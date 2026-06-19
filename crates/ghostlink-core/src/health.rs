@@ -124,8 +124,12 @@ impl NetworkHealthMonitor {
                 }
                 
                 // Update cluster metrics
-                self.cluster.get_metrics_mut(&node.id).unwrap().record_latency(latency_us);
-                self.cluster.get_metrics_mut(&node.id).unwrap().record_delivery_ratio(delivery_ratio);
+                self.cluster.get_metrics_mut(&node.id, |m| {
+                    m.record_latency(latency_us);
+                });
+                self.cluster.get_metrics_mut(&node.id, |m| {
+                    m.record_delivery_ratio(delivery_ratio);
+                });
             }
         }
         
@@ -336,25 +340,16 @@ impl FaultDetector {
         
         for node in self.cluster.nodes() {
             if self.cluster.check_heartbeat_timeout(&node.id) {
-                let metrics = self.cluster.get_metrics(&node.id);
-                
-                if let Some(mut m) = metrics {
+                if let Some(metrics) = self.cluster.get_metrics(&node.id) {
                     // Check if node is already marked as failed
-                    if m.status == NodeStatus::Active {
-                        m.status = NodeStatus::Failed;
-                        self.cluster.register(node.clone()); // Re-register with updated status
+                    if metrics.status == NodeStatus::Active {
+                        self.cluster.mark_failed(&node.id);
                         failed_nodes.push(node.id.clone());
                     }
                 } else {
                     // No metrics for this node - mark as failed
-                    let _ = self.cluster.get_metrics_mut(&node.id).unwrap_or_else(|| {
-                        NodeMetrics::new(
-                            0.0, 
-                            0.0, 
-                            "unknown".to_string(), 
-                            Duration::from_secs(5)
-                        )
-                    });
+                    self.cluster.mark_failed(&node.id);
+                    failed_nodes.push(node.id.clone());
                 }
             }
         }
@@ -364,7 +359,7 @@ impl FaultDetector {
     
     /// Recover a failed node
     pub fn recover_node(&self, node_id: &str) {
-        if let Some(mut metrics) = self.cluster.get_metrics_mut(node_id) {
+        self.cluster.get_metrics_mut(node_id, |metrics| {
             metrics.status = NodeStatus::Active;
             metrics.last_heartbeat = Instant::now();
             
@@ -375,7 +370,7 @@ impl FaultDetector {
             metrics.latency_samples = 0;
             metrics.delivery_ratio = 1.0;
             metrics.throughput_gbps = 0.0;
-        }
+        });
     }
     
     /// Start periodic fault detection in background
@@ -425,9 +420,10 @@ mod tests {
         let monitor = NetworkHealthMonitor::new(cluster.clone(), HealthConfig::default());
         
         // Simulate degraded node
-        let mut metrics = cluster.get_metrics_mut("node-a").unwrap();
-        metrics.record_delivery_ratio(0.85); // Below threshold
-        metrics.record_latency(15.0); // High latency
+        cluster.get_metrics_mut("node-a", |metrics| {
+            metrics.record_delivery_ratio(0.85); // Below threshold
+            metrics.record_latency(15.0); // High latency
+        });
         
         monitor.check_all();
         
