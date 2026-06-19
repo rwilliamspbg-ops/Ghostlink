@@ -3,11 +3,9 @@
 //! This implementation uses pinned allocations and proper memory ordering
 //! for single-producer/single-consumer DMA-style hand-off.
 
-use pin_utils::pin_mut;
-use std::cell::{Cell, UnsafeCell};
+use std::cell::UnsafeCell;
 use std::mem::MaybeUninit;
-use std::ptr;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// Ring buffer configuration with backpressure thresholds
 #[derive(Clone, Copy, Debug)]
@@ -21,11 +19,14 @@ pub struct RingConfig {
 impl Default for RingConfig {
     fn default() -> Self {
         Self {
-            capacity: 1024,
-            backpressure_threshold: 716, // 70% of 1024
+            capacity: 1023, // Must be < RING_CAPACITY to avoid wraparound aliasing
+            backpressure_threshold: 716 // ~70% of 1023, // 70% of 1024
         }
     }
 }
+
+/// Fixed capacity used for DMA alignment
+const RING_CAPACITY: usize = 1024;
 
 /// Zero-copy SPSC ring buffer with proper memory ordering
 /// 
@@ -36,11 +37,11 @@ impl Default for RingConfig {
 /// - Memory is properly aligned for the element type T
 #[derive(Debug)]
 pub struct SpscRingBuffer<T> {
-    /// Pinned buffer with zero-copy allocations
-    buffer: UnsafeCell<MaybeUninit<[MaybeUninit<T>; Self::CAPACITY]>>,
-    /// Current head position (producer writes here)
+    /// Buffer of uninitialized elements
+    buffer: UnsafeCell<[MaybeUninit<T>; RING_CAPACITY]>,
+    /// Current head position (consumer reads here)
     head: AtomicUsize,
-    /// Current tail position (consumer reads here)
+    /// Current tail position (producer writes here)
     tail: AtomicUsize,
     /// Overflow counter for backpressure monitoring
     overflow_count: AtomicUsize,
@@ -51,13 +52,16 @@ pub struct SpscRingBuffer<T> {
 }
 
 impl<T> SpscRingBuffer<T> {
-    const CAPACITY: usize = 1024; // Fixed capacity for DMA alignment
+    const CAPACITY: usize = RING_CAPACITY;
     
     /// Create a new SPSC ring buffer with the given configuration
     pub fn new(config: RingConfig) -> Self {
-        assert!(config.capacity <= Self::CAPACITY, "capacity must not exceed maximum");
+        assert!(config.capacity < Self::CAPACITY, "capacity must be strictly less than RING_CAPACITY");
         
-        let buffer = UnsafeCell::new(MaybeUninit::uninit());
+        // Safety: MaybeUninit does not require initialization
+        let buffer = UnsafeCell::new(unsafe {
+            MaybeUninit::<[MaybeUninit<T>; RING_CAPACITY]>::uninit().assume_init()
+        });
         
         Self {
             buffer,
@@ -75,25 +79,26 @@ impl<T> SpscRingBuffer<T> {
     /// When full, the producer should wait/backpressure until space is available.
     pub fn push(&self, value: T) -> Result<(), T> {
         let tail = self.tail.load(Ordering::Acquire);
-        let next_tail = Self::increment(tail);
         let head = self.head.load(Ordering::Acquire);
         
-        // Check if ring is full (with wrap-around handling)
-        let is_full = if next_tail >= head {
-            next_tail == head
+        // Check if ring is full using count (respects config.capacity)
+        let current_len = if tail >= head {
+            tail - head
         } else {
-            false
+            Self::CAPACITY - head + tail
         };
         
-        if is_full {
+        if current_len >= self.config.capacity {
             self.overflow_count.fetch_add(1, Ordering::Relaxed);
             return Err(value);
         }
         
+        let next_tail = Self::increment(tail);
+        
         // Write the value at tail position
         unsafe {
-            let buffer = &*self.buffer.get();
-            (*buffer[tail]).write(value);
+            let buf = &mut *self.buffer.get();
+            buf[tail].write(value);
             
             // Release store to make write visible to consumer
             self.tail.store(next_tail, Ordering::Release);
@@ -121,13 +126,15 @@ impl<T> SpscRingBuffer<T> {
         }
         
         // Read the value at head position
-        unsafe {
-            let buffer = &*self.buffer.get();
-            let value = (*buffer[head]).read();
+        let value = unsafe {
+            let buf = &mut *self.buffer.get();
+            let val = buf[head].assume_init_read();
             
-            // Acquire store to make read visible to producer
+            // Release store to make read visible to producer
             self.head.store(Self::increment(head), Ordering::Release);
-        }
+            
+            val
+        };
         
         Some(value)
     }
@@ -147,6 +154,11 @@ impl<T> SpscRingBuffer<T> {
     /// Check if the ring is empty
     pub fn is_empty(&self) -> bool {
         self.head.load(Ordering::Acquire) == self.tail.load(Ordering::Acquire)
+    }
+    
+    /// Get the configured capacity
+    pub fn capacity(&self) -> usize {
+        self.config.capacity
     }
     
     /// Get overflow count for backpressure monitoring
@@ -189,6 +201,12 @@ impl<T> SpscRingBuffer<T> {
         (index + 1) % Self::CAPACITY
     }
 }
+
+// Safety: SpscRingBuffer is safe to send across threads when used as SPSC.
+// The producer and consumer operate on disjoint memory regions with proper
+// atomic ordering, making this safe for our SPSC use case.
+unsafe impl<T: Send> Send for SpscRingBuffer<T> {}
+unsafe impl<T: Send> Sync for SpscRingBuffer<T> {}
 
 impl<T> Drop for SpscRingBuffer<T> {
     fn drop(&mut self) {
@@ -274,8 +292,8 @@ mod tests {
         
         assert_eq!(ring.len(), 1020);
         
-        // Pop all elements
-        for i in (0..1020).rev() {
+        // Pop all elements in FIFO order
+        for i in 0..1020 {
             assert_eq!(ring.pop(), Some(i));
         }
         
@@ -298,7 +316,7 @@ mod tests {
         
         // Fill one more - should backpressure
         let result = ring.push(70);
-        assert!(result.is_err());
+        assert!(result.is_ok()); // Push succeeds until capacity (100) is reached
         assert!(ring.should_backpressure());
     }
 

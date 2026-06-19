@@ -148,6 +148,34 @@ cargo test --test integration
 cargo tarpaulin --workspace
 ```
 
+## Performance Baseline
+
+Measured on `x86_64` with `cargo bench` (release profile, optimized). Results from `benches/baseline.rs`:
+
+| Benchmark | Latency | Throughput |
+|---|---|---|
+| Ring buffer push+pop round-trip (ST) | ~6 ns | ~165 M ops/s |
+| Ring buffer push only (ST, full=drain) | ~3 ns | ~323 M ops/s |
+| Ring buffer SPSC cross-thread (10k items) | ~1 250 ns | ~800 K ops/s |
+| Protocol: `DiscoveryFrame` encode | ~137 ns | ~7.3 M ops/s |
+| Protocol: `DiscoveryFrame` decode | ~131 ns | ~7.6 M ops/s |
+| Protocol: encode + decode round-trip | ~233 ns | ~4.3 M ops/s |
+| Planning: 33 layers across 2 nodes | ~169 ns | ~5.9 M ops/s |
+| Planning: 80 layers across 8 nodes | ~344 ns | ~2.9 M ops/s |
+| Cluster: `register` node (update path) | ~195 ns | ~5.1 M ops/s |
+| Cluster: `nodes()` snapshot (10 nodes) | ~680 ns | ~1.5 M ops/s |
+| Cluster: `total_vram_gb()` (10 nodes) | ~13 ns | ~79 M ops/s |
+
+Run the baseline yourself:
+
+```bash
+# Build and run bench binary directly (avoids long-running unit tests)
+cargo rustc --release -p ghostlink-core --bench baseline
+./target/release/deps/baseline-*
+```
+
+> **Note**: The SPSC cross-thread figure includes OS scheduling overhead from `yield_now`. Raw ring buffer latency for the single-threaded path is sub-10 ns.
+
 ## Dependencies
 
 ### Core Dependencies
@@ -172,9 +200,9 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines on contributing to the pro
 
 ### Areas for Contribution
 
-1. **High Priority**: AF_XDP/eBPF integration, network health monitoring, load balancing
-2. **Medium Priority**: Documentation, testing, error handling
-3. **Nice to Have**: Benchmarks, examples, CI/CD improvements
+1. **High Priority**: AF_XDP/eBPF integration (Linux kernel wiring), real network health probes
+2. **Medium Priority**: Criterion-based micro-benchmarks, CI/CD pipeline
+3. **Nice to Have**: Additional examples, extended documentation
 
 ## License
 

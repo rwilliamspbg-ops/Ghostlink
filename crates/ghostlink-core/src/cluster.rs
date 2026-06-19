@@ -6,11 +6,11 @@
 //! - Fault detection and recovery
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, AtomicBool, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use crate::protocol::NodeResources;
+pub use crate::protocol::NodeResources;
 
 /// Node status enumeration
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -30,12 +30,16 @@ impl Default for NodeStatus {
 }
 
 /// Metrics for a single node
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct NodeMetrics {
+    /// Node display name
+    pub name: String,
     /// Current status
     pub status: NodeStatus,
     /// Total VRAM in GB
     pub vram_gb: f32,
+    /// Total VRAM (alias for vram_gb, used by display/balancer)
+    pub total_vram_gb: f32,
     /// System memory in GB
     pub system_memory_gb: f32,
     /// Compute capability
@@ -69,6 +73,41 @@ pub struct NodeMetrics {
     
     /// Number of layers streaming on this node
     pub streaming_layers: Option<(usize, usize)>,
+    
+    /// AF_XDP throughput in Gbps (for display)
+    pub af_xdp_gbps: f32,
+    /// Per-packet latency in microseconds (for display)
+    pub latency_micros: f32,
+    /// Whether delivery_ratio has been initialized (first sample sets directly)
+    pub(crate) delivery_ratio_initialized: bool,
+}
+
+impl Default for NodeMetrics {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            status: NodeStatus::Active,
+            vram_gb: 0.0,
+            total_vram_gb: 0.0,
+            system_memory_gb: 0.0,
+            compute_capability: String::new(),
+            gpu_name: None,
+            last_heartbeat: Instant::now(),
+            heartbeat_timeout: Duration::from_secs(5),
+            avg_latency_us: 0.0,
+            min_latency_us: f32::MAX,
+            max_latency_us: 0.0,
+            latency_samples: 0,
+            delivery_ratio: 1.0,
+            throughput_gbps: 0.0,
+            used_vram_gb: 0.0,
+            available_vram_gb: 0.0,
+            streaming_layers: None,
+            af_xdp_gbps: 0.0,
+            latency_micros: 0.0,
+            delivery_ratio_initialized: false,
+        }
+    }
 }
 
 impl NodeMetrics {
@@ -80,8 +119,10 @@ impl NodeMetrics {
         heartbeat_timeout: Duration,
     ) -> Self {
         Self {
+            name: String::new(),
             status: NodeStatus::Active,
             vram_gb,
+            total_vram_gb: vram_gb,
             system_memory_gb,
             compute_capability,
             gpu_name: None,
@@ -96,10 +137,13 @@ impl NodeMetrics {
             used_vram_gb: 0.0,
             available_vram_gb: vram_gb,
             streaming_layers: None,
+            af_xdp_gbps: 0.0,
+            latency_micros: 0.0,
+            delivery_ratio_initialized: false,
         }
     }
     
-    /// Update metrics with new latency sample
+    /// Update metrics with new latency sample (EMA with alpha=0.1)
     pub fn record_latency(&mut self, latency_us: f32) {
         if latency_us < self.min_latency_us {
             self.min_latency_us = latency_us;
@@ -109,13 +153,22 @@ impl NodeMetrics {
         }
         
         self.latency_samples += 1;
-        self.avg_latency_us = (self.avg_latency_us * (self.latency_samples - 1) + latency_us) / self.latency_samples as f32;
+        if self.latency_samples == 1 {
+            self.avg_latency_us = latency_us;
+        } else {
+            self.avg_latency_us = self.avg_latency_us * 0.9 + latency_us * 0.1;
+        }
     }
     
     /// Update metrics with new delivery ratio sample
     pub fn record_delivery_ratio(&mut self, ratio: f32) {
-        // Exponential moving average with alpha=0.1
-        self.delivery_ratio = self.delivery_ratio * 0.9 + ratio * 0.1;
+        if !self.delivery_ratio_initialized {
+            self.delivery_ratio = ratio;
+            self.delivery_ratio_initialized = true;
+        } else {
+            // Exponential moving average with alpha=0.1
+            self.delivery_ratio = self.delivery_ratio * 0.9 + ratio * 0.1;
+        }
     }
     
     /// Update metrics with new throughput sample
@@ -127,7 +180,7 @@ impl NodeMetrics {
     /// Update used VRAM
     pub fn record_vram_usage(&mut self, used_vram_gb: f32) {
         self.used_vram_gb = used_vram_gb;
-        self.available_vram_gb = self.vram_gb - used_vram_gb;
+        self.available_vram_gb = self.total_vram_gb - used_vram_gb;
     }
     
     /// Set streaming layers
@@ -149,7 +202,17 @@ pub struct ClusterState {
     /// Map of node ID to live metrics
     metrics: Arc<Mutex<HashMap<String, NodeMetrics>>>,
     /// Last cluster update timestamp
-    last_update: AtomicU64,
+    last_update: Arc<AtomicU64>,
+}
+
+impl Clone for ClusterState {
+    fn clone(&self) -> Self {
+        Self {
+            nodes: Arc::clone(&self.nodes),
+            metrics: Arc::clone(&self.metrics),
+            last_update: Arc::clone(&self.last_update),
+        }
+    }
 }
 
 impl Default for ClusterState {
@@ -164,7 +227,7 @@ impl ClusterState {
         Self {
             nodes: Arc::new(Mutex::new(HashMap::new())),
             metrics: Arc::new(Mutex::new(HashMap::new())),
-            last_update: AtomicU64::new(0),
+            last_update: Arc::new(AtomicU64::new(0)),
         }
     }
     
@@ -179,7 +242,7 @@ impl ClusterState {
             let existing = nodes.get_mut(&node.id).unwrap();
             existing.vram_gb = node.vram_gb;
             existing.system_memory_gb = node.system_memory_gb;
-            existing.compute_capability = node.compute_capability;
+            existing.compute_capability = node.compute_capability.clone();
             
             // Initialize or update metrics
             if !metrics.contains_key(&node.id) {
@@ -189,25 +252,30 @@ impl ClusterState {
                         node.vram_gb,
                         node.system_memory_gb,
                         node.compute_capability,
-                        Duration::from_secs(5), // Default heartbeat timeout
+                        Duration::from_secs(5),
                     ),
                 );
             } else {
                 let existing_metrics = metrics.get_mut(&node.id).unwrap();
                 existing_metrics.vram_gb = node.vram_gb;
+                existing_metrics.total_vram_gb = node.vram_gb;
                 existing_metrics.system_memory_gb = node.system_memory_gb;
                 existing_metrics.compute_capability = node.compute_capability;
                 existing_metrics.heartbeat_timeout = Duration::from_secs(5);
             }
         } else {
-            // New node
-            nodes.insert(node.id.clone(), node);
+            // New node - extract fields before moving node into map
+            let id = node.id.clone();
+            let vram_gb = node.vram_gb;
+            let system_memory_gb = node.system_memory_gb;
+            let compute_capability = node.compute_capability.clone();
+            nodes.insert(id.clone(), node);
             metrics.insert(
-                node.id.clone(),
+                id,
                 NodeMetrics::new(
-                    node.vram_gb,
-                    node.system_memory_gb,
-                    node.compute_capability,
+                    vram_gb,
+                    system_memory_gb,
+                    compute_capability,
                     Duration::from_secs(5),
                 ),
             );
@@ -239,7 +307,7 @@ impl ClusterState {
     }
     
     /// Get metrics mutable reference (for internal updates)
-    fn get_metrics_mut<F, R>(&self, node_id: &str, f: F) -> Option<R>
+    pub fn get_metrics_mut<F, R>(&self, node_id: &str, f: F) -> Option<R>
     where
         F: FnOnce(&mut NodeMetrics) -> R,
     {
@@ -378,8 +446,8 @@ mod tests {
     #[test]
     fn register_replaces_existing_nodes() {
         let cluster = ClusterState::new();
-        cluster.register(NodeResources::new("node-a", 24.0, 64.0, "8.9".to_string()));
-        cluster.register(NodeResources::new("node-a", 48.0, 128.0, "9.0".to_string()));
+        cluster.register(NodeResources::new("node-a", 24.0, 64.0, "8.9", None));
+        cluster.register(NodeResources::new("node-a", 48.0, 128.0, "9.0", None));
 
         assert_eq!(cluster.nodes().len(), 1);
         assert_eq!(cluster.nodes()[0].vram_gb, 48.0);
@@ -388,7 +456,7 @@ mod tests {
     #[test]
     fn heartbeat_timeout_detection() {
         let cluster = ClusterState::new();
-        cluster.register(NodeResources::new("node-a", 24.0, 64.0, "8.9".to_string()));
+        cluster.register(NodeResources::new("node-a", 24.0, 64.0, "8.9", None));
         
         // Simulate timeout by waiting longer than default heartbeat timeout
         thread::sleep(Duration::from_secs(6));
@@ -399,8 +467,8 @@ mod tests {
     #[test]
     fn health_monitor_reports_active_count() {
         let cluster = Arc::new(ClusterState::new());
-        cluster.register(NodeResources::new("node-a", 24.0, 64.0, "8.9".to_string()));
-        cluster.register(NodeResources::new("node-b", 12.0, 32.0, "8.6".to_string()));
+        cluster.register(NodeResources::new("node-a", 24.0, 64.0, "8.9", None));
+        cluster.register(NodeResources::new("node-b", 12.0, 32.0, "8.6", None));
         
         let monitor = ClusterHealthMonitor::new(cluster.clone(), Duration::from_secs(1));
         monitor.check_health();
@@ -420,7 +488,7 @@ mod tests {
         
         metrics.record_latency(2.0);
         // EMA with alpha=0.1: (1.0 * 0.9) + 2.0 * 0.1 = 0.9 + 0.2 = 1.1
-        assert_eq!(metrics.avg_latency_us, 1.1);
+        assert!((metrics.avg_latency_us - 1.1).abs() < 1e-6);
     }
 
     #[test]
@@ -428,18 +496,18 @@ mod tests {
         let mut metrics = NodeMetrics::new(24.0, 64.0, "8.9".to_string(), Duration::from_secs(5));
         
         metrics.record_delivery_ratio(0.98);
-        assert_eq!(metrics.delivery_ratio, 0.98);
+        assert!((metrics.delivery_ratio - 0.98).abs() < 1e-6);
         
         metrics.record_delivery_ratio(0.90);
         // EMA: 0.98 * 0.9 + 0.90 * 0.1 = 0.882 + 0.09 = 0.972
-        assert_eq!(metrics.delivery_ratio, 0.972);
+        assert!((metrics.delivery_ratio - 0.972).abs() < 1e-6);
     }
 
     #[test]
     fn cluster_tracks_total_vram() {
         let cluster = ClusterState::new();
-        cluster.register(NodeResources::new("node-a", 24.0, 64.0, "8.9".to_string()));
-        cluster.register(NodeResources::new("node-b", 12.0, 32.0, "8.6".to_string()));
+        cluster.register(NodeResources::new("node-a", 24.0, 64.0, "8.9", None));
+        cluster.register(NodeResources::new("node-b", 12.0, 32.0, "8.6", None));
         
         assert_eq!(cluster.total_vram_gb(), 36.0);
     }

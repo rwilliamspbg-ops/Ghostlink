@@ -101,13 +101,14 @@ impl PlacementPlan {
         let participating_nodes = assignments.iter()
             .map(|a| a.node_id.clone())
             .collect();
+        let total_layers = assignments.iter()
+            .map(|a| a.num_layers)
+            .sum();
         
         Self {
             assignments,
             quantization_mode,
-            total_layers: assignments.iter()
-                .map(|a| a.num_layers)
-                .sum(),
+            total_layers,
             participating_nodes,
         }
     }
@@ -362,8 +363,8 @@ mod tests {
     #[test]
     fn greedily_places_layers_across_nodes() {
         let nodes = vec![
-            NodeResources::new("node-a", 24.0, 64.0, "8.9".to_string()),
-            NodeResources::new("node-b", 12.0, 32.0, "8.6".to_string()),
+            NodeResources::new("node-a", 24.0, 64.0, "8.9", None),
+            NodeResources::new("node-b", 12.0, 32.0, "8.6", None),
         ];
 
         let assignments = assign_layers_sequentially(&nodes, &sample_layers(33, 1.0)).unwrap();
@@ -391,7 +392,7 @@ mod tests {
 
     #[test]
     fn reports_insufficient_capacity() {
-        let nodes = vec![NodeResources::new("node-a", 2.0, 64.0, "8.9".to_string())];
+        let nodes = vec![NodeResources::new("node-a", 2.0, 64.0, "8.9", None)];
         let error = assign_layers_sequentially(&nodes, &sample_layers(3, 1.0)).unwrap_err();
 
         assert!(error.contains("insufficient cluster VRAM"));
