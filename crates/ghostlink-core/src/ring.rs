@@ -14,7 +14,7 @@ unsafe impl<T: Send> Sync for SpscRingBuffer<T> {}
 
 impl<T> SpscRingBuffer<T> {
     pub fn new(capacity: usize) -> Self {
-        assert!(capacity > 1, "capacity must be greater than 1");
+        assert!(capacity > 1, "capacity must be at least 2");
         let buffer = (0..capacity)
             .map(|_| UnsafeCell::new(MaybeUninit::uninit()))
             .collect::<Vec<_>>()

@@ -9,13 +9,15 @@ pub enum FrameKind {
     Attestation = 3,
 }
 
-impl FrameKind {
-    fn from_u8(value: u8) -> Option<Self> {
+impl TryFrom<u8> for FrameKind {
+    type Error = &'static str;
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
         match value {
-            1 => Some(Self::Discovery),
-            2 => Some(Self::Join),
-            3 => Some(Self::Attestation),
-            _ => None,
+            1 => Ok(Self::Discovery),
+            2 => Ok(Self::Join),
+            3 => Ok(Self::Attestation),
+            _ => Err("unknown frame kind"),
         }
     }
 }
@@ -52,7 +54,7 @@ impl DiscoveryFrame {
             return Err(format!("unexpected EtherType 0x{ether_type:04x}"));
         }
 
-        let kind = FrameKind::from_u8(bytes[2]).ok_or("unknown frame kind")?;
+        let kind = FrameKind::try_from(bytes[2])?;
         let payload = std::str::from_utf8(&bytes[3..]).map_err(|error| error.to_string())?;
         let mut parts = payload.split('|');
         let id = parts.next().ok_or("missing node id")?;
