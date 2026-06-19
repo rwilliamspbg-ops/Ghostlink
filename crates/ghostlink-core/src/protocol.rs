@@ -49,8 +49,7 @@ impl FrameHeader {
     /// Encode header as bytes (little-endian)
     pub fn encode(&self) -> [u8; Self::HEADER_SIZE] {
         let mut header = [0u8; Self::HEADER_SIZE];
-        header[0] = (self.ether_type & 0xFF) as u8;
-        header[1] = ((self.ether_type >> 8) & 0xFF) as u8;
+        header[0..2].copy_from_slice(&self.ether_type.to_le_bytes());
         header[2] = self.kind;
         header[3] = self.version;
         header[4..].copy_from_slice(&self.crc.to_le_bytes());
@@ -155,7 +154,7 @@ impl NodeResources {
         
         // System memory (4 bytes, little-endian f32)
         unsafe {
-            let ptr = self.system_memory_gb as *const f32 as *const u8;
+            let ptr = &self.system_memory_gb as *const f32 as *const u8;
             payload.extend_from_slice(&*(ptr as *const [u8; 4]));
         }
         
@@ -227,10 +226,10 @@ impl NodeResources {
             compute_capability: cc.to_string(),
             gpu_name: if has_gpu_name {
                 let gpu_len = payload[10 + id_len + cc_len + 1] as usize;
-                if gpu_len > payload.len() - 12 {
+                if gpu_len > payload.len() - 12 - id_len - cc_len {
                     return Err("invalid GPU name length".into());
                 }
-                Some(std::str::from_utf8(&payload[10 + id_len + cc_len + 2..])
+                Some(std::str::from_utf8(&payload[10 + id_len + cc_len + 2..10 + id_len + cc_len + 2 + gpu_len])
                     .map_err(|e| e.to_string())?
                     .to_string())
             } else {
@@ -281,7 +280,7 @@ impl DiscoveryFrame {
         }
         
         // Parse header
-        let ether_type = u16::from_be_bytes([bytes[0], bytes[1]]);
+        let ether_type = u16::from_le_bytes([bytes[0], bytes[1]]);
         let kind = FrameKind::try_from(bytes[2])?;
         let version = bytes[3];
         let expected_crc = u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]);
