@@ -4,5 +4,31 @@ version = "0.1.0"
 edition = "2021"
 license = "MIT"
 
-[lib]
-path = "src/lib.rs"
+[dependencies]
+# Zero-copy pinned allocations
+pin-utils = "0.1"
+
+# Fast CRC32 checksums
+crc32fast = "1.5"
+
+# Error types
+thiserror = "2"
+
+# Async runtime (for health monitoring)
+tokio = { version = "1", features = ["full"] }
+
+# Terminal UI
+ratatui = "0.28"
+
+# Production error handling
+anyhow = "1"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = "0.3"
+rand = "0.10.1"
+libc = "0.2.186"
+crossterm = "0.29.0"
+
+[dev-dependencies]
+tokio-test = "0.4"
