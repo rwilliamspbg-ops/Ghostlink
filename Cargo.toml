@@ -1,0 +1,7 @@
+[workspace]
+members = ["crates/ghost-link", "crates/ghostlink-core"]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+license = "MIT"
