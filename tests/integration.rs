@@ -165,8 +165,8 @@ fn test_ring_buffer_wrap_around() {
     
     assert_eq!(ring.len(), 1020);
     
-    // Pop all elements and verify order
-    for i in (0..1020).rev() {
+    // Pop all elements and verify FIFO order
+    for i in 0..1020 {
         assert_eq!(ring.pop(), Some(i));
     }
     

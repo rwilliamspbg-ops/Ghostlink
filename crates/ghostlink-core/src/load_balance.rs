@@ -134,6 +134,7 @@ impl LoadBalancer {
         // Collect all layers into a single sorted vector (by index)
         let mut all_layers: Vec<_> = layers.iter().cloned().collect();
         all_layers.sort_by_key(|l| l.index);
+        let total_layer_count = all_layers.len();
         
         // Greedy assignment: assign contiguous layers to nodes based on VRAM
         let mut distributions = Vec::new();
@@ -144,29 +145,25 @@ impl LoadBalancer {
                 break;
             }
             
-            let mut node_slices: Vec<usize> = Vec::new();
             let mut used_vram = 0.0f32;
-            let mut start_index = usize::MAX;
-            let mut end_index = 0usize;
-            
-            // Assign layers to this node while VRAM allows
-            for (index, layer) in remaining_layers.iter().enumerate() {
+            let mut start_enum = usize::MAX;
+            let mut end_enum = 0usize;
+
+            for (enum_idx, layer) in remaining_layers.iter().enumerate() {
                 if used_vram + layer.vram_gb > node.vram_gb {
                     break;
                 }
                 
-                let layer_index = layer.index;
-                
-                if start_index == usize::MAX {
-                    start_index = layer_index;
+                if start_enum == usize::MAX {
+                    start_enum = enum_idx;
                 }
-                end_index = layer_index + 1;
+                end_enum = enum_idx + 1;
                 
                 used_vram += layer.vram_gb;
             }
             
-            if start_index != usize::MAX {
-                let slices: Vec<TensorSlice> = remaining_layers[start_index..end_index]
+            if start_enum != usize::MAX {
+                let slices: Vec<TensorSlice> = remaining_layers[start_enum..end_enum]
                     .iter()
                     .map(|l| TensorSlice::new((l.index, l.index + 1), l.vram_gb))
                     .collect();
@@ -174,12 +171,12 @@ impl LoadBalancer {
                 distributions.push((node.id.clone(), slices));
                 
                 // Remove assigned layers from remaining
-                remaining_layers.drain(start_index..end_index);
+                remaining_layers.drain(start_enum..end_enum);
             }
         }
         
         if remaining_layers.is_empty() {
-            Ok(LoadDistributionPlan::new(distributions, all_layers.len()))
+            Ok(LoadDistributionPlan::new(distributions, total_layer_count))
         } else {
             Err(format!(
                 "insufficient VRAM: {} layers remain",
@@ -228,6 +225,7 @@ impl LoadBalancer {
         
         // Find underloaded nodes (using > 80% VRAM utilization as underloaded)
         let underloaded_nodes: Vec<_> = self.cluster.active_nodes()
+            .into_iter()
             .filter(|m| m.available_vram_gb < m.total_vram_gb * 0.2)
             .collect();
         
@@ -266,7 +264,7 @@ impl LoadBalancer {
         // Use timeout-based acquisition to prevent deadlocks
         let start_time = std::time::Instant::now();
         
-        while start_time.elapsed().as_micros() < self.config.lock_timeout_us as u64 {
+        while start_time.elapsed().as_micros() < self.config.lock_timeout_us as u128 {
             match self.distribute_layers(layers) {
                 Ok(plan) => return Ok(plan),
                 Err(_) => {
@@ -307,8 +305,13 @@ impl LoadStats {
     
     /// Update load balance ratio
     pub fn update_balance_ratio(&mut self, ratio: f32) {
-        // EMA with alpha=0.1
-        self.avg_load_balance_ratio = self.avg_load_balance_ratio * 0.9 + ratio * 0.1;
+        if self.avg_load_balance_ratio == 0.0 && self.rebalancing_count == 0 && self.total_layers_distributed == 0 {
+            // First call - initialize directly
+            self.avg_load_balance_ratio = ratio;
+        } else {
+            // EMA with alpha=0.1
+            self.avg_load_balance_ratio = self.avg_load_balance_ratio * 0.9 + ratio * 0.1;
+        }
     }
     
     /// Record rebalancing operation
@@ -336,7 +339,8 @@ impl LoadStats {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cluster::{ClusterState, NodeResources};
+    use crate::cluster::ClusterState;
+    use crate::protocol::NodeResources;
     use std::sync::Arc;
 
     fn sample_layers(count: usize, vram_gb: f32) -> Vec<crate::planning::LayerSpec> {
@@ -407,11 +411,11 @@ mod tests {
         let mut stats = LoadStats::new();
         
         stats.update_balance_ratio(0.95);
-        assert_eq!(stats.avg_load_balance_ratio, 0.95);
+        assert!((stats.avg_load_balance_ratio - 0.95).abs() < 1e-6);
         
         stats.update_balance_ratio(0.85);
         // EMA: 0.95 * 0.9 + 0.85 * 0.1 = 0.855 + 0.085 = 0.94
-        assert_eq!(stats.avg_load_balance_ratio, 0.94);
+        assert!((stats.avg_load_balance_ratio - 0.94).abs() < 1e-6);
     }
 
     #[test]

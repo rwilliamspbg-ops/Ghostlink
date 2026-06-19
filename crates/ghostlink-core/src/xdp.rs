@@ -12,6 +12,7 @@ use std::os::raw::{c_char, c_int};
 use std::ptr;
 
 use crate::protocol::{DiscoveryFrame, GHOSTLINK_ETHERTYPE};
+use crate::ring::RingConfig;
 
 /// AF_XDP socket constants (Linux-specific)
 const SOL_XDP: i32 = 0x2F;
@@ -22,7 +23,7 @@ const XDP_UNMAP: i32 = 1;
 pub const MAX_XDP_FRAME_SIZE: usize = 2048;
 
 /// XDP socket configuration
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct XdpConfig {
     /// Interface name to bind (e.g., "eth0")
     pub interface_name: String,
@@ -77,7 +78,7 @@ impl XdpSocketHandle {
 }
 
 /// Frame reception loop with zero-copy buffers
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct XdpFrameReceiver {
     /// Configuration for receiver
     config: XdpConfig,
@@ -88,7 +89,7 @@ pub struct XdpFrameReceiver {
 impl XdpFrameReceiver {
     /// Create new frame receiver
     pub fn new(config: XdpConfig) -> Self {
-        let ring = crate::ring::SpscRingBuffer::new(XdpConfig::default());
+        let ring = crate::ring::SpscRingBuffer::new(RingConfig::default());
         
         Self {
             config,
@@ -114,7 +115,7 @@ impl XdpFrameReceiver {
         }
         
         // Check EtherType filter
-        let ether_type = u16::from_be_bytes([bytes[0], bytes[1]]);
+        let ether_type = u16::from_le_bytes([bytes[0], bytes[1]]);
         if ether_type != GHOSTLINK_ETHERTYPE {
             return None;
         }
@@ -168,6 +169,8 @@ pub struct XdpStats {
     pub bytes_received: u64,
     /// Average latency in microseconds
     pub avg_latency_us: f32,
+    /// Whether latency has been initialized
+    latency_initialized: bool,
 }
 
 impl XdpStats {
@@ -183,6 +186,7 @@ impl XdpStats {
     
     /// Record frame dropped
     pub fn record_dropped(&mut self) {
+        self.frames_received += 1;
         self.frames_dropped += 1;
     }
     
@@ -193,8 +197,13 @@ impl XdpStats {
     
     /// Update average latency
     pub fn update_latency(&mut self, latency_us: f32) {
-        // EMA with alpha=0.1
-        self.avg_latency_us = self.avg_latency_us * 0.9 + latency_us * 0.1;
+        if !self.latency_initialized {
+            self.avg_latency_us = latency_us;
+            self.latency_initialized = true;
+        } else {
+            // EMA with alpha=0.1
+            self.avg_latency_us = self.avg_latency_us * 0.9 + latency_us * 0.1;
+        }
     }
     
     /// Get throughput estimate (frames/sec)
@@ -230,7 +239,7 @@ impl XdpStats {
 }
 
 /// XDP receiver with statistics and zero-copy handling
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct XdpReceiver {
     /// Configuration
     config: XdpConfig,
@@ -334,7 +343,7 @@ mod tests {
 
     #[test]
     fn xdp_receiver_processes_frames() {
-        let receiver = XdpReceiver::new(XdpConfig::default());
+        let mut receiver = XdpReceiver::new(XdpConfig::default());
         
         // Create a test discovery frame
         let node = NodeResources::new("test-node", 24.0, 64.0, "8.9".to_string(), None);
@@ -384,17 +393,17 @@ mod tests {
         
         stats.update_latency(2.0);
         // EMA: 1.0 * 0.9 + 2.0 * 0.1 = 0.9 + 0.2 = 1.1
-        assert_eq!(stats.avg_latency_us, 1.1);
+        assert!((stats.avg_latency_us - 1.1).abs() < 1e-6);
     }
 
     #[test]
     fn xdp_receiver_rejects_wrong_ether_type() {
-        let receiver = XdpReceiver::new(XdpConfig::default());
+        let mut receiver = XdpReceiver::new(XdpConfig::default());
         
         // Create a frame with wrong EtherType
         let mut fake_frame = vec![0u8; 10];
-        fake_frame[0] = 0x88B5 as u8; // Correct first byte
-        fake_frame[1] = 0xFF; // Wrong second byte
+        fake_frame[0] = 0xB5u8; // Low byte of GHOSTLINK_ETHERTYPE (0x88B5 LE)
+        fake_frame[1] = 0xFF;   // Wrong high byte
         
         let result = receiver.process_frame(&fake_frame);
         assert!(result.is_none());
@@ -410,7 +419,7 @@ mod tests {
         stats.update_latency(1.5);
         
         let report = stats.report();
-        assert!(report.contains("Frames received: 2"));
+        assert!(report.contains("Frames received: 3"));
         assert!(report.contains("Frames dropped: 1"));
     }
 }

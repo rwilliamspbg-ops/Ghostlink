@@ -352,8 +352,8 @@ mod tests {
     #[test]
     fn rejects_wrong_ether_type() {
         let mut fake_frame = vec![0u8; 10];
-        fake_frame[0] = 0x88B5 as u8; // Correct first byte
-        fake_frame[1] = 0xFF; // Wrong second byte
+        fake_frame[0] = 0xB5u8; // Low byte of GHOSTLINK_ETHERTYPE (0x88B5 LE)
+        fake_frame[1] = 0xFF;   // Wrong high byte
         
         let result = DiscoveryFrame::decode(&fake_frame);
         assert!(result.is_err());
