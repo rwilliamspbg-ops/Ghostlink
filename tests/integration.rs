@@ -16,19 +16,19 @@ use std::thread;
 #[test]
 fn test_multi_node_discovery_and_registration() {
     // Create cluster state
-    let mut cluster = ClusterState::new();
+    let cluster = ClusterState::new();
     
     // Register multiple nodes
-    cluster.register(NodeResources::new("node-a", 24.0, 64.0, "8.9".to_string()));
-    cluster.register(NodeResources::new("node-b", 12.0, 32.0, "8.6".to_string()));
-    cluster.register(NodeResources::new("node-c", 48.0, 128.0, "9.0".to_string()));
+    cluster.register(NodeResources::new("node-a", 24.0, 64.0, "8.9", None));
+    cluster.register(NodeResources::new("node-b", 12.0, 32.0, "8.6", None));
+    cluster.register(NodeResources::new("node-c", 48.0, 128.0, "9.0", None));
     
     // Verify all nodes are registered
     assert_eq!(cluster.nodes().len(), 3);
     assert_eq!(cluster.total_vram_gb(), 84.0);
     
     // Register duplicate node should update existing
-    cluster.register(NodeResources::new("node-b", 24.0, 64.0, "9.0".to_string()));
+    cluster.register(NodeResources::new("node-b", 24.0, 64.0, "9.0", None));
     let node_b = cluster.nodes().iter()
         .find(|n| n.id == "node-b").unwrap();
     assert_eq!(node_b.vram_gb, 24.0);
@@ -37,7 +37,7 @@ fn test_multi_node_discovery_and_registration() {
 #[test]
 fn test_layer_assignment_with_failure_scenarios() {
     // Test case 1: Insufficient capacity
-    let nodes = vec![NodeResources::new("node-a", 2.0, 64.0, "8.9".to_string())];
+    let nodes = vec![NodeResources::new("node-a", 2.0, 64.0, "8.9", None)];
     let layers: Vec<LayerSpec> = (0..3).map(|i| LayerSpec { index: i, vram_gb: 1.0, num_weights: 0 }).collect();
     
     let result = assign_layers_sequentially(&nodes, &layers);
@@ -53,7 +53,7 @@ fn test_layer_assignment_with_failure_scenarios() {
 
 #[test]
 fn test_ring_buffer_stress() {
-    let ring = Arc::new(SpscRingBuffer::<i32>::new(crate::ring::RingConfig::default()));
+    let ring = Arc::new(SpscRingBuffer::<i32>::new(ghostlink_core::RingConfig::default()));
     let producer_ring = Arc::clone(&ring);
     let consumer_ring = Arc::clone(&ring);
     
@@ -133,12 +133,14 @@ fn test_cluster_state_concurrent_access() {
     // Spawn multiple threads registering nodes
     let handles: Vec<_> = (0..10)
         .map(|i| {
+            let cluster = Arc::clone(&cluster_clone);
             thread::spawn(move || {
-                cluster_clone.register(NodeResources::new(
+                cluster.register(NodeResources::new(
                     format!("node-{}", i),
                     24.0,
                     64.0,
-                    "8.9".to_string(),
+                    "8.9",
+                    None,
                 ));
             })
         })
@@ -154,7 +156,7 @@ fn test_cluster_state_concurrent_access() {
 
 #[test]
 fn test_ring_buffer_wrap_around() {
-    let ring = SpscRingBuffer::<i32>::new(crate::ring::RingConfig::default());
+    let ring = SpscRingBuffer::<i32>::new(ghostlink_core::RingConfig::default());
     
     // Fill most of the ring
     for i in 0..1020 {
@@ -175,7 +177,7 @@ fn test_ring_buffer_wrap_around() {
 fn test_discovery_frame_crc_verification() {
     let frame = DiscoveryFrame {
         kind: FrameKind::Discovery,
-        node: NodeResources::new("node-a", 24.0, 64.0, "8.9".to_string(), None),
+        node: NodeResources::new("node-a", 24.0, 64.0, "8.9", None),
     };
     
     let encoded = frame.encode();
@@ -193,8 +195,8 @@ fn test_discovery_frame_crc_verification() {
 #[test]
 fn test_layer_assignment_greedy_strategy() {
     let nodes = vec![
-        NodeResources::new("node-a", 24.0, 64.0, "8.9".to_string()),
-        NodeResources::new("node-b", 12.0, 32.0, "8.6".to_string()),
+        NodeResources::new("node-a", 24.0, 64.0, "8.9", None),
+        NodeResources::new("node-b", 12.0, 32.0, "8.6", None),
     ];
 
     let assignments = assign_layers_sequentially(&nodes, &sample_layers(33, 1.0)).unwrap();

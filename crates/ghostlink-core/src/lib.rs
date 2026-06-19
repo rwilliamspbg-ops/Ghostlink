@@ -40,4 +40,4 @@ pub mod xdp;
 pub use cluster::{ClusterState, NodeMetrics, NodeStatus};
 pub use planning::{LayerAssignment, LayerSpec, PlacementPlan, QuantizationMode, assign_layers_sequentially, select_quantization_mode};
 pub use protocol::NodeResources;
-pub use ring::SpscRingBuffer;
+pub use ring::{SpscRingBuffer, RingConfig};

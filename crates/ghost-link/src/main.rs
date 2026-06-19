@@ -80,7 +80,7 @@ fn print_plan() -> Result<()> {
 
     for assignment in &assignments {
         println!(
-            "- {} => layers {}-{} ({:.1} GB)\",
+            "- {} => layers {}-{} ({:.1} GB)",
             assignment.node_id,
             assignment.start_layer,
             assignment.end_layer,
@@ -144,37 +144,26 @@ fn print_join(node_id: &str) -> Result<()> {
 fn print_dashboard() -> Result<()> {
     // Create sample cluster state
     let cluster = ClusterState::new();
-    cluster.register(NodeResources::new("NODE-01", 24.0, 64.0, "8.9".to_string()));
-    cluster.register(NodeResources::new("NODE-02", 12.0, 32.0, "8.6".to_string()));
+    cluster.register(NodeResources::new("NODE-01", 24.0, 64.0, "8.9", Some("RTX4090".to_string())));
+    cluster.register(NodeResources::new("NODE-02", 12.0, 32.0, "8.6", Some("RTX3080".to_string())));
 
-    // Create metrics for each node
-    let nodes = vec![
-        NodeMetrics {
-            name: "NODE-01".into(),
-            gpu_name: Some("RTX4090".into()),
-            used_vram_gb: 22.4,
-            total_vram_gb: 24.0,
-            streaming_layers: Some((0, 24)),
-            af_xdp_gbps: 9.8,
-            latency_micros: 1.2,
-        },
-        NodeMetrics {
-            name: "NODE-02".into(),
-            gpu_name: Some("RTX3080".into()),
-            used_vram_gb: 7.2,
-            total_vram_gb: 12.0,
-            streaming_layers: None,
-            af_xdp_gbps: 0.0,
-            latency_micros: 0.0,
-        },
-    ];
+    // Update metrics for each node
+    cluster.get_metrics_mut("NODE-01", |metrics| {
+        metrics.record_vram_usage(22.4);
+        metrics.set_streaming_layers(0, 24);
+        metrics.record_latency(1.2);
+        metrics.record_throughput(9.8);
+    });
+
+    cluster.get_metrics_mut("NODE-02", |metrics| {
+        metrics.record_vram_usage(7.2);
+    });
 
     // Create and render dashboard
     let dashboard = Dashboard::new(
         cluster.clone(),
         63,
         42,
-        nodes.clone(),
     );
 
     println!("{}", dashboard.render_ascii());

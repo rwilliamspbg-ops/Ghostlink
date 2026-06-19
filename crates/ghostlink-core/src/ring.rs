@@ -216,7 +216,11 @@ mod tests {
 
     #[test]
     fn returns_full_when_capacity_is_reached() {
-        let ring = SpscRingBuffer::<i32>::new(RingConfig::default());
+        let config = RingConfig {
+            capacity: 2,
+            backpressure_threshold: 1,
+        };
+        let ring = SpscRingBuffer::<i32>::new(config);
         assert!(ring.push(1).is_ok());
         assert!(ring.push(2).is_ok());
         assert_eq!(ring.push(3), Err(3));

@@ -214,7 +214,7 @@ impl ClusterState {
         }
         
         self.last_update.store(std::time::SystemTime::now()
-            .duration_since(Instant::now())
+            .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or(Duration::ZERO)
             .as_millis() as u64, Ordering::Release);
     }
@@ -233,15 +233,18 @@ impl ClusterState {
     
     /// Update last heartbeat for a node
     pub fn update_heartbeat(&self, node_id: &str) {
-        if let Some(mut metrics) = self.get_metrics_mut(node_id) {
+        self.get_metrics_mut(node_id, |metrics| {
             metrics.last_heartbeat = Instant::now();
-        }
+        });
     }
     
     /// Get metrics mutable reference (for internal updates)
-    fn get_metrics_mut(&self, node_id: &str) -> Option<NodeMetrics> {
+    fn get_metrics_mut<F, R>(&self, node_id: &str, f: F) -> Option<R>
+    where
+        F: FnOnce(&mut NodeMetrics) -> R,
+    {
         let mut metrics = self.metrics.lock().unwrap();
-        metrics.get_mut(node_id).cloned()
+        metrics.get_mut(node_id).map(f)
     }
     
     /// Check if a node has timed out
@@ -256,16 +259,16 @@ impl ClusterState {
     
     /// Mark a node as failed due to timeout
     pub fn mark_failed(&self, node_id: &str) {
-        if let Some(mut metrics) = self.get_metrics_mut(node_id) {
+        self.get_metrics_mut(node_id, |metrics| {
             metrics.status = NodeStatus::Failed;
-        }
+        });
     }
     
     /// Recover a failed node
     pub fn recover_node(&self, node_id: &str) {
-        if let Some(mut metrics) = self.get_metrics_mut(node_id) {
+        self.get_metrics_mut(node_id, |metrics| {
             metrics.status = NodeStatus::Active;
-        }
+        });
     }
     
     /// Get all active nodes
@@ -327,7 +330,7 @@ impl ClusterHealthMonitor {
         // Update last update timestamp
         self.cluster.last_update.store(
             std::time::SystemTime::now()
-                .duration_since(Instant::now())
+                .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or(Duration::ZERO)
                 .as_millis() as u64,
             Ordering::Release
