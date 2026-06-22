@@ -1,0 +1,49 @@
+name: Benchmarks
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - fix/test-suite-and-perf-baseline
+      - ci-artifacts-benchmarks
+    paths:
+      - 'Cargo.toml'
+      - 'crates/ghostlink-core/Cargo.toml'
+      - 'crates/ghostlink-core/src/**'
+      - 'benches/**'
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  criterion:
+    name: Run Criterion benchmarks
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run Criterion benchmarks
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts
+          cargo bench -p ghostlink-core --bench criterion -- --warm-up-time 1 --measurement-time 1 | tee artifacts/criterion.log
+
+      - name: Upload benchmark artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: criterion-benchmarks
+          path: |
+            artifacts/criterion.log
+            target/criterion
+          retention-days: 14

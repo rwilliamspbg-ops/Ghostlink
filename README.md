@@ -1,6 +1,8 @@
 # Ghost-Link 🚀
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![CI](https://github.com/rwilliamspbg-ops/Ghostlink/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/rwilliamspbg-ops/Ghostlink/actions/workflows/ci.yml)
+[![Benchmarks](https://github.com/rwilliamspbg-ops/Ghostlink/actions/workflows/benchmarks.yml/badge.svg?branch=main)](https://github.com/rwilliamspbg-ops/Ghostlink/actions/workflows/benchmarks.yml)
 [![Rust](https://img.shields.io/badge/Rust-1.70+-orange.svg)](https://www.rust-lang.org)
 
 Ghost-Link is an open-source, zero-config LAN fabric that turns spare local GPUs into a shared execution surface for large-model inference and training. The system moves tensors directly over the local wire without forcing workloads through heavy orchestration layers or cloud subscriptions.
@@ -150,37 +152,40 @@ cargo tarpaulin --workspace
 
 ## Performance Baseline
 
-Measured on `x86_64` with `cargo bench` (release profile, optimized). Results from `benches/baseline.rs`:
+Measured on `x86_64` with Criterion (`cargo bench -p ghostlink-core --bench criterion -- --warm-up-time 1 --measurement-time 1`). GitHub Actions uploads the raw benchmark logs and Criterion report directory as artifacts.
+
+### Latest Criterion Run
 
 | Benchmark | Latency | Throughput |
 |---|---|---|
-| Ring buffer push+pop round-trip (ST) | ~6 ns | ~165 M ops/s |
-| Ring buffer push only (ST, full=drain) | ~3 ns | ~323 M ops/s |
-| Ring buffer SPSC cross-thread (10k items) | ~1 250 ns | ~800 K ops/s |
-| Protocol: `DiscoveryFrame` encode | ~137 ns | ~7.3 M ops/s |
-| Protocol: `DiscoveryFrame` decode | ~131 ns | ~7.6 M ops/s |
-| Protocol: encode + decode round-trip | ~233 ns | ~4.3 M ops/s |
-| Planning: 33 layers across 2 nodes | ~169 ns | ~5.9 M ops/s |
-| Planning: 80 layers across 8 nodes | ~344 ns | ~2.9 M ops/s |
-| Cluster: `register` node (update path) | ~195 ns | ~5.1 M ops/s |
-| Cluster: `nodes()` snapshot (10 nodes) | ~680 ns | ~1.5 M ops/s |
-| Cluster: `total_vram_gb()` (10 nodes) | ~13 ns | ~79 M ops/s |
+| Ring buffer push+pop round-trip (ST) | ~2.89-3.03 ns | ~330 M ops/s |
+| Ring buffer push only (ST, full=drain) | ~1.89-1.98 ns | ~518 M ops/s |
+| Protocol: `DiscoveryFrame` encode | ~100.04-103.54 ns | ~9.7 M ops/s |
+| Protocol: `DiscoveryFrame` decode | ~102.50-103.81 ns | ~9.7 M ops/s |
+| Protocol: encode + decode round-trip | ~210.21-219.03 ns | ~4.6 M ops/s |
+| Planning: 33 layers across 2 nodes | ~164.90-170.18 ns | ~5.9 M ops/s |
+| Planning: 80 layers across 8 nodes | ~344.28-354.76 ns | ~2.9 M ops/s |
+| Cluster: `register` node (update path) | ~179.57-186.40 ns | ~5.4 M ops/s |
+| Cluster: `nodes_snapshot()` (10 nodes) | ~9.78-10.28 ns | ~97 M ops/s |
+| Cluster: `total_vram_gb()` (10 nodes) | ~1.59-1.77 ns | ~600 M ops/s |
 
 Run the baseline yourself:
 
 ```bash
-# Build and run bench binary directly (avoids long-running unit tests)
-cargo rustc --release -p ghostlink-core --bench baseline
-./target/release/deps/baseline-*
+# Build and run the Criterion benchmark harness
+cargo bench -p ghostlink-core --bench criterion -- --warm-up-time 1 --measurement-time 1
 ```
 
-> **Note**: The SPSC cross-thread figure includes OS scheduling overhead from `yield_now`. Raw ring buffer latency for the single-threaded path is sub-10 ns.
+> **Note**: The SPSC cross-thread figure includes OS scheduling overhead from `yield_now`. Raw ring buffer latency for the single-threaded path remains sub-3 ns.
+
+Benchmark artifacts are captured automatically in GitHub Actions under the `Benchmarks` workflow.
 
 ## Dependencies
 
 ### Core Dependencies
 - `pin-utils` - Zero-copy pinned allocations
 - `crc32fast` - Fast CRC32 checksums
+- `arc-swap` - Shared, lock-free snapshot reads
 - `thiserror` - Error types
 - `tokio` - Async runtime (for health monitoring)
 - `ratatui` - Terminal UI
@@ -188,6 +193,7 @@ cargo rustc --release -p ghostlink-core --bench baseline
 
 ### Dev Dependencies
 - `tokio-test` - Tokio testing utilities
+- `criterion` - Benchmark harness for hot-path regression tracking
 
 ## Platform Support
 
