@@ -143,12 +143,8 @@ impl<T> SpscRingBuffer<T> {
     pub fn len(&self) -> usize {
         let head = self.head.load(Ordering::Acquire);
         let tail = self.tail.load(Ordering::Acquire);
-        
-        if tail >= head {
-            tail - head
-        } else {
-            Self::CAPACITY - head + tail
-        }
+
+        tail.wrapping_sub(head) & (Self::CAPACITY - 1)
     }
     
     /// Check if the ring is empty
@@ -198,7 +194,7 @@ impl<T> SpscRingBuffer<T> {
     }
     
     fn increment(index: usize) -> usize {
-        (index + 1) % Self::CAPACITY
+        (index + 1) & (Self::CAPACITY - 1)
     }
 }
 

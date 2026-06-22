@@ -6,9 +6,11 @@
 //! - Fault detection and recovery
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+
+use arc_swap::ArcSwap;
 
 pub use crate::protocol::NodeResources;
 
@@ -199,18 +201,27 @@ impl NodeMetrics {
 pub struct ClusterState {
     /// Map of node ID to resources and metrics
     nodes: Arc<Mutex<HashMap<String, NodeResources>>>,
+    /// Cached shared snapshot of nodes for read-heavy paths
+    nodes_snapshot: Arc<ArcSwap<Vec<NodeResources>>>,
+    /// Indicates whether the shared snapshot needs to be refreshed
+    nodes_snapshot_dirty: Arc<AtomicBool>,
     /// Map of node ID to live metrics
     metrics: Arc<Mutex<HashMap<String, NodeMetrics>>>,
     /// Last cluster update timestamp
     last_update: Arc<AtomicU64>,
+    /// Cached total VRAM across all registered nodes
+    total_vram_cache: Arc<AtomicU64>,
 }
 
 impl Clone for ClusterState {
     fn clone(&self) -> Self {
         Self {
             nodes: Arc::clone(&self.nodes),
+            nodes_snapshot: Arc::clone(&self.nodes_snapshot),
+            nodes_snapshot_dirty: Arc::clone(&self.nodes_snapshot_dirty),
             metrics: Arc::clone(&self.metrics),
             last_update: Arc::clone(&self.last_update),
+            total_vram_cache: Arc::clone(&self.total_vram_cache),
         }
     }
 }
@@ -226,8 +237,11 @@ impl ClusterState {
     pub fn new() -> Self {
         Self {
             nodes: Arc::new(Mutex::new(HashMap::new())),
+            nodes_snapshot: Arc::new(ArcSwap::from_pointee(Vec::<NodeResources>::new())),
+            nodes_snapshot_dirty: Arc::new(AtomicBool::new(false)),
             metrics: Arc::new(Mutex::new(HashMap::new())),
             last_update: Arc::new(AtomicU64::new(0)),
+            total_vram_cache: Arc::new(AtomicU64::new(0.0_f64.to_bits())),
         }
     }
     
@@ -235,41 +249,29 @@ impl ClusterState {
     pub fn register(&self, node: NodeResources) {
         let mut nodes = self.nodes.lock().unwrap();
         let mut metrics = self.metrics.lock().unwrap();
-        
-        // Check if node already exists
-        if nodes.contains_key(&node.id) {
-            // Update existing node with new resources
-            let existing = nodes.get_mut(&node.id).unwrap();
-            existing.vram_gb = node.vram_gb;
-            existing.system_memory_gb = node.system_memory_gb;
-            existing.compute_capability = node.compute_capability.clone();
-            
-            // Initialize or update metrics
-            if !metrics.contains_key(&node.id) {
-                metrics.insert(
-                    node.id.clone(),
-                    NodeMetrics::new(
-                        node.vram_gb,
-                        node.system_memory_gb,
-                        node.compute_capability,
-                        Duration::from_secs(5),
-                    ),
-                );
-            } else {
-                let existing_metrics = metrics.get_mut(&node.id).unwrap();
-                existing_metrics.vram_gb = node.vram_gb;
-                existing_metrics.total_vram_gb = node.vram_gb;
-                existing_metrics.system_memory_gb = node.system_memory_gb;
-                existing_metrics.compute_capability = node.compute_capability;
-                existing_metrics.heartbeat_timeout = Duration::from_secs(5);
-            }
+
+        let id = node.id.clone();
+        let vram_gb = node.vram_gb;
+        let system_memory_gb = node.system_memory_gb;
+        let compute_capability = node.compute_capability.clone();
+        let mut vram_delta = vram_gb;
+
+        if let Some(existing) = nodes.get_mut(&id) {
+            vram_delta = vram_gb - existing.vram_gb;
+            existing.vram_gb = vram_gb;
+            existing.system_memory_gb = system_memory_gb;
+            existing.compute_capability = compute_capability.clone();
         } else {
-            // New node - extract fields before moving node into map
-            let id = node.id.clone();
-            let vram_gb = node.vram_gb;
-            let system_memory_gb = node.system_memory_gb;
-            let compute_capability = node.compute_capability.clone();
             nodes.insert(id.clone(), node);
+        }
+
+        if let Some(existing_metrics) = metrics.get_mut(&id) {
+            existing_metrics.vram_gb = vram_gb;
+            existing_metrics.total_vram_gb = vram_gb;
+            existing_metrics.system_memory_gb = system_memory_gb;
+            existing_metrics.compute_capability = compute_capability;
+            existing_metrics.heartbeat_timeout = Duration::from_secs(5);
+        } else {
             metrics.insert(
                 id,
                 NodeMetrics::new(
@@ -280,6 +282,11 @@ impl ClusterState {
                 ),
             );
         }
+
+        self.nodes_snapshot_dirty.store(true, Ordering::Release);
+
+        let current_total_vram = f64::from_bits(self.total_vram_cache.load(Ordering::Acquire));
+        self.total_vram_cache.store((current_total_vram + vram_delta as f64).to_bits(), Ordering::Release);
         
         self.last_update.store(std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -289,8 +296,19 @@ impl ClusterState {
     
     /// Get all nodes
     pub fn nodes(&self) -> Vec<NodeResources> {
-        let nodes = self.nodes.lock().unwrap();
-        nodes.values().cloned().collect()
+        self.nodes_snapshot().as_ref().to_vec()
+    }
+
+    /// Get a shared snapshot of all nodes
+    pub fn nodes_snapshot(&self) -> Arc<Vec<NodeResources>> {
+        if self.nodes_snapshot_dirty.load(Ordering::Acquire) {
+            if self.nodes_snapshot_dirty.swap(false, Ordering::AcqRel) {
+                let nodes = self.nodes.lock().unwrap();
+                self.nodes_snapshot.store(Arc::new(nodes.values().cloned().collect::<Vec<_>>()));
+            }
+        }
+
+        self.nodes_snapshot.load_full()
     }
     
     /// Get metrics for a specific node
@@ -350,10 +368,7 @@ impl ClusterState {
     
     /// Get total cluster VRAM
     pub fn total_vram_gb(&self) -> f32 {
-        let nodes = self.nodes.lock().unwrap();
-        nodes.values()
-            .map(|n| n.vram_gb)
-            .sum()
+        f64::from_bits(self.total_vram_cache.load(Ordering::Acquire)) as f32
     }
     
     /// Get total system memory
@@ -384,7 +399,7 @@ impl ClusterHealthMonitor {
     
     /// Run health check on all nodes
     pub fn check_health(&self) {
-        let failed_nodes: Vec<String> = self.cluster.nodes()
+        let failed_nodes: Vec<String> = self.cluster.nodes_snapshot()
             .iter()
             .filter(|n| self.cluster.check_heartbeat_timeout(&n.id))
             .map(|n| n.id.clone())
@@ -408,7 +423,7 @@ impl ClusterHealthMonitor {
     /// Get health report
     pub fn health_report(&self) -> String {
         let active_count = self.cluster.active_nodes().len();
-        let total_nodes = self.cluster.nodes().len();
+        let total_nodes = self.cluster.nodes_snapshot().len();
         
         format!(
             "Cluster Health Report\n\

@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use crate::cluster::{ClusterState, NodeMetrics, NodeStatus};
+use crate::cluster::{ClusterState, NodeStatus};
 
 /// Health check configuration
 #[derive(Clone, Copy, Debug)]
@@ -98,12 +98,15 @@ impl NetworkHealthMonitor {
     pub fn check_all(&self) {
         let now = Instant::now();
         
-        for node in self.cluster.nodes() {
-            if let Some(metrics) = self.cluster.get_metrics(&node.id) {
-                // Simulate health check (in production, would use actual ping/pong)
-                let latency_us = 1.0 + (rand::random::<f32>() * 0.5); // Random latency
-                let delivery_ratio = 0.98 - (rand::random::<f32>() * 0.05); // Random delivery ratio
-                
+        for node in self.cluster.nodes_snapshot().iter() {
+            // Simulate health check inputs (production would gather real probe results)
+            let latency_us = 1.0 + (rand::random::<f32>() * 0.5);
+            let delivery_ratio = 0.98 - (rand::random::<f32>() * 0.05);
+
+            if self.cluster.get_metrics_mut(&node.id, |m| {
+                m.record_latency(latency_us);
+                m.record_delivery_ratio(delivery_ratio);
+            }).is_some() {
                 let result = HealthCheckResult {
                     node_id: node.id.clone(),
                     latency_us,
@@ -123,13 +126,6 @@ impl NetworkHealthMonitor {
                     checks.insert(node.id.clone(), vec![result]);
                 }
                 
-                // Update cluster metrics
-                self.cluster.get_metrics_mut(&node.id, |m| {
-                    m.record_latency(latency_us);
-                });
-                self.cluster.get_metrics_mut(&node.id, |m| {
-                    m.record_delivery_ratio(delivery_ratio);
-                });
             }
         }
         
@@ -339,7 +335,7 @@ impl FaultDetector {
     pub fn detect_failures(&self) -> Vec<String> {
         let mut failed_nodes: Vec<String> = Vec::new();
         
-        for node in self.cluster.nodes() {
+        for node in self.cluster.nodes_snapshot().iter() {
             if self.cluster.check_heartbeat_timeout(&node.id) {
                 if let Some(metrics) = self.cluster.get_metrics(&node.id) {
                     // Check if node is already marked as failed

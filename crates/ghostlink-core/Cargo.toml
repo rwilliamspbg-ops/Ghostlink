@@ -29,11 +29,18 @@ tracing-subscriber = "0.3"
 rand = "0.10.1"
 libc = "0.2.186"
 crossterm = "0.29.0"
+arc-swap = "1"
 
 [dev-dependencies]
 tokio-test = "0.4"
+criterion = "0.5"
 
 [[bench]]
 name = "baseline"
 path = "../../benches/baseline.rs"
+harness = false
+
+[[bench]]
+name = "criterion"
+path = "../../benches/criterion.rs"
 harness = false

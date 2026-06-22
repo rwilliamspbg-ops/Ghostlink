@@ -49,15 +49,25 @@ impl DashboardState {
     /// Update cluster state
     pub fn update_cluster(&mut self) {
         let active_count = self.cluster.active_nodes().len();
-        let total_nodes = self.cluster.nodes().len();
+        let total_nodes = self.cluster.nodes_snapshot().len();
+        let quantization_label = match self.quantization_mode {
+            QuantizationMode::None => "full precision",
+            QuantizationMode::Int8 => "int8",
+            QuantizationMode::Int4 => "int4",
+        };
+        let health_label = if self.health_monitor.is_some() {
+            "health monitor: enabled"
+        } else {
+            "health monitor: disabled"
+        };
         
         if active_count == 0 && total_nodes > 0 {
-            self.status_message = "No active nodes".to_string();
+            self.status_message = format!("No active nodes | {} | {}", quantization_label, health_label);
         } else if active_count < total_nodes {
-            self.status_message = format!("{} of {} nodes active", active_count, total_nodes);
+            self.status_message = format!("{} of {} nodes active | {} | {}", active_count, total_nodes, quantization_label, health_label);
         } else {
-            self.status_message = format!("Cluster healthy: {:.1} GB total VRAM", 
-                self.cluster.total_vram_gb());
+            self.status_message = format!("Cluster healthy: {:.1} GB total VRAM | {} | {}", 
+                self.cluster.total_vram_gb(), quantization_label, health_label);
         }
     }
     
@@ -111,7 +121,7 @@ impl AsciiDashboard {
         let mut output = String::from("+───────────────────────────────────────────────────────────────+\n");
         output.push_str(&format!(
             "| GHOST-LINK CLUSTER DASHBOARD               [STATUS: {:<8}] |\n",
-            if self.cluster.nodes().is_empty() { "EMPTY" } else { "ACTIVE" }
+            if self.cluster.nodes_snapshot().is_empty() { "EMPTY" } else { "ACTIVE" }
         ));
         output.push_str("+───────────────────────────────────────────────────────────────+\n");
         output.push_str(&format!(
@@ -159,7 +169,7 @@ impl TerminalApp {
     /// Run terminal application
     pub fn run(&mut self) {
         // Initialize terminal
-        let mut stdout = std::io::stdout();
+        let stdout = std::io::stdout();
         
         if let Err(err) = enable_raw_mode() {
             println!("Failed to enable raw mode: {:?}", err);
@@ -330,7 +340,6 @@ mod tests {
     use super::*;
     use crate::cluster::ClusterState;
     use crate::protocol::NodeResources;
-    use std::sync::Arc;
 
     #[test]
     fn renders_dashboard_with_stream_information() {

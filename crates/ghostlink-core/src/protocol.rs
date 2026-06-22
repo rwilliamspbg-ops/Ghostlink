@@ -6,7 +6,6 @@
 //! - Sequence numbers and versioning for ordering
 
 use crc32fast::Hasher;
-use std::mem::MaybeUninit;
 
 /// Ghost-Link EtherType (0x88B5)
 pub const GHOSTLINK_ETHERTYPE: u16 = 0x88B5;
@@ -135,50 +134,49 @@ impl NodeResources {
     /// Serialize node resources to fixed-width binary payload
     /// 
     /// Format: [id_len(1) + id + vram_f32_le + mem_f32_le + cc_len(1) + cc]
+    #[inline]
     pub fn encode_payload(&self, max_size: usize) -> Vec<u8> {
-        let mut payload = Vec::with_capacity(max_size);
-        
-        // ID length (1 byte)
         let id_bytes = self.id.as_bytes();
-        if id_bytes.len() > max_size - 4 {
-            return Vec::new(); // Too long
+        let cc_bytes = self.compute_capability.as_bytes();
+        let gpu_bytes = self.gpu_name.as_ref().map(|name| name.as_bytes());
+
+        if id_bytes.len() > u8::MAX as usize || cc_bytes.len() > u8::MAX as usize {
+            return Vec::new();
         }
+        if let Some(gpu_bytes) = gpu_bytes {
+            if gpu_bytes.len() > u8::MAX as usize {
+                return Vec::new();
+            }
+        }
+
+        let payload_len = 11
+            + id_bytes.len()
+            + cc_bytes.len()
+            + gpu_bytes.map_or(0, |bytes| 2 + bytes.len());
+        if payload_len > max_size {
+            return Vec::new();
+        }
+
+        let mut payload = Vec::with_capacity(payload_len);
         payload.push(id_bytes.len() as u8);
         payload.extend_from_slice(id_bytes);
-        
-        // VRAM (4 bytes, little-endian f32)
-        unsafe {
-            let ptr = &self.vram_gb as *const f32 as *const u8;
-            payload.extend_from_slice(&*(ptr as *const [u8; 4]));
-        }
-        
-        // System memory (4 bytes, little-endian f32)
-        unsafe {
-            let ptr = &self.system_memory_gb as *const f32 as *const u8;
-            payload.extend_from_slice(&*(ptr as *const [u8; 4]));
-        }
-        
-        // Compute capability length (1 byte)
-        let cc_bytes = self.compute_capability.as_bytes();
-        if cc_bytes.len() > max_size - 8 {
-            return Vec::new(); // Too long
-        }
+        payload.extend_from_slice(unsafe {
+            std::slice::from_raw_parts(&self.vram_gb as *const f32 as *const u8, 4)
+        });
+        payload.extend_from_slice(unsafe {
+            std::slice::from_raw_parts(&self.system_memory_gb as *const f32 as *const u8, 4)
+        });
         payload.push(cc_bytes.len() as u8);
         payload.extend_from_slice(cc_bytes);
-        
-        // GPU name (optional, prefixed with length)
-        if let Some(ref gpu_name) = self.gpu_name {
-            let gpu_bytes = gpu_name.as_bytes();
-            if gpu_bytes.len() > max_size - 10 {
-                return Vec::new(); // Too long
-            }
-            payload.push(1); // Flag indicating GPU name present
+
+        if let Some(gpu_bytes) = gpu_bytes {
+            payload.push(1);
             payload.push(gpu_bytes.len() as u8);
             payload.extend_from_slice(gpu_bytes);
         } else {
-            payload.push(0); // No GPU name
+            payload.push(0);
         }
-        
+
         payload
     }
     
@@ -195,8 +193,7 @@ impl NodeResources {
         }
         
         // Read ID
-        let id = std::str::from_utf8(&payload[1..1 + id_len])
-            .map_err(|e| e.to_string())?;
+        let id = unsafe { std::str::from_utf8_unchecked(&payload[1..1 + id_len]) };
         
         // Read VRAM (little-endian f32)
         let vram_bytes: [u8; 4] = payload[1 + id_len..5 + id_len].try_into().unwrap();
@@ -213,8 +210,7 @@ impl NodeResources {
         }
         
         // Read compute capability
-        let cc = std::str::from_utf8(&payload[10 + id_len..10 + id_len + cc_len])
-            .map_err(|e| e.to_string())?;
+        let cc = unsafe { std::str::from_utf8_unchecked(&payload[10 + id_len..10 + id_len + cc_len]) };
         
         // Check for GPU name flag
         let has_gpu_name = payload[10 + id_len + cc_len] == 1;
@@ -229,9 +225,12 @@ impl NodeResources {
                 if gpu_len > payload.len() - 12 - id_len - cc_len {
                     return Err("invalid GPU name length".into());
                 }
-                Some(std::str::from_utf8(&payload[10 + id_len + cc_len + 2..10 + id_len + cc_len + 2 + gpu_len])
-                    .map_err(|e| e.to_string())?
-                    .to_string())
+                Some(unsafe {
+                    std::str::from_utf8_unchecked(
+                        &payload[10 + id_len + cc_len + 2..10 + id_len + cc_len + 2 + gpu_len],
+                    )
+                }
+                .to_string())
             } else {
                 None
             },
@@ -248,9 +247,9 @@ pub struct DiscoveryFrame {
 
 impl DiscoveryFrame {
     /// Encode discovery frame to bytes (header + payload)
+    #[inline]
     pub fn encode(&self) -> Vec<u8> {
-        // Create payload
-        let mut payload = self.node.encode_payload(MAX_PAYLOAD_SIZE);
+        let payload = self.node.encode_payload(MAX_PAYLOAD_SIZE);
         
         // Compute CRC32 over payload
         let mut hasher = Hasher::new();
@@ -264,16 +263,18 @@ impl DiscoveryFrame {
             version: PROTOCOL_VERSION,
             crc,
         };
+        let header_bytes = header.encode();
         
         // Combine header and payload
-        let mut frame = Vec::with_capacity(header.encode().len() + payload.len());
-        frame.extend_from_slice(&header.encode());
+        let mut frame = Vec::with_capacity(header_bytes.len() + payload.len());
+        frame.extend_from_slice(&header_bytes);
         frame.extend_from_slice(&payload);
         
         frame
     }
     
     /// Decode discovery frame from bytes (header + payload)
+    #[inline]
     pub fn decode(bytes: &[u8]) -> Result<Self, String> {
         if bytes.len() < FrameHeader::HEADER_SIZE {
             return Err("frame too short".into());

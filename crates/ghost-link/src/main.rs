@@ -7,8 +7,8 @@
 
 use anyhow::Result;
 use ghostlink_core::cluster::{ClusterState, NodeMetrics};
+use ghostlink_core::dashboard::Dashboard;
 use ghostlink_core::protocol::NodeResources;
-use ghostlink_core::dashboard::{Dashboard, AsciiDashboard};
 use ghostlink_core::planning::{assign_layers_sequentially, select_quantization_mode, LayerSpec};
 use ghostlink_core::protocol::{DiscoveryFrame, FrameKind};
 
@@ -159,7 +159,7 @@ fn print_dashboard() -> Result<()> {
     });
 
     // Collect nodes metrics for display
-    let nodes_metrics: Vec<NodeMetrics> = cluster.nodes()
+    let nodes_metrics: Vec<NodeMetrics> = cluster.nodes_snapshot()
         .iter()
         .filter_map(|n| cluster.get_metrics(&n.id))
         .collect();
@@ -179,5 +179,5 @@ fn print_dashboard() -> Result<()> {
 
 // Re-export protocol module for use in main.rs
 mod protocol {
-    pub use ghostlink_core::protocol::{GHOSTLINK_ETHERTYPE, PROTOCOL_VERSION};
+    pub use ghostlink_core::protocol::GHOSTLINK_ETHERTYPE;
 }

@@ -6,18 +6,10 @@
 //! - Frame reception loop with zero-copy buffers
 //! - eBPF program loading helpers
 
-use std::ffi::c_void;
-use std::mem;
-use std::os::raw::{c_char, c_int};
-use std::ptr;
+use std::os::raw::c_int;
 
 use crate::protocol::{DiscoveryFrame, GHOSTLINK_ETHERTYPE};
 use crate::ring::RingConfig;
-
-/// AF_XDP socket constants (Linux-specific)
-const SOL_XDP: i32 = 0x2F;
-const XDP_ATTACHED: i32 = 1;
-const XDP_UNMAP: i32 = 1;
 
 /// Maximum size of XDP frame (including header)
 pub const MAX_XDP_FRAME_SIZE: usize = 2048;
@@ -55,7 +47,7 @@ impl XdpSocketHandle {
         // Note: This is a placeholder for Linux-specific implementation
         // Actual implementation would use syscall! macro or bindgen
         
-        Err("AF_XDP sockets are Linux-only".into())
+        Err(format!("AF_XDP sockets are Linux-only (requested interface: {interface_name})"))
     }
     
     /// Bind socket to interface (Linux-specific)
@@ -66,13 +58,13 @@ impl XdpSocketHandle {
     /// Receive frame from XDP socket
     /// 
     /// Returns the raw frame bytes.
-    pub fn recv_frame(&self, buffer: &mut [u8]) -> Option<usize> {
+    pub fn recv_frame(&self, _buffer: &mut [u8]) -> Option<usize> {
         // Placeholder - actual implementation uses recvmsg syscall
         None
     }
     
     /// Send frame to XDP socket (for outgoing traffic)
-    pub fn send_frame(&self, data: &[u8]) -> Result<(), String> {
+    pub fn send_frame(&self, _data: &[u8]) -> Result<(), String> {
         Err("AF_XDP send requires specific setup".into())
     }
 }
@@ -99,12 +91,7 @@ impl XdpFrameReceiver {
     
     /// Receive and parse discovery frame from raw socket
     pub fn recv_discovery_frame(&self) -> Option<DiscoveryFrame> {
-        // Allocate buffer for incoming frame
-        let mut buffer = vec![0u8; MAX_XDP_FRAME_SIZE];
-        
-        // In production, this would use AF_XDP recvmsg
-        // For now, we simulate with protocol decoding
-        
+        let _ = (&self.config.interface_name, self.config.memory_order);
         None
     }
     
@@ -147,12 +134,12 @@ impl EbpfProgramLoader {
     
     /// Load eBPF program (Linux-specific)
     pub fn load(&self, _program_path: &str) -> Result<(), String> {
-        Err("eBPF loading requires Linux kernel support".into())
+        Err(format!("eBPF loading for '{}' requires Linux kernel support", self.program_name))
     }
     
     /// Attach eBPF program to XDP socket
     pub fn attach(&self, _fd: c_int) -> Result<(), String> {
-        Err("eBPF attachment requires Linux kernel support".into())
+        Err(format!("eBPF attachment for '{}' requires Linux kernel support", self.program_name))
     }
 }
 
@@ -265,7 +252,7 @@ impl XdpReceiver {
     pub fn recv_loop(&self) -> Result<(), String> {
         // In production, this would use AF_XDP recvmsg in a loop
         // Placeholder implementation
-        
+        let _ = (&self.config.interface_name, self.config.memory_order);
         Ok(())
     }
     
@@ -310,18 +297,18 @@ impl XdpSocketManager {
     pub fn init(&mut self) -> Result<(), String> {
         // This would use syscall! macro for Linux-specific syscalls
         // Placeholder implementation
-        
+        let _ = &self.interface_name;
         Ok(())
     }
     
     /// Receive frame using AF_XDP recvmsg
-    pub fn recv_frame(&mut self, buffer: &mut [u8]) -> Option<usize> {
+    pub fn recv_frame(&mut self, _buffer: &mut [u8]) -> Option<usize> {
         // Placeholder - actual implementation uses recvmsg syscall
         None
     }
     
     /// Send frame using AF_XDP sendmsg
-    pub fn send_frame(&mut self, data: &[u8]) -> Result<(), String> {
+    pub fn send_frame(&mut self, _data: &[u8]) -> Result<(), String> {
         Err("AF_XDP send requires specific setup".into())
     }
     

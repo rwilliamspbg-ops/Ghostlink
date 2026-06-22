@@ -123,12 +123,13 @@ impl LoadBalancer {
     
     /// Distribute tensor layers across nodes based on VRAM capacity
     pub fn distribute_layers(&self, layers: &[crate::planning::LayerSpec]) -> Result<LoadDistributionPlan, String> {
-        if self.cluster.nodes().is_empty() {
+        let nodes_snapshot = self.cluster.nodes_snapshot();
+        if nodes_snapshot.is_empty() {
             return Err("no nodes available".into());
         }
         
         // Sort nodes by VRAM capacity (descending)
-        let mut sorted_nodes: Vec<_> = self.cluster.nodes().into_iter().collect();
+        let mut sorted_nodes: Vec<_> = nodes_snapshot.iter().cloned().collect();
         sorted_nodes.sort_by(|a, b| b.vram_gb.partial_cmp(&a.vram_gb).unwrap_or(std::cmp::Ordering::Equal));
         
         // Collect all layers into a single sorted vector (by index)

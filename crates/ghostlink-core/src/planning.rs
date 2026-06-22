@@ -217,7 +217,7 @@ pub fn assign_layers_with_fault_tolerance(
     cluster: &ClusterState,
     layers: &[LayerSpec],
 ) -> Result<PlacementPlan, String> {
-    let nodes = cluster.nodes();
+    let nodes = cluster.nodes_snapshot();
     
     if nodes.is_empty() {
         return Err("no nodes available".into());
@@ -307,7 +307,7 @@ pub fn calculate_cluster_health(cluster: &ClusterState) -> (f32, usize, Vec<Stri
         .sum::<f32>() / active_nodes.len() as f32;
     
     // Count failed nodes
-    let failed_count = cluster.nodes().iter()
+    let failed_count = cluster.nodes_snapshot().iter()
         .filter(|n| {
             if let Some(metrics) = cluster.get_metrics(&n.id) {
                 metrics.status == NodeStatus::Failed
@@ -318,7 +318,7 @@ pub fn calculate_cluster_health(cluster: &ClusterState) -> (f32, usize, Vec<Stri
         .count();
     
     // Get failed node IDs
-    let failed_nodes: Vec<String> = cluster.nodes()
+    let failed_nodes: Vec<String> = cluster.nodes_snapshot()
         .iter()
         .filter(|n| {
             if let Some(metrics) = cluster.get_metrics(&n.id) {
@@ -336,7 +336,6 @@ pub fn calculate_cluster_health(cluster: &ClusterState) -> (f32, usize, Vec<Stri
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cluster::NodeMetrics;
 
     fn sample_layers(count: usize, vram_gb: f32) -> Vec<LayerSpec> {
         (0..count)
@@ -345,18 +344,6 @@ mod tests {
                 vram_gb, 
                 num_weights: 0, 
             })
-            .collect()
-    }
-
-    fn sample_nodes(count: usize, base_vram: f32) -> Vec<NodeResources> {
-        (0..count)
-            .map(|i| NodeResources::new(
-                format!("node-{}", i),
-                base_vram + (i as f32 * 6.0),
-                64.0,
-                "8.9".to_string(),
-                None,
-            ))
             .collect()
     }
 
