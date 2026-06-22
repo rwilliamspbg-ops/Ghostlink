@@ -137,7 +137,7 @@ impl LoadBalancer {
         });
 
         // Collect all layers into a single sorted vector (by index)
-        let mut all_layers: Vec<_> = layers.iter().cloned().collect();
+        let mut all_layers: Vec<_> = layers.to_vec();
         all_layers.sort_by_key(|l| l.index);
         let total_layer_count = all_layers.len();
 

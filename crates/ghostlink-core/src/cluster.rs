@@ -15,20 +15,15 @@ use arc_swap::ArcSwap;
 pub use crate::protocol::NodeResources;
 
 /// Node status enumeration
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum NodeStatus {
     /// Node is healthy and accepting traffic
+    #[default]
     Active,
     /// Node is degraded (below threshold)
     Degraded,
     /// Node has failed or timed out
     Failed,
-}
-
-impl Default for NodeStatus {
-    fn default() -> Self {
-        Self::Active
-    }
 }
 
 /// Metrics for a single node
@@ -307,12 +302,12 @@ impl ClusterState {
 
     /// Get a shared snapshot of all nodes
     pub fn nodes_snapshot(&self) -> Arc<Vec<NodeResources>> {
-        if self.nodes_snapshot_dirty.load(Ordering::Acquire) {
-            if self.nodes_snapshot_dirty.swap(false, Ordering::AcqRel) {
-                let nodes = self.nodes.lock().unwrap();
-                self.nodes_snapshot
-                    .store(Arc::new(nodes.values().cloned().collect::<Vec<_>>()));
-            }
+        if self.nodes_snapshot_dirty.load(Ordering::Acquire)
+            && self.nodes_snapshot_dirty.swap(false, Ordering::AcqRel)
+        {
+            let nodes = self.nodes.lock().unwrap();
+            self.nodes_snapshot
+                .store(Arc::new(nodes.values().cloned().collect::<Vec<_>>()));
         }
 
         self.nodes_snapshot.load_full()

@@ -37,7 +37,7 @@ impl Default for HealthConfig {
 }
 
 /// Health status for a node
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum HealthStatus {
     /// Node is healthy
     Healthy,
@@ -46,13 +46,8 @@ pub enum HealthStatus {
     /// Node has failed
     Failed,
     /// No health data available yet
+    #[default]
     Unknown,
-}
-
-impl Default for HealthStatus {
-    fn default() -> Self {
-        Self::Unknown
-    }
 }
 
 /// Health check result
