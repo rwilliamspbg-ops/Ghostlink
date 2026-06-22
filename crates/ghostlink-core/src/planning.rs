@@ -1,13 +1,13 @@
 //! Greedy Layer Assignment with Fault Tolerance and Adaptive Quantization
-//! 
+//!
 //! This module provides:
 //! - Sequential greedy layer splitting across nodes based on VRAM capacity
 //! - Adaptive quantization trigger (select_quantization_mode)
 //! - Load balancing and fault detection integration
 
+use crate::cluster::NodeStatus;
 use crate::cluster::{ClusterState, NodeMetrics};
 use crate::protocol::NodeResources;
-use crate::cluster::NodeStatus;
 
 /// Delivery ratio thresholds for adaptive quantization
 pub const DELIVERY_RATIO_INT8_THRESHOLD: f32 = 0.95;
@@ -60,7 +60,7 @@ impl LayerAssignment {
             num_layers: end_layer - start_layer,
         }
     }
-    
+
     /// Get average VRAM per layer
     pub fn avg_vram_per_layer(&self) -> f32 {
         if self.num_layers == 0 {
@@ -98,13 +98,9 @@ pub struct PlacementPlan {
 impl PlacementPlan {
     /// Create new placement plan
     pub fn new(assignments: Vec<LayerAssignment>, quantization_mode: QuantizationMode) -> Self {
-        let participating_nodes = assignments.iter()
-            .map(|a| a.node_id.clone())
-            .collect();
-        let total_layers = assignments.iter()
-            .map(|a| a.num_layers)
-            .sum();
-        
+        let participating_nodes = assignments.iter().map(|a| a.node_id.clone()).collect();
+        let total_layers = assignments.iter().map(|a| a.num_layers).sum();
+
         Self {
             assignments,
             quantization_mode,
@@ -112,7 +108,7 @@ impl PlacementPlan {
             participating_nodes,
         }
     }
-    
+
     /// Get human-readable plan summary
     pub fn summary(&self) -> String {
         let mode_str = match self.quantization_mode {
@@ -120,7 +116,7 @@ impl PlacementPlan {
             QuantizationMode::Int8 => "8-bit Quantized",
             QuantizationMode::Int4 => "4-bit Quantized",
         };
-        
+
         format!(
             "Placement Plan ({})\n\
              =================\n\
@@ -186,7 +182,7 @@ pub fn assign_layers_sequentially(
 
         // Assign layer to current node
         remaining_capacity -= layer.vram_gb;
-        
+
         match current_assignment.as_mut() {
             Some(assignment) => {
                 assignment.end_layer = layer.index + 1;
@@ -218,48 +214,47 @@ pub fn assign_layers_with_fault_tolerance(
     layers: &[LayerSpec],
 ) -> Result<PlacementPlan, String> {
     let nodes = cluster.nodes_snapshot();
-    
+
     if nodes.is_empty() {
         return Err("no nodes available".into());
     }
-    
+
     // First pass: greedy assignment
     let assignments = assign_layers_sequentially(&nodes, layers)?;
-    
+
     // Calculate average delivery ratio across all nodes
-    let total_delivery_ratio = cluster.active_nodes()
+    let total_delivery_ratio = cluster
+        .active_nodes()
         .iter()
         .map(|m| m.delivery_ratio)
-        .sum::<f32>() / cluster.active_nodes().len() as f32;
-    
+        .sum::<f32>()
+        / cluster.active_nodes().len() as f32;
+
     // Select quantization mode based on health
     let quantization_mode = select_quantization_mode(total_delivery_ratio);
-    
+
     Ok(PlacementPlan::new(assignments, quantization_mode))
 }
 
 /// Update layer assignments based on node health metrics
-pub fn rebalance_assignments(
-    cluster: &ClusterState,
-    plan: &mut PlacementPlan,
-) -> bool {
+pub fn rebalance_assignments(cluster: &ClusterState, plan: &mut PlacementPlan) -> bool {
     // Check if any active node has high available VRAM
     let mut needs_rebalance = false;
-    
+
     for assignment in &mut plan.assignments {
         if let Some(metrics) = cluster.get_metrics(&assignment.node_id) {
             if metrics.status != NodeStatus::Active {
                 // Skip failed nodes
                 continue;
             }
-            
+
             // Check if this node can take more layers
             let available = metrics.available_vram_gb;
             let avg_layer_size = assignment.avg_vram_per_layer();
-            
+
             if available > 0.0 && avg_layer_size > 0.0 {
                 let potential_layers = (available / avg_layer_size) as usize;
-                
+
                 // If node has significant capacity, mark for rebalancing
                 if potential_layers > 2 {
                     needs_rebalance = true;
@@ -268,7 +263,7 @@ pub fn rebalance_assignments(
             }
         }
     }
-    
+
     needs_rebalance
 }
 
@@ -280,34 +275,35 @@ pub fn simulate_layer_streaming(
     end_layer: usize,
 ) -> Option<NodeMetrics> {
     let mut metrics = cluster.get_metrics(node_id)?;
-    
+
     // Record VRAM usage
     let num_layers = end_layer - start_layer;
     let avg_vram = (metrics.available_vram_gb + metrics.vram_gb) / 2.0;
     let vram_per_layer = avg_vram / num_layers as f32;
     metrics.record_vram_usage(vram_per_layer * num_layers as f32);
-    
+
     // Set streaming layers
     metrics.set_streaming_layers(start_layer, end_layer);
-    
+
     Some(metrics)
 }
 
 /// Calculate network health across the cluster
 pub fn calculate_cluster_health(cluster: &ClusterState) -> (f32, usize, Vec<String>) {
     let active_nodes = cluster.active_nodes();
-    
+
     if active_nodes.is_empty() {
         return (0.0, 0, vec![]);
     }
-    
+
     // Calculate average delivery ratio
-    let avg_delivery_ratio = active_nodes.iter()
-        .map(|m| m.delivery_ratio)
-        .sum::<f32>() / active_nodes.len() as f32;
-    
+    let avg_delivery_ratio =
+        active_nodes.iter().map(|m| m.delivery_ratio).sum::<f32>() / active_nodes.len() as f32;
+
     // Count failed nodes
-    let failed_count = cluster.nodes_snapshot().iter()
+    let failed_count = cluster
+        .nodes_snapshot()
+        .iter()
         .filter(|n| {
             if let Some(metrics) = cluster.get_metrics(&n.id) {
                 metrics.status == NodeStatus::Failed
@@ -316,9 +312,10 @@ pub fn calculate_cluster_health(cluster: &ClusterState) -> (f32, usize, Vec<Stri
             }
         })
         .count();
-    
+
     // Get failed node IDs
-    let failed_nodes: Vec<String> = cluster.nodes_snapshot()
+    let failed_nodes: Vec<String> = cluster
+        .nodes_snapshot()
         .iter()
         .filter(|n| {
             if let Some(metrics) = cluster.get_metrics(&n.id) {
@@ -329,7 +326,7 @@ pub fn calculate_cluster_health(cluster: &ClusterState) -> (f32, usize, Vec<Stri
         })
         .map(|n| n.id.clone())
         .collect();
-    
+
     (avg_delivery_ratio, failed_count, failed_nodes)
 }
 
@@ -339,10 +336,10 @@ mod tests {
 
     fn sample_layers(count: usize, vram_gb: f32) -> Vec<LayerSpec> {
         (0..count)
-            .map(|index| LayerSpec { 
-                index, 
-                vram_gb, 
-                num_weights: 0, 
+            .map(|index| LayerSpec {
+                index,
+                vram_gb,
+                num_weights: 0,
             })
             .collect()
     }
@@ -413,7 +410,7 @@ mod tests {
             vec![LayerAssignment::new("node-a".into(), 0, 24, 24.0)],
             QuantizationMode::None,
         );
-        
+
         // Would need actual cluster state to test rebalancing
         assert!(!rebalance_assignments(&ClusterState::default(), &mut plan));
     }

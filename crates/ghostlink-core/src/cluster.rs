@@ -1,5 +1,5 @@
 //! Thread-Safe Cluster State with Metrics Collection
-//! 
+//!
 //! This module provides a lock-free, thread-safe cluster state tracking:
 //! - Node capabilities (VRAM, system memory, compute capability)
 //! - Live metrics (latency, delivery ratio, throughput)
@@ -48,12 +48,12 @@ pub struct NodeMetrics {
     pub compute_capability: String,
     /// GPU name/model
     pub gpu_name: Option<String>,
-    
+
     /// Last heartbeat time
     pub last_heartbeat: Instant,
     /// Heartbeat interval threshold
     pub heartbeat_timeout: Duration,
-    
+
     /// Average latency in microseconds
     pub avg_latency_us: f32,
     /// Minimum observed latency
@@ -62,20 +62,20 @@ pub struct NodeMetrics {
     pub max_latency_us: f32,
     /// Number of latency samples
     pub latency_samples: u64,
-    
+
     /// Delivery ratio (0.0 to 1.0)
     pub delivery_ratio: f32,
     /// Throughput in GB/s
     pub throughput_gbps: f32,
-    
+
     /// Current used VRAM in GB
     pub used_vram_gb: f32,
     /// Available VRAM in GB
     pub available_vram_gb: f32,
-    
+
     /// Number of layers streaming on this node
     pub streaming_layers: Option<(usize, usize)>,
-    
+
     /// AF_XDP throughput in Gbps (for display)
     pub af_xdp_gbps: f32,
     /// Per-packet latency in microseconds (for display)
@@ -144,7 +144,7 @@ impl NodeMetrics {
             delivery_ratio_initialized: false,
         }
     }
-    
+
     /// Update metrics with new latency sample (EMA with alpha=0.1)
     pub fn record_latency(&mut self, latency_us: f32) {
         if latency_us < self.min_latency_us {
@@ -153,7 +153,7 @@ impl NodeMetrics {
         if latency_us > self.max_latency_us {
             self.max_latency_us = latency_us;
         }
-        
+
         self.latency_samples += 1;
         if self.latency_samples == 1 {
             self.avg_latency_us = latency_us;
@@ -161,7 +161,7 @@ impl NodeMetrics {
             self.avg_latency_us = self.avg_latency_us * 0.9 + latency_us * 0.1;
         }
     }
-    
+
     /// Update metrics with new delivery ratio sample
     pub fn record_delivery_ratio(&mut self, ratio: f32) {
         if !self.delivery_ratio_initialized {
@@ -172,24 +172,24 @@ impl NodeMetrics {
             self.delivery_ratio = self.delivery_ratio * 0.9 + ratio * 0.1;
         }
     }
-    
+
     /// Update metrics with new throughput sample
     pub fn record_throughput(&mut self, throughput_gbps: f32) {
         // Exponential moving average with alpha=0.1
         self.throughput_gbps = self.throughput_gbps * 0.9 + throughput_gbps * 0.1;
     }
-    
+
     /// Update used VRAM
     pub fn record_vram_usage(&mut self, used_vram_gb: f32) {
         self.used_vram_gb = used_vram_gb;
         self.available_vram_gb = self.total_vram_gb - used_vram_gb;
     }
-    
+
     /// Set streaming layers
     pub fn set_streaming_layers(&mut self, start: usize, end: usize) {
         self.streaming_layers = Some((start, end));
     }
-    
+
     /// Clear streaming layers
     pub fn clear_streaming_layers(&mut self) {
         self.streaming_layers = None;
@@ -244,7 +244,7 @@ impl ClusterState {
             total_vram_cache: Arc::new(AtomicU64::new(0.0_f64.to_bits())),
         }
     }
-    
+
     /// Register a new node with the cluster
     pub fn register(&self, node: NodeResources) {
         let mut nodes = self.nodes.lock().unwrap();
@@ -286,14 +286,20 @@ impl ClusterState {
         self.nodes_snapshot_dirty.store(true, Ordering::Release);
 
         let current_total_vram = f64::from_bits(self.total_vram_cache.load(Ordering::Acquire));
-        self.total_vram_cache.store((current_total_vram + vram_delta as f64).to_bits(), Ordering::Release);
-        
-        self.last_update.store(std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or(Duration::ZERO)
-            .as_millis() as u64, Ordering::Release);
+        self.total_vram_cache.store(
+            (current_total_vram + vram_delta as f64).to_bits(),
+            Ordering::Release,
+        );
+
+        self.last_update.store(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or(Duration::ZERO)
+                .as_millis() as u64,
+            Ordering::Release,
+        );
     }
-    
+
     /// Get all nodes
     pub fn nodes(&self) -> Vec<NodeResources> {
         self.nodes_snapshot().as_ref().to_vec()
@@ -304,26 +310,27 @@ impl ClusterState {
         if self.nodes_snapshot_dirty.load(Ordering::Acquire) {
             if self.nodes_snapshot_dirty.swap(false, Ordering::AcqRel) {
                 let nodes = self.nodes.lock().unwrap();
-                self.nodes_snapshot.store(Arc::new(nodes.values().cloned().collect::<Vec<_>>()));
+                self.nodes_snapshot
+                    .store(Arc::new(nodes.values().cloned().collect::<Vec<_>>()));
             }
         }
 
         self.nodes_snapshot.load_full()
     }
-    
+
     /// Get metrics for a specific node
     pub fn get_metrics(&self, node_id: &str) -> Option<NodeMetrics> {
         let metrics = self.metrics.lock().unwrap();
         metrics.get(node_id).cloned()
     }
-    
+
     /// Update last heartbeat for a node
     pub fn update_heartbeat(&self, node_id: &str) {
         self.get_metrics_mut(node_id, |metrics| {
             metrics.last_heartbeat = Instant::now();
         });
     }
-    
+
     /// Get metrics mutable reference (for internal updates)
     pub fn get_metrics_mut<F, R>(&self, node_id: &str, f: F) -> Option<R>
     where
@@ -332,7 +339,7 @@ impl ClusterState {
         let mut metrics = self.metrics.lock().unwrap();
         metrics.get_mut(node_id).map(f)
     }
-    
+
     /// Check if a node has timed out
     pub fn check_heartbeat_timeout(&self, node_id: &str) -> bool {
         if let Some(metrics) = self.get_metrics(node_id) {
@@ -342,41 +349,40 @@ impl ClusterState {
             false
         }
     }
-    
+
     /// Mark a node as failed due to timeout
     pub fn mark_failed(&self, node_id: &str) {
         self.get_metrics_mut(node_id, |metrics| {
             metrics.status = NodeStatus::Failed;
         });
     }
-    
+
     /// Recover a failed node
     pub fn recover_node(&self, node_id: &str) {
         self.get_metrics_mut(node_id, |metrics| {
             metrics.status = NodeStatus::Active;
         });
     }
-    
+
     /// Get all active nodes
     pub fn active_nodes(&self) -> Vec<NodeMetrics> {
         let metrics = self.metrics.lock().unwrap();
-        metrics.values()
+        metrics
+            .values()
             .filter(|m| m.status == NodeStatus::Active)
             .cloned()
             .collect()
     }
-    
+
     /// Get total cluster VRAM
     pub fn total_vram_gb(&self) -> f32 {
         f64::from_bits(self.total_vram_cache.load(Ordering::Acquire)) as f32
     }
-    
+
     /// Get total system memory
     pub fn total_system_memory_gb(&self) -> f32 {
         let nodes = self.nodes.lock().unwrap();
-        nodes.values()
-            .map(|n| n.system_memory_gb)
-            .sum()
+        nodes.values().map(|n| n.system_memory_gb).sum()
     }
 }
 
@@ -396,57 +402,58 @@ impl ClusterHealthMonitor {
             check_interval,
         }
     }
-    
+
     /// Run health check on all nodes
     pub fn check_health(&self) {
-        let failed_nodes: Vec<String> = self.cluster.nodes_snapshot()
+        let failed_nodes: Vec<String> = self
+            .cluster
+            .nodes_snapshot()
             .iter()
             .filter(|n| self.cluster.check_heartbeat_timeout(&n.id))
             .map(|n| n.id.clone())
             .collect();
-        
+
         // Mark timed-out nodes as failed
         for node_id in &failed_nodes {
             self.cluster.mark_failed(node_id);
         }
-        
+
         // Update last update timestamp
         self.cluster.last_update.store(
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or(Duration::ZERO)
                 .as_millis() as u64,
-            Ordering::Release
+            Ordering::Release,
         );
     }
-    
+
     /// Get health report
     pub fn health_report(&self) -> String {
         let active_count = self.cluster.active_nodes().len();
         let total_nodes = self.cluster.nodes_snapshot().len();
-        
+
         format!(
             "Cluster Health Report\n\
              =================\n\
              Active nodes: {}/{}\n\
              Total VRAM: {:.1} GB\n\
              System memory: {:.1} GB\n",
-            active_count, total_nodes,
+            active_count,
+            total_nodes,
             self.cluster.total_vram_gb(),
             self.cluster.total_system_memory_gb()
         )
     }
-    
+
     /// Run periodic health checks in background
     pub fn start_periodic_checks(&self) {
         let this = self.clone();
-        
+
         // Spawn health check task
-        std::thread::spawn(move || {
-            loop {
-                this.check_health();
-                std::thread::sleep(this.check_interval);
-            }
+        std::thread::spawn(move || loop {
+            this.check_health();
+            std::thread::sleep(this.check_interval);
         });
     }
 }
@@ -472,10 +479,10 @@ mod tests {
     fn heartbeat_timeout_detection() {
         let cluster = ClusterState::new();
         cluster.register(NodeResources::new("node-a", 24.0, 64.0, "8.9", None));
-        
+
         // Simulate timeout by waiting longer than default heartbeat timeout
         thread::sleep(Duration::from_secs(6));
-        
+
         assert!(cluster.check_heartbeat_timeout("node-a"));
     }
 
@@ -484,10 +491,10 @@ mod tests {
         let cluster = Arc::new(ClusterState::new());
         cluster.register(NodeResources::new("node-a", 24.0, 64.0, "8.9", None));
         cluster.register(NodeResources::new("node-b", 12.0, 32.0, "8.6", None));
-        
+
         let monitor = ClusterHealthMonitor::new(cluster.clone(), Duration::from_secs(1));
         monitor.check_health();
-        
+
         let report = monitor.health_report();
         assert!(report.contains("Active nodes: 2/2"));
     }
@@ -495,12 +502,12 @@ mod tests {
     #[test]
     fn metrics_record_latency() {
         let mut metrics = NodeMetrics::new(24.0, 64.0, "8.9".to_string(), Duration::from_secs(5));
-        
+
         metrics.record_latency(1.0);
         assert_eq!(metrics.avg_latency_us, 1.0);
         assert_eq!(metrics.min_latency_us, 1.0);
         assert_eq!(metrics.max_latency_us, 1.0);
-        
+
         metrics.record_latency(2.0);
         // EMA with alpha=0.1: (1.0 * 0.9) + 2.0 * 0.1 = 0.9 + 0.2 = 1.1
         assert!((metrics.avg_latency_us - 1.1).abs() < 1e-6);
@@ -509,10 +516,10 @@ mod tests {
     #[test]
     fn metrics_record_delivery_ratio() {
         let mut metrics = NodeMetrics::new(24.0, 64.0, "8.9".to_string(), Duration::from_secs(5));
-        
+
         metrics.record_delivery_ratio(0.98);
         assert!((metrics.delivery_ratio - 0.98).abs() < 1e-6);
-        
+
         metrics.record_delivery_ratio(0.90);
         // EMA: 0.98 * 0.9 + 0.90 * 0.1 = 0.882 + 0.09 = 0.972
         assert!((metrics.delivery_ratio - 0.972).abs() < 1e-6);
@@ -523,7 +530,7 @@ mod tests {
         let cluster = ClusterState::new();
         cluster.register(NodeResources::new("node-a", 24.0, 64.0, "8.9", None));
         cluster.register(NodeResources::new("node-b", 12.0, 32.0, "8.6", None));
-        
+
         assert_eq!(cluster.total_vram_gb(), 36.0);
     }
 }

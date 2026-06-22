@@ -1,5 +1,5 @@
 //! Binary Protocol with CRC32 Checksums for Ghost-Link Discovery
-//! 
+//!
 //! This module implements a fixed-width binary protocol using:
 //! - Fixed-size fields for zero-copy parsing
 //! - CRC32 checksums for frame integrity
@@ -31,12 +31,12 @@ pub struct FrameHeader {
 
 impl FrameHeader {
     const HEADER_SIZE: usize = 8; // 2 + 1 + 1 + 4 bytes
-    
+
     /// Create a new frame header with computed CRC
     pub fn new(ether_type: u16, kind: u8, payload: &[u8]) -> Self {
         let mut hasher = Hasher::new();
         hasher.update(payload);
-        
+
         Self {
             ether_type,
             kind,
@@ -44,7 +44,7 @@ impl FrameHeader {
             crc: hasher.finalize(),
         }
     }
-    
+
     /// Encode header as bytes (little-endian)
     pub fn encode(&self) -> [u8; Self::HEADER_SIZE] {
         let mut header = [0u8; Self::HEADER_SIZE];
@@ -130,9 +130,9 @@ impl NodeResources {
             gpu_name,
         }
     }
-    
+
     /// Serialize node resources to fixed-width binary payload
-    /// 
+    ///
     /// Format: [id_len(1) + id + vram_f32_le + mem_f32_le + cc_len(1) + cc]
     #[inline]
     pub fn encode_payload(&self, max_size: usize) -> Vec<u8> {
@@ -149,10 +149,8 @@ impl NodeResources {
             }
         }
 
-        let payload_len = 11
-            + id_bytes.len()
-            + cc_bytes.len()
-            + gpu_bytes.map_or(0, |bytes| 2 + bytes.len());
+        let payload_len =
+            11 + id_bytes.len() + cc_bytes.len() + gpu_bytes.map_or(0, |bytes| 2 + bytes.len());
         if payload_len > max_size {
             return Vec::new();
         }
@@ -179,42 +177,43 @@ impl NodeResources {
 
         payload
     }
-    
+
     /// Deserialize node resources from binary payload
     pub fn decode_payload(payload: &[u8]) -> Result<Self, String> {
         if payload.len() < 16 {
             return Err("payload too short".into());
         }
-        
+
         // Read ID length
         let id_len = payload[0] as usize;
         if id_len > payload.len() - 4 {
             return Err("invalid ID length".into());
         }
-        
+
         // Read ID
         let id = unsafe { std::str::from_utf8_unchecked(&payload[1..1 + id_len]) };
-        
+
         // Read VRAM (little-endian f32)
         let vram_bytes: [u8; 4] = payload[1 + id_len..5 + id_len].try_into().unwrap();
         let vram_gb = f32::from_le_bytes(vram_bytes);
-        
+
         // Read system memory (little-endian f32)
         let mem_bytes: [u8; 4] = payload[5 + id_len..9 + id_len].try_into().unwrap();
         let system_memory_gb = f32::from_le_bytes(mem_bytes);
-        
+
         // Read compute capability length
         let cc_len = payload[9 + id_len] as usize;
         if cc_len > payload.len() - 10 {
             return Err("invalid CC length".into());
         }
-        
+
         // Read compute capability
-        let cc = unsafe { std::str::from_utf8_unchecked(&payload[10 + id_len..10 + id_len + cc_len]) };
-        
+        let cc =
+            unsafe { std::str::from_utf8_unchecked(&payload[10 + id_len..10 + id_len + cc_len]) };
+
         // Check for GPU name flag
         let has_gpu_name = payload[10 + id_len + cc_len] == 1;
-        
+
         Ok(Self {
             id: id.to_string(),
             vram_gb,
@@ -225,12 +224,14 @@ impl NodeResources {
                 if gpu_len > payload.len() - 12 - id_len - cc_len {
                     return Err("invalid GPU name length".into());
                 }
-                Some(unsafe {
-                    std::str::from_utf8_unchecked(
-                        &payload[10 + id_len + cc_len + 2..10 + id_len + cc_len + 2 + gpu_len],
-                    )
-                }
-                .to_string())
+                Some(
+                    unsafe {
+                        std::str::from_utf8_unchecked(
+                            &payload[10 + id_len + cc_len + 2..10 + id_len + cc_len + 2 + gpu_len],
+                        )
+                    }
+                    .to_string(),
+                )
             } else {
                 None
             },
@@ -250,12 +251,12 @@ impl DiscoveryFrame {
     #[inline]
     pub fn encode(&self) -> Vec<u8> {
         let payload = self.node.encode_payload(MAX_PAYLOAD_SIZE);
-        
+
         // Compute CRC32 over payload
         let mut hasher = Hasher::new();
         hasher.update(&payload);
         let crc = hasher.finalize();
-        
+
         // Build header
         let header = FrameHeader {
             ether_type: GHOSTLINK_ETHERTYPE,
@@ -264,53 +265,55 @@ impl DiscoveryFrame {
             crc,
         };
         let header_bytes = header.encode();
-        
+
         // Combine header and payload
         let mut frame = Vec::with_capacity(header_bytes.len() + payload.len());
         frame.extend_from_slice(&header_bytes);
         frame.extend_from_slice(&payload);
-        
+
         frame
     }
-    
+
     /// Decode discovery frame from bytes (header + payload)
     #[inline]
     pub fn decode(bytes: &[u8]) -> Result<Self, String> {
         if bytes.len() < FrameHeader::HEADER_SIZE {
             return Err("frame too short".into());
         }
-        
+
         // Parse header
         let ether_type = u16::from_le_bytes([bytes[0], bytes[1]]);
         let kind = FrameKind::try_from(bytes[2])?;
         let version = bytes[3];
         let expected_crc = u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]);
-        
+
         if ether_type != GHOSTLINK_ETHERTYPE {
             return Err(format!("unexpected EtherType 0x{ether_type:04x}"));
         }
-        
+
         if version != PROTOCOL_VERSION {
             return Err(format!("unsupported protocol version {version}"));
         }
-        
+
         // Parse payload with CRC verification
         let payload_start = FrameHeader::HEADER_SIZE;
         let payload_end = bytes.len();
         let payload = &bytes[payload_start..payload_end];
-        
+
         // Compute CRC over payload
         let mut hasher = Hasher::new();
         hasher.update(payload);
         let computed_crc = hasher.finalize();
-        
+
         if computed_crc != expected_crc {
-            return Err(format!("CRC mismatch: expected 0x{expected_crc:08x}, got 0x{computed_crc:08x}"));
+            return Err(format!(
+                "CRC mismatch: expected 0x{expected_crc:08x}, got 0x{computed_crc:08x}"
+            ));
         }
-        
+
         // Decode node resources from payload
         let node = NodeResources::decode_payload(payload)?;
-        
+
         Ok(Self { kind, node })
     }
 }
@@ -344,7 +347,7 @@ mod tests {
         let encoded = frame.encode();
         let mut modified = encoded.clone();
         modified[10] ^= 0xFF; // Modify payload
-        
+
         let result = DiscoveryFrame::decode(&modified);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("CRC mismatch"));
@@ -354,8 +357,8 @@ mod tests {
     fn rejects_wrong_ether_type() {
         let mut fake_frame = vec![0u8; 10];
         fake_frame[0] = 0xB5u8; // Low byte of GHOSTLINK_ETHERTYPE (0x88B5 LE)
-        fake_frame[1] = 0xFF;   // Wrong high byte
-        
+        fake_frame[1] = 0xFF; // Wrong high byte
+
         let result = DiscoveryFrame::decode(&fake_frame);
         assert!(result.is_err());
     }
@@ -365,17 +368,20 @@ mod tests {
         let frame = DiscoveryFrame {
             kind: FrameKind::Discovery,
             node: NodeResources::new(
-                "gpu-node-1", 
-                24.0, 
-                64.0, 
-                "9.0", 
-                Some("NVIDIA GeForce RTX 4090".to_string())
+                "gpu-node-1",
+                24.0,
+                64.0,
+                "9.0",
+                Some("NVIDIA GeForce RTX 4090".to_string()),
             ),
         };
 
         let encoded = frame.encode();
         let decoded = DiscoveryFrame::decode(&encoded).unwrap();
 
-        assert_eq!(decoded.node.gpu_name, Some("NVIDIA GeForce RTX 4090".to_string()));
+        assert_eq!(
+            decoded.node.gpu_name,
+            Some("NVIDIA GeForce RTX 4090".to_string())
+        );
     }
 }

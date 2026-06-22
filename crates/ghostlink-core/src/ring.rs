@@ -1,5 +1,5 @@
 //! Zero-Copy SPSC Ring Buffer with AF_XDP Integration
-//! 
+//!
 //! This implementation uses pinned allocations and proper memory ordering
 //! for single-producer/single-consumer DMA-style hand-off.
 
@@ -19,8 +19,8 @@ pub struct RingConfig {
 impl Default for RingConfig {
     fn default() -> Self {
         Self {
-            capacity: 1023, // Must be < RING_CAPACITY to avoid wraparound aliasing
-            backpressure_threshold: 716 // ~70% of 1023, // 70% of 1024
+            capacity: 1023,              // Must be < RING_CAPACITY to avoid wraparound aliasing
+            backpressure_threshold: 716, // ~70% of 1023, // 70% of 1024
         }
     }
 }
@@ -29,7 +29,7 @@ impl Default for RingConfig {
 const RING_CAPACITY: usize = 1024;
 
 /// Zero-copy SPSC ring buffer with proper memory ordering
-/// 
+///
 /// # Safety
 /// This type is only safe to use when:
 /// - Only one producer thread exists
@@ -53,16 +53,19 @@ pub struct SpscRingBuffer<T> {
 
 impl<T> SpscRingBuffer<T> {
     const CAPACITY: usize = RING_CAPACITY;
-    
+
     /// Create a new SPSC ring buffer with the given configuration
     pub fn new(config: RingConfig) -> Self {
-        assert!(config.capacity < Self::CAPACITY, "capacity must be strictly less than RING_CAPACITY");
-        
+        assert!(
+            config.capacity < Self::CAPACITY,
+            "capacity must be strictly less than RING_CAPACITY"
+        );
+
         // Safety: MaybeUninit does not require initialization
         let buffer = UnsafeCell::new(unsafe {
             MaybeUninit::<[MaybeUninit<T>; RING_CAPACITY]>::uninit().assume_init()
         });
-        
+
         Self {
             buffer,
             head: AtomicUsize::new(0),
@@ -72,73 +75,69 @@ impl<T> SpscRingBuffer<T> {
             config,
         }
     }
-    
+
     /// Push an element into the ring buffer
-    /// 
+    ///
     /// Returns `Ok(())` on success, or `Err(value)` if the ring is full.
     /// When full, the producer should wait/backpressure until space is available.
     pub fn push(&self, value: T) -> Result<(), T> {
         let tail = self.tail.load(Ordering::Acquire);
         let head = self.head.load(Ordering::Acquire);
-        
+
         // Check if ring is full using count (respects config.capacity)
         let current_len = if tail >= head {
             tail - head
         } else {
             Self::CAPACITY - head + tail
         };
-        
+
         if current_len >= self.config.capacity {
             self.overflow_count.fetch_add(1, Ordering::Relaxed);
             return Err(value);
         }
-        
+
         let next_tail = Self::increment(tail);
-        
+
         // Write the value at tail position
         unsafe {
             let buf = &mut *self.buffer.get();
             buf[tail].write(value);
-            
+
             // Release store to make write visible to consumer
             self.tail.store(next_tail, Ordering::Release);
         }
-        
+
         Ok(())
     }
-    
+
     /// Pop an element from the ring buffer
-    /// 
+    ///
     /// Returns `Some(value)` on success, or `None` if the ring is empty.
     pub fn pop(&self) -> Option<T> {
         let head = self.head.load(Ordering::Acquire);
         let tail = self.tail.load(Ordering::Acquire);
-        
+
         // Check if ring is empty (with wrap-around handling)
-        let is_empty = if head >= tail {
-            head == tail
-        } else {
-            false
-        };
-        
+        let is_empty = if head >= tail { head == tail } else { false };
+
         if is_empty {
             return None;
         }
-        
+
         // Read the value at head position
         let value = unsafe {
             let buf = &mut *self.buffer.get();
             let val = buf[head].assume_init_read();
-            
+
             // Release store to make read visible to producer
             self.head.store(Self::increment(head), Ordering::Release);
-            
+
             val
         };
-        
+
         Some(value)
     }
-    
+
     /// Get the current number of elements in the ring
     pub fn len(&self) -> usize {
         let head = self.head.load(Ordering::Acquire);
@@ -146,35 +145,35 @@ impl<T> SpscRingBuffer<T> {
 
         tail.wrapping_sub(head) & (Self::CAPACITY - 1)
     }
-    
+
     /// Check if the ring is empty
     pub fn is_empty(&self) -> bool {
         self.head.load(Ordering::Acquire) == self.tail.load(Ordering::Acquire)
     }
-    
+
     /// Get the configured capacity
     pub fn capacity(&self) -> usize {
         self.config.capacity
     }
-    
+
     /// Get overflow count for backpressure monitoring
     pub fn overflow_count(&self) -> usize {
         self.overflow_count.load(Ordering::Relaxed)
     }
-    
+
     /// Get empty count for backpressure monitoring
     pub fn empty_count(&self) -> usize {
         self.empty_count.load(Ordering::Relaxed)
     }
-    
+
     /// Check if backpressure should be applied (ring >= threshold)
     pub fn should_backpressure(&self) -> bool {
         let len = self.len();
         len >= self.config.backpressure_threshold
     }
-    
+
     /// Wait for space to become available
-    /// 
+    ///
     /// Spins until there's room in the ring buffer.
     pub fn wait_for_space(&self) {
         while self.should_backpressure() {
@@ -182,9 +181,9 @@ impl<T> SpscRingBuffer<T> {
             std::thread::yield_now();
         }
     }
-    
+
     /// Wait for an element to become available
-    /// 
+    ///
     /// Spins until there's data in the ring buffer.
     pub fn wait_for_data(&self) {
         while self.is_empty() {
@@ -192,7 +191,7 @@ impl<T> SpscRingBuffer<T> {
             std::thread::yield_now();
         }
     }
-    
+
     fn increment(index: usize) -> usize {
         (index + 1) & (Self::CAPACITY - 1)
     }
@@ -280,19 +279,19 @@ mod tests {
     #[test]
     fn handles_wrap_around_correctly() {
         let ring = SpscRingBuffer::<i32>::new(RingConfig::default());
-        
+
         // Fill most of the ring
         for i in 0..1020 {
             ring.push(i).unwrap();
         }
-        
+
         assert_eq!(ring.len(), 1020);
-        
+
         // Pop all elements in FIFO order
         for i in 0..1020 {
             assert_eq!(ring.pop(), Some(i));
         }
-        
+
         assert!(ring.is_empty());
     }
 
@@ -303,13 +302,13 @@ mod tests {
             backpressure_threshold: 70,
         };
         let ring = SpscRingBuffer::<i32>::new(config);
-        
+
         // Fill to threshold - should not backpressure
         for i in 0..69 {
             ring.push(i).unwrap();
         }
         assert!(!ring.should_backpressure());
-        
+
         // Fill one more - should backpressure
         let result = ring.push(70);
         assert!(result.is_ok()); // Push succeeds until capacity (100) is reached

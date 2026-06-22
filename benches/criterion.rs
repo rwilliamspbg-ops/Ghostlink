@@ -83,10 +83,20 @@ fn bench_planning(c: &mut Criterion) {
 
     let mut group = c.benchmark_group("planning");
     group.bench_function("33_layers_2_nodes", |b| {
-        b.iter(|| black_box(assign_layers_sequentially(black_box(&nodes_2), black_box(&layers_33))));
+        b.iter(|| {
+            black_box(assign_layers_sequentially(
+                black_box(&nodes_2),
+                black_box(&layers_33),
+            ))
+        });
     });
     group.bench_function("80_layers_8_nodes", |b| {
-        b.iter(|| black_box(assign_layers_sequentially(black_box(&nodes_8), black_box(&layers_80))));
+        b.iter(|| {
+            black_box(assign_layers_sequentially(
+                black_box(&nodes_8),
+                black_box(&layers_80),
+            ))
+        });
     });
     group.finish();
 }

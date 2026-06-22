@@ -1,20 +1,23 @@
-/// Performance Baseline for Ghost-Link Primitives
-
-use std::time::Instant;
 use std::sync::Arc;
 use std::thread;
+/// Performance Baseline for Ghost-Link Primitives
+use std::time::Instant;
 
 use ghostlink_core::{
-    ring::{SpscRingBuffer, RingConfig},
-    protocol::{DiscoveryFrame, FrameKind, NodeResources},
     cluster::ClusterState,
     planning::{assign_layers_sequentially, LayerSpec},
+    protocol::{DiscoveryFrame, FrameKind, NodeResources},
+    ring::{RingConfig, SpscRingBuffer},
 };
 
 fn bench(name: &str, iters: u64, mut f: impl FnMut()) -> f64 {
-    for _ in 0..1000_u64.min(iters / 10) { f(); }
+    for _ in 0..1000_u64.min(iters / 10) {
+        f();
+    }
     let start = Instant::now();
-    for _ in 0..iters { f(); }
+    for _ in 0..iters {
+        f();
+    }
     let elapsed = start.elapsed();
     let ns = elapsed.as_nanos() as f64 / iters as f64;
     let ops = 1_000_000_000.0 / ns;
@@ -25,7 +28,10 @@ fn bench(name: &str, iters: u64, mut f: impl FnMut()) -> f64 {
 fn main() {
     println!("\nGhost-Link Performance Baseline");
     println!("================================");
-    println!("{:<52} {:>10}       {:>14}", "Benchmark", "Latency", "Throughput");
+    println!(
+        "{:<52} {:>10}       {:>14}",
+        "Benchmark", "Latency", "Throughput"
+    );
     println!("{}", "-".repeat(82));
 
     // ─── Ring Buffer (single-threaded) ────────────────────────────────────────
@@ -42,7 +48,9 @@ fn main() {
     {
         let ring = SpscRingBuffer::<u64>::new(RingConfig::default());
         bench("ring_buffer: push only (ST, full=drain)", 1_000_000, || {
-            if ring.push(42u64).is_err() { ring.pop(); }
+            if ring.push(42u64).is_err() {
+                ring.pop();
+            }
         });
     }
 
@@ -56,7 +64,9 @@ fn main() {
         let producer = thread::spawn(move || {
             for i in 0..iters {
                 loop {
-                    if prod.push(i).is_ok() { break; }
+                    if prod.push(i).is_ok() {
+                        break;
+                    }
                     thread::yield_now();
                 }
             }
@@ -64,7 +74,11 @@ fn main() {
         let consumer = thread::spawn(move || {
             let mut n = 0u64;
             while n < iters {
-                if cons.pop().is_some() { n += 1; } else { thread::yield_now(); }
+                if cons.pop().is_some() {
+                    n += 1;
+                } else {
+                    thread::yield_now();
+                }
             }
         });
         producer.join().unwrap();
@@ -72,13 +86,18 @@ fn main() {
         let elapsed = start.elapsed();
         let ns = elapsed.as_nanos() as f64 / iters as f64;
         let ops = 1_000_000_000.0 / ns;
-        println!("{:<52} {:>10.2} ns/op  {:>14.0} ops/sec",
-            "ring_buffer: SPSC cross-thread (10k items)", ns, ops);
+        println!(
+            "{:<52} {:>10.2} ns/op  {:>14.0} ops/sec",
+            "ring_buffer: SPSC cross-thread (10k items)", ns, ops
+        );
     }
 
     // ─── Protocol ────────────────────────────────────────────────────────────
     let node = NodeResources::new("bench-node", 24.0, 64.0, "8.9", None);
-    let frame = DiscoveryFrame { kind: FrameKind::Discovery, node };
+    let frame = DiscoveryFrame {
+        kind: FrameKind::Discovery,
+        node,
+    };
 
     bench("protocol: DiscoveryFrame encode", 500_000, || {
         let _ = frame.encode();
@@ -95,22 +114,30 @@ fn main() {
     });
 
     // ─── Layer Assignment Planning ───────────────────────────────────────────
-    let nodes_2: Vec<_> = (0..2).map(|i| {
-        NodeResources::new(format!("node-{}", i), 24.0, 64.0, "8.9", None)
-    }).collect();
-    let layers_33: Vec<LayerSpec> = (0..33).map(|i| LayerSpec {
-        index: i, vram_gb: 1.0, num_weights: 0
-    }).collect();
+    let nodes_2: Vec<_> = (0..2)
+        .map(|i| NodeResources::new(format!("node-{}", i), 24.0, 64.0, "8.9", None))
+        .collect();
+    let layers_33: Vec<LayerSpec> = (0..33)
+        .map(|i| LayerSpec {
+            index: i,
+            vram_gb: 1.0,
+            num_weights: 0,
+        })
+        .collect();
     bench("planning: 33 layers across 2 nodes", 100_000, || {
         let _ = assign_layers_sequentially(&nodes_2, &layers_33);
     });
 
-    let nodes_8: Vec<_> = (0..8).map(|i| {
-        NodeResources::new(format!("node-{}", i), 48.0, 128.0, "9.0", None)
-    }).collect();
-    let layers_80: Vec<LayerSpec> = (0..80).map(|i| LayerSpec {
-        index: i, vram_gb: 1.0, num_weights: 0
-    }).collect();
+    let nodes_8: Vec<_> = (0..8)
+        .map(|i| NodeResources::new(format!("node-{}", i), 48.0, 128.0, "9.0", None))
+        .collect();
+    let layers_80: Vec<LayerSpec> = (0..80)
+        .map(|i| LayerSpec {
+            index: i,
+            vram_gb: 1.0,
+            num_weights: 0,
+        })
+        .collect();
     bench("planning: 80 layers across 8 nodes", 100_000, || {
         let _ = assign_layers_sequentially(&nodes_8, &layers_80);
     });
@@ -124,7 +151,12 @@ fn main() {
     let cluster2 = ClusterState::new();
     for i in 0..10 {
         cluster2.register(NodeResources::new(
-            format!("node-{}", i), 24.0, 64.0, "8.9", None));
+            format!("node-{}", i),
+            24.0,
+            64.0,
+            "8.9",
+            None,
+        ));
     }
     bench("cluster: nodes() snapshot (10 nodes)", 200_000, || {
         let _ = cluster2.nodes();
@@ -134,6 +166,8 @@ fn main() {
     });
 
     println!("{}", "-".repeat(82));
-    println!("\nPlatform: {} | Profile: release (optimized)\n",
-        std::env::consts::ARCH);
+    println!(
+        "\nPlatform: {} | Profile: release (optimized)\n",
+        std::env::consts::ARCH
+    );
 }

@@ -1,5 +1,5 @@
 //! AF_XDP/eBPF Socket Integration for Ghost-Link
-//! 
+//!
 //! This module provides:
 //! - Raw socket binding with AF_XDP
 //! - EtherType filtering (0x88B5)
@@ -46,23 +46,25 @@ impl XdpSocketHandle {
     pub fn new(interface_name: &str) -> Result<Self, String> {
         // Note: This is a placeholder for Linux-specific implementation
         // Actual implementation would use syscall! macro or bindgen
-        
-        Err(format!("AF_XDP sockets are Linux-only (requested interface: {interface_name})"))
+
+        Err(format!(
+            "AF_XDP sockets are Linux-only (requested interface: {interface_name})"
+        ))
     }
-    
+
     /// Bind socket to interface (Linux-specific)
     pub fn bind(&self, _interface_name: &str) -> Result<(), String> {
         Err("AF_XDP binding requires Linux kernel support".into())
     }
-    
+
     /// Receive frame from XDP socket
-    /// 
+    ///
     /// Returns the raw frame bytes.
     pub fn recv_frame(&self, _buffer: &mut [u8]) -> Option<usize> {
         // Placeholder - actual implementation uses recvmsg syscall
         None
     }
-    
+
     /// Send frame to XDP socket (for outgoing traffic)
     pub fn send_frame(&self, _data: &[u8]) -> Result<(), String> {
         Err("AF_XDP send requires specific setup".into())
@@ -82,35 +84,35 @@ impl XdpFrameReceiver {
     /// Create new frame receiver
     pub fn new(config: XdpConfig) -> Self {
         let ring = crate::ring::SpscRingBuffer::new(RingConfig::default());
-        
+
         Self {
             config,
             ring_buffer: ring,
         }
     }
-    
+
     /// Receive and parse discovery frame from raw socket
     pub fn recv_discovery_frame(&self) -> Option<DiscoveryFrame> {
         let _ = (&self.config.interface_name, self.config.memory_order);
         None
     }
-    
+
     /// Process raw frame bytes and extract discovery frame
     pub fn process_frame(&self, bytes: &[u8]) -> Option<DiscoveryFrame> {
         if bytes.len() < 10 {
             return None;
         }
-        
+
         // Check EtherType filter
         let ether_type = u16::from_le_bytes([bytes[0], bytes[1]]);
         if ether_type != GHOSTLINK_ETHERTYPE {
             return None;
         }
-        
+
         // Try to decode as discovery frame
         DiscoveryFrame::decode(bytes).ok()
     }
-    
+
     /// Get ring buffer statistics
     pub fn ring_stats(&self) -> (usize, usize) {
         (self.ring_buffer.len(), self.ring_buffer.capacity())
@@ -131,15 +133,21 @@ impl EbpfProgramLoader {
             program_name: program_name.to_string(),
         }
     }
-    
+
     /// Load eBPF program (Linux-specific)
     pub fn load(&self, _program_path: &str) -> Result<(), String> {
-        Err(format!("eBPF loading for '{}' requires Linux kernel support", self.program_name))
+        Err(format!(
+            "eBPF loading for '{}' requires Linux kernel support",
+            self.program_name
+        ))
     }
-    
+
     /// Attach eBPF program to XDP socket
     pub fn attach(&self, _fd: c_int) -> Result<(), String> {
-        Err(format!("eBPF attachment for '{}' requires Linux kernel support", self.program_name))
+        Err(format!(
+            "eBPF attachment for '{}' requires Linux kernel support",
+            self.program_name
+        ))
     }
 }
 
@@ -165,23 +173,23 @@ impl XdpStats {
     pub fn new() -> Self {
         Self::default()
     }
-    
+
     /// Record frame received
     pub fn record_received(&mut self) {
         self.frames_received += 1;
     }
-    
+
     /// Record frame dropped
     pub fn record_dropped(&mut self) {
         self.frames_received += 1;
         self.frames_dropped += 1;
     }
-    
+
     /// Record frame processed
     pub fn record_processed(&mut self) {
         self.frames_processed += 1;
     }
-    
+
     /// Update average latency
     pub fn update_latency(&mut self, latency_us: f32) {
         if !self.latency_initialized {
@@ -192,7 +200,7 @@ impl XdpStats {
             self.avg_latency_us = self.avg_latency_us * 0.9 + latency_us * 0.1;
         }
     }
-    
+
     /// Get throughput estimate (frames/sec)
     pub fn throughput(&self, duration_seconds: f32) -> Option<f64> {
         if duration_seconds > 0.0 {
@@ -201,7 +209,7 @@ impl XdpStats {
             None
         }
     }
-    
+
     /// Generate statistics report
     pub fn report(&self) -> String {
         format!(
@@ -240,14 +248,14 @@ impl XdpReceiver {
     /// Create new XDP receiver with statistics
     pub fn new(config: XdpConfig) -> Self {
         let frame_receiver = XdpFrameReceiver::new(config.clone());
-        
+
         Self {
             config,
             frame_receiver,
             stats: XdpStats::new(),
         }
     }
-    
+
     /// Receive and process frames from socket
     pub fn recv_loop(&self) -> Result<(), String> {
         // In production, this would use AF_XDP recvmsg in a loop
@@ -255,7 +263,7 @@ impl XdpReceiver {
         let _ = (&self.config.interface_name, self.config.memory_order);
         Ok(())
     }
-    
+
     /// Process received frame and extract discovery frame
     pub fn process_frame(&mut self, bytes: &[u8]) -> Option<DiscoveryFrame> {
         if let Some(frame) = self.frame_receiver.process_frame(bytes) {
@@ -268,7 +276,7 @@ impl XdpReceiver {
             None
         }
     }
-    
+
     /// Get current statistics
     pub fn stats(&self) -> &XdpStats {
         &self.stats
@@ -292,7 +300,7 @@ impl XdpSocketManager {
             fd: None,
         }
     }
-    
+
     /// Initialize AF_XDP socket and bind to interface
     pub fn init(&mut self) -> Result<(), String> {
         // This would use syscall! macro for Linux-specific syscalls
@@ -300,18 +308,18 @@ impl XdpSocketManager {
         let _ = &self.interface_name;
         Ok(())
     }
-    
+
     /// Receive frame using AF_XDP recvmsg
     pub fn recv_frame(&mut self, _buffer: &mut [u8]) -> Option<usize> {
         // Placeholder - actual implementation uses recvmsg syscall
         None
     }
-    
+
     /// Send frame using AF_XDP sendmsg
     pub fn send_frame(&mut self, _data: &[u8]) -> Result<(), String> {
         Err("AF_XDP send requires specific setup".into())
     }
-    
+
     /// Close socket
     pub fn close(&mut self) {
         if let Some(fd) = self.fd.take() {
@@ -331,16 +339,16 @@ mod tests {
     #[test]
     fn xdp_receiver_processes_frames() {
         let mut receiver = XdpReceiver::new(XdpConfig::default());
-        
+
         // Create a test discovery frame
         let node = NodeResources::new("test-node", 24.0, 64.0, "8.9".to_string(), None);
         let frame = DiscoveryFrame {
             kind: FrameKind::Discovery,
             node,
         };
-        
+
         let encoded = frame.encode();
-        
+
         // Process the frame
         let decoded = receiver.process_frame(&encoded);
         assert!(decoded.is_some());
@@ -349,12 +357,12 @@ mod tests {
     #[test]
     fn xdp_stats_tracks_frames() {
         let mut stats = XdpStats::new();
-        
+
         stats.record_received();
         stats.record_received();
         stats.record_dropped();
         stats.record_processed();
-        
+
         assert_eq!(stats.frames_received, 3);
         assert_eq!(stats.frames_dropped, 1);
         assert_eq!(stats.frames_processed, 1);
@@ -363,10 +371,10 @@ mod tests {
     #[test]
     fn xdp_stats_reports_throughput() {
         let mut stats = XdpStats::new();
-        
+
         stats.record_received();
         stats.record_received();
-        
+
         let throughput = stats.throughput(2.0);
         assert_eq!(throughput, Some(1.0));
     }
@@ -374,10 +382,10 @@ mod tests {
     #[test]
     fn xdp_stats_updates_latency() {
         let mut stats = XdpStats::new();
-        
+
         stats.update_latency(1.0);
         assert_eq!(stats.avg_latency_us, 1.0);
-        
+
         stats.update_latency(2.0);
         // EMA: 1.0 * 0.9 + 2.0 * 0.1 = 0.9 + 0.2 = 1.1
         assert!((stats.avg_latency_us - 1.1).abs() < 1e-6);
@@ -386,12 +394,12 @@ mod tests {
     #[test]
     fn xdp_receiver_rejects_wrong_ether_type() {
         let mut receiver = XdpReceiver::new(XdpConfig::default());
-        
+
         // Create a frame with wrong EtherType
         let mut fake_frame = vec![0u8; 10];
         fake_frame[0] = 0xB5u8; // Low byte of GHOSTLINK_ETHERTYPE (0x88B5 LE)
-        fake_frame[1] = 0xFF;   // Wrong high byte
-        
+        fake_frame[1] = 0xFF; // Wrong high byte
+
         let result = receiver.process_frame(&fake_frame);
         assert!(result.is_none());
     }
@@ -399,12 +407,12 @@ mod tests {
     #[test]
     fn xdp_stats_reports() {
         let mut stats = XdpStats::new();
-        
+
         stats.record_received();
         stats.record_received();
         stats.record_dropped();
         stats.update_latency(1.5);
-        
+
         let report = stats.report();
         assert!(report.contains("Frames received: 3"));
         assert!(report.contains("Frames dropped: 1"));

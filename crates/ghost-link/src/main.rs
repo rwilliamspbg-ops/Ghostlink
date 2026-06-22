@@ -1,5 +1,5 @@
 //! Ghost-Link CLI Demo
-//! 
+//!
 //! Command-line interface for demonstrating Ghost-Link primitives:
 //! - `plan` - Generate layer placement plan
 //! - `join` - Broadcast discovery frame to join cluster
@@ -8,8 +8,8 @@
 use anyhow::Result;
 use ghostlink_core::cluster::{ClusterState, NodeMetrics};
 use ghostlink_core::dashboard::Dashboard;
-use ghostlink_core::protocol::NodeResources;
 use ghostlink_core::planning::{assign_layers_sequentially, select_quantization_mode, LayerSpec};
+use ghostlink_core::protocol::NodeResources;
 use ghostlink_core::protocol::{DiscoveryFrame, FrameKind};
 
 fn main() -> Result<()> {
@@ -17,7 +17,7 @@ fn main() -> Result<()> {
     tracing_subscriber::fmt().init();
 
     let mut args = std::env::args().skip(1);
-    
+
     match args.next().as_deref() {
         Some("plan") => print_plan()?,
         Some("join") => print_join(args.next().as_deref().unwrap_or("node-01"))?,
@@ -63,16 +63,16 @@ fn print_plan() -> Result<()> {
 
     // Create sample layers (Llama-7B has ~33 layers)
     let layers: Vec<LayerSpec> = (0..33)
-        .map(|index| LayerSpec { 
-            index, 
+        .map(|index| LayerSpec {
+            index,
             vram_gb: 1.0,
-            num_weights: 0, 
+            num_weights: 0,
         })
         .collect();
 
     // Assign layers sequentially
-    let assignments = assign_layers_sequentially(&nodes, &layers)
-        .map_err(|e| anyhow::anyhow!(e))?;
+    let assignments =
+        assign_layers_sequentially(&nodes, &layers).map_err(|e| anyhow::anyhow!(e))?;
 
     println!("Ghost-Link Layer Placement Plan\n");
     println!("================================\n");
@@ -103,18 +103,11 @@ fn print_join(node_id: &str) -> Result<()> {
     // Create discovery frame with node resources
     let frame = DiscoveryFrame {
         kind: FrameKind::Join,
-        node: NodeResources::new(
-            node_id, 
-            12.0, 
-            32.0, 
-            "8.6".to_string(),
-            None,
-        ),
+        node: NodeResources::new(node_id, 12.0, 32.0, "8.6".to_string(), None),
     };
 
     let encoded = frame.encode();
-    let decoded = DiscoveryFrame::decode(&encoded)
-        .map_err(|e| anyhow::anyhow!(e))?;
+    let decoded = DiscoveryFrame::decode(&encoded).map_err(|e| anyhow::anyhow!(e))?;
 
     println!("Broadcasting Ghost-Link Join Frame\n");
     println!("====================================\n");
@@ -143,8 +136,20 @@ fn print_join(node_id: &str) -> Result<()> {
 fn print_dashboard() -> Result<()> {
     // Create sample cluster state
     let cluster = ClusterState::new();
-    cluster.register(NodeResources::new("NODE-01", 24.0, 64.0, "8.9", Some("RTX4090".to_string())));
-    cluster.register(NodeResources::new("NODE-02", 12.0, 32.0, "8.6", Some("RTX3080".to_string())));
+    cluster.register(NodeResources::new(
+        "NODE-01",
+        24.0,
+        64.0,
+        "8.9",
+        Some("RTX4090".to_string()),
+    ));
+    cluster.register(NodeResources::new(
+        "NODE-02",
+        12.0,
+        32.0,
+        "8.6",
+        Some("RTX3080".to_string()),
+    ));
 
     // Update metrics for each node
     cluster.get_metrics_mut("NODE-01", |metrics| {
@@ -159,18 +164,14 @@ fn print_dashboard() -> Result<()> {
     });
 
     // Collect nodes metrics for display
-    let nodes_metrics: Vec<NodeMetrics> = cluster.nodes_snapshot()
+    let nodes_metrics: Vec<NodeMetrics> = cluster
+        .nodes_snapshot()
         .iter()
         .filter_map(|n| cluster.get_metrics(&n.id))
         .collect();
 
     // Create and render dashboard
-    let dashboard = Dashboard::new(
-        cluster.clone(),
-        63,
-        42,
-        nodes_metrics,
-    );
+    let dashboard = Dashboard::new(cluster.clone(), 63, 42, nodes_metrics);
 
     println!("{}", dashboard.render_ascii());
 

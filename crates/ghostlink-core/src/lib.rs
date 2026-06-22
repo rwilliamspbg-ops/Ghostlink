@@ -1,5 +1,5 @@
 //! Ghost-Link Core Library
-//! 
+//!
 //! A zero-config LAN fabric that turns spare local GPUs into a shared execution surface
 //! for large-model inference and training.
 //!
@@ -38,6 +38,9 @@ pub mod xdp;
 
 // Re-export common types for convenience
 pub use cluster::{ClusterState, NodeMetrics, NodeStatus};
-pub use planning::{LayerAssignment, LayerSpec, PlacementPlan, QuantizationMode, assign_layers_sequentially, select_quantization_mode};
+pub use planning::{
+    assign_layers_sequentially, select_quantization_mode, LayerAssignment, LayerSpec,
+    PlacementPlan, QuantizationMode,
+};
 pub use protocol::NodeResources;
-pub use ring::{SpscRingBuffer, RingConfig};
+pub use ring::{RingConfig, SpscRingBuffer};
