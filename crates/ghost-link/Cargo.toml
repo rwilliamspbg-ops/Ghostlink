@@ -1,16 +1,17 @@
-name = "ghost-limk"
+[package]
+name = "ghost-link"
 version = "0.1.0-alpha.0"
 edition = "2021"
 authors = ["Ryan K Williams"]
 description = "High-performance, low-level network fabric utilizing zero-copy SPSC buffers and AF_XDP kernel bypass."
 repository = "https://github.com/rwilliamspbg-ops/Ghostlink"
 readme = "../../README.md"
-license = "Apache-2.0" # Change to your preferred license
+license = "Apache-2.0"
 keywords = ["networking", "xdp", "zero-copy", "async"]
 categories = ["asynchronous", "network-programming"]
 
 [dependencies]
-ghostlink-core = { path = "../ghostlink-core" }
+ghostlink-core = { path = "../ghostlink-core", version = "0.1.0-alpha.0" }
 
 # Production error handling
 anyhow = "1"
