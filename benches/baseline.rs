@@ -4,7 +4,13 @@ use std::thread;
 use std::time::Instant;
 
 use ghostlink_core::{
+    accelerator::ExecutionBackend,
     cluster::ClusterState,
+    host::{
+        detect_runtime_profile, detect_runtime_profile_with_mode, AccelerationMode, ProbeMode,
+        RuntimeProfile,
+    },
+    load_balance::LoadBalancer,
     planning::{assign_layers_sequentially, LayerSpec},
     protocol::{DiscoveryFrame, FrameKind, NodeResources},
     ring::{RingConfig, SpscRingBuffer},
@@ -142,6 +148,27 @@ fn main() {
         let _ = assign_layers_sequentially(&nodes_8, &layers_80);
     });
 
+    let runtime_profile = RuntimeProfile {
+        node_resources: NodeResources::new("bench-host", 24.0, 64.0, "8.9", None),
+        logical_cores: 16,
+        recommended_workers: 8,
+        acceleration_mode: AccelerationMode::Gpu,
+        xdp_supported: true,
+        detection_source: String::from("bench"),
+        probe_mode: ghostlink_core::ProbeMode::Fast,
+    };
+    bench(
+        "planning: 80 layers across 8 nodes (autotuned)",
+        100_000,
+        || {
+            let _ = ghostlink_core::planning::assign_layers_with_runtime_profile(
+                &nodes_8,
+                &layers_80,
+                &runtime_profile,
+            );
+        },
+    );
+
     // ─── Cluster State ───────────────────────────────────────────────────────
     let cluster = ClusterState::new();
     bench("cluster: register node (update path)", 100_000, || {
@@ -163,6 +190,32 @@ fn main() {
     });
     bench("cluster: total_vram_gb() (10 nodes)", 500_000, || {
         let _ = cluster2.total_vram_gb();
+    });
+
+    let cluster3 = Arc::new(ClusterState::new());
+    for i in 0..8 {
+        cluster3.register(NodeResources::new(
+            format!("node-{}", i),
+            24.0 + (i as f32 * 4.0),
+            64.0,
+            "8.9",
+            None,
+        ));
+    }
+    let load_balancer = LoadBalancer::with_runtime_profile(Arc::clone(&cluster3), &runtime_profile);
+    let backend = ExecutionBackend::from_runtime_profile(&runtime_profile);
+    let input: Vec<f32> = (0..8192).map(|index| index as f32 * 0.5).collect();
+    bench("autotune: detect_runtime_profile_fast", 20_000, || {
+        let _ = detect_runtime_profile("bench-local");
+    });
+    bench("autotune: detect_runtime_profile_full", 5_000, || {
+        let _ = detect_runtime_profile_with_mode("bench-local", ProbeMode::Full);
+    });
+    bench("autotune: load_balance 80 layers", 100_000, || {
+        let _ = load_balancer.distribute_layers_with_runtime_profile(&layers_80, &runtime_profile);
+    });
+    bench("autotune: accelerator scale_f32_slice", 20_000, || {
+        let _ = backend.scale_f32_slice(&input, 1.5);
     });
 
     println!("{}", "-".repeat(82));

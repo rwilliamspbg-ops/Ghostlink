@@ -15,7 +15,7 @@ pub fn sample_layers(count: usize, vram_gb: f32) -> Vec<LayerSpec> {
         .map(|index| LayerSpec {
             index,
             vram_gb,
-            num_weights: (index as u32 + 1) * 1_000_000,  // Realistic: 1M-50M weights per layer
+            num_weights: (index as u32 + 1) * 1_000_000,
         })
         .collect()
 }
@@ -27,9 +27,9 @@ pub fn sample_nodes(count: usize, base_vram_gb: f32) -> Vec<NodeResources> {
         .map(|i| {
             NodeResources::new(
                 format!("node-{}", i),
-                base_vram_gb + (i as f32 * 12.0),  // 12GB increments: 24, 36, 48...
+                base_vram_gb + (i as f32 * 12.0),
                 64.0,
-                format!("8.{}", 6 + (i % 4)),      // Vary compute capability: 8.6-8.9
+                format!("8.{}", 6 + (i % 4)),
                 if i % 2 == 0 {
                     Some(format!("RTX{}", 4000 + (i * 100)))
                 } else {
@@ -59,7 +59,7 @@ pub fn assert_cluster_state(cluster: &ClusterState, expected_nodes: usize, expec
         expected_nodes,
         nodes.len()
     );
-    
+
     let total = cluster.total_vram_gb();
     assert!(
         (total - expected_vram).abs() < 0.1,
@@ -71,18 +71,18 @@ pub fn assert_cluster_state(cluster: &ClusterState, expected_nodes: usize, expec
 
 /// Simulate packet corruption for protocol testing
 /// Flips random bits in a frame to test corruption detection
-pub fn corrupt_frame_bits(frame: &mut Vec<u8>, bit_count: usize) {
+pub fn corrupt_frame_bits(frame: &mut [u8], bit_count: usize) {
     use std::collections::HashSet;
-    
+
     let total_bits = frame.len() * 8;
     let mut corrupted = HashSet::new();
-    
+
     for idx in 0..bit_count.min(total_bits) {
-        let bit_index = (idx * 7) % total_bits;  // Deterministic but spread out
-        
+        let bit_index = (idx * 7) % total_bits;
+
         let byte_idx = bit_index / 8;
         let bit_idx = bit_index % 8;
-        
+
         if !corrupted.contains(&bit_index) {
             frame[byte_idx] ^= 1 << bit_idx;
             corrupted.insert(bit_index);
@@ -119,13 +119,11 @@ mod tests {
     fn sample_nodes_are_heterogeneous() {
         let nodes = sample_nodes(3, 24.0);
         assert_eq!(nodes.len(), 3);
-        
-        // Verify heterogeneous VRAM (12GB increments)
+
         assert_eq!(nodes[0].vram_gb, 24.0);
         assert_eq!(nodes[1].vram_gb, 36.0);
         assert_eq!(nodes[2].vram_gb, 48.0);
-        
-        // Verify GPU names alternate
+
         assert!(nodes[0].gpu_name.is_some());
         assert!(nodes[1].gpu_name.is_none());
         assert!(nodes[2].gpu_name.is_some());
@@ -134,18 +132,18 @@ mod tests {
     #[test]
     fn setup_cluster_registers_all_nodes() {
         let cluster = setup_cluster(5, 24.0);
-        assert_cluster_state(&cluster, 5, 24.0 + 36.0 + 48.0 + 60.0 + 72.0);  // 240 GB total
+        assert_cluster_state(&cluster, 5, 24.0 + 36.0 + 48.0 + 60.0 + 72.0);
     }
 
     #[test]
     fn corrupt_frame_bits_modifies_data() {
         let mut frame = vec![0u8; 10];
-        frame[5] = 0xFF;  // All bits set
-        
-        corrupt_frame_bits(&mut frame, 3);  // Flip 3 bits
-        
-        // At least one bit should have changed
-        assert!((frame[5] as u32) < 255);
+        frame[5] = 0xFF;
+        let original = frame.clone();
+
+        corrupt_frame_bits(&mut frame, 3);
+
+        assert_ne!(frame, original);
     }
 
     #[test]

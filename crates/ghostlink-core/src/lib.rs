@@ -27,9 +27,11 @@
 //! └── ghost-link/          # CLI demo entrypoint
 //! ```
 
+pub mod accelerator;
 pub mod cluster;
 pub mod dashboard;
 pub mod health;
+pub mod host;
 pub mod load_balance;
 pub mod planning;
 pub mod protocol;
@@ -37,10 +39,16 @@ pub mod ring;
 pub mod xdp;
 
 // Re-export common types for convenience
+pub use accelerator::ExecutionBackend;
 pub use cluster::{ClusterState, NodeMetrics, NodeStatus};
+pub use host::{
+    detect_local_node_resources, detect_runtime_profile, detect_runtime_profile_full,
+    detect_runtime_profile_with_mode, AccelerationMode, ProbeMode, RuntimeProfile,
+};
 pub use planning::{
-    assign_layers_sequentially, select_quantization_mode, LayerAssignment, LayerSpec,
-    PlacementPlan, QuantizationMode,
+    assign_layers_sequentially, assign_layers_with_fault_tolerance_and_runtime,
+    assign_layers_with_runtime_profile, chunk_assignments_for_workers, select_quantization_mode,
+    LayerAssignment, LayerSpec, PlacementPlan, PlanningTuning, QuantizationMode,
 };
 pub use protocol::NodeResources;
 pub use ring::{RingConfig, SpscRingBuffer};
