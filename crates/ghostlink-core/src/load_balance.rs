@@ -5,8 +5,8 @@
 //! - Dynamic load shedding
 //! - Deadlock prevention with timeout
 
-use crate::cluster::{ClusterState, NodeMetrics};
 use crate::accelerator::ExecutionBackend;
+use crate::cluster::{ClusterState, NodeMetrics};
 use crate::host::{AccelerationMode, RuntimeProfile};
 use std::sync::Arc;
 
@@ -380,7 +380,8 @@ fn chunk_distribution_plan(
                 while start < slice.layer_range.1 {
                     let end = (start + slice_limit).min(slice.layer_range.1);
                     let layers_in_chunk = end - start;
-                    let mut chunk = TensorSlice::new((start, end), avg_size * layers_in_chunk as f32);
+                    let mut chunk =
+                        TensorSlice::new((start, end), avg_size * layers_in_chunk as f32);
                     chunk.num_weights = slice.num_weights;
                     chunked.push(chunk);
                     start = end;
@@ -572,10 +573,7 @@ mod tests {
     #[test]
     fn runtime_profile_chunks_large_distribution_slices() {
         let plan = LoadDistributionPlan::new(
-            vec![(
-                "node-a".into(),
-                vec![TensorSlice::new((0, 10), 10.0)],
-            )],
+            vec![("node-a".into(), vec![TensorSlice::new((0, 10), 10.0)])],
             10,
         );
 

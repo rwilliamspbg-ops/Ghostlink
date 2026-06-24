@@ -6,7 +6,10 @@ use std::time::Instant;
 use ghostlink_core::{
     accelerator::ExecutionBackend,
     cluster::ClusterState,
-    host::{detect_runtime_profile, detect_runtime_profile_with_mode, AccelerationMode, ProbeMode, RuntimeProfile},
+    host::{
+        detect_runtime_profile, detect_runtime_profile_with_mode, AccelerationMode, ProbeMode,
+        RuntimeProfile,
+    },
     load_balance::LoadBalancer,
     planning::{assign_layers_sequentially, LayerSpec},
     protocol::{DiscoveryFrame, FrameKind, NodeResources},
@@ -154,13 +157,17 @@ fn main() {
         detection_source: String::from("bench"),
         probe_mode: ghostlink_core::ProbeMode::Fast,
     };
-    bench("planning: 80 layers across 8 nodes (autotuned)", 100_000, || {
-        let _ = ghostlink_core::planning::assign_layers_with_runtime_profile(
-            &nodes_8,
-            &layers_80,
-            &runtime_profile,
-        );
-    });
+    bench(
+        "planning: 80 layers across 8 nodes (autotuned)",
+        100_000,
+        || {
+            let _ = ghostlink_core::planning::assign_layers_with_runtime_profile(
+                &nodes_8,
+                &layers_80,
+                &runtime_profile,
+            );
+        },
+    );
 
     // ─── Cluster State ───────────────────────────────────────────────────────
     let cluster = ClusterState::new();

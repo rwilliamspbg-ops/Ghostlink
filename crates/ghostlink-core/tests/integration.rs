@@ -58,7 +58,9 @@ fn test_layer_assignment_with_failure_scenarios() {
 
 #[test]
 fn test_ring_buffer_stress() {
-    let ring = Arc::new(SpscRingBuffer::<i32>::new(ghostlink_core::RingConfig::default()));
+    let ring = Arc::new(SpscRingBuffer::<i32>::new(
+        ghostlink_core::RingConfig::default(),
+    ));
     let producer_ring = Arc::clone(&ring);
     let consumer_ring = Arc::clone(&ring);
 
@@ -267,7 +269,10 @@ fn protocol_detects_single_bit_corruption() {
 
         let result = DiscoveryFrame::decode(&corrupted);
         assert!(result.is_err(), "Single-bit corruption should fail CRC");
-        assert!(result.unwrap_err().contains("CRC"), "Error should mention CRC");
+        assert!(
+            result.unwrap_err().contains("CRC"),
+            "Error should mention CRC"
+        );
     }
 }
 
@@ -318,9 +323,18 @@ fn protocol_recovers_after_corruption() {
     let enc1 = frame1.encode();
     let enc2 = frame2.encode();
 
-    assert!(DiscoveryFrame::decode(&enc1).is_ok(), "First frame should decode");
-    assert!(DiscoveryFrame::decode(&bad).is_err(), "Bad frame should fail");
-    assert!(DiscoveryFrame::decode(&enc2).is_ok(), "Recovery frame should decode");
+    assert!(
+        DiscoveryFrame::decode(&enc1).is_ok(),
+        "First frame should decode"
+    );
+    assert!(
+        DiscoveryFrame::decode(&bad).is_err(),
+        "Bad frame should fail"
+    );
+    assert!(
+        DiscoveryFrame::decode(&enc2).is_ok(),
+        "Recovery frame should decode"
+    );
 }
 
 #[test]
@@ -366,14 +380,20 @@ fn ring_buffer_handles_producer_outpacing_consumer() {
     producer.join().unwrap();
     let values = consumer.join().unwrap();
 
-    assert_eq!(values.len(), 1_000, "All 1000 elements should be transferred");
+    assert_eq!(
+        values.len(),
+        1_000,
+        "All 1000 elements should be transferred"
+    );
     assert_eq!(values[0], 0, "First element preserved");
     assert_eq!(values[999], 999, "Last element preserved");
 }
 
 #[test]
 fn ring_buffer_no_loss_under_rate_mismatch() {
-    let ring = Arc::new(SpscRingBuffer::<u64>::new(ghostlink_core::RingConfig::default()));
+    let ring = Arc::new(SpscRingBuffer::<u64>::new(
+        ghostlink_core::RingConfig::default(),
+    ));
     let producer_ring = Arc::clone(&ring);
     let consumer_ring = Arc::clone(&ring);
 

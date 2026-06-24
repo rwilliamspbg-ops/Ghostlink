@@ -111,7 +111,10 @@ impl RuntimeProfile {
             } else {
                 &self.node_resources.compute_capability
             },
-            self.node_resources.gpu_name.as_deref().unwrap_or("Not detected"),
+            self.node_resources
+                .gpu_name
+                .as_deref()
+                .unwrap_or("Not detected"),
             self.acceleration_mode.as_str(),
             if self.xdp_supported {
                 "available"
@@ -523,7 +526,9 @@ fn recommend_worker_count(
         _ => 0,
     };
 
-    reserved_core.min(memory_bound).saturating_add(accelerator_bonus)
+    reserved_core
+        .min(memory_bound)
+        .saturating_add(accelerator_bonus)
 }
 
 fn visible_device_hint() -> Option<String> {

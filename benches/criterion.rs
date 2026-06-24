@@ -4,7 +4,10 @@ use criterion::{criterion_group, criterion_main, BatchSize, BenchmarkId, Criteri
 use ghostlink_core::{
     accelerator::ExecutionBackend,
     cluster::ClusterState,
-    host::{detect_runtime_profile, detect_runtime_profile_with_mode, AccelerationMode, ProbeMode, RuntimeProfile},
+    host::{
+        detect_runtime_profile, detect_runtime_profile_with_mode, AccelerationMode, ProbeMode,
+        RuntimeProfile,
+    },
     load_balance::LoadBalancer,
     planning::{assign_layers_sequentially, assign_layers_with_runtime_profile, LayerSpec},
     protocol::{DiscoveryFrame, FrameKind, NodeResources},

@@ -5,9 +5,9 @@
 //! - Adaptive quantization trigger (select_quantization_mode)
 //! - Load balancing and fault detection integration
 
+use crate::accelerator::ExecutionBackend;
 use crate::cluster::NodeStatus;
 use crate::cluster::{ClusterState, NodeMetrics};
-use crate::accelerator::ExecutionBackend;
 use crate::host::{AccelerationMode, RuntimeProfile};
 use crate::protocol::NodeResources;
 
@@ -324,8 +324,13 @@ pub fn assign_layers_with_fault_tolerance_and_runtime(
 ) -> Result<PlacementPlan, String> {
     let mut plan = assign_layers_with_fault_tolerance(cluster, layers)?;
     let tuning = PlanningTuning::from_runtime_profile(profile, layers.len());
-    plan.assignments = chunk_assignments_for_workers(&plan.assignments, tuning.max_layers_per_assignment);
-    plan.total_layers = plan.assignments.iter().map(|assignment| assignment.num_layers).sum();
+    plan.assignments =
+        chunk_assignments_for_workers(&plan.assignments, tuning.max_layers_per_assignment);
+    plan.total_layers = plan
+        .assignments
+        .iter()
+        .map(|assignment| assignment.num_layers)
+        .sum();
     plan.participating_nodes = plan
         .assignments
         .iter()

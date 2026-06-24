@@ -62,12 +62,24 @@ impl HealthConfig {
         Self {
             check_interval: Duration::from_secs(5),
             timeout,
-            min_successes: if profile.recommended_workers >= 8 { 3 } else { 2 },
+            min_successes: if profile.recommended_workers >= 8 {
+                3
+            } else {
+                2
+            },
             max_failures,
             healthy_latency_us,
             degraded_latency_us,
-            healthy_delivery_ratio: if profile.node_resources.vram_gb > 0.0 { 0.97 } else { 0.95 },
-            degraded_delivery_ratio: if profile.node_resources.vram_gb > 0.0 { 0.88 } else { 0.80 },
+            healthy_delivery_ratio: if profile.node_resources.vram_gb > 0.0 {
+                0.97
+            } else {
+                0.95
+            },
+            degraded_delivery_ratio: if profile.node_resources.vram_gb > 0.0 {
+                0.88
+            } else {
+                0.80
+            },
         }
     }
 }

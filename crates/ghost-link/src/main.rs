@@ -60,7 +60,9 @@ fn print_help() {
     println!("  plan      - Generate layer placement plan across nodes");
     println!("  join [id] - Broadcast discovery frame to join cluster");
     println!("  dashboard - Display ASCII cluster dashboard");
-    println!("  probe [id] [fast|full|--fast|--full] - Detect local workers and acceleration profile");
+    println!(
+        "  probe [id] [fast|full|--fast|--full] - Detect local workers and acceleration profile"
+    );
     println!("  help      - Show this help message");
     println!();
     println!("Examples:");
@@ -219,7 +221,8 @@ fn print_dashboard() -> Result<()> {
         })
         .collect();
     let load_balancer = LoadBalancer::with_runtime_profile(Arc::new(cluster.clone()), &profile);
-    let distribution_plan = load_balancer.distribute_layers_with_runtime_profile(&demo_layers, &profile);
+    let distribution_plan =
+        load_balancer.distribute_layers_with_runtime_profile(&demo_layers, &profile);
 
     // Create and render dashboard
     let dashboard = Dashboard::new(cluster.clone(), 63, 42, nodes_metrics);

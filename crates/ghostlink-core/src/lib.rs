@@ -27,11 +27,11 @@
 //! └── ghost-link/          # CLI demo entrypoint
 //! ```
 
+pub mod accelerator;
 pub mod cluster;
 pub mod dashboard;
 pub mod health;
 pub mod host;
-pub mod accelerator;
 pub mod load_balance;
 pub mod planning;
 pub mod protocol;
@@ -39,8 +39,8 @@ pub mod ring;
 pub mod xdp;
 
 // Re-export common types for convenience
-pub use cluster::{ClusterState, NodeMetrics, NodeStatus};
 pub use accelerator::ExecutionBackend;
+pub use cluster::{ClusterState, NodeMetrics, NodeStatus};
 pub use host::{
     detect_local_node_resources, detect_runtime_profile, detect_runtime_profile_full,
     detect_runtime_profile_with_mode, AccelerationMode, ProbeMode, RuntimeProfile,
