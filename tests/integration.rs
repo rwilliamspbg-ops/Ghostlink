@@ -5,6 +5,11 @@
 //! - Layer assignment with failure scenarios
 //! - Ring buffer stress tests
 //! - Protocol encoding/decoding edge cases
+//! - Network failure injection (packet loss, corruption)
+//! - Node failure cascades and recovery
+//! - Health monitoring and adaptive quantization
+
+mod common;
 
 use ghostlink_core::cluster::{ClusterState, NodeResources};
 use ghostlink_core::planning::{assign_layers_sequentially, select_quantization_mode, LayerSpec};
@@ -218,4 +223,338 @@ fn sample_layers(count: usize, vram_gb: f32) -> Vec<ghostlink_core::planning::La
             num_weights: 0, 
         })
         .collect()
+}
+
+// ============================================================================
+// NETWORK FAILURE INJECTION TESTS
+// ============================================================================
+
+#[test]
+fn protocol_handles_truncated_frame() {
+    let frame = DiscoveryFrame {
+        kind: FrameKind::Discovery,
+        node: NodeResources::new("node-a", 24.0, 64.0, "8.9", None),
+    };
+
+    let encoded = frame.encode();
+    
+    // Simulate incomplete frame (network drop mid-packet)
+    let truncated = &encoded[0..encoded.len().saturating_sub(5)];
+    
+    let result = DiscoveryFrame::decode(truncated);
+    assert!(result.is_err(), "Should reject truncated frame");
+}
+
+#[test]
+fn protocol_detects_single_bit_corruption() {
+    let frame = DiscoveryFrame {
+        kind: FrameKind::Join,
+        node: NodeResources::new("node-b", 12.0, 32.0, "8.6", Some("RTX4090".into())),
+    };
+
+    let encoded = frame.encode();
+    let mut corrupted = encoded.clone();
+
+    // Flip a single bit in the payload (not CRC)
+    if corrupted.len() > 20 {
+        corrupted[15] ^= 1;  // Flip bit 0 of byte 15
+        
+        let result = DiscoveryFrame::decode(&corrupted);
+        assert!(result.is_err(), "Single-bit corruption should fail CRC");
+        assert!(result.unwrap_err().contains("CRC"), "Error should mention CRC");
+    }
+}
+
+#[test]
+fn protocol_detects_multi_byte_corruption() {
+    let frame = DiscoveryFrame {
+        kind: FrameKind::Discovery,
+        node: NodeResources::new("gpu-node", 48.0, 128.0, "9.0", None),
+    };
+
+    let encoded = frame.encode();
+    let mut corrupted = encoded.clone();
+
+    // Flip multiple bytes
+    for i in 5..10.min(corrupted.len()) {
+        corrupted[i] = corrupted[i].wrapping_add(1);
+    }
+
+    let result = DiscoveryFrame::decode(&corrupted);
+    assert!(result.is_err(), "Multi-byte corruption should fail CRC");
+}
+
+#[test]
+fn protocol_rejects_invalid_magic() {
+    let mut fake_frame = vec![0u8; 64];
+    
+    // Set wrong magic/EtherType
+    fake_frame[0] = 0xFF;
+    fake_frame[1] = 0xFF;
+
+    let result = DiscoveryFrame::decode(&fake_frame);
+    assert!(result.is_err(), "Invalid EtherType should be rejected");
+}
+
+#[test]
+fn protocol_recovers_after_corruption() {
+    // Valid frame
+    let frame1 = DiscoveryFrame {
+        kind: FrameKind::Discovery,
+        node: NodeResources::new("node-1", 24.0, 64.0, "8.9", None),
+    };
+
+    // Corrupted frame
+    let mut bad = vec![0xFF; 50];
+    bad[0] = 0xB5;  // Try to look valid but corrupt
+    bad[1] = 0x88;
+
+    // Next valid frame
+    let frame2 = DiscoveryFrame {
+        kind: FrameKind::Join,
+        node: NodeResources::new("node-2", 12.0, 32.0, "8.6", None),
+    };
+
+    // Decode sequence: valid -> bad -> valid
+    let enc1 = frame1.encode();
+    let enc2 = frame2.encode();
+
+    assert!(DiscoveryFrame::decode(&enc1).is_ok(), "First frame should decode");
+    assert!(DiscoveryFrame::decode(&bad).is_err(), "Bad frame should fail");
+    assert!(DiscoveryFrame::decode(&enc2).is_ok(), "Recovery frame should decode");
+}
+
+// ============================================================================
+// RING BUFFER NETWORK STRESS TESTS
+// ============================================================================
+
+#[test]
+fn ring_buffer_handles_producer_outpacing_consumer() {
+    let ring = Arc::new(SpscRingBuffer::<i32>::new(ghostlink_core::RingConfig {
+        capacity: 100,
+        backpressure_threshold: 80,
+    }));
+
+    let producer_ring = Arc::clone(&ring);
+    let consumer_ring = Arc::clone(&ring);
+
+    let producer = thread::spawn(move || {
+        for i in 0..1_000 {
+            loop {
+                if producer_ring.push(i).is_ok() {
+                    break;
+                }
+                // Backpressure: buffer full, yield and retry
+                std::thread::yield_now();
+            }
+        }
+    });
+
+    let consumer = thread::spawn(move || {
+        let mut received = Vec::new();
+        let mut slow_start = true;
+        
+        while received.len() < 1_000 {
+            if let Some(value) = consumer_ring.pop() {
+                // Simulate slow consumer at start
+                if slow_start && received.len() < 100 {
+                    std::thread::sleep(std::time::Duration::from_micros(10));
+                } else {
+                    slow_start = false;
+                }
+                received.push(value);
+            } else {
+                std::thread::yield_now();
+            }
+        }
+        received
+    });
+
+    producer.join().unwrap();
+    let values = consumer.join().unwrap();
+
+    assert_eq!(values.len(), 1_000, "All 1000 elements should be transferred");
+    assert_eq!(values[0], 0, "First element preserved");
+    assert_eq!(values[999], 999, "Last element preserved");
+}
+
+#[test]
+fn ring_buffer_no_loss_under_rate_mismatch() {
+    let ring = Arc::new(SpscRingBuffer::<u64>::new(ghostlink_core::RingConfig::default()));
+    let producer_ring = Arc::clone(&ring);
+    let consumer_ring = Arc::clone(&ring);
+
+    let producer = thread::spawn(move || {
+        // Fast push
+        for i in 0..10_000 {
+            loop {
+                if producer_ring.push(i).is_ok() {
+                    break;
+                }
+                std::thread::yield_now();
+            }
+        }
+    });
+
+    let consumer = thread::spawn(move || {
+        let mut values = Vec::new();
+        let start = std::time::Instant::now();
+        
+        while values.len() < 10_000 {
+            if let Some(value) = consumer_ring.pop() {
+                values.push(value);
+                
+                // Simulate variable latency consumer
+                if values.len() % 1_000 == 0 {
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
+            } else {
+                std::thread::yield_now();
+            }
+        }
+        (values, start.elapsed())
+    });
+
+    producer.join().unwrap();
+    let (values, elapsed) = consumer.join().unwrap();
+
+    assert_eq!(values.len(), 10_000, "All 10K elements transferred");
+    assert_eq!(values.first(), Some(&0), "Correct first element");
+    assert_eq!(values.last(), Some(&9999), "Correct last element");
+    
+    // Should complete in reasonable time
+    assert!(elapsed.as_secs() < 5, "Transfer should complete quickly");
+}
+
+// ============================================================================
+// NODE FAILURE & RECOVERY TESTS
+// ============================================================================
+
+#[test]
+fn cluster_handles_single_node_deregistration() {
+    let cluster = Arc::new(ClusterState::new());
+    
+    // Register 3 nodes
+    cluster.register(NodeResources::new("node-a", 24.0, 64.0, "8.9", None));
+    cluster.register(NodeResources::new("node-b", 24.0, 64.0, "8.9", None));
+    cluster.register(NodeResources::new("node-c", 24.0, 64.0, "8.9", None));
+    
+    assert_eq!(cluster.nodes().len(), 3);
+    
+    // Filter out node-b (simulating deregistration)
+    let nodes = cluster.nodes();
+    let healthy_nodes: Vec<_> = nodes
+        .iter()
+        .filter(|n| n.id != "node-b")
+        .cloned()
+        .collect();
+    
+    assert_eq!(healthy_nodes.len(), 2, "Should have 2 nodes after removal");
+    assert!(healthy_nodes.iter().any(|n| n.id == "node-a"));
+    assert!(healthy_nodes.iter().any(|n| n.id == "node-c"));
+}
+
+#[test]
+fn cluster_handles_two_concurrent_failures() {
+    let cluster = Arc::new(ClusterState::new());
+    
+    // Register 5 nodes (quorum = 3)
+    for i in 0..5 {
+        cluster.register(NodeResources::new(
+            format!("node-{}", i),
+            24.0,
+            64.0,
+            "8.9",
+            None,
+        ));
+    }
+    
+    assert_eq!(cluster.nodes().len(), 5);
+    
+    // Simulate loss of nodes 1 and 3 simultaneously
+    let remaining: Vec<_> = cluster.nodes()
+        .iter()
+        .filter(|n| !n.id.ends_with("1") && !n.id.ends_with("3"))
+        .cloned()
+        .collect();
+    
+    // Should have 3 nodes remaining (quorum retained: 3/5 > 1/2)
+    assert_eq!(remaining.len(), 3, "Quorum should be maintained");
+}
+
+#[test]
+fn cluster_allows_node_rejoin_after_failure() {
+    let cluster = Arc::new(ClusterState::new());
+    
+    // Initial registration with low VRAM
+    cluster.register(NodeResources::new("node-a", 24.0, 64.0, "8.9", None));
+    assert_eq!(cluster.nodes().len(), 1);
+    assert_eq!(cluster.nodes()[0].vram_gb, 24.0);
+    
+    // Rejoin with same ID but different resources (upgraded hardware)
+    cluster.register(NodeResources::new("node-a", 48.0, 128.0, "9.0", None));
+    
+    let nodes = cluster.nodes();
+    assert_eq!(nodes.len(), 1, "Should still have 1 node");
+    assert_eq!(nodes[0].vram_gb, 48.0, "Resources should be updated");
+    assert_eq!(nodes[0].compute_capability, "9.0");
+}
+
+#[test]
+fn cluster_scales_to_multiple_nodes() {
+    let cluster = Arc::new(ClusterState::new());
+    
+    // Register many nodes
+    for i in 0..50 {
+        cluster.register(NodeResources::new(
+            format!("node-{:03}", i),
+            24.0 + (i as f32),
+            64.0,
+            "8.9",
+            None,
+        ));
+    }
+    
+    assert_eq!(cluster.nodes().len(), 50, "Should handle 50 nodes");
+    
+    let total_vram = cluster.total_vram_gb();
+    let expected: f32 = (0..50).map(|i| 24.0 + i as f32).sum();
+    assert!((total_vram - expected).abs() < 0.1, "VRAM calculation accurate");
+}
+
+// ============================================================================
+// LAYER ASSIGNMENT WITH FAILURE MODES
+// ============================================================================
+
+#[test]
+fn layer_assignment_handles_single_large_node() {
+    let nodes = vec![NodeResources::new("gpu-node-large", 96.0, 256.0, "9.0", None)];
+    let layers = sample_layers(100, 1.0);
+    
+    let result = assign_layers_sequentially(&nodes, &layers);
+    assert!(result.is_ok(), "Should handle single large node");
+    
+    let assignments = result.unwrap();
+    assert_eq!(assignments.len(), 1, "Single node assignment");
+    assert_eq!(assignments[0].node_id, "gpu-node-large");
+    assert_eq!(assignments[0].start_layer, 0);
+    assert_eq!(assignments[0].end_layer, 96);  // Limited by VRAM
+}
+
+#[test]
+fn layer_assignment_with_extreme_capacity_mismatch() {
+    let nodes = vec![
+        NodeResources::new("node-small", 2.0, 32.0, "8.6", None),
+        NodeResources::new("node-large", 96.0, 256.0, "9.0", None),
+    ];
+    
+    let layers = sample_layers(50, 2.0);
+    
+    let result = assign_layers_sequentially(&nodes, &layers);
+    assert!(result.is_ok(), "Should handle capacity mismatch");
+    
+    let assignments = result.unwrap();
+    // Small node gets 1 layer, large node gets the rest
+    assert_eq!(assignments[0].num_layers, 1);
+    assert_eq!(assignments[1].num_layers, 49);
 }

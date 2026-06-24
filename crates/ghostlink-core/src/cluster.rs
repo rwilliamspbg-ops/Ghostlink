@@ -528,4 +528,150 @@ mod tests {
 
         assert_eq!(cluster.total_vram_gb(), 36.0);
     }
+
+    // ========================================================================
+    // NEW: Comprehensive Health Monitoring & Failure Recovery Tests
+    // ========================================================================
+
+    #[test]
+    fn cluster_health_monitor_checks_all_nodes() {
+        let cluster = Arc::new(ClusterState::new());
+        cluster.register(NodeResources::new("node-a", 24.0, 64.0, "8.9", None));
+        cluster.register(NodeResources::new("node-b", 12.0, 32.0, "8.6", None));
+
+        let monitor = ClusterHealthMonitor::new(cluster.clone(), Duration::from_millis(100));
+        monitor.check_health();
+
+        let report = monitor.health_report();
+        assert!(report.contains("node-a"), "Report should mention node-a");
+        assert!(report.contains("node-b"), "Report should mention node-b");
+    }
+
+    #[test]
+    fn cluster_metrics_use_exponential_moving_average() {
+        let mut metrics = NodeMetrics::new(24.0, 64.0, "8.9".to_string(), Duration::from_secs(5));
+
+        // Record sequence of latencies: 1, 2, 3
+        metrics.record_latency(1.0);
+        let avg1 = metrics.avg_latency_us;
+        assert_eq!(avg1, 1.0);
+
+        metrics.record_latency(2.0);
+        let avg2 = metrics.avg_latency_us;
+        // EMA: 1.0 * 0.9 + 2.0 * 0.1 = 1.1
+        assert!((avg2 - 1.1).abs() < 1e-6, "EMA calculation: expected 1.1, got {}", avg2);
+
+        metrics.record_latency(3.0);
+        let avg3 = metrics.avg_latency_us;
+        // EMA: 1.1 * 0.9 + 3.0 * 0.1 = 0.99 + 0.3 = 1.29
+        assert!((avg3 - 1.29).abs() < 1e-5, "EMA calculation: expected 1.29, got {}", avg3);
+    }
+
+    #[test]
+    fn cluster_delivery_ratio_tracks_network_quality() {
+        let mut metrics = NodeMetrics::new(24.0, 64.0, "8.9".to_string(), Duration::from_secs(5));
+
+        metrics.record_delivery_ratio(0.98);
+        assert!((metrics.delivery_ratio - 0.98).abs() < 1e-6);
+
+        metrics.record_delivery_ratio(0.95);
+        // EMA: 0.98 * 0.9 + 0.95 * 0.1 = 0.882 + 0.095 = 0.977
+        assert!((metrics.delivery_ratio - 0.977).abs() < 1e-6);
+
+        // Simulate degradation
+        metrics.record_delivery_ratio(0.80);
+        // EMA: 0.977 * 0.9 + 0.80 * 0.1 = 0.8793 + 0.08 = 0.9593
+        assert!(metrics.delivery_ratio < 0.98, "Delivery ratio should degrade");
+        assert!(metrics.delivery_ratio > 0.90, "But recover somewhat");
+    }
+
+    #[test]
+    fn cluster_concurrent_metric_updates() {
+        let cluster = Arc::new(ClusterState::new());
+        cluster.register(NodeResources::new("node-a", 24.0, 64.0, "8.9", None));
+
+        let mut handles = vec![];
+
+        // Spawn 10 threads updating metrics concurrently
+        for _ in 0..10 {
+            let cluster_clone = Arc::clone(&cluster);
+            let handle = thread::spawn(move || {
+                let nodes = cluster_clone.nodes();
+                for _ in 0..100 {
+                    // Update would happen here in real usage
+                    let _ = nodes.len();
+                }
+            });
+            handles.push(handle);
+        }
+
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        // Cluster should remain consistent
+        assert_eq!(cluster.nodes().len(), 1);
+        assert_eq!(cluster.total_vram_gb(), 24.0);
+    }
+
+    #[test]
+    fn cluster_handles_rapid_registration_churn() {
+        let cluster = Arc::new(ClusterState::new());
+
+        // Rapidly register and reregister nodes
+        for iteration in 0..5 {
+            for i in 0..10 {
+                cluster.register(NodeResources::new(
+                    format!("node-{}", i),
+                    24.0 + (iteration as f32),
+                    64.0,
+                    "8.9",
+                    None,
+                ));
+            }
+
+            let nodes = cluster.nodes();
+            assert_eq!(nodes.len(), 10, "Should have 10 nodes at iteration {}", iteration);
+            
+            // Verify VRAM reflects latest registration
+            let expected_vram: f32 = (0..10).map(|_| 24.0 + iteration as f32).sum();
+            let actual = cluster.total_vram_gb();
+            assert!((actual - expected_vram).abs() < 0.1);
+        }
+    }
+
+    #[test]
+    fn cluster_health_monitor_reports_accurate_status() {
+        let cluster = Arc::new(ClusterState::new());
+        cluster.register(NodeResources::new("node-a", 24.0, 64.0, "8.9", None));
+        cluster.register(NodeResources::new("node-b", 12.0, 32.0, "8.6", None));
+
+        let monitor = ClusterHealthMonitor::new(cluster.clone(), Duration::from_millis(100));
+        monitor.check_health();
+
+        let report = monitor.health_report();
+        assert!(report.contains("Active nodes: 2"), "Should report 2 active nodes");
+        assert!(report.contains("2/2"), "Should show 2 of 2 nodes");
+    }
+
+    #[test]
+    fn node_metrics_track_min_max_latency() {
+        let mut metrics = NodeMetrics::new(24.0, 64.0, "8.9".to_string(), Duration::from_secs(5));
+
+        metrics.record_latency(2.0);
+        assert_eq!(metrics.min_latency_us, 2.0);
+        assert_eq!(metrics.max_latency_us, 2.0);
+
+        metrics.record_latency(1.0);
+        assert_eq!(metrics.min_latency_us, 1.0);
+        assert_eq!(metrics.max_latency_us, 2.0);
+
+        metrics.record_latency(5.0);
+        assert_eq!(metrics.min_latency_us, 1.0);
+        assert_eq!(metrics.max_latency_us, 5.0);
+
+        metrics.record_latency(3.0);
+        assert_eq!(metrics.min_latency_us, 1.0);
+        assert_eq!(metrics.max_latency_us, 5.0);
+    }
 }

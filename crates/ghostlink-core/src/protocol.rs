@@ -384,4 +384,83 @@ mod tests {
             Some("NVIDIA GeForce RTX 4090".to_string())
         );
     }
+
+    // ====================================================================
+    // PROPERTY-BASED TESTS (proptest)
+    // ====================================================================
+    
+    #[cfg(test)]
+    mod proptest_protocol {
+        use proptest::prelude::*;
+        use super::super::*;
+
+        proptest! {
+            /// Property: Any valid discovery frame should round-trip encode/decode
+            #[test]
+            fn prop_discovery_frame_round_trip(
+                node_id in "[a-z0-9]{1,12}",
+                vram in 1.0f32..512.0,
+                ram in 8.0f32..1024.0,
+            ) {
+                let frame = DiscoveryFrame {
+                    kind: FrameKind::Discovery,
+                    node: NodeResources::new(&format!("node-{}", node_id), vram, ram, "8.9", None),
+                };
+                
+                let encoded = frame.encode();
+                let decoded = DiscoveryFrame::decode(&encoded).expect("round-trip failed");
+                
+                assert_eq!(decoded.node.id, frame.node.id);
+                assert!((decoded.node.vram_gb - frame.node.vram_gb).abs() < 0.01);
+                assert!((decoded.node.ram_gb - frame.node.ram_gb).abs() < 0.01);
+            }
+
+            /// Property: CRC should detect corruption with high probability
+            #[test]
+            fn prop_crc_detects_any_payload_corruption(
+                seed in 0u8..255,
+                corruption_pos in 0usize..256,
+            ) {
+                let frame = DiscoveryFrame {
+                    kind: FrameKind::Join,
+                    node: NodeResources::new("node-test", 24.0, 64.0, "8.9", None),
+                };
+                
+                let mut encoded = frame.encode();
+                if corruption_pos < encoded.len() && corruption_pos < 200 {
+                    // Corrupt payload (not header/CRC area)
+                    if corruption_pos > 10 && corruption_pos < encoded.len().saturating_sub(4) {
+                        encoded[corruption_pos] = encoded[corruption_pos].wrapping_add(seed.wrapping_add(1));
+                        
+                        // Should fail CRC check
+                        let result = DiscoveryFrame::decode(&encoded);
+                        assert!(result.is_err(), "Corruption at byte {} should be detected", corruption_pos);
+                    }
+                }
+            }
+
+            /// Property: Frame encoding is deterministic
+            #[test]
+            fn prop_frame_encoding_is_deterministic(
+                node_id in "[a-z0-9]{1,8}",
+                vram in 1.0f32..100.0,
+            ) {
+                let frame1 = DiscoveryFrame {
+                    kind: FrameKind::Discovery,
+                    node: NodeResources::new(&format!("node-{}", node_id), vram, 64.0, "8.9", None),
+                };
+
+                let frame2 = DiscoveryFrame {
+                    kind: FrameKind::Discovery,
+                    node: NodeResources::new(&format!("node-{}", node_id), vram, 64.0, "8.9", None),
+                };
+
+                let enc1 = frame1.encode();
+                let enc2 = frame2.encode();
+
+                // Same input should produce same output
+                assert_eq!(enc1, enc2, "Encoding should be deterministic");
+            }
+        }
+    }
 }
