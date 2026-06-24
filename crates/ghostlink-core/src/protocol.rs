@@ -388,11 +388,11 @@ mod tests {
     // ====================================================================
     // PROPERTY-BASED TESTS (proptest)
     // ====================================================================
-    
+
     #[cfg(test)]
     mod proptest_protocol {
-        use proptest::prelude::*;
         use super::super::*;
+        use proptest::prelude::*;
 
         proptest! {
             /// Property: Any valid discovery frame should round-trip encode/decode
@@ -404,15 +404,15 @@ mod tests {
             ) {
                 let frame = DiscoveryFrame {
                     kind: FrameKind::Discovery,
-                    node: NodeResources::new(&format!("node-{}", node_id), vram, ram, "8.9", None),
+                    node: NodeResources::new(format!("node-{}", node_id), vram, ram, "8.9", None),
                 };
-                
+
                 let encoded = frame.encode();
                 let decoded = DiscoveryFrame::decode(&encoded).expect("round-trip failed");
-                
+
                 assert_eq!(decoded.node.id, frame.node.id);
                 assert!((decoded.node.vram_gb - frame.node.vram_gb).abs() < 0.01);
-                assert!((decoded.node.ram_gb - frame.node.ram_gb).abs() < 0.01);
+                assert!((decoded.node.system_memory_gb - frame.node.system_memory_gb).abs() < 0.01);
             }
 
             /// Property: CRC should detect corruption with high probability
@@ -425,13 +425,13 @@ mod tests {
                     kind: FrameKind::Join,
                     node: NodeResources::new("node-test", 24.0, 64.0, "8.9", None),
                 };
-                
+
                 let mut encoded = frame.encode();
                 if corruption_pos < encoded.len() && corruption_pos < 200 {
                     // Corrupt payload (not header/CRC area)
                     if corruption_pos > 10 && corruption_pos < encoded.len().saturating_sub(4) {
                         encoded[corruption_pos] = encoded[corruption_pos].wrapping_add(seed.wrapping_add(1));
-                        
+
                         // Should fail CRC check
                         let result = DiscoveryFrame::decode(&encoded);
                         assert!(result.is_err(), "Corruption at byte {} should be detected", corruption_pos);
@@ -447,12 +447,12 @@ mod tests {
             ) {
                 let frame1 = DiscoveryFrame {
                     kind: FrameKind::Discovery,
-                    node: NodeResources::new(&format!("node-{}", node_id), vram, 64.0, "8.9", None),
+                    node: NodeResources::new(format!("node-{}", node_id), vram, 64.0, "8.9", None),
                 };
 
                 let frame2 = DiscoveryFrame {
                     kind: FrameKind::Discovery,
-                    node: NodeResources::new(&format!("node-{}", node_id), vram, 64.0, "8.9", None),
+                    node: NodeResources::new(format!("node-{}", node_id), vram, 64.0, "8.9", None),
                 };
 
                 let enc1 = frame1.encode();

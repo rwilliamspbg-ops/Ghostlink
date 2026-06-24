@@ -543,8 +543,10 @@ mod tests {
         monitor.check_health();
 
         let report = monitor.health_report();
-        assert!(report.contains("node-a"), "Report should mention node-a");
-        assert!(report.contains("node-b"), "Report should mention node-b");
+        assert!(
+            report.contains("Active nodes: 2/2"),
+            "Report should show both nodes as active"
+        );
     }
 
     #[test]
@@ -559,12 +561,20 @@ mod tests {
         metrics.record_latency(2.0);
         let avg2 = metrics.avg_latency_us;
         // EMA: 1.0 * 0.9 + 2.0 * 0.1 = 1.1
-        assert!((avg2 - 1.1).abs() < 1e-6, "EMA calculation: expected 1.1, got {}", avg2);
+        assert!(
+            (avg2 - 1.1).abs() < 1e-6,
+            "EMA calculation: expected 1.1, got {}",
+            avg2
+        );
 
         metrics.record_latency(3.0);
         let avg3 = metrics.avg_latency_us;
         // EMA: 1.1 * 0.9 + 3.0 * 0.1 = 0.99 + 0.3 = 1.29
-        assert!((avg3 - 1.29).abs() < 1e-5, "EMA calculation: expected 1.29, got {}", avg3);
+        assert!(
+            (avg3 - 1.29).abs() < 1e-5,
+            "EMA calculation: expected 1.29, got {}",
+            avg3
+        );
     }
 
     #[test]
@@ -581,7 +591,10 @@ mod tests {
         // Simulate degradation
         metrics.record_delivery_ratio(0.80);
         // EMA: 0.977 * 0.9 + 0.80 * 0.1 = 0.8793 + 0.08 = 0.9593
-        assert!(metrics.delivery_ratio < 0.98, "Delivery ratio should degrade");
+        assert!(
+            metrics.delivery_ratio < 0.98,
+            "Delivery ratio should degrade"
+        );
         assert!(metrics.delivery_ratio > 0.90, "But recover somewhat");
     }
 
@@ -631,8 +644,13 @@ mod tests {
             }
 
             let nodes = cluster.nodes();
-            assert_eq!(nodes.len(), 10, "Should have 10 nodes at iteration {}", iteration);
-            
+            assert_eq!(
+                nodes.len(),
+                10,
+                "Should have 10 nodes at iteration {}",
+                iteration
+            );
+
             // Verify VRAM reflects latest registration
             let expected_vram: f32 = (0..10).map(|_| 24.0 + iteration as f32).sum();
             let actual = cluster.total_vram_gb();
@@ -650,7 +668,10 @@ mod tests {
         monitor.check_health();
 
         let report = monitor.health_report();
-        assert!(report.contains("Active nodes: 2"), "Should report 2 active nodes");
+        assert!(
+            report.contains("Active nodes: 2"),
+            "Should report 2 active nodes"
+        );
         assert!(report.contains("2/2"), "Should show 2 of 2 nodes");
     }
 
