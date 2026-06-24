@@ -6,6 +6,8 @@
 //! - Deadlock prevention with timeout
 
 use crate::cluster::{ClusterState, NodeMetrics};
+use crate::accelerator::ExecutionBackend;
+use crate::host::{AccelerationMode, RuntimeProfile};
 use std::sync::Arc;
 
 /// Load balancing configuration
@@ -17,6 +19,8 @@ pub struct LoadBalanceConfig {
     pub min_load_threshold: f32,
     /// Maximum layers per node for single assignment
     pub max_layers_per_assignment: usize,
+    /// Maximum concurrent rebalance transfers.
+    pub max_concurrent_rebalances: usize,
 }
 
 impl Default for LoadBalanceConfig {
@@ -25,6 +29,31 @@ impl Default for LoadBalanceConfig {
             lock_timeout_us: 1000, // 1ms
             min_load_threshold: 0.8,
             max_layers_per_assignment: 100,
+            max_concurrent_rebalances: 1,
+        }
+    }
+}
+
+impl LoadBalanceConfig {
+    /// Auto-tune load balancing thresholds from the detected runtime profile.
+    pub fn autotuned(profile: &RuntimeProfile) -> Self {
+        let base_timeout = match profile.acceleration_mode {
+            AccelerationMode::Gpu => 500,
+            AccelerationMode::Avx512 => 750,
+            _ => 1000,
+        };
+        let min_load_threshold = match profile.acceleration_mode {
+            AccelerationMode::Gpu => 1.15,
+            AccelerationMode::Avx512 => 1.05,
+            _ => 0.95,
+        };
+        let max_layers_per_assignment = profile.recommended_workers.max(1) * 2;
+
+        Self {
+            lock_timeout_us: base_timeout,
+            min_load_threshold,
+            max_layers_per_assignment,
+            max_concurrent_rebalances: profile.recommended_workers.clamp(1, 8),
         }
     }
 }
@@ -118,6 +147,11 @@ impl LoadBalancer {
         Self { cluster, config }
     }
 
+    /// Create a load balancer with configuration derived from the local runtime profile.
+    pub fn with_runtime_profile(cluster: Arc<ClusterState>, profile: &RuntimeProfile) -> Self {
+        Self::new(cluster, LoadBalanceConfig::autotuned(profile))
+    }
+
     /// Distribute tensor layers across nodes based on VRAM capacity
     pub fn distribute_layers(
         &self,
@@ -190,6 +224,24 @@ impl LoadBalancer {
         }
     }
 
+    /// Distribute layers and then chunk large node allocations to match worker parallelism.
+    pub fn distribute_layers_with_runtime_profile(
+        &self,
+        layers: &[crate::planning::LayerSpec],
+        profile: &RuntimeProfile,
+    ) -> Result<LoadDistributionPlan, String> {
+        let plan = self.distribute_layers(layers)?;
+        let backend = ExecutionBackend::from_runtime_profile(profile);
+        let vector_bias = (backend.vector_width_bits / 128).max(1);
+        let max_layers_per_slice = self
+            .config
+            .max_layers_per_assignment
+            .min(profile.recommended_workers.max(1).saturating_mul(2))
+            .min(backend.preferred_batch_size / vector_bias)
+            .max(1);
+        Ok(chunk_distribution_plan(plan, max_layers_per_slice))
+    }
+
     /// Rebalance load based on current node metrics
     pub fn rebalance(&self) -> bool {
         let active_nodes = self.cluster.active_nodes();
@@ -245,6 +297,9 @@ impl LoadBalancer {
 
         // For each overloaded node, find a suitable underloaded target
         for overloaded in &overloaded_nodes {
+            if transfers.len() >= self.config.max_concurrent_rebalances {
+                break;
+            }
             if let Some(target) = self.find_best_target(underloaded_nodes.as_slice(), overloaded) {
                 transfers.push((overloaded.name.clone(), target.name.clone()));
             }
@@ -297,6 +352,45 @@ impl LoadBalancer {
 
         Err("deadlock prevention timeout".into())
     }
+}
+
+fn chunk_distribution_plan(
+    plan: LoadDistributionPlan,
+    max_layers_per_slice: usize,
+) -> LoadDistributionPlan {
+    let slice_limit = max_layers_per_slice.max(1);
+    let distributions = plan
+        .distributions
+        .into_iter()
+        .map(|(node_id, slices)| {
+            let mut chunked = Vec::new();
+            for slice in slices {
+                let total_layers = slice.layer_range.1.saturating_sub(slice.layer_range.0);
+                if total_layers <= slice_limit {
+                    chunked.push(slice);
+                    continue;
+                }
+
+                let avg_size = if total_layers == 0 {
+                    0.0
+                } else {
+                    slice.size_gb / total_layers as f32
+                };
+                let mut start = slice.layer_range.0;
+                while start < slice.layer_range.1 {
+                    let end = (start + slice_limit).min(slice.layer_range.1);
+                    let layers_in_chunk = end - start;
+                    let mut chunk = TensorSlice::new((start, end), avg_size * layers_in_chunk as f32);
+                    chunk.num_weights = slice.num_weights;
+                    chunked.push(chunk);
+                    start = end;
+                }
+            }
+            (node_id, chunked)
+        })
+        .collect();
+
+    LoadDistributionPlan::new(distributions, plan.total_layers)
 }
 
 /// Load statistics collector
@@ -364,6 +458,7 @@ impl LoadStats {
 mod tests {
     use super::*;
     use crate::cluster::ClusterState;
+    use crate::host::AccelerationMode;
     use crate::protocol::NodeResources;
     use std::sync::Arc;
 
@@ -453,5 +548,40 @@ mod tests {
 
         let report = stats.report();
         assert!(report.contains("Total layers distributed: 24"));
+    }
+
+    #[test]
+    fn autotuned_config_reflects_runtime_profile() {
+        let profile = RuntimeProfile {
+            node_resources: NodeResources::new("node-a", 24.0, 64.0, "8.9", None),
+            logical_cores: 16,
+            recommended_workers: 6,
+            acceleration_mode: AccelerationMode::Gpu,
+            xdp_supported: true,
+            detection_source: String::from("test"),
+            probe_mode: crate::host::ProbeMode::Fast,
+        };
+
+        let config = LoadBalanceConfig::autotuned(&profile);
+        assert_eq!(config.lock_timeout_us, 500);
+        assert_eq!(config.max_layers_per_assignment, 12);
+        assert_eq!(config.max_concurrent_rebalances, 6);
+        assert!(config.min_load_threshold > 1.0);
+    }
+
+    #[test]
+    fn runtime_profile_chunks_large_distribution_slices() {
+        let plan = LoadDistributionPlan::new(
+            vec![(
+                "node-a".into(),
+                vec![TensorSlice::new((0, 10), 10.0)],
+            )],
+            10,
+        );
+
+        let chunked = chunk_distribution_plan(plan, 4);
+        assert_eq!(chunked.distributions[0].1.len(), 3);
+        assert_eq!(chunked.distributions[0].1[0].layer_range, (0, 4));
+        assert_eq!(chunked.distributions[0].1[2].layer_range, (8, 10));
     }
 }

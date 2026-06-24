@@ -11,6 +11,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::cluster::{ClusterState, NodeStatus};
+use crate::host::{AccelerationMode, RuntimeProfile};
 
 /// Health check configuration
 #[derive(Clone, Copy, Debug)]
@@ -23,6 +24,14 @@ pub struct HealthConfig {
     pub min_successes: usize,
     /// Maximum allowed failures before marking node degraded
     pub max_failures: usize,
+    /// Upper latency bound for a healthy node.
+    pub healthy_latency_us: f32,
+    /// Upper latency bound for a degraded-but-usable node.
+    pub degraded_latency_us: f32,
+    /// Minimum delivery ratio for a healthy node.
+    pub healthy_delivery_ratio: f32,
+    /// Minimum delivery ratio for a degraded node.
+    pub degraded_delivery_ratio: f32,
 }
 
 impl Default for HealthConfig {
@@ -32,6 +41,33 @@ impl Default for HealthConfig {
             timeout: Duration::from_secs(3),
             min_successes: 2,
             max_failures: 3,
+            healthy_latency_us: 10.0,
+            degraded_latency_us: 20.0,
+            healthy_delivery_ratio: 0.95,
+            degraded_delivery_ratio: 0.80,
+        }
+    }
+}
+
+impl HealthConfig {
+    /// Tune health thresholds from the detected runtime profile.
+    pub fn autotuned(profile: &RuntimeProfile) -> Self {
+        let (healthy_latency_us, degraded_latency_us, timeout, max_failures) =
+            match profile.acceleration_mode {
+                AccelerationMode::Gpu => (6.0, 14.0, Duration::from_secs(2), 4),
+                AccelerationMode::Avx512 => (8.0, 18.0, Duration::from_secs(2), 3),
+                _ => (10.0, 20.0, Duration::from_secs(3), 3),
+            };
+
+        Self {
+            check_interval: Duration::from_secs(5),
+            timeout,
+            min_successes: if profile.recommended_workers >= 8 { 3 } else { 2 },
+            max_failures,
+            healthy_latency_us,
+            degraded_latency_us,
+            healthy_delivery_ratio: if profile.node_resources.vram_gb > 0.0 { 0.97 } else { 0.95 },
+            degraded_delivery_ratio: if profile.node_resources.vram_gb > 0.0 { 0.88 } else { 0.80 },
         }
     }
 }
@@ -89,6 +125,11 @@ impl NetworkHealthMonitor {
         }
     }
 
+    /// Create a monitor with thresholds derived from runtime auto-detection.
+    pub fn with_runtime_profile(cluster: Arc<ClusterState>, profile: &RuntimeProfile) -> Self {
+        Self::new(cluster, HealthConfig::autotuned(profile))
+    }
+
     /// Run health check on all nodes
     pub fn check_all(&self) {
         let now = Instant::now();
@@ -132,13 +173,13 @@ impl NetworkHealthMonitor {
 
     /// Get health status based on metrics
     fn get_health_status(&self, latency_us: f32, delivery_ratio: f32) -> HealthStatus {
-        // Thresholds for health assessment
-        const MAX_LATENCY_US: f32 = 10.0;
-        const MIN_DELIVERY_RATIO: f32 = 0.95;
-
-        if delivery_ratio >= MIN_DELIVERY_RATIO && latency_us <= MAX_LATENCY_US {
+        if delivery_ratio >= self.config.healthy_delivery_ratio
+            && latency_us <= self.config.healthy_latency_us
+        {
             HealthStatus::Healthy
-        } else if delivery_ratio >= 0.80 || latency_us <= MAX_LATENCY_US * 2.0 {
+        } else if delivery_ratio >= self.config.degraded_delivery_ratio
+            || latency_us <= self.config.degraded_latency_us
+        {
             HealthStatus::Degraded
         } else {
             HealthStatus::Failed
@@ -180,7 +221,8 @@ impl NetworkHealthMonitor {
             let avg_latency_us: f32 = recent.iter().map(|r| r.latency_us).sum::<f32>() / 3.0;
 
             // Need fallback if delivery ratio dropped below threshold or latency increased significantly
-            avg_delivery_ratio < 0.95 || avg_latency_us > 10.0
+            avg_delivery_ratio < self.config.healthy_delivery_ratio
+                || avg_latency_us > self.config.healthy_latency_us
         } else {
             false
         }
@@ -494,5 +536,22 @@ mod tests {
 
         let recommendation = metrics.get_recommendation();
         assert!(recommendation.contains("healthy"));
+    }
+
+    #[test]
+    fn health_config_autotunes_for_gpu_profiles() {
+        let profile = RuntimeProfile {
+            node_resources: NodeResources::new("node-a", 24.0, 64.0, "8.9", None),
+            logical_cores: 16,
+            recommended_workers: 8,
+            acceleration_mode: AccelerationMode::Gpu,
+            xdp_supported: true,
+            detection_source: String::from("test"),
+            probe_mode: crate::host::ProbeMode::Fast,
+        };
+
+        let config = HealthConfig::autotuned(&profile);
+        assert!(config.healthy_latency_us < 10.0);
+        assert!(config.healthy_delivery_ratio > 0.95);
     }
 }

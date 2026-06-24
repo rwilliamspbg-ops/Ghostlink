@@ -1,275 +1,136 @@
-# Ghost-Link 🚀
+# Ghost-Link
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![CI](https://github.com/rwilliamspbg-ops/Ghostlink/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/rwilliamspbg-ops/Ghostlink/actions/workflows/ci.yml)
 [![Benchmarks](https://github.com/rwilliamspbg-ops/Ghostlink/actions/workflows/benchmarks.yml/badge.svg?branch=main)](https://github.com/rwilliamspbg-ops/Ghostlink/actions/workflows/benchmarks.yml)
-[![Rust](https://img.shields.io/badge/Rust-1.70+-orange.svg)](https://www.rust-lang.org)
-[![Tests](https://img.shields.io/badge/Tests-67+-brightgreen)](TESTING.md)
-[![Coverage](https://img.shields.io/badge/Coverage-75%25-green)](TESTING.md)
+[![Rust](https://img.shields.io/badge/Rust-stable-orange.svg)](https://www.rust-lang.org)
+[![Tests](https://img.shields.io/badge/Tests-100%20passing-brightgreen)](TESTING.md)
+[![Coverage](https://img.shields.io/badge/Coverage-not%20measured-lightgrey)](TESTING.md)
 
-Ghost-Link is an open-source, zero-config LAN fabric that turns spare local GPUs into a shared execution surface for large-model inference and training. The system moves tensors directly over the local wire without forcing workloads through heavy orchestration layers or cloud subscriptions.
+Ghost-Link is an open-source LAN fabric for turning spare local GPUs and CPU hosts into a shared execution surface for large-model inference and training. The project focuses on low-overhead runtime primitives, binary discovery, host-aware autotuning, and runtime-selected execution backends rather than heavy orchestration.
 
 ## Features
 
-- **Zero-Copy Ring Buffers**: SPSC (Single Producer / Single Consumer) DMA-style hand-off with backpressure
-- **Binary Protocol**: Custom Layer-2 discovery protocol with EtherType `0x88B5` and CRC32 checksums
-- **Thread-Safe Cluster State**: Lock-free node tracking with live metrics collection
-- **Adaptive Quantization**: Automatic fallback to 8-bit or 4-bit when delivery health degrades
-- **Fault Tolerance**: Heartbeat monitoring, automatic recovery, load rebalancing
-- **Terminal Dashboard**: Live ASCII display with ratatui integration for production use
+- Zero-copy SPSC ring buffers with backpressure handling
+- Binary Layer-2 discovery protocol with CRC32 validation
+- Thread-safe cluster state with live metrics and fault tracking
+- Runtime-aware planning, load balancing, and health thresholds
+- Fast and full hardware probe modes with cached host detection
+- Runtime-selected execution backends for GPU, AVX-512, AVX2, NEON, and generic CPU paths
+- Terminal dashboard and CLI demo commands
 
-## Quick Start
+## Install
 
 ```bash
+# Install stable Rust
+curl https://sh.rustup.rs -sSf | sh -s -- -y
+. "$HOME/.cargo/env"
+
+# Clone the repository
+git clone https://github.com/rwilliamspbg-ops/Ghostlink.git
+cd Ghostlink
+
 # Build the workspace
 cargo build --workspace
+```
 
-# Run unit tests
+## Usage
+
+```bash
+# Run the full workspace test suite
 cargo test --workspace
 
-# Generate layer placement plan
+# Run the package-owned integration suite
+cargo test -p ghostlink-core --test integration
+
+# Generate a layer placement plan
 cargo run -p ghost-link -- plan
 
-# Join cluster with node ID
+# Emit a join frame for a specific node ID
 cargo run -p ghost-link -- join node-02
 
-# Display ASCII dashboard
+# Render the sample dashboard
 cargo run -p ghost-link -- dashboard
+
+# Detect the local runtime profile using the fast cached probe path
+cargo run -p ghost-link -- probe local-node fast
+
+# Detect the local runtime profile using the deeper full probe path
+cargo run -p ghost-link -- probe local-node full
 ```
 
-## Architecture
+Fast mode uses cheap local signals and a short-lived cache. Full mode enables deeper hardware probing, including external tools when they are available on the host.
 
-```
+## Probe Modes
+
+- `fast`: cheap local detection intended for frequent runtime use
+- `full`: deeper hardware inspection intended for operator diagnostics
+
+If the host does not provide tools such as `nvidia-smi` or `lspci`, full mode falls back to the same sysfs and local signals available to fast mode.
+
+## Repository Layout
+
+```text
 Ghostlink/
 ├── crates/
-│   ├── ghostlink-core/  # Shared runtime primitives
-│   │   ├── ring.rs          # Zero-copy SPSC ring buffer
-│   │   ├── protocol.rs      # Binary protocol with CRC32
-│   │   ├── cluster.rs       # Thread-safe node state
-│   │   ├── planning.rs      # Layer assignment + fault tolerance
-│   │   ├── health.rs        # Network health monitoring
-│   │   ├── load_balance.rs  # Tensor distribution
-│   │   ├── xdp.rs           # AF_XDP/eBPF integration (Linux)
-│   │   └── dashboard.rs     # Terminal UI with ratatui
-│   └── ghost-link/          # CLI demo entrypoint
-├── tests/                    # Integration test suite
-├── docs/                     # Documentation
-│   ├── ARCHITECTURE.md       # Detailed design docs
-│   ├── TROUBLESHOOTING.md    # Common issues and solutions
-│   └── EXAMPLES.md           # Usage examples
+│   ├── ghostlink-core/
+│   │   ├── src/
+│   │   │   ├── accelerator.rs
+│   │   │   ├── cluster.rs
+│   │   │   ├── dashboard.rs
+│   │   │   ├── health.rs
+│   │   │   ├── host.rs
+│   │   │   ├── lib.rs
+│   │   │   ├── load_balance.rs
+│   │   │   ├── planning.rs
+│   │   │   ├── protocol.rs
+│   │   │   ├── ring.rs
+│   │   │   └── xdp.rs
+│   │   └── tests/
+│   │       ├── common.rs
+│   │       └── integration.rs
+│   └── ghost-link/
+│       └── src/main.rs
+├── benches/
+├── docs/
+├── TESTING.md
 └── README.md
 ```
 
-## Design Principles
+## Current Validation
 
-1. **Zero-Copy / Low Latency**: Prioritize zero-copy primitives, raw memory alignment, and minimal allocation in the hot path.
-2. **No Bloat**: Avoid heavy cloud-native orchestration frameworks. This is a bare-metal, raw frame LAN fabric.
-3. **Idiomatic Rust**: Enforce strict type safety, correct lifetime management for shared ring buffers, and explicit error handling without relying on unwrap().
+The current workspace validation passes:
+
+- `cargo test --workspace`
+- `cargo clippy --workspace --all-targets -- -D warnings`
+
+That currently covers 100 passing tests across library and package-owned integration targets.
+
+## Benchmark Notes
+
+Recent measured results in this environment include:
+
+- `autotune/detect_runtime_profile_fast`: about `187-217 ns`
+- `autotune/detect_runtime_profile_full`: about `192-203 us`
+- `planning/80_layers_8_nodes_autotuned`: about `877-954 ns`
+- `autotune/load_balance_80_layers_autotuned`: about `2.42-2.68 us`
+
+The fast probe path is intended for frequent runtime use. The full probe path is intentionally slower.
+
+## Limitations
+
+- AF_XDP/eBPF remains Linux-specific and is not backed by kernel integration tests yet
+- Full hardware probing depends on the tools and kernel interfaces available on the host
+- Health monitoring still uses synthetic probe inputs rather than real network latency traffic
 
 ## Documentation
 
-- [ARCHITECTURE.md](docs/ARCHITECTURE.md) - Detailed design documentation
-- [TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) - Common issues and solutions
-- [EXAMPLES.md](docs/EXAMPLES.md) - Usage examples and best practices
-- [CONTRIBUTING.md](CONTRIBUTING.md) - Guidelines for contributing
-
-## Examples
-
-### Layer Placement Plan
-
-```bash
-$ cargo run -p ghost-link -- plan
-Ghost-Link Layer Placement Plan
-
-================================
-
-- node-a => layers 0-23 (24.0 GB)
-- node-b => layers 23-32 (9.0 GB)
-
-Adaptive Quantization Trigger:
-
-delivery_ratio=0.98 => None
-delivery_ratio=0.90 => Int8
-delivery_ratio=0.75 => Int4
-```
-
-### Join Cluster
-
-```bash
-$ cargo run -p ghost-link -- join node-02
-Broadcasting Ghost-Link Join Frame
-
-====================================
-
-Frame Size: 62 bytes
-EtherType: 0x88B5
-
-Node Information:
-
-  ID: node-02
-  VRAM: 12.0 GB
-  System Memory: 32.0 GB
-  Compute Capability: 8.6
-```
-
-### ASCII Dashboard
-
-```bash
-$ cargo run -p ghost-link -- dashboard
-+───────────────────────────────────────────────────────────────+
-| GHOST-LINK CLUSTER DASHBOARD               [STATUS: ACTIVE] |
-+───────────────────────────────────────────────────────────────+
-| Ring Buffer Fill:  63%                    Gradient Steps:    42 |
-+───────────────────────────────────────────────────────────────+
-| NODE-01 (RTX4090) [██████████████████░░] 22.4 / 24.0 GB VRAM |
-| >>> Streaming Layers   0-24 >>> [AF_XDP:    9.8 Gbps /   1.2μs] |
-+───────────────────────────────────────────────────────────────+
-```
-
-## Testing
-
-Ghostlink has **67+ tests** across unit, integration, and property-based test suites covering core functionality, network failure scenarios, and node failure cascades.
-
-### Quick Start
-
-```bash
-# Fast unit tests (< 5 sec)
-cargo test --lib
-
-# Full test suite (including integration tests)
-cargo test --workspace
-
-# With coverage report
-cargo tarpaulin --workspace --out Html
-```
-
-### Test Coverage by Component
-
-| Component | Tests | Coverage | Notes |
-|-----------|-------|----------|-------|
-| Ring Buffer | 9 | **95%** | SPSC, wrap-around, backpressure, stress |
-| Protocol | 11 | **85%** | Encode/decode, CRC, corruption, property-based |
-| Cluster | 14 | **85%** | Registration, heartbeat, health, metrics |
-| Health | 7 | **70%** | Monitoring, degradation detection, EMA |
-| Planning | 7 | **80%** | Layer assignment, capacity, extreme cases |
-| Load Balance | 5 | **75%** | Distribution, heterogeneous nodes |
-| **Total** | **67** | **75%** | Production-ready for core paths |
-
-### Test Execution
-
-```bash
-# Development (fast path)
-cargo test --lib
-
-# Everything
-cargo test --workspace
-
-# Only property-based tests
-cargo test proptest
-
-# Only integration tests
-cargo test --test integration
-
-# Network failure scenarios
-cargo test network_failure protocol_handles
-
-# Node failure cascades
-cargo test cluster_handles cascade
-
-# Performance benchmarks
-cargo bench --package ghostlink-core --bench criterion
-```
-
-**For detailed testing guide, see [TESTING.md](TESTING.md)**
-
-## Performance Baseline
-
-Measured on `x86_64` with Criterion (`cargo bench -p ghostlink-core --bench criterion -- --warm-up-time 1 --measurement-time 1`). GitHub Actions uploads the raw benchmark logs and Criterion report directory as artifacts.
-
-### Latest Criterion Run
-
-| Benchmark | Latency | Throughput |
-|---|---|---|
-| Ring buffer push+pop round-trip (ST) | ~2.89-3.03 ns | ~330 M ops/s |
-| Ring buffer push only (ST, full=drain) | ~1.89-1.98 ns | ~518 M ops/s |
-| Protocol: `DiscoveryFrame` encode | ~100.04-103.54 ns | ~9.7 M ops/s |
-| Protocol: `DiscoveryFrame` decode | ~102.50-103.81 ns | ~9.7 M ops/s |
-| Protocol: encode + decode round-trip | ~210.21-219.03 ns | ~4.6 M ops/s |
-| Planning: 33 layers across 2 nodes | ~164.90-170.18 ns | ~5.9 M ops/s |
-| Planning: 80 layers across 8 nodes | ~344.28-354.76 ns | ~2.9 M ops/s |
-| Cluster: `register` node (update path) | ~179.57-186.40 ns | ~5.4 M ops/s |
-| Cluster: `nodes_snapshot()` (10 nodes) | ~9.78-10.28 ns | ~97 M ops/s |
-| Cluster: `total_vram_gb()` (10 nodes) | ~1.59-1.77 ns | ~600 M ops/s |
-
-Run the baseline yourself:
-
-```bash
-# Build and run the Criterion benchmark harness
-cargo bench -p ghostlink-core --bench criterion -- --warm-up-time 1 --measurement-time 1
-```
-
-> **Note**: The SPSC cross-thread figure includes OS scheduling overhead from `yield_now`. Raw ring buffer latency for the single-threaded path remains sub-3 ns.
-
-Benchmark artifacts are captured automatically in GitHub Actions under the `Benchmarks` workflow.
-
-## Dependencies
-
-### Core Dependencies
-- `pin-utils` - Zero-copy pinned allocations
-- `crc32fast` - Fast CRC32 checksums
-- `arc-swap` - Shared, lock-free snapshot reads
-- `thiserror` - Error types
-- `tokio` - Async runtime (for health monitoring)
-- `ratatui` - Terminal UI
-- `anyhow` - Production error handling
-
-### Dev Dependencies
-- `tokio-test` - Tokio testing utilities
-- `criterion` - Benchmark harness for hot-path regression tracking
-
-## Platform Support
-
-- **Linux**: Full support with AF_XDP/eBPF integration
-- **Windows/macOS**: Standard socket implementation (AF_XDP not available)
-
-## Test Roadmap
-
-### Current Test Coverage (v0.1)
-✅ **Production-ready paths**:
-- Ring buffer FIFO, backpressure, wrap-around
-- Protocol encode/decode, CRC validation
-- Cluster registration, heartbeat, metrics
-- Layer assignment across heterogeneous nodes
-- Network failure injection (truncation, corruption)
-- Node failure cascades (single, concurrent)
-
-### Known Testing Gaps (will be addressed)
-⚠️ **AF_XDP/eBPF**: No kernel socket tests (unit tests only)
-⚠️ **macOS/Windows**: Standard socket fallback untested on those platforms
-⚠️ **Health Monitoring**: Uses synthetic data (real latency injection coming)
-⚠️ **Chaos Engineering**: No distributed failure injection framework
-⚠️ **Dynamic Rebalancing**: Tensor migration not tested
-
-**See [TESTING.md](TESTING.md) for full test documentation and [TESTING.md#known-test-limitations](TESTING.md#known-test-limitations) for roadmap details.**
-
-## Contributing
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines on contributing to the project.
-
-### Areas for Contribution
-
-1. **High Priority**: AF_XDP/eBPF integration (Linux kernel wiring), real network health probes
-2. **Medium Priority**: Criterion-based micro-benchmarks, CI/CD pipeline
-3. **Nice to Have**: Additional examples, extended documentation
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
+- [docs/EXAMPLES.md](docs/EXAMPLES.md)
+- [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)
+- [TESTING.md](TESTING.md)
+- [CONTRIBUTING.md](CONTRIBUTING.md)
 
 ## License
 
-Ghost-Link is released under the MIT License to keep experimentation and enterprise adoption friction low.
-
-## Acknowledgments
-
-This project is inspired by the need for a copy-paste local clustering workflow where workstations, gaming rigs, and rack servers can discover each other, advertise resources, and participate in a shared execution graph with a single command.
-
----
-
-For more information, see the [documentation](docs/ARCHITECTURE.md).
+Ghost-Link is released under the MIT License.

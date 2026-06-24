@@ -8,9 +8,14 @@
 use anyhow::Result;
 use ghostlink_core::cluster::{ClusterState, NodeMetrics};
 use ghostlink_core::dashboard::Dashboard;
-use ghostlink_core::planning::{assign_layers_sequentially, select_quantization_mode, LayerSpec};
+use ghostlink_core::host::{detect_runtime_profile, detect_runtime_profile_full, ProbeMode};
+use ghostlink_core::load_balance::LoadBalancer;
+use ghostlink_core::planning::{
+    assign_layers_with_runtime_profile, select_quantization_mode, LayerSpec,
+};
 use ghostlink_core::protocol::NodeResources;
 use ghostlink_core::protocol::{DiscoveryFrame, FrameKind};
+use std::sync::Arc;
 
 fn main() -> Result<()> {
     // Initialize logging
@@ -22,14 +27,23 @@ fn main() -> Result<()> {
         Some("plan") => print_plan()?,
         Some("join") => print_join(args.next().as_deref().unwrap_or("node-01"))?,
         Some("dashboard") => print_dashboard()?,
+        Some("probe") => print_probe(
+            args.next().as_deref().unwrap_or("local-node"),
+            match args.next().as_deref() {
+                Some("--full" | "full") => ProbeMode::Full,
+                Some("--fast" | "fast") => ProbeMode::Fast,
+                _ => ProbeMode::Fast,
+            },
+        )?,
         Some("help" | "--help" | "-h") => print_help(),
         _ => {
-            eprintln!("Usage: ghost-link <plan|join|dashboard|help>");
+            eprintln!("Usage: ghost-link <plan|join|dashboard|probe|help>");
             eprintln!();
             eprintln!("Commands:");
             eprintln!("  plan      - Generate layer placement plan");
             eprintln!("  join [id] - Broadcast discovery frame to join cluster");
             eprintln!("  dashboard - Display ASCII cluster dashboard");
+            eprintln!("  probe [id] [fast|full|--fast|--full] - Detect local workers and acceleration profile");
             eprintln!("  help      - Show this help message");
         }
     }
@@ -46,18 +60,29 @@ fn print_help() {
     println!("  plan      - Generate layer placement plan across nodes");
     println!("  join [id] - Broadcast discovery frame to join cluster");
     println!("  dashboard - Display ASCII cluster dashboard");
+    println!("  probe [id] [fast|full|--fast|--full] - Detect local workers and acceleration profile");
     println!("  help      - Show this help message");
     println!();
     println!("Examples:");
     println!("  $ ghost-link plan");
     println!("  $ ghost-link join node-02");
     println!("  $ ghost-link dashboard");
+    println!("  $ ghost-link probe workstation-a fast");
+    println!("  $ ghost-link probe workstation-a --full");
 }
 
 fn print_plan() -> Result<()> {
+    let profile = detect_runtime_profile("planner-local");
+
     // Create sample nodes
     let nodes = vec![
-        NodeResources::new("node-a", 24.0, 64.0, "8.9", None),
+        NodeResources::new(
+            profile.node_resources.id.clone(),
+            profile.node_resources.vram_gb.max(24.0),
+            profile.node_resources.system_memory_gb.max(64.0),
+            profile.node_resources.compute_capability.clone(),
+            profile.node_resources.gpu_name.clone(),
+        ),
         NodeResources::new("node-b", 12.0, 32.0, "8.6", None),
     ];
 
@@ -71,11 +96,17 @@ fn print_plan() -> Result<()> {
         .collect();
 
     // Assign layers sequentially
-    let assignments =
-        assign_layers_sequentially(&nodes, &layers).map_err(|e| anyhow::anyhow!(e))?;
+    let assignments = assign_layers_with_runtime_profile(&nodes, &layers, &profile)
+        .map_err(|e| anyhow::anyhow!(e))?;
 
     println!("Ghost-Link Layer Placement Plan\n");
     println!("================================\n");
+    println!(
+        "Local profile: workers={} acceleration={} XDP={}\n",
+        profile.recommended_workers,
+        profile.acceleration_mode.as_str(),
+        if profile.xdp_supported { "on" } else { "off" }
+    );
 
     for assignment in &assignments {
         println!(
@@ -100,10 +131,12 @@ fn print_plan() -> Result<()> {
 }
 
 fn print_join(node_id: &str) -> Result<()> {
+    let profile = detect_runtime_profile(node_id);
+
     // Create discovery frame with node resources
     let frame = DiscoveryFrame {
         kind: FrameKind::Join,
-        node: NodeResources::new(node_id, 12.0, 32.0, "8.6".to_string(), None),
+        node: profile.node_resources.clone(),
     };
 
     let encoded = frame.encode();
@@ -119,6 +152,8 @@ fn print_join(node_id: &str) -> Result<()> {
     println!("  VRAM: {:.1} GB", decoded.node.vram_gb);
     println!("  System Memory: {:.1} GB", decoded.node.system_memory_gb);
     println!("  Compute Capability: {}", decoded.node.compute_capability);
+    println!("  Recommended Workers: {}", profile.recommended_workers);
+    println!("  Acceleration: {}", profile.acceleration_mode.as_str());
 
     // Show encoded frame (first 50 bytes for brevity)
     if !encoded.is_empty() {
@@ -134,14 +169,20 @@ fn print_join(node_id: &str) -> Result<()> {
 }
 
 fn print_dashboard() -> Result<()> {
+    let profile = detect_runtime_profile("local-dashboard");
+
     // Create sample cluster state
     let cluster = ClusterState::new();
     cluster.register(NodeResources::new(
         "NODE-01",
-        24.0,
-        64.0,
-        "8.9",
-        Some("RTX4090".to_string()),
+        profile.node_resources.vram_gb.max(24.0),
+        profile.node_resources.system_memory_gb.max(64.0),
+        profile.node_resources.compute_capability.clone(),
+        profile
+            .node_resources
+            .gpu_name
+            .clone()
+            .or(Some("Local Host".to_string())),
     ));
     cluster.register(NodeResources::new(
         "NODE-02",
@@ -170,11 +211,38 @@ fn print_dashboard() -> Result<()> {
         .filter_map(|n| cluster.get_metrics(&n.id))
         .collect();
 
+    let demo_layers: Vec<LayerSpec> = (0..33)
+        .map(|index| LayerSpec {
+            index,
+            vram_gb: 1.0,
+            num_weights: 0,
+        })
+        .collect();
+    let load_balancer = LoadBalancer::with_runtime_profile(Arc::new(cluster.clone()), &profile);
+    let distribution_plan = load_balancer.distribute_layers_with_runtime_profile(&demo_layers, &profile);
+
     // Create and render dashboard
     let dashboard = Dashboard::new(cluster.clone(), 63, 42, nodes_metrics);
 
     println!("{}", dashboard.render_ascii());
+    println!(
+        "\nAuto-tuned local runtime: {} workers, {} acceleration",
+        profile.recommended_workers,
+        profile.acceleration_mode.as_str()
+    );
+    if let Ok(plan) = distribution_plan {
+        println!("Autotuned distribution nodes: {}", plan.distributions.len());
+    }
 
+    Ok(())
+}
+
+fn print_probe(node_id: &str, probe_mode: ProbeMode) -> Result<()> {
+    let profile = match probe_mode {
+        ProbeMode::Fast => detect_runtime_profile(node_id),
+        ProbeMode::Full => detect_runtime_profile_full(node_id),
+    };
+    println!("{}", profile.summary());
     Ok(())
 }
 
