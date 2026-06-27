@@ -9,7 +9,6 @@ license = "MIT"
 [dependencies]
 # Core Ghost-Link networking
 ghostlink-core = { workspace = true }
-ghost-link = { workspace = true }
 
 # Async runtime
 tokio = { workspace = true }
@@ -32,7 +31,7 @@ tower = "0.4"
 hyper = "1.0"
 
 # Model inference (ONNX Runtime)
-ort = { version = "2.0", features = ["download-binaries"] }
+ort = { version = "2.0.0-rc.12", features = ["download-binaries"] }
 
 # Metrics and monitoring
 prometheus = "0.13"

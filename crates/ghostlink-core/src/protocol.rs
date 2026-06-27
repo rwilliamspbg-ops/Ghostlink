@@ -121,7 +121,7 @@ impl HealthCheckFrame {
                 .unwrap_or_default()
                 .as_secs(),
             latency_us,
-            delivery_ratio: (delivery_ratio * 100.0).min(100.0).max(0.0) as u8,
+            delivery_ratio: (delivery_ratio * 100.0).clamp(0.0, 100.0) as u8,
         }
     }
 

@@ -6,7 +6,8 @@
 //! - Frame reception loop with zero-copy buffers
 //! - eBPF program loading helpers
 
-use std::os::raw::c_int;
+use std::ffi::CStr;
+use std::os::raw::{c_char, c_int};
 
 use crate::protocol::{DiscoveryFrame, GHOSTLINK_ETHERTYPE};
 use crate::ring::RingConfig;
@@ -55,7 +56,7 @@ impl XdpSocketHandle {
             let fd = libc::socket(
                 libc::AF_PACKET,
                 libc::SOCK_RAW,
-                libc::htons(GHOSTLINK_ETHERTYPE as u16) as i32,
+                libc::htons(GHOSTLINK_ETHERTYPE) as i32,
             );
 
             if fd < 0 {
@@ -81,10 +82,8 @@ impl XdpSocketHandle {
                 buf
             };
 
-            let mut ifreq = libc::ifreq {
-                ifr_name,
-                ifr_ifru: libc::ifru_ifindex { ifru_ifindex: 0 },
-            };
+            let mut ifreq: libc::ifreq = std::mem::zeroed();
+            ifreq.ifr_name = ifr_name;
 
             if libc::ioctl(fd, libc::SIOCGIFINDEX, &mut ifreq) < 0 {
                 libc::close(fd);
@@ -99,7 +98,7 @@ impl XdpSocketHandle {
             // Bind socket to interface
             let addr = libc::sockaddr_ll {
                 sll_family: libc::AF_PACKET as u16,
-                sll_protocol: libc::htons(GHOSTLINK_ETHERTYPE as u16),
+                sll_protocol: libc::htons(GHOSTLINK_ETHERTYPE),
                 sll_ifindex: ifindex,
                 sll_hatype: 0,
                 sll_pkttype: 0,

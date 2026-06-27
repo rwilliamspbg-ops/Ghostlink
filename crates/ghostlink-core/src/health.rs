@@ -605,6 +605,7 @@ mod tests {
 mod tests_health_frame_processing {
     use super::*;
     use crate::protocol::HealthCheckFrame;
+    use crate::protocol::NodeResources;
     use std::sync::Arc;
 
     #[test]

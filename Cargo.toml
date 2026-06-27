@@ -13,8 +13,8 @@ license = "MIT"
 
 [workspace.dependencies]
 # Core networking
-ghostlink-core = { path = "crates/ghostlink-core", version = "0.1.0" }
-ghost-link = { path = "crates/ghost-link", version = "0.1.0" }
+ghostlink-core = { path = "crates/ghostlink-core", version = "0.1.0-alpha.0" }
+ghost-link = { path = "crates/ghost-link", version = "0.1.0-alpha.0" }
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }
