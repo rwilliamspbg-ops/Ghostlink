@@ -86,15 +86,16 @@ async fn main() -> Result<()> {
             engine.start_discovery().await?;
 
             // Load model if specified
-            if !engine.config.model_path.is_empty() {
-                engine.load_model(&engine.config.model_path)?;
+            if !engine.config().model_path.is_empty() {
+                let model_path = engine.config().model_path.clone();
+                engine.load_model(&model_path)?;
             }
 
             // Start API server
             mohawk_engine::api::start_api_server(&addr).await?;
 
             println!("Mohawk Engine started on {}", addr);
-            println!("Node ID: {}", engine.config.node_id);
+            println!("Node ID: {}", engine.config().node_id);
             println!("Cluster nodes: {}", engine.cluster().node_count());
 
             // Keep running

@@ -76,6 +76,11 @@ impl InferenceEngine {
         self.cluster.clone()
     }
 
+    /// Get the engine configuration
+    pub fn config(&self) -> &EngineConfig {
+        &self.config
+    }
+
     /// Get the health monitor
     pub fn health_monitor(&self) -> Arc<NetworkHealthMonitor> {
         self.health_monitor.clone()

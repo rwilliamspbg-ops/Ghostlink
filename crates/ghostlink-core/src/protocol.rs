@@ -160,8 +160,16 @@ impl HealthCheckFrame {
             .map_err(|_| "Invalid node ID UTF-8")?;
 
         let offset = 1 + node_id_len;
-        let timestamp_secs = u64::from_le_bytes(bytes[offset..offset + 8].try_into().unwrap());
-        let latency_us = u32::from_le_bytes(bytes[offset + 8..offset + 12].try_into().unwrap());
+        let timestamp_secs = u64::from_le_bytes(
+            bytes[offset..offset + 8]
+                .try_into()
+                .map_err(|_| "Invalid health check timestamp")?,
+        );
+        let latency_us = u32::from_le_bytes(
+            bytes[offset + 8..offset + 12]
+                .try_into()
+                .map_err(|_| "Invalid health check latency")?,
+        );
         let delivery_ratio = bytes[offset + 12];
 
         Ok(Self {

@@ -215,8 +215,9 @@ pub fn detect_network_interfaces() -> Result<Vec<NetworkInterface>, String> {
                 if is_up && !is_loopback {
                     // Try to get MAC address from sockaddr_ll
                     let mac_addr = if !iface.ifa_addr.is_null() {
-                        let addr = &*(iface.ifa_addr as *const libc::sockaddr_ll);
-                        if addr.sll_family == libc::AF_PACKET as u16 {
+                        let addr = &*iface.ifa_addr;
+                        if addr.sa_family as i32 == libc::AF_PACKET {
+                            let addr = &*(iface.ifa_addr as *const libc::sockaddr_ll);
                             let mac = format!(
                                 "{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
                                 addr.sll_addr[0],
