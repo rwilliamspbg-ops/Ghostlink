@@ -57,7 +57,7 @@ impl XdpSocketHandle {
                 libc::SOCK_RAW,
                 libc::htons(GHOSTLINK_ETHERTYPE as u16) as i32,
             );
-            
+
             if fd < 0 {
                 return Err(format!(
                     "Failed to create AF_PACKET socket for interface '{}'. \n\
@@ -66,7 +66,7 @@ impl XdpSocketHandle {
                     interface_name
                 ));
             }
-            
+
             // Get interface index
             let ifr_name: [c_char; libc::IFNAMSIZ] = {
                 let mut buf = [0i8; libc::IFNAMSIZ];
@@ -80,19 +80,22 @@ impl XdpSocketHandle {
                 }
                 buf
             };
-            
+
             let mut ifreq = libc::ifreq {
                 ifr_name,
                 ifr_ifru: libc::ifru_ifindex { ifru_ifindex: 0 },
             };
-            
+
             if libc::ioctl(fd, libc::SIOCGIFINDEX, &mut ifreq) < 0 {
                 libc::close(fd);
-                return Err(format!("Failed to get interface index for '{}'", interface_name));
+                return Err(format!(
+                    "Failed to get interface index for '{}'",
+                    interface_name
+                ));
             }
-            
+
             let ifindex = ifreq.ifr_ifru.ifru_ifindex;
-            
+
             // Bind socket to interface
             let addr = libc::sockaddr_ll {
                 sll_family: libc::AF_PACKET as u16,
@@ -103,15 +106,18 @@ impl XdpSocketHandle {
                 sll_halen: 6,
                 sll_addr: [0u8; 8],
             };
-            
+
             let addr_ptr = &addr as *const libc::sockaddr_ll as *const libc::sockaddr;
             let addr_len = std::mem::size_of::<libc::sockaddr_ll>() as u32;
-            
+
             if libc::bind(fd, addr_ptr, addr_len) < 0 {
                 libc::close(fd);
-                return Err(format!("Failed to bind AF_PACKET socket to '{}'", interface_name));
+                return Err(format!(
+                    "Failed to bind AF_PACKET socket to '{}'",
+                    interface_name
+                ));
             }
-            
+
             Ok(Self {
                 fd,
                 interface_name: interface_name.to_string(),
@@ -183,31 +189,29 @@ pub struct NetworkInterface {
 /// Returns a list of interfaces that are up and not loopback.
 pub fn detect_network_interfaces() -> Result<Vec<NetworkInterface>, String> {
     let mut interfaces = Vec::new();
-    
+
     unsafe {
         let mut ifaddr_ptr: *mut libc::ifaddrs = std::ptr::null_mut();
-        
+
         // Get linked list of interface addresses
         if libc::getifaddrs(&mut ifaddr_ptr) != 0 {
             return Err("Failed to get interface addresses".into());
         }
-        
+
         let mut current = ifaddr_ptr;
         while !current.is_null() {
             let iface = &*current;
-            
+
             // Get interface name
             let name_ptr = iface.ifa_name;
             if !name_ptr.is_null() {
-                let name = CStr::from_ptr(name_ptr)
-                    .to_string_lossy()
-                    .into_owned();
-                
+                let name = CStr::from_ptr(name_ptr).to_string_lossy().into_owned();
+
                 // Get flags to check if interface is up
                 let flags = iface.ifa_flags;
                 let is_up = (flags & (libc::IFF_UP as u32)) != 0;
                 let is_loopback = (flags & (libc::IFF_LOOPBACK as u32)) != 0;
-                
+
                 // Only include non-loopback interfaces that are up
                 if is_up && !is_loopback {
                     // Try to get MAC address from sockaddr_ll
@@ -230,7 +234,7 @@ pub fn detect_network_interfaces() -> Result<Vec<NetworkInterface>, String> {
                     } else {
                         None
                     };
-                    
+
                     interfaces.push(NetworkInterface {
                         name,
                         mac_addr,
@@ -239,13 +243,13 @@ pub fn detect_network_interfaces() -> Result<Vec<NetworkInterface>, String> {
                     });
                 }
             }
-            
+
             current = (*current).ifa_next;
         }
-        
+
         libc::freeifaddrs(ifaddr_ptr);
     }
-    
+
     Ok(interfaces)
 }
 
@@ -255,11 +259,11 @@ pub fn detect_network_interfaces() -> Result<Vec<NetworkInterface>, String> {
 /// If preference is provided, tries to use that interface first.
 pub fn select_network_interface(preference: Option<&str>) -> Result<String, String> {
     let interfaces = detect_network_interfaces()?;
-    
+
     if interfaces.is_empty() {
         return Err("No network interfaces found".into());
     }
-    
+
     // If user specified a preference, try to use it
     if let Some(pref) = preference {
         if interfaces.iter().any(|iface| iface.name == pref) {
@@ -267,13 +271,13 @@ pub fn select_network_interface(preference: Option<&str>) -> Result<String, Stri
         }
         // Preference not found, fall through to auto-selection
     }
-    
+
     // Priority-based selection
     let mut eth_interfaces: Vec<&NetworkInterface> = Vec::new();
     let mut en_interfaces: Vec<&NetworkInterface> = Vec::new();
     let mut wlan_interfaces: Vec<&NetworkInterface> = Vec::new();
     let mut other_interfaces: Vec<&NetworkInterface> = Vec::new();
-    
+
     for iface in &interfaces {
         if iface.name.starts_with("eth") {
             eth_interfaces.push(iface);
@@ -285,14 +289,16 @@ pub fn select_network_interface(preference: Option<&str>) -> Result<String, Stri
             other_interfaces.push(iface);
         }
     }
-    
+
     // Select based on priority
-    let selected = eth_interfaces.first()
+    let selected = eth_interfaces
+        .first()
         .or_else(|| en_interfaces.first())
         .or_else(|| wlan_interfaces.first())
         .or_else(|| other_interfaces.first());
-    
-    selected.map(|iface| iface.name.clone())
+
+    selected
+        .map(|iface| iface.name.clone())
         .ok_or_else(|| "No suitable network interface found".into())
 }
 

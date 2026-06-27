@@ -36,19 +36,19 @@ impl WorkerConfig {
             ..Default::default()
         }
     }
-    
+
     /// Set GPU assignment
     pub fn with_gpu(mut self, gpu_id: usize) -> Self {
         self.gpu_id = Some(gpu_id);
         self
     }
-    
+
     /// Set layer range for this worker
     pub fn with_layers(mut self, start: usize, end: usize) -> Self {
         self.layer_range = (start, end);
         self
     }
-    
+
     /// Set memory limit
     pub fn with_memory_limit(mut self, limit_mb: usize) -> Self {
         self.memory_limit_mb = limit_mb;

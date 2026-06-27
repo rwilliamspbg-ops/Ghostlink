@@ -155,7 +155,7 @@ impl NodeMetrics {
         } else {
             self.avg_latency_us = self.avg_latency_us * 0.9 + latency_us * 0.1;
         }
-        
+
         // Sync display field
         self.latency_micros = self.avg_latency_us;
     }
@@ -175,7 +175,7 @@ impl NodeMetrics {
     pub fn record_throughput(&mut self, throughput_gbps: f32) {
         // Exponential moving average with alpha=0.1
         self.throughput_gbps = self.throughput_gbps * 0.9 + throughput_gbps * 0.1;
-        
+
         // Sync display field
         self.af_xdp_gbps = self.throughput_gbps;
     }

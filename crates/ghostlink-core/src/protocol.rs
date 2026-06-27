@@ -128,20 +128,20 @@ impl HealthCheckFrame {
     /// Encode health check frame to bytes
     pub fn encode(&self) -> Vec<u8> {
         let mut payload = Vec::with_capacity(1 + self.node_id.len() + 8 + 4 + 1);
-        
+
         // Node ID length + ID
         payload.push(self.node_id.len() as u8);
         payload.extend_from_slice(self.node_id.as_bytes());
-        
+
         // Timestamp (u64 LE)
         payload.extend_from_slice(&self.timestamp_secs.to_le_bytes());
-        
+
         // Latency (u32 LE)
         payload.extend_from_slice(&self.latency_us.to_le_bytes());
-        
+
         // Delivery ratio (u8)
         payload.push(self.delivery_ratio);
-        
+
         payload
     }
 
@@ -150,20 +150,20 @@ impl HealthCheckFrame {
         if bytes.is_empty() {
             return Err("Empty health check frame".into());
         }
-        
+
         let node_id_len = bytes[0] as usize;
         if bytes.len() < 1 + node_id_len + 8 + 4 + 1 {
             return Err("Health check frame too short".into());
         }
-        
-        let node_id = String::from_utf8(bytes[1..1+node_id_len].to_vec())
+
+        let node_id = String::from_utf8(bytes[1..1 + node_id_len].to_vec())
             .map_err(|_| "Invalid node ID UTF-8")?;
-        
+
         let offset = 1 + node_id_len;
-        let timestamp_secs = u64::from_le_bytes(bytes[offset..offset+8].try_into().unwrap());
-        let latency_us = u32::from_le_bytes(bytes[offset+8..offset+12].try_into().unwrap());
-        let delivery_ratio = bytes[offset+12];
-        
+        let timestamp_secs = u64::from_le_bytes(bytes[offset..offset + 8].try_into().unwrap());
+        let latency_us = u32::from_le_bytes(bytes[offset + 8..offset + 12].try_into().unwrap());
+        let delivery_ratio = bytes[offset + 12];
+
         Ok(Self {
             node_id,
             timestamp_secs,
@@ -549,7 +549,7 @@ mod tests_health_check_frame {
         let frame = HealthCheckFrame::new("node-01", 1200, 0.99);
         let encoded = frame.encode();
         let decoded = HealthCheckFrame::decode(&encoded).unwrap();
-        
+
         assert_eq!(decoded.node_id, "node-01");
         assert_eq!(decoded.latency_us, 1200);
         assert!(decoded.delivery_ratio >= 98 && decoded.delivery_ratio <= 100);
@@ -563,10 +563,10 @@ mod tests_health_check_frame {
             latency_us: 5000,
             delivery_ratio: 85,
         };
-        
+
         let encoded = original.encode();
         let decoded = HealthCheckFrame::decode(&encoded).unwrap();
-        
+
         assert_eq!(decoded.node_id, original.node_id);
         assert_eq!(decoded.timestamp_secs, original.timestamp_secs);
         assert_eq!(decoded.latency_us, original.latency_us);
@@ -577,7 +577,7 @@ mod tests_health_check_frame {
     fn test_health_check_frame_invalid_data() {
         // Empty frame
         assert!(HealthCheckFrame::decode(&[]).is_err());
-        
+
         // Too short frame
         assert!(HealthCheckFrame::decode(&[5, 1, 2, 3]).is_err());
     }

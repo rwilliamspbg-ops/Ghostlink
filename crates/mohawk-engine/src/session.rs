@@ -21,12 +21,12 @@ impl InferenceSession {
             request_count: 0,
         }
     }
-    
+
     /// Record a request
     pub fn record_request(&mut self) {
         self.request_count += 1;
     }
-    
+
     /// Get session duration
     pub fn duration(&self) -> std::time::Duration {
         self.created_at.elapsed()

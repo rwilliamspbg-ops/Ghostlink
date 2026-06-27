@@ -148,12 +148,12 @@ impl NetworkHealthMonitor {
     /// Updates node metrics and health status based on received heartbeat data.
     pub fn process_health_frame(&self, frame: &crate::protocol::HealthCheckFrame) {
         let delivery_ratio = frame.delivery_ratio as f32 / 100.0;
-        
+
         self.cluster.get_metrics_mut(&frame.node_id, |metrics| {
             metrics.record_latency(frame.latency_us as f32);
             metrics.record_delivery_ratio(delivery_ratio);
         });
-        
+
         // Store the health check result for tracking
         let now = Instant::now();
         let result = HealthCheckResult {
@@ -163,7 +163,7 @@ impl NetworkHealthMonitor {
             status: self.get_health_status(frame.latency_us as f32, delivery_ratio),
             timestamp: now,
         };
-        
+
         let mut checks = self.recent_checks.lock().unwrap();
         if let Some(node_checks) = checks.get_mut(&frame.node_id) {
             node_checks.push(result.clone());
@@ -611,13 +611,13 @@ mod tests_health_frame_processing {
     fn test_process_health_frame_updates_metrics() {
         let cluster = Arc::new(ClusterState::new());
         cluster.register(NodeResources::new("node-01", 24.0, 64.0, "8.9", None));
-        
+
         let monitor = NetworkHealthMonitor::new(cluster.clone(), HealthConfig::default());
-        
+
         // Process a health check frame
         let frame = HealthCheckFrame::new("node-01", 1500, 0.95);
         monitor.process_health_frame(&frame);
-        
+
         // Verify metrics were updated
         let metrics = cluster.get_metrics("node-01").unwrap();
         assert!((metrics.avg_latency_us - 1500.0).abs() < 1.0);
@@ -627,24 +627,42 @@ mod tests_health_frame_processing {
     #[test]
     fn test_multi_node_auto_discovery_scenario() {
         let cluster = Arc::new(ClusterState::new());
-        
+
         // Simulate discovering 3 nodes
-        cluster.register(NodeResources::new("node-01", 24.0, 64.0, "8.9", Some("RTX4090".into())));
-        cluster.register(NodeResources::new("node-02", 12.0, 32.0, "8.6", Some("RTX3080".into())));
-        cluster.register(NodeResources::new("node-03", 48.0, 128.0, "9.0", Some("RTX6000".into())));
-        
+        cluster.register(NodeResources::new(
+            "node-01",
+            24.0,
+            64.0,
+            "8.9",
+            Some("RTX4090".into()),
+        ));
+        cluster.register(NodeResources::new(
+            "node-02",
+            12.0,
+            32.0,
+            "8.6",
+            Some("RTX3080".into()),
+        ));
+        cluster.register(NodeResources::new(
+            "node-03",
+            48.0,
+            128.0,
+            "9.0",
+            Some("RTX6000".into()),
+        ));
+
         let monitor = NetworkHealthMonitor::new(cluster.clone(), HealthConfig::default());
-        
+
         // Simulate health checks from each node
         monitor.process_health_frame(&HealthCheckFrame::new("node-01", 1200, 0.99));
         monitor.process_health_frame(&HealthCheckFrame::new("node-02", 8000, 0.85));
         monitor.process_health_frame(&HealthCheckFrame::new("node-03", 900, 0.98));
-        
+
         // All nodes discoverable and health-tracked
         assert!(monitor.get_node_health("node-01").is_some());
         assert!(monitor.get_node_health("node-02").is_some());
         assert!(monitor.get_node_health("node-03").is_some());
-        
+
         // Verify node-02 is degraded (high latency, low delivery ratio)
         let node2_health = monitor.get_node_health("node-02").unwrap();
         assert_eq!(node2_health.status, HealthStatus::Degraded);

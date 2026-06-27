@@ -16,7 +16,7 @@ impl EngineMetrics {
     pub fn new() -> Self {
         Self::default()
     }
-    
+
     /// Record a latency measurement
     pub fn record_latency(&mut self, latency_ms: f32) {
         self.requests_total += 1;

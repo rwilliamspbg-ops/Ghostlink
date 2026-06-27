@@ -1,5 +1,5 @@
 //! Mohawk Inference Engine Core
-//! 
+//!
 //! Provides the main inference engine with distributed computation support
 
 use anyhow::Result;
@@ -57,9 +57,12 @@ impl InferenceEngine {
     pub fn new(config: EngineConfig) -> Result<Self> {
         let cluster = Arc::new(ClusterState::new());
         let health_monitor = Arc::new(NetworkHealthMonitor::new(cluster.clone()));
-        
-        info!("Creating Mohawk Inference Engine for node: {}", config.node_id);
-        
+
+        info!(
+            "Creating Mohawk Inference Engine for node: {}",
+            config.node_id
+        );
+
         Ok(Self {
             config,
             cluster,
@@ -67,21 +70,21 @@ impl InferenceEngine {
             loaded_models: std::collections::HashMap::new(),
         })
     }
-    
+
     /// Get the cluster state for node discovery
     pub fn cluster(&self) -> Arc<ClusterState> {
         self.cluster.clone()
     }
-    
+
     /// Get the health monitor
     pub fn health_monitor(&self) -> Arc<NetworkHealthMonitor> {
         self.health_monitor.clone()
     }
-    
+
     /// Load a model for inference
     pub fn load_model(&mut self, model_path: &str) -> Result<String> {
         info!("Loading model: {}", model_path);
-        
+
         // TODO: Integrate with ONNX Runtime
         let model_info = ModelInfo {
             name: model_path.to_string(),
@@ -89,39 +92,43 @@ impl InferenceEngine {
             size_mb: 0.0,
             loaded_at: std::time::Instant::now(),
         };
-        
-        self.loaded_models.insert(model_path.to_string(), model_info);
-        
+
+        self.loaded_models
+            .insert(model_path.to_string(), model_info);
+
         Ok(model_path.to_string())
     }
-    
+
     /// Run inference on input data
     pub async fn infer(&self, model_id: &str, input: Vec<f32>) -> Result<Vec<f32>> {
         if !self.loaded_models.contains_key(model_id) {
             anyhow::bail!("Model not loaded: {}", model_id);
         }
-        
+
         // TODO: Implement actual inference
         // For now, return dummy output
         Ok(vec![0.0; input.len()])
     }
-    
+
     /// Start auto-discovery using Ghost-Link
     pub async fn start_discovery(&self) -> Result<()> {
         if !self.config.enable_ghostlink {
             warn!("Ghost-Link discovery disabled");
             return Ok(());
         }
-        
+
         let interface = self.config.interface.as_deref().unwrap_or("auto");
-        info!("Starting Ghost-Link auto-discovery on interface: {}", interface);
-        
+        info!(
+            "Starting Ghost-Link auto-discovery on interface: {}",
+            interface
+        );
+
         // TODO: Integrate with ghost-link crate for actual socket operations
         // This will broadcast join frames and listen for responses
-        
+
         Ok(())
     }
-    
+
     /// Get engine metrics
     pub fn get_metrics(&self) -> EngineMetrics {
         EngineMetrics {
