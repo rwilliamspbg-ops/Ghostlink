@@ -1,0 +1,28 @@
+{
+  "profile": "flow_exec256_mb4_v1",
+  "description": "Post transport-batching baseline for docs/runtime-probe-docs",
+  "drift_policy": {
+    "max_throughput_drop_ratio": 0.30,
+    "max_p95_rise_ratio": 0.60
+  },
+  "modes": {
+    "tcp": {
+      "throughput_avg": 64863.34,
+      "p95_avg": 3.86,
+      "wall_avg": 4.06,
+      "drift_policy": {
+        "max_throughput_drop_ratio": 0.30,
+        "max_p95_rise_ratio": 0.60
+      }
+    },
+    "inmem": {
+      "throughput_avg": 100604.80,
+      "p95_avg": 2.47,
+      "wall_avg": 2.64,
+      "drift_policy": {
+        "max_throughput_drop_ratio": 0.35,
+        "max_p95_rise_ratio": 0.65
+      }
+    }
+  }
+}

@@ -5,16 +5,30 @@ on:
   push:
     branches:
       - main
-      - fix/test-suite-and-perf-baseline
-      - ci-artifacts-benchmarks
+      - docs/runtime-probe-docs
+      - 'release/**'
+      - 'hotfix/**'
     paths:
       - 'Cargo.toml'
       - 'crates/ghostlink-core/Cargo.toml'
       - 'crates/ghostlink-core/src/**'
       - 'benches/**'
+      - '.github/workflows/benchmarks.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'Cargo.toml'
+      - 'crates/ghostlink-core/Cargo.toml'
+      - 'crates/ghostlink-core/src/**'
+      - 'benches/**'
+      - '.github/workflows/benchmarks.yml'
 
 env:
   CARGO_TERM_COLOR: always
+
+concurrency:
+  group: benchmarks-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   criterion:

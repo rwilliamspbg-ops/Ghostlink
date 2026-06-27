@@ -279,6 +279,35 @@ Failed to show popup: Os { code: 1, kind: PermissionDenied, .. }
 
 ### General Issues
 
+#### Issue: Hugging Face model download verification fails
+
+**Symptoms:**
+```
+FAILED: 1 repository checks failed
+```
+
+**Causes:**
+- Invalid repo id or filename
+- Missing authentication for gated/private models
+- Network/DNS/proxy restrictions
+- Rate limiting on unauthenticated requests
+
+**Solutions:**
+1. Verify repo and file names:
+   ```bash
+   python3 scripts/verify_hf_models.py --repo sshleifer/tiny-gpt2 --file config.json
+   ```
+2. Use an auth token for gated models and higher rate limits:
+   ```bash
+   export HF_TOKEN=your_token_here
+   python3 scripts/verify_hf_models.py --repo your-org/your-model --file config.json
+   ```
+3. Check connectivity/proxy settings:
+   ```bash
+   curl -I https://huggingface.co
+   ```
+4. Retry with a known public tiny repo to isolate auth issues.
+
 #### Issue: "Failed to decode discovery frame" errors
 
 **Symptoms:**

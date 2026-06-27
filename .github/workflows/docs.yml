@@ -1,0 +1,49 @@
+name: Docs
+
+on:
+  workflow_call:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - docs/runtime-probe-docs
+      - 'release/**'
+      - 'hotfix/**'
+    paths:
+      - '**/*.md'
+      - 'docs/**'
+      - 'scripts/verify_hf_models.py'
+      - '.github/workflows/docs.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - '**/*.md'
+      - 'docs/**'
+      - 'scripts/verify_hf_models.py'
+      - '.github/workflows/docs.yml'
+
+jobs:
+  docs-consistency:
+    name: Docs Consistency
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify required docs exist
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f README.md
+          test -f TESTING.md
+          test -f VERIFICATION.md
+          test -f docs/ARCHITECTURE.md
+          test -f docs/EXAMPLES.md
+          test -f docs/TROUBLESHOOTING.md
+
+      - name: Verify README references key checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q "cargo test --workspace" README.md
+          grep -q "cargo clippy --workspace --all-targets -- -D warnings" README.md
+          grep -q "scripts/verify_hf_models.py" README.md

@@ -1,0 +1,41 @@
+name: Tests
+
+on:
+  workflow_call:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - docs/runtime-probe-docs
+      - 'release/**'
+      - 'hotfix/**'
+    paths:
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'crates/**'
+      - 'tests/**'
+      - 'benches/**'
+      - '.github/workflows/tests.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'crates/**'
+      - 'tests/**'
+      - 'benches/**'
+      - '.github/workflows/tests.yml'
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  workspace-tests:
+    name: Workspace Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --workspace --verbose
+      - run: cargo test --doc

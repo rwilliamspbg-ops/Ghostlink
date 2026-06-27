@@ -1,0 +1,116 @@
+name: Production Gate
+
+on:
+  workflow_call:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - docs/runtime-probe-docs
+      - 'release/**'
+      - 'hotfix/**'
+    paths:
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'crates/**'
+      - 'scripts/**'
+      - 'docs/PERF_BASELINE.json'
+      - 'README.md'
+      - 'TESTING.md'
+      - '.github/workflows/production-gate.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'crates/**'
+      - 'scripts/**'
+      - 'docs/PERF_BASELINE.json'
+      - 'README.md'
+      - 'TESTING.md'
+      - '.github/workflows/production-gate.yml'
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+concurrency:
+  group: production-gate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  production-gate:
+    name: Production Gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Format
+        run: cargo fmt --all --check
+
+      - name: Lint
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Tests
+        run: cargo test --workspace --verbose
+
+      - name: Runtime Smoke (TCP)
+        env:
+          GHOSTLINK_TCP_MAX_INFLIGHT: "32"
+          GHOSTLINK_TCP_RECONNECT_ATTEMPTS: "3"
+          GHOSTLINK_TCP_RECONNECT_BACKOFF_MS: "10"
+          GHOSTLINK_TCP_AUTH_TOKEN: "ci-production-gate-token"
+          GHOSTLINK_FLOW_METRICS_JSON: ./tmp/flow-metrics-tcp.json
+        run: cargo run -p ghost-link -- flow iprada-16gb zenbook-32gb 32 32 128 4 tcp
+
+      - name: Validate Runtime SLO (TCP)
+        run: |
+          python3 scripts/validate_flow_metrics.py \
+            --file ./tmp/flow-metrics-tcp.json \
+            --transport tcp \
+            --profile production
+
+      - name: Runtime Smoke (In-Memory)
+        env:
+          GHOSTLINK_FLOW_METRICS_JSON: ./tmp/flow-metrics-inmem.json
+        run: cargo run -p ghost-link -- flow iprada-16gb zenbook-32gb 32 32 128 4 inmem
+
+      - name: Validate Runtime SLO (In-Memory)
+        run: |
+          python3 scripts/validate_flow_metrics.py \
+            --file ./tmp/flow-metrics-inmem.json \
+            --transport inmem \
+            --profile production
+
+      - name: Upload Runtime Metrics Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: flow-runtime-metrics
+          path: ./tmp/flow-metrics-*.json
+          retention-days: 14
+
+      - name: Perf Snapshot (Deterministic)
+        env:
+          GHOSTLINK_TCP_AUTH_TOKEN: "ci-production-gate-token"
+        run: |
+          python3 scripts/flow_perf_snapshot.py \
+            --runs 3 \
+            --output-dir ./tmp/perf_snapshot_ci
+
+      - name: Perf Drift Check
+        run: |
+          python3 scripts/check_perf_drift.py \
+            --baseline ./docs/PERF_BASELINE.json \
+            --current ./tmp/perf_snapshot_ci/summary.json
+
+      - name: Upload Perf Snapshot Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: flow-perf-snapshot
+          path: ./tmp/perf_snapshot_ci/
+          retention-days: 14

@@ -28,6 +28,12 @@ If you touch integration behavior, also run:
 cargo test -p ghostlink-core --test integration
 ```
 
+If you touch model/bootstrap/download workflow, also run:
+
+```bash
+python3 scripts/verify_hf_models.py
+```
+
 ## Test Location
 
 Package-owned integration tests live in `crates/ghostlink-core/tests/`.

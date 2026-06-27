@@ -35,6 +35,23 @@ cargo test -p ghostlink-core --test integration
 cargo bench -p ghostlink-core --bench criterion
 ```
 
+## Model Download Verification
+
+```bash
+# Install the Hugging Face hub client once
+python3 -m pip install huggingface_hub
+
+# Verify default tiny repos and config.json download
+python3 scripts/verify_hf_models.py
+
+# Verify specific repos/files
+python3 scripts/verify_hf_models.py --repo mistralai/Mistral-7B-v0.1 --file config.json
+
+# Optional: use an auth token for higher rate limits
+export HF_TOKEN=your_token_here
+python3 scripts/verify_hf_models.py --repo meta-llama/Llama-3.2-1B --file config.json
+```
+
 ## Rust API Example
 
 ```rust
