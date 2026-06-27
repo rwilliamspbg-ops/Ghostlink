@@ -198,9 +198,7 @@ pub fn detect_network_interfaces() -> Result<Vec<NetworkInterface>, String> {
         }
 
         let mut current = ifaddr_ptr;
-        while !current.is_null() {
-            let iface = &*current;
-
+        while let Some(iface) = current.as_ref() {
             // Get interface name
             let name_ptr = iface.ifa_name;
             if !name_ptr.is_null() {
@@ -244,7 +242,7 @@ pub fn detect_network_interfaces() -> Result<Vec<NetworkInterface>, String> {
                 }
             }
 
-            current = (*current).ifa_next;
+            current = iface.ifa_next;
         }
 
         libc::freeifaddrs(ifaddr_ptr);
