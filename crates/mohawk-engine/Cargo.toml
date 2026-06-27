@@ -1,0 +1,59 @@
+[package]
+name = "mohawk-engine"
+version = "0.1.0"
+edition = "2021"
+authors = ["Ryan K Williams"]
+description = "Mohawk Inference Engine - High-performance distributed inference with Ghost-Link networking"
+license = "MIT"
+
+[dependencies]
+# Core Ghost-Link networking
+ghostlink-core = { workspace = true }
+ghost-link = { workspace = true }
+
+# Async runtime
+tokio = { workspace = true }
+
+# Error handling
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# HTTP server for API
+axum = "0.7"
+tower = "0.4"
+hyper = "1.0"
+
+# Model inference (ONNX Runtime)
+ort = { version = "2.0", features = ["download-binaries"] }
+
+# Metrics and monitoring
+prometheus = "0.13"
+
+# Random
+rand = { workspace = true }
+
+# CPU detection
+num_cpus = "1.16"
+
+# CLI
+clap = { version = "4.4", features = ["derive"] }
+
+[dev-dependencies]
+tokio-test = "0.4"
+criterion = { workspace = true }
+
+[[bin]]
+name = "mohawk-engine"
+path = "src/main.rs"
+
+[lib]
+name = "mohawk_engine"
+path = "src/lib.rs"
