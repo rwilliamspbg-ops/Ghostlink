@@ -98,6 +98,89 @@ impl TryFrom<u8> for FrameKind {
     }
 }
 
+/// Health check frame for network heartbeats
+#[derive(Clone, Debug)]
+pub struct HealthCheckFrame {
+    /// Node ID sending the health check
+    pub node_id: String,
+    /// Timestamp in seconds since epoch
+    pub timestamp_secs: u64,
+    /// Latency in microseconds
+    pub latency_us: u32,
+    /// Delivery ratio (0-100 scale, will be converted to 0.0-1.0)
+    pub delivery_ratio: u8,
+}
+
+impl HealthCheckFrame {
+    /// Create a new health check frame
+    pub fn new(node_id: impl Into<String>, latency_us: u32, delivery_ratio: f32) -> Self {
+        Self {
+            node_id: node_id.into(),
+            timestamp_secs: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs(),
+            latency_us,
+            delivery_ratio: (delivery_ratio * 100.0).clamp(0.0, 100.0) as u8,
+        }
+    }
+
+    /// Encode health check frame to bytes
+    pub fn encode(&self) -> Vec<u8> {
+        let mut payload = Vec::with_capacity(1 + self.node_id.len() + 8 + 4 + 1);
+
+        // Node ID length + ID
+        payload.push(self.node_id.len() as u8);
+        payload.extend_from_slice(self.node_id.as_bytes());
+
+        // Timestamp (u64 LE)
+        payload.extend_from_slice(&self.timestamp_secs.to_le_bytes());
+
+        // Latency (u32 LE)
+        payload.extend_from_slice(&self.latency_us.to_le_bytes());
+
+        // Delivery ratio (u8)
+        payload.push(self.delivery_ratio);
+
+        payload
+    }
+
+    /// Decode health check frame from bytes
+    pub fn decode(bytes: &[u8]) -> Result<Self, String> {
+        if bytes.is_empty() {
+            return Err("Empty health check frame".into());
+        }
+
+        let node_id_len = bytes[0] as usize;
+        if bytes.len() < 1 + node_id_len + 8 + 4 + 1 {
+            return Err("Health check frame too short".into());
+        }
+
+        let node_id = String::from_utf8(bytes[1..1 + node_id_len].to_vec())
+            .map_err(|_| "Invalid node ID UTF-8")?;
+
+        let offset = 1 + node_id_len;
+        let timestamp_secs = u64::from_le_bytes(
+            bytes[offset..offset + 8]
+                .try_into()
+                .map_err(|_| "Invalid health check timestamp")?,
+        );
+        let latency_us = u32::from_le_bytes(
+            bytes[offset + 8..offset + 12]
+                .try_into()
+                .map_err(|_| "Invalid health check latency")?,
+        );
+        let delivery_ratio = bytes[offset + 12];
+
+        Ok(Self {
+            node_id,
+            timestamp_secs,
+            latency_us,
+            delivery_ratio,
+        })
+    }
+}
+
 /// Node resources structure for discovery frames
 #[derive(Clone, Debug, Default)]
 pub struct NodeResources {
@@ -462,5 +545,48 @@ mod tests {
                 assert_eq!(enc1, enc2, "Encoding should be deterministic");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests_health_check_frame {
+    use super::*;
+
+    #[test]
+    fn test_health_check_frame_encode_decode() {
+        let frame = HealthCheckFrame::new("node-01", 1200, 0.99);
+        let encoded = frame.encode();
+        let decoded = HealthCheckFrame::decode(&encoded).unwrap();
+
+        assert_eq!(decoded.node_id, "node-01");
+        assert_eq!(decoded.latency_us, 1200);
+        assert!(decoded.delivery_ratio >= 98 && decoded.delivery_ratio <= 100);
+    }
+
+    #[test]
+    fn test_health_check_frame_round_trip() {
+        let original = HealthCheckFrame {
+            node_id: "test-node".to_string(),
+            timestamp_secs: 1234567890,
+            latency_us: 5000,
+            delivery_ratio: 85,
+        };
+
+        let encoded = original.encode();
+        let decoded = HealthCheckFrame::decode(&encoded).unwrap();
+
+        assert_eq!(decoded.node_id, original.node_id);
+        assert_eq!(decoded.timestamp_secs, original.timestamp_secs);
+        assert_eq!(decoded.latency_us, original.latency_us);
+        assert_eq!(decoded.delivery_ratio, original.delivery_ratio);
+    }
+
+    #[test]
+    fn test_health_check_frame_invalid_data() {
+        // Empty frame
+        assert!(HealthCheckFrame::decode(&[]).is_err());
+
+        // Too short frame
+        assert!(HealthCheckFrame::decode(&[5, 1, 2, 3]).is_err());
     }
 }

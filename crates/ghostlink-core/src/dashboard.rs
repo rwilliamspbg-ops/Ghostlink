@@ -160,7 +160,7 @@ impl AsciiDashboard {
             if let Some((start, end)) = node.streaming_layers {
                 output.push_str(&format!(
                     "| >>> Streaming Layers {:>2}-{:>2} >>> [AF_XDP: {:>4.1} Gbps / {:>3.1}μs] |\n",
-                    start, end, 9.8, 1.2
+                    start, end, node.af_xdp_gbps, node.latency_micros
                 ));
             }
         }

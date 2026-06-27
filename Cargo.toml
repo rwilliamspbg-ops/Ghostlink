@@ -1,7 +1,48 @@
 [workspace]
-members = ["crates/ghost-link", "crates/ghostlink-core"]
+members = [
+    "crates/ghost-link", 
+    "crates/ghostlink-core",
+    "crates/mohawk-engine",
+    "crates/mohawk-gui"
+]
 resolver = "2"
 
 [workspace.package]
 edition = "2021"
 license = "MIT"
+
+[workspace.dependencies]
+# Core networking
+ghostlink-core = { path = "crates/ghostlink-core", version = "0.1.0-alpha.0" }
+ghost-link = { path = "crates/ghost-link", version = "0.1.0-alpha.0" }
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# Error handling
+anyhow = "1"
+thiserror = "2"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = "0.3"
+
+# Terminal UI
+ratatui = "0.28"
+crossterm = "0.29.0"
+
+# Zero-copy
+pin-utils = "0.1"
+
+# Checksums
+crc32fast = "1.5"
+
+# Random
+rand = "0.10.1"
+
+# Arc swap
+arc-swap = "1"
+
+# Testing
+criterion = "0.5"
+proptest = "1.4"
