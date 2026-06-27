@@ -63,10 +63,16 @@ Computes distribution plans and autotuned rebalance settings based on the runtim
 
 Applies runtime-aware health thresholds and fault detection settings.
 
+- computes health from collected node metrics (latency, delivery ratio)
+- marks fresh nodes as `Unknown` until samples are available
+- folds heartbeat timeout into failure decisions
+- keeps cluster node status aligned with health outcomes
+
 ## Validation Commands
 
 ```bash
 cargo test --workspace
 cargo test -p ghostlink-core --test integration
 cargo clippy --workspace --all-targets -- -D warnings
+python3 scripts/verify_hf_models.py
 ```

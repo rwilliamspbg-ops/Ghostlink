@@ -147,36 +147,64 @@ impl NetworkHealthMonitor {
         let now = Instant::now();
 
         for node in self.cluster.nodes_snapshot().iter() {
-            // Simulate health check inputs (production would gather real probe results)
-            let latency_us = 1.0 + (rand::random::<f32>() * 0.5);
-            let delivery_ratio = 0.98 - (rand::random::<f32>() * 0.05);
+            let timeout = self.cluster.check_heartbeat_timeout(&node.id);
+            let result = if let Some(metrics) = self.cluster.get_metrics(&node.id) {
+                let latency_us = if metrics.latency_samples > 0 {
+                    metrics.avg_latency_us
+                } else {
+                    0.0
+                };
 
-            if self
-                .cluster
-                .get_metrics_mut(&node.id, |m| {
-                    m.record_latency(latency_us);
-                    m.record_delivery_ratio(delivery_ratio);
-                })
-                .is_some()
-            {
-                let result = HealthCheckResult {
+                let delivery_ratio = if metrics.delivery_ratio_initialized {
+                    metrics.delivery_ratio
+                } else {
+                    1.0
+                };
+
+                let status = if timeout || metrics.status == NodeStatus::Failed {
+                    HealthStatus::Failed
+                } else if metrics.latency_samples == 0 && !metrics.delivery_ratio_initialized {
+                    HealthStatus::Unknown
+                } else {
+                    self.get_health_status(latency_us, delivery_ratio)
+                };
+
+                HealthCheckResult {
                     node_id: node.id.clone(),
                     latency_us,
                     delivery_ratio,
-                    status: self.get_health_status(latency_us, delivery_ratio),
+                    status,
                     timestamp: now,
-                };
-
-                // Store recent check results (keep last 10)
-                let mut checks = self.recent_checks.lock().unwrap();
-                if let Some(node_checks) = checks.get_mut(&node.id) {
-                    node_checks.push(result.clone());
-                    if node_checks.len() > 10 {
-                        node_checks.remove(0);
-                    }
-                } else {
-                    checks.insert(node.id.clone(), vec![result]);
                 }
+            } else {
+                HealthCheckResult {
+                    node_id: node.id.clone(),
+                    latency_us: 0.0,
+                    delivery_ratio: 1.0,
+                    status: HealthStatus::Unknown,
+                    timestamp: now,
+                }
+            };
+
+            // Keep cluster node status aligned with health checks.
+            self.cluster.get_metrics_mut(&node.id, |m| {
+                m.status = match result.status {
+                    HealthStatus::Healthy => NodeStatus::Active,
+                    HealthStatus::Degraded => NodeStatus::Degraded,
+                    HealthStatus::Failed => NodeStatus::Failed,
+                    HealthStatus::Unknown => m.status,
+                };
+            });
+
+            // Store recent check results (keep last 10)
+            let mut checks = self.recent_checks.lock().unwrap();
+            if let Some(node_checks) = checks.get_mut(&node.id) {
+                node_checks.push(result);
+                if node_checks.len() > 10 {
+                    node_checks.remove(0);
+                }
+            } else {
+                checks.insert(node.id.clone(), vec![result]);
             }
         }
 
@@ -213,6 +241,20 @@ impl NetworkHealthMonitor {
         checks.values().flat_map(|checks| checks.clone()).collect()
     }
 
+    /// Get the number of nodes whose latest health sample is healthy.
+    pub fn healthy_node_count(&self) -> usize {
+        let checks = self.recent_checks.lock().unwrap();
+        checks
+            .values()
+            .filter(|node_checks| {
+                node_checks
+                    .last()
+                    .map(|c| c.status == HealthStatus::Healthy)
+                    .unwrap_or(false)
+            })
+            .count()
+    }
+
     /// Check if node needs quantization fallback
     pub fn needs_quantization_fallback(&self, node_id: &str) -> bool {
         let checks = self.recent_checks.lock().unwrap();
@@ -244,7 +286,7 @@ impl NetworkHealthMonitor {
     pub fn get_health_summary(&self) -> String {
         let checks = self.recent_checks.lock().unwrap();
 
-        let total_nodes = checks.len();
+        let total_nodes = self.cluster.node_count();
         let healthy_count = checks
             .values()
             .filter(|node_checks| {
@@ -461,6 +503,20 @@ mod tests {
 
         let summary = monitor.get_health_summary();
         assert!(summary.contains("Total nodes: 2"));
+    }
+
+    #[test]
+    fn health_monitor_marks_fresh_nodes_unknown_without_samples() {
+        let cluster = Arc::new(ClusterState::new());
+        cluster.register(NodeResources::new("node-a", 24.0, 64.0, "8.9", None));
+
+        let monitor = NetworkHealthMonitor::new(cluster, HealthConfig::default());
+        monitor.check_all();
+
+        let node_health = monitor
+            .get_node_health("node-a")
+            .expect("expected health check result for node-a");
+        assert_eq!(node_health.status, HealthStatus::Unknown);
     }
 
     #[test]

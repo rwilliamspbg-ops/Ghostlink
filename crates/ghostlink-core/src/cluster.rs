@@ -246,6 +246,7 @@ impl ClusterState {
         let mut metrics = self.metrics.lock().unwrap();
 
         let id = node.id.clone();
+        let gpu_name = node.gpu_name.clone();
         let vram_gb = node.vram_gb;
         let system_memory_gb = node.system_memory_gb;
         let compute_capability = node.compute_capability.clone();
@@ -256,26 +257,29 @@ impl ClusterState {
             existing.vram_gb = vram_gb;
             existing.system_memory_gb = system_memory_gb;
             existing.compute_capability = compute_capability.clone();
+            existing.gpu_name = gpu_name.clone();
         } else {
             nodes.insert(id.clone(), node);
         }
 
         if let Some(existing_metrics) = metrics.get_mut(&id) {
+            existing_metrics.name = id.clone();
             existing_metrics.vram_gb = vram_gb;
             existing_metrics.total_vram_gb = vram_gb;
             existing_metrics.system_memory_gb = system_memory_gb;
             existing_metrics.compute_capability = compute_capability;
+            existing_metrics.gpu_name = gpu_name;
             existing_metrics.heartbeat_timeout = Duration::from_secs(5);
         } else {
-            metrics.insert(
-                id,
-                NodeMetrics::new(
-                    vram_gb,
-                    system_memory_gb,
-                    compute_capability,
-                    Duration::from_secs(5),
-                ),
+            let mut node_metrics = NodeMetrics::new(
+                vram_gb,
+                system_memory_gb,
+                compute_capability,
+                Duration::from_secs(5),
             );
+            node_metrics.name = id.clone();
+            node_metrics.gpu_name = gpu_name;
+            metrics.insert(id, node_metrics);
         }
 
         self.nodes_snapshot_dirty.store(true, Ordering::Release);
@@ -298,6 +302,11 @@ impl ClusterState {
     /// Get all nodes
     pub fn nodes(&self) -> Vec<NodeResources> {
         self.nodes_snapshot().as_ref().to_vec()
+    }
+
+    /// Get total number of registered nodes.
+    pub fn node_count(&self) -> usize {
+        self.nodes_snapshot().len()
     }
 
     /// Get a shared snapshot of all nodes

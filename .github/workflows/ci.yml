@@ -1,53 +1,88 @@
 name: CI
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - main
-      - test-suite-improvements
+      - docs/runtime-probe-docs
+      - 'release/**'
+      - 'hotfix/**'
+    paths:
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'crates/**'
+      - 'benches/**'
+      - 'scripts/**'
+      - 'docs/PERF_BASELINE.json'
+      - 'README.md'
+      - 'TESTING.md'
+      - '.github/workflows/ci.yml'
+      - '.github/workflows/production-gate.yml'
   pull_request:
     branches:
       - main
+    paths:
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'crates/**'
+      - 'benches/**'
+      - 'scripts/**'
+      - 'docs/PERF_BASELINE.json'
+      - 'README.md'
+      - 'TESTING.md'
+      - '.github/workflows/ci.yml'
+      - '.github/workflows/production-gate.yml'
 
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  format:
-    name: Format Check
+  docs:
+    name: Docs
+    uses: ./.github/workflows/docs.yml
+
+  perf-tooling-smoke:
+    name: Perf Tooling Smoke
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt
-      - run: cargo fmt --all --check
 
-  lint:
-    name: Lint (Clippy)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Drift Checker Schema Smoke
+        run: |
+          mkdir -p ./tmp
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
 
-  test-matrix:
-    name: Test (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-      fail-fast: false
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo test --workspace --verbose
-      - run: cargo test --doc
+          baseline = json.loads(Path("./docs/PERF_BASELINE.json").read_text(encoding="utf-8"))
+          modes = baseline.get("modes", {})
+          summary = {
+              mode: {
+                  "throughput_avg": float(values["throughput_avg"]),
+                  "p95_avg": float(values["p95_avg"]),
+              }
+              for mode, values in modes.items()
+          }
+
+          Path("./tmp/perf-summary-smoke.json").write_text(
+              json.dumps(summary, indent=2),
+              encoding="utf-8",
+          )
+          PY
+
+          python3 scripts/check_perf_drift.py \
+            --baseline ./docs/PERF_BASELINE.json \
+            --current ./tmp/perf-summary-smoke.json
+
+  production-gate:
+    name: Production Gate
+    uses: ./.github/workflows/production-gate.yml
 
   coverage:
     name: Code Coverage
@@ -58,19 +93,22 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Install tarpaulin
-        run: cargo install cargo-tarpaulin
+        run: cargo install cargo-tarpaulin --version 0.31.5 --locked
 
       - name: Generate coverage report
         run: |
           cargo tarpaulin --workspace --out Lcov --output-dir coverage \
-            --timeout 300 --exclude-files benches/* || true
+            --timeout 300 --exclude-files benches/*
+
+      - name: Verify coverage artifact
+        run: |
+          test -s ./coverage/lcov.info
 
       - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v3
+        uses: codecov/codecov-action@v4
         with:
-          files: ./coverage/cobertura.xml
+          files: ./coverage/lcov.info
           fail_ci_if_error: false
-        continue-on-error: true
 
       - name: Upload coverage artifacts
         if: always()
@@ -78,27 +116,4 @@ jobs:
         with:
           name: coverage-report
           path: coverage/
-          retention-days: 30
-
-  benchmarks:
-    name: Performance Benchmarks
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-
-      - name: Run criterion benchmarks
-        shell: bash
-        run: |
-          mkdir -p artifacts
-          cargo bench --package ghostlink-core --bench criterion \
-            -- --warm-up-time 1 --measurement-time 2 \
-            2>&1 | tee artifacts/benchmark.log || true
-
-      - name: Upload benchmark artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: benchmark-results
-          path: artifacts/benchmark.log
           retention-days: 30

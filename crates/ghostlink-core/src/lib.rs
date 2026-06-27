@@ -36,6 +36,7 @@ pub mod load_balance;
 pub mod planning;
 pub mod protocol;
 pub mod ring;
+pub mod runtime;
 pub mod xdp;
 
 // Re-export common types for convenience
@@ -52,3 +53,8 @@ pub use planning::{
 };
 pub use protocol::NodeResources;
 pub use ring::{RingConfig, SpscRingBuffer};
+pub use runtime::{
+    build_token_schedule, execute_pipeline, execute_pipeline_tcp_loopback,
+    execute_pipeline_tcp_loopback_with_config, DeviceKind, ExecutionResult, PipelinePlan,
+    StageExecutionStats, StagePlacement, TcpTransportConfig, TokenStep,
+};

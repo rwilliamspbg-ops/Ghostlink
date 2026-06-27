@@ -34,10 +34,13 @@
 cargo test --workspace
 cargo test -p ghostlink-core --test integration
 cargo clippy --workspace --all-targets -- -D warnings
+python3 scripts/verify_hf_models.py
 ```
 
 ## Current Notes
 
 - integration tests are package-owned under `crates/ghostlink-core/tests/`
+- current validated workspace total is 106 passing tests
 - coverage is not currently published as a measured value
 - full hardware probing depends on the tools available on the host
+- model availability/download checks can be run against Hugging Face with `scripts/verify_hf_models.py`

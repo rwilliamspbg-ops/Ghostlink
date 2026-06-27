@@ -172,7 +172,11 @@ pub fn detect_runtime_profile_with_mode(
     let vram_gb = detect_gpu_vram_gb(gpu_probe.vram_gb).unwrap_or(0.0);
     let gpu_name = detect_gpu_name(gpu_probe.gpu_name.clone());
     let compute_capability = detect_compute_capability(gpu_probe.compute_capability.clone());
-    let acceleration_mode = detect_acceleration_mode(vram_gb, gpu_name.as_deref());
+    let acceleration_mode = detect_acceleration_mode(
+        vram_gb,
+        gpu_name.as_deref(),
+        Some(compute_capability.as_str()),
+    );
     let xdp_supported = cfg!(target_os = "linux");
     let detection_source = gpu_probe
         .detection_source
@@ -481,8 +485,12 @@ fn infer_compute_capability_from_name(name: &str) -> String {
     }
 }
 
-fn detect_acceleration_mode(vram_gb: f32, gpu_name: Option<&str>) -> AccelerationMode {
-    if vram_gb > 0.0 || gpu_name.is_some() {
+fn detect_acceleration_mode(
+    vram_gb: f32,
+    gpu_name: Option<&str>,
+    compute_capability: Option<&str>,
+) -> AccelerationMode {
+    if has_strong_gpu_signal(vram_gb, gpu_name, compute_capability) {
         return AccelerationMode::Gpu;
     }
 
@@ -502,6 +510,56 @@ fn detect_acceleration_mode(vram_gb: f32, gpu_name: Option<&str>) -> Acceleratio
     }
 
     AccelerationMode::Generic
+}
+
+fn has_strong_gpu_signal(
+    vram_gb: f32,
+    gpu_name: Option<&str>,
+    compute_capability: Option<&str>,
+) -> bool {
+    if vram_gb > 0.0 {
+        return true;
+    }
+
+    if let Some(capability) = compute_capability {
+        let lowered = capability.trim().to_ascii_lowercase();
+        if !lowered.is_empty() && lowered != "cpu" && lowered != "gpu" {
+            return true;
+        }
+    }
+
+    if let Some(name) = gpu_name {
+        let lowered = name.trim().to_ascii_lowercase();
+        if lowered.is_empty() || lowered == "detected gpu" {
+            return false;
+        }
+
+        if lowered
+            .split(':')
+            .all(|part| !part.is_empty() && part.chars().all(|c| c.is_ascii_hexdigit()))
+        {
+            return false;
+        }
+
+        return [
+            "nvidia",
+            "geforce",
+            "rtx",
+            "tesla",
+            "quadro",
+            "radeon",
+            "amd",
+            "intel arc",
+            "arc ",
+            "apple m",
+            "mali",
+            "adreno",
+        ]
+        .iter()
+        .any(|token| lowered.contains(token));
+    }
+
+    false
 }
 
 fn recommend_worker_count(
@@ -620,6 +678,27 @@ mod tests {
     fn infers_compute_capability_from_gpu_name() {
         assert_eq!(infer_compute_capability_from_name("RTX 4090"), "8.9");
         assert_eq!(infer_compute_capability_from_name("Arc A770"), "xe");
+    }
+
+    #[test]
+    fn acceleration_detection_rejects_weak_placeholder_signals() {
+        let mode = detect_acceleration_mode(0.0, Some("1414:6"), Some("gpu"));
+        assert_ne!(mode, AccelerationMode::Gpu);
+
+        let mode = detect_acceleration_mode(0.0, Some("Detected GPU"), Some("gpu"));
+        assert_ne!(mode, AccelerationMode::Gpu);
+    }
+
+    #[test]
+    fn acceleration_detection_accepts_real_gpu_signals() {
+        assert_eq!(
+            detect_acceleration_mode(0.0, Some("NVIDIA GeForce RTX 4090"), Some("8.9")),
+            AccelerationMode::Gpu
+        );
+        assert_eq!(
+            detect_acceleration_mode(24.0, Some("unknown"), Some("gpu")),
+            AccelerationMode::Gpu
+        );
     }
 
     #[test]

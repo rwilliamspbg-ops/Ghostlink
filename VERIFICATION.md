@@ -7,7 +7,10 @@ The workspace currently validates successfully with:
 ```bash
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
+python3 scripts/verify_hf_models.py
 ```
+
+GitHub Actions now also exposes split workflow status for docs, lint, tests, and nightly Hugging Face model verification.
 
 ## Current Structure
 
@@ -39,7 +42,8 @@ crates/ghostlink-core/tests/
 
 ## Current Test Totals
 
-- 66 library tests
+- 3 CLI tests
+- 69 library tests
 - 7 shared integration-target tests
 - 27 integration tests
-- 100 total passing tests
+- 106 total passing tests
