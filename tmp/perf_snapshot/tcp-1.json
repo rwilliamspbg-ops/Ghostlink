@@ -1,0 +1,12 @@
+{
+  "transport_mode": "tcp",
+  "token_count": 256,
+  "micro_batch": 4,
+  "batch_count": 64,
+  "stage_count": 5,
+  "total_time_ms": 3.616700,
+  "throughput_tokens_per_sec": 70782.757812,
+  "avg_token_latency_ms": 3.467897,
+  "p95_token_latency_ms": 3.541600,
+  "stage_stats": [{"stage_idx":0,"processed_batches":64,"avg_compute_ms":0.003937,"avg_recv_wait_ms":0.000187,"avg_send_wait_ms":0.000086},{"stage_idx":1,"processed_batches":64,"avg_compute_ms":0.004167,"avg_recv_wait_ms":0.030252,"avg_send_wait_ms":0.000512},{"stage_idx":2,"processed_batches":64,"avg_compute_ms":0.001080,"avg_recv_wait_ms":0.037264,"avg_send_wait_ms":0.000125},{"stage_idx":3,"processed_batches":64,"avg_compute_ms":0.002803,"avg_recv_wait_ms":0.040577,"avg_send_wait_ms":0.000117},{"stage_idx":4,"processed_batches":64,"avg_compute_ms":0.002798,"avg_recv_wait_ms":0.045253,"avg_send_wait_ms":0.000556}]
+}
