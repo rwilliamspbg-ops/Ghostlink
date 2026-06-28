@@ -68,7 +68,9 @@ jobs:
           GHOSTLINK_TCP_RECONNECT_BACKOFF_MS: "10"
           GHOSTLINK_TCP_AUTH_TOKEN: "ci-production-gate-token"
           GHOSTLINK_FLOW_METRICS_JSON: ./tmp/flow-metrics-tcp.json
-        run: cargo run -p ghost-link -- flow iprada-16gb zenbook-32gb 32 32 128 4 tcp
+        run: |
+          mkdir -p ./tmp
+          cargo run -p ghost-link -- flow iprada-16gb zenbook-32gb 32 32 128 4 tcp
 
       - name: Validate Runtime SLO (TCP)
         run: |
@@ -80,7 +82,9 @@ jobs:
       - name: Runtime Smoke (In-Memory)
         env:
           GHOSTLINK_FLOW_METRICS_JSON: ./tmp/flow-metrics-inmem.json
-        run: cargo run -p ghost-link -- flow iprada-16gb zenbook-32gb 32 32 128 4 inmem
+        run: |
+          mkdir -p ./tmp
+          cargo run -p ghost-link -- flow iprada-16gb zenbook-32gb 32 32 128 4 inmem
 
       - name: Validate Runtime SLO (In-Memory)
         run: |
