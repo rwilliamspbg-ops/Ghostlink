@@ -1168,7 +1168,10 @@ fn print_gui_diagnostics(strict: bool) -> Result<()> {
     println!("GUI entry: {}", gui_entry.display());
     println!("Requirements: {}", requirements.display());
     println!("Python executable: {}", python);
-    println!("Display session: {}", if has_display { "detected" } else { "none" });
+    println!(
+        "Display session: {}",
+        if has_display { "detected" } else { "none" }
+    );
 
     if categories.is_empty() {
         println!("\nDiagnostics: PASS");

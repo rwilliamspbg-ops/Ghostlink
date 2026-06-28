@@ -1158,8 +1158,7 @@ mod tests {
             payload: vec![1.0, 2.0],
         };
         let mut encoded = Vec::new();
-        write_transport_batch(&mut encoded, &batch, 1, Some("token"))
-            .expect("encode frame");
+        write_transport_batch(&mut encoded, &batch, 1, Some("token")).expect("encode frame");
 
         let mut cursor = Cursor::new(encoded);
         let err = read_transport_batch(&mut cursor, 0, Some("token"))
