@@ -7,6 +7,7 @@
 //! - Fault detection and recovery
 
 use std::collections::HashMap;
+use std::net::{SocketAddr, TcpStream};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -124,6 +125,8 @@ pub struct NetworkHealthMonitor {
     last_check: Arc<Mutex<Option<Instant>>>,
     /// Recent check results per node
     recent_checks: Arc<Mutex<HashMap<String, Vec<HealthCheckResult>>>>,
+    /// Optional per-node TCP probe targets for active liveness checks.
+    tcp_probe_targets: Arc<Mutex<HashMap<String, SocketAddr>>>,
 }
 
 impl NetworkHealthMonitor {
@@ -134,6 +137,7 @@ impl NetworkHealthMonitor {
             config,
             last_check: Arc::new(Mutex::new(None)),
             recent_checks: Arc::new(Mutex::new(HashMap::new())),
+            tcp_probe_targets: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -142,12 +146,36 @@ impl NetworkHealthMonitor {
         Self::new(cluster, HealthConfig::autotuned(profile))
     }
 
+    /// Register a node-specific TCP probe target.
+    pub fn register_tcp_probe_target(&self, node_id: impl Into<String>, target: SocketAddr) {
+        self.tcp_probe_targets
+            .lock()
+            .unwrap()
+            .insert(node_id.into(), target);
+    }
+
+    /// Remove a TCP probe target for a node.
+    pub fn clear_tcp_probe_target(&self, node_id: &str) -> bool {
+        self.tcp_probe_targets
+            .lock()
+            .unwrap()
+            .remove(node_id)
+            .is_some()
+    }
+
+    fn run_active_tcp_probe(&self, node_id: &str) -> Option<bool> {
+        let target = self.tcp_probe_targets.lock().unwrap().get(node_id).copied();
+
+        target.map(|addr| TcpStream::connect_timeout(&addr, self.config.timeout).is_ok())
+    }
+
     /// Run health check on all nodes
     pub fn check_all(&self) {
         let now = Instant::now();
 
         for node in self.cluster.nodes_snapshot().iter() {
             let timeout = self.cluster.check_heartbeat_timeout(&node.id);
+            let tcp_probe_ok = self.run_active_tcp_probe(&node.id);
             let result = if let Some(metrics) = self.cluster.get_metrics(&node.id) {
                 let latency_us = if metrics.latency_samples > 0 {
                     metrics.avg_latency_us
@@ -161,7 +189,10 @@ impl NetworkHealthMonitor {
                     1.0
                 };
 
-                let status = if timeout || metrics.status == NodeStatus::Failed {
+                let status = if tcp_probe_ok == Some(false)
+                    || timeout
+                    || metrics.status == NodeStatus::Failed
+                {
                     HealthStatus::Failed
                 } else if metrics.latency_samples == 0 && !metrics.delivery_ratio_initialized {
                     HealthStatus::Unknown
@@ -169,9 +200,15 @@ impl NetworkHealthMonitor {
                     self.get_health_status(latency_us, delivery_ratio)
                 };
 
+                let measured_latency_us = if tcp_probe_ok == Some(false) {
+                    self.config.timeout.as_secs_f32() * 1_000_000.0
+                } else {
+                    latency_us
+                };
+
                 HealthCheckResult {
                     node_id: node.id.clone(),
-                    latency_us,
+                    latency_us: measured_latency_us,
                     delivery_ratio,
                     status,
                     timestamp: now,
@@ -489,6 +526,7 @@ mod tests {
     use super::*;
     use crate::cluster::ClusterState;
     use crate::protocol::NodeResources;
+    use std::net::TcpListener;
     use std::sync::Arc;
     use std::time::Duration;
 
@@ -621,5 +659,47 @@ mod tests {
         let config = HealthConfig::autotuned(&profile);
         assert!(config.healthy_latency_us < 10.0);
         assert!(config.healthy_delivery_ratio > 0.95);
+    }
+
+    #[test]
+    fn tcp_probe_target_can_mark_node_failed_when_unreachable() {
+        let cluster = Arc::new(ClusterState::new());
+        cluster.register(NodeResources::new("node-a", 24.0, 64.0, "8.9", None));
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind probe listener");
+        let addr = listener.local_addr().expect("listener local addr");
+        drop(listener);
+
+        let monitor = NetworkHealthMonitor::new(cluster.clone(), HealthConfig::default());
+        monitor.register_tcp_probe_target("node-a", addr);
+        monitor.check_all();
+
+        let node_health = monitor
+            .get_node_health("node-a")
+            .expect("expected health check result for node-a");
+        assert_eq!(node_health.status, HealthStatus::Failed);
+    }
+
+    #[test]
+    fn tcp_probe_target_healthy_when_reachable() {
+        let cluster = Arc::new(ClusterState::new());
+        cluster.register(NodeResources::new("node-a", 24.0, 64.0, "8.9", None));
+
+        cluster.get_metrics_mut("node-a", |metrics| {
+            metrics.record_latency(2.0);
+            metrics.record_delivery_ratio(0.99);
+        });
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind probe listener");
+        let addr = listener.local_addr().expect("listener local addr");
+
+        let monitor = NetworkHealthMonitor::new(cluster.clone(), HealthConfig::default());
+        monitor.register_tcp_probe_target("node-a", addr);
+        monitor.check_all();
+
+        let node_health = monitor
+            .get_node_health("node-a")
+            .expect("expected health check result for node-a");
+        assert_eq!(node_health.status, HealthStatus::Healthy);
     }
 }

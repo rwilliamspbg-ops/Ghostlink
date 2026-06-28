@@ -1,0 +1,28 @@
+{
+  "profile": "flow_exec512_mb8_stress_v1",
+  "description": "Stress baseline for 512-token / micro-batch 8 flow runs on docs/runtime-probe-docs",
+  "drift_policy": {
+    "max_throughput_drop_ratio": 0.30,
+    "max_p95_rise_ratio": 0.30
+  },
+  "modes": {
+    "tcp": {
+      "throughput_avg": 71272.78,
+      "p95_avg": 7.06,
+      "wall_avg": 7.41,
+      "drift_policy": {
+        "max_throughput_drop_ratio": 0.30,
+        "max_p95_rise_ratio": 0.30
+      }
+    },
+    "inmem": {
+      "throughput_avg": 159996.96,
+      "p95_avg": 2.94,
+      "wall_avg": 3.36,
+      "drift_policy": {
+        "max_throughput_drop_ratio": 0.35,
+        "max_p95_rise_ratio": 0.35
+      }
+    }
+  }
+}

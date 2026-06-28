@@ -27,6 +27,12 @@ The workspace root is a virtual Cargo workspace, so integration tests live under
 ## Validated Commands
 
 ```bash
+# Build full local test environment (Python deps + GUI readiness checks)
+scripts/setup_full_test_env.sh
+
+# Run complete validation bundle (tests, clippy, perf drift, strict GUI readiness)
+scripts/run_full_validation.sh
+
 # Full workspace validation
 cargo test --workspace
 
@@ -35,14 +41,45 @@ GHOSTLINK_TCP_AUTH_TOKEN=local-gate cargo run -p ghost-link -- flow iprada-16gb 
 cargo run -p ghost-link -- flow iprada-16gb zenbook-32gb 32 32 128 4 inmem
 
 # Export runtime metrics in JSON for SLO parsing/automation
+# JSON includes stage bridge transport timing fields (avg_bridge_write_ms / avg_bridge_read_ms)
 GHOSTLINK_FLOW_METRICS_JSON=./tmp/flow-metrics.json cargo run -p ghost-link -- flow iprada-16gb zenbook-32gb 32 32 128 4 tcp
 python3 scripts/validate_flow_metrics.py --file ./tmp/flow-metrics.json --transport tcp --profile production
 
 # Generate repeatable multi-run snapshot summaries
-python3 scripts/flow_perf_snapshot.py --runs 5 --output-dir ./tmp/perf_snapshot
+# Warmup runs are excluded from summary but help reduce cold-start variance
+python3 scripts/flow_perf_snapshot.py --runs 5 --warmup-runs 1 --output-dir ./tmp/perf_snapshot
 python3 scripts/check_perf_drift.py --baseline ./docs/PERF_BASELINE.json --current ./tmp/perf_snapshot/summary.json
+
+# Stress profile validation (512 tokens / micro-batch 8)
+python3 scripts/flow_perf_snapshot.py --runs 12 --warmup-runs 2 --modes tcp inmem --exec-tokens 512 --micro-batch 8 --output-dir ./tmp/perf_snapshot_stress
+python3 scripts/check_perf_drift.py --baseline ./docs/PERF_BASELINE_STRESS.json --current ./tmp/perf_snapshot_stress/summary.json
+
+# Stage-level percentile analysis for bridge/read/write waits
+python3 scripts/analyze_flow_stage_metrics.py --glob './tmp/perf_snapshot_stress/tcp-*.json'
 # Optional overrides for temporary policy experiments
 python3 scripts/check_perf_drift.py --baseline ./docs/PERF_BASELINE.json --current ./tmp/perf_snapshot/summary.json --max-throughput-drop-ratio 0.30 --max-p95-rise-ratio 0.60
+
+# Optional TCP inflight autotuning sweep for the current host profile
+GHOSTLINK_TCP_AUTOTUNE=1 GHOSTLINK_TCP_AUTOTUNE_RUNS=3 GHOSTLINK_TCP_AUTOTUNE_CANDIDATES=32,64,128,256 \
+	cargo run -p ghost-link -- flow iprada-16gb zenbook-32gb 32 32 128 4 tcp
+
+# Optional persistent autotune cache for repeated runs on same plan/profile
+GHOSTLINK_TCP_AUTOTUNE=1 GHOSTLINK_TCP_AUTOTUNE_CACHE=./tmp/tcp_autotune_cache.tsv \
+	cargo run -p ghost-link -- flow iprada-16gb zenbook-32gb 32 32 128 4 tcp
+
+# Refresh cached autotune selection when retuning after environment changes
+GHOSTLINK_TCP_AUTOTUNE=1 GHOSTLINK_TCP_AUTOTUNE_REFRESH=1 \
+	cargo run -p ghost-link -- flow iprada-16gb zenbook-32gb 32 32 128 4 tcp
+
+# Enforce stage-tail SLOs across snapshot files
+python3 scripts/validate_stage_tail_metrics.py --glob './tmp/perf_snapshot/tcp-*.json'
+
+# Enforce rollout canary guardrails from summary metrics
+python3 scripts/validate_flow_canary.py --summary ./tmp/perf_snapshot/summary.json --profile production
+
+# GUI readiness and detailed diagnostics
+cargo run -p ghost-link -- gui-check --strict
+GHOSTLINK_GUI_DIAG_JSON=./tmp/gui-diag.json cargo run -p ghost-link -- gui-diagnose --strict
 
 # Package-owned integration suite
 cargo test -p ghostlink-core --test integration
@@ -55,6 +92,9 @@ python3 scripts/verify_hf_models.py
 
 # Run criterion benchmarks
 cargo bench -p ghostlink-core --bench criterion
+
+# Export criterion benchmark means for trend artifact publication
+python3 scripts/summarize_criterion_report.py --criterion-root target/criterion --output artifacts/criterion-summary.json
 ```
 
 ## Current Counts

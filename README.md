@@ -52,8 +52,16 @@ cargo run -p ghost-link -- plan
 # Emit a join frame for a specific node ID
 cargo run -p ghost-link -- join node-02
 
+# Start a UDP discovery responder (service loop)
+cargo run -p ghost-link -- listen local-node
+
 # Render the sample dashboard
 cargo run -p ghost-link -- dashboard
+
+# Launch vendored Mohawk GUI (requires Python + PyQt6 deps)
+python3 -m pip install -r third_party/mohawk_gui/requirements.txt
+# Linux containers may also require: sudo apt-get install -y libgl1
+cargo run -p ghost-link -- gui --host localhost --port 8003
 
 # Detect the local runtime profile using the fast cached probe path
 cargo run -p ghost-link -- probe local-node fast
@@ -70,13 +78,29 @@ cargo run -p ghost-link -- flow iprada-16gb zenbook-32gb 32 32 128 4 tcp
 cargo run -p ghost-link -- flow iprada-16gb zenbook-32gb 32 32 128 4 inmem
 
 # TCP transport hardening knobs
-GHOSTLINK_TCP_MAX_INFLIGHT=32 \
+GHOSTLINK_TCP_MAX_INFLIGHT=256 \
 GHOSTLINK_TCP_RECONNECT_ATTEMPTS=3 \
 GHOSTLINK_TCP_RECONNECT_BACKOFF_MS=10 \
 GHOSTLINK_TCP_AUTH_TOKEN=example-token \
 cargo run -p ghost-link -- flow iprada-16gb zenbook-32gb 32 32 128 4 tcp
 
+# Optional: quick startup sweep to auto-select max inflight for this host
+GHOSTLINK_TCP_AUTOTUNE=1 \
+GHOSTLINK_TCP_AUTOTUNE_RUNS=3 \
+GHOSTLINK_TCP_AUTOTUNE_CANDIDATES=32,64,128,256 \
+cargo run -p ghost-link -- flow iprada-16gb zenbook-32gb 32 32 128 4 tcp
+
+# Optional: persist autotune choice and reuse by plan/profile key
+GHOSTLINK_TCP_AUTOTUNE=1 \
+GHOSTLINK_TCP_AUTOTUNE_CACHE=./tmp/tcp_autotune_cache.tsv \
+cargo run -p ghost-link -- flow iprada-16gb zenbook-32gb 32 32 128 4 tcp
+
+# Force a cache refresh during rollout validation
+GHOSTLINK_TCP_AUTOTUNE=1 GHOSTLINK_TCP_AUTOTUNE_REFRESH=1 \
+cargo run -p ghost-link -- flow iprada-16gb zenbook-32gb 32 32 128 4 tcp
+
 # Emit machine-readable runtime telemetry for dashboards/CI parsing
+# Includes per-stage compute/wait plus bridge write/read timing metrics
 GHOSTLINK_FLOW_METRICS_JSON=./tmp/flow-metrics.json \
 cargo run -p ghost-link -- flow iprada-16gb zenbook-32gb 32 32 128 4 tcp
 
@@ -87,12 +111,27 @@ python3 scripts/validate_flow_metrics.py \
 	--profile production
 
 # Generate repeatable perf snapshots for tcp/inmem and export summary JSON
-python3 scripts/flow_perf_snapshot.py --runs 5 --output-dir ./tmp/perf_snapshot
+# Warmup runs reduce cold-start noise and are excluded from summary statistics.
+python3 scripts/flow_perf_snapshot.py --runs 5 --warmup-runs 1 --output-dir ./tmp/perf_snapshot
 
 # Compare snapshot against committed baseline and fail on relative regressions
 python3 scripts/check_perf_drift.py \
 	--baseline ./docs/PERF_BASELINE.json \
 	--current ./tmp/perf_snapshot/summary.json
+
+# Stress profile baseline (512 tokens, micro-batch 8)
+python3 scripts/check_perf_drift.py \
+	--baseline ./docs/PERF_BASELINE_STRESS.json \
+	--current ./tmp/perf_snapshot_stress/summary.json
+
+# Analyze per-stage bridge timing distributions across runs
+python3 scripts/analyze_flow_stage_metrics.py --glob './tmp/perf_snapshot_stress/tcp-*.json'
+
+# Enforce stage-tail SLOs (p95) for transport bridge/wait timing
+python3 scripts/validate_stage_tail_metrics.py --glob './tmp/perf_snapshot_stress/tcp-*.json'
+
+# Enforce canary guardrails from summary (throughput, tail latency, spread)
+python3 scripts/validate_flow_canary.py --summary ./tmp/perf_snapshot_stress/summary.json --profile stress
 
 # Optional: temporarily override thresholds instead of baseline policy defaults
 python3 scripts/check_perf_drift.py \
@@ -107,7 +146,13 @@ python3 scripts/verify_hf_models.py
 
 # Verify specific model repos and file presence/downloadability
 python3 scripts/verify_hf_models.py --repo mistralai/Mistral-7B-v0.1 --file config.json
+
+# Export Criterion means for trend dashboards/artifacts
+python3 scripts/summarize_criterion_report.py --criterion-root target/criterion --output artifacts/criterion-summary.json
 ```
+
+The Mohawk GUI sources are vendored under [third_party/mohawk_gui](third_party/mohawk_gui). Use the `ghost-link gui` command to launch it from this repository.
+Use `ghost-link gui-check` for readiness checks and `ghost-link gui-diagnose --strict` for categorized failure diagnostics suitable for CI artifacts.
 
 Fast mode uses cheap local signals and a short-lived cache. Full mode enables deeper hardware probing, including external tools when they are available on the host.
 
@@ -192,7 +237,7 @@ for mode in tcp inmem; do
 done
 
 # Equivalent helper command
-python3 scripts/flow_perf_snapshot.py --runs 5 --output-dir ./tmp/perf_snapshot
+python3 scripts/flow_perf_snapshot.py --runs 5 --warmup-runs 1 --output-dir ./tmp/perf_snapshot
 ```
 
 ### Baseline (Before Transport Batching)

@@ -158,12 +158,8 @@ impl NodeResources {
         let mut payload = Vec::with_capacity(payload_len);
         payload.push(id_bytes.len() as u8);
         payload.extend_from_slice(id_bytes);
-        payload.extend_from_slice(unsafe {
-            std::slice::from_raw_parts(&self.vram_gb as *const f32 as *const u8, 4)
-        });
-        payload.extend_from_slice(unsafe {
-            std::slice::from_raw_parts(&self.system_memory_gb as *const f32 as *const u8, 4)
-        });
+        payload.extend_from_slice(&self.vram_gb.to_le_bytes());
+        payload.extend_from_slice(&self.system_memory_gb.to_le_bytes());
         payload.push(cc_bytes.len() as u8);
         payload.extend_from_slice(cc_bytes);
 
@@ -180,61 +176,91 @@ impl NodeResources {
 
     /// Deserialize node resources from binary payload
     pub fn decode_payload(payload: &[u8]) -> Result<Self, String> {
-        if payload.len() < 16 {
+        // Minimum payload: id_len(1) + vram(4) + mem(4) + cc_len(1) + has_gpu_name(1)
+        if payload.len() < 11 {
             return Err("payload too short".into());
         }
 
-        // Read ID length
-        let id_len = payload[0] as usize;
-        if id_len > payload.len() - 4 {
-            return Err("invalid ID length".into());
-        }
+        let mut cursor = 0usize;
 
         // Read ID
-        let id = unsafe { std::str::from_utf8_unchecked(&payload[1..1 + id_len]) };
+        let id_len = *payload
+            .get(cursor)
+            .ok_or_else(|| "missing ID length".to_string())? as usize;
+        cursor += 1;
+        let id_slice = payload
+            .get(cursor..cursor + id_len)
+            .ok_or_else(|| "invalid ID length".to_string())?;
+        let id = std::str::from_utf8(id_slice)
+            .map_err(|_| "ID contains invalid UTF-8".to_string())?
+            .to_string();
+        cursor += id_len;
 
         // Read VRAM (little-endian f32)
-        let vram_bytes: [u8; 4] = payload[1 + id_len..5 + id_len].try_into().unwrap();
+        let vram_slice = payload
+            .get(cursor..cursor + 4)
+            .ok_or_else(|| "missing VRAM bytes".to_string())?;
+        let vram_bytes: [u8; 4] = vram_slice
+            .try_into()
+            .map_err(|_| "invalid VRAM byte length".to_string())?;
         let vram_gb = f32::from_le_bytes(vram_bytes);
+        cursor += 4;
 
         // Read system memory (little-endian f32)
-        let mem_bytes: [u8; 4] = payload[5 + id_len..9 + id_len].try_into().unwrap();
+        let mem_slice = payload
+            .get(cursor..cursor + 4)
+            .ok_or_else(|| "missing system memory bytes".to_string())?;
+        let mem_bytes: [u8; 4] = mem_slice
+            .try_into()
+            .map_err(|_| "invalid system memory byte length".to_string())?;
         let system_memory_gb = f32::from_le_bytes(mem_bytes);
-
-        // Read compute capability length
-        let cc_len = payload[9 + id_len] as usize;
-        if cc_len > payload.len() - 10 {
-            return Err("invalid CC length".into());
-        }
+        cursor += 4;
 
         // Read compute capability
-        let cc =
-            unsafe { std::str::from_utf8_unchecked(&payload[10 + id_len..10 + id_len + cc_len]) };
+        let cc_len = *payload
+            .get(cursor)
+            .ok_or_else(|| "missing CC length".to_string())? as usize;
+        cursor += 1;
+        let cc_slice = payload
+            .get(cursor..cursor + cc_len)
+            .ok_or_else(|| "invalid CC length".to_string())?;
+        let compute_capability = std::str::from_utf8(cc_slice)
+            .map_err(|_| "compute capability contains invalid UTF-8".to_string())?
+            .to_string();
+        cursor += cc_len;
 
         // Check for GPU name flag
-        let has_gpu_name = payload[10 + id_len + cc_len] == 1;
+        let has_gpu_name = *payload
+            .get(cursor)
+            .ok_or_else(|| "missing GPU name flag".to_string())?
+            == 1;
+        cursor += 1;
+
+        let gpu_name = if has_gpu_name {
+            let gpu_len = *payload
+                .get(cursor)
+                .ok_or_else(|| "missing GPU name length".to_string())?
+                as usize;
+            cursor += 1;
+
+            let gpu_slice = payload
+                .get(cursor..cursor + gpu_len)
+                .ok_or_else(|| "invalid GPU name length".to_string())?;
+            Some(
+                std::str::from_utf8(gpu_slice)
+                    .map_err(|_| "GPU name contains invalid UTF-8".to_string())?
+                    .to_string(),
+            )
+        } else {
+            None
+        };
 
         Ok(Self {
-            id: id.to_string(),
+            id,
             vram_gb,
             system_memory_gb,
-            compute_capability: cc.to_string(),
-            gpu_name: if has_gpu_name {
-                let gpu_len = payload[10 + id_len + cc_len + 1] as usize;
-                if gpu_len > payload.len() - 12 - id_len - cc_len {
-                    return Err("invalid GPU name length".into());
-                }
-                Some(
-                    unsafe {
-                        std::str::from_utf8_unchecked(
-                            &payload[10 + id_len + cc_len + 2..10 + id_len + cc_len + 2 + gpu_len],
-                        )
-                    }
-                    .to_string(),
-                )
-            } else {
-                None
-            },
+            compute_capability,
+            gpu_name,
         })
     }
 }

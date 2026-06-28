@@ -1,0 +1,54 @@
+# Mohawk Inference Engine GUI - Configuration Template
+# Version: 2.1.0
+# =============================================================================
+
+[mohawk]
+# Worker connection settings
+host = "localhost"
+port = 8003
+
+# SSL/TLS configuration (production)
+ssl_enabled = false
+ssl_cert = "certs/client.crt"
+ssl_key = "certs/client.key"
+
+[workers]
+# Worker management settings
+enabled = true
+auto_discover = false
+timeout_ms = 5000
+max_connections = 100
+
+[sessions]
+# Session management
+max_concurrent = 10
+default_batch_size = 32
+checkpoint_interval_s = 60
+
+[metrics]
+# Metrics collection
+sampling_rate = 0.1
+export_interval_s = 60
+buffer_window_size = 1000
+
+[logging]
+# Logging configuration
+level = "INFO"
+file = "logs/mohawk_gui.log"
+format = "json"
+
+[security]
+# Security settings
+jwt_expiry_hours = 24
+refresh_window_hours = 1
+audit_enabled = true
+
+[[resources]]
+name = "model.onnx"
+path = "models/model.onnx"
+devices = ["gpu_0", "gpu_1"]
+
+[[resources]]
+name = "tokenizer"
+path = "models/tokenizer.json"
+devices = ["cpu"]

@@ -8,6 +8,10 @@
 use anyhow::Result;
 use ghostlink_core::cluster::{ClusterState, NodeMetrics};
 use ghostlink_core::dashboard::Dashboard;
+use ghostlink_core::discovery::{
+    broadcast_and_collect, respond_once, serve_discovery, serve_discovery_with_stats,
+    UdpDiscoveryConfig, DEFAULT_DISCOVERY_PORT,
+};
 use ghostlink_core::health::NetworkHealthMonitor;
 use ghostlink_core::host::{detect_runtime_profile, detect_runtime_profile_full, ProbeMode};
 use ghostlink_core::load_balance::LoadBalancer;
@@ -22,7 +26,13 @@ use ghostlink_core::runtime::{
 };
 use std::collections::HashMap;
 use std::fs;
+use std::hash::{Hash, Hasher};
+use std::net::SocketAddr;
+use std::path::Path;
+use std::path::PathBuf;
+use std::process::Command;
 use std::sync::Arc;
+use std::time::Duration;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FlowTransportMode {
@@ -43,9 +53,17 @@ fn main() -> Result<()> {
     // Initialize logging
     tracing_subscriber::fmt().init();
 
-    if let Err(err) = run() {
+    let command = match parse_cli(std::env::args().skip(1)) {
+        Ok(command) => command,
+        Err(err) => {
+            eprintln!("Error: {err}");
+            print_usage();
+            std::process::exit(2);
+        }
+    };
+
+    if let Err(err) = execute_command(command) {
         eprintln!("Error: {err}");
-        print_usage();
         std::process::exit(2);
     }
 
@@ -57,6 +75,19 @@ enum CliCommand {
     Plan,
     Join {
         node_id: String,
+    },
+    Listen {
+        node_id: String,
+        once: bool,
+    },
+    Gui {
+        args: Vec<String>,
+    },
+    GuiCheck {
+        strict: bool,
+    },
+    GuiDiagnose {
+        strict: bool,
     },
     Dashboard,
     Probe {
@@ -75,12 +106,14 @@ enum CliCommand {
     Help,
 }
 
-fn run() -> Result<()> {
-    let command = parse_cli(std::env::args().skip(1))?;
-
+fn execute_command(command: CliCommand) -> Result<()> {
     match command {
         CliCommand::Plan => print_plan()?,
         CliCommand::Join { node_id } => print_join(&node_id)?,
+        CliCommand::Listen { node_id, once } => print_discovery_listener(&node_id, once)?,
+        CliCommand::Gui { args } => launch_mohawk_gui(&args)?,
+        CliCommand::GuiCheck { strict } => print_gui_readiness(strict)?,
+        CliCommand::GuiDiagnose { strict } => print_gui_diagnostics(strict)?,
         CliCommand::Dashboard => print_dashboard()?,
         CliCommand::Probe { node_id, mode } => print_probe(&node_id, mode)?,
         CliCommand::Flow {
@@ -119,6 +152,22 @@ where
         "join" => Ok(CliCommand::Join {
             node_id: args.next().unwrap_or_else(|| "node-01".to_string()),
         }),
+        "listen" => {
+            let node_id = args.next().unwrap_or_else(|| "local-node".to_string());
+            let once = args.any(|arg| arg == "--once");
+            Ok(CliCommand::Listen { node_id, once })
+        }
+        "gui" => Ok(CliCommand::Gui {
+            args: args.collect(),
+        }),
+        "gui-check" => {
+            let strict = args.any(|arg| arg == "--strict");
+            Ok(CliCommand::GuiCheck { strict })
+        }
+        "gui-diagnose" => {
+            let strict = args.any(|arg| arg == "--strict");
+            Ok(CliCommand::GuiDiagnose { strict })
+        }
         "dashboard" => Ok(CliCommand::Dashboard),
         "probe" => {
             let node_id = args.next().unwrap_or_else(|| "local-node".to_string());
@@ -215,12 +264,14 @@ fn maybe_write_flow_metrics_json(
             stage_entries.push(',');
         }
         stage_entries.push_str(&format!(
-            "{{\"stage_idx\":{},\"processed_batches\":{},\"avg_compute_ms\":{:.6},\"avg_recv_wait_ms\":{:.6},\"avg_send_wait_ms\":{:.6}}}",
+            "{{\"stage_idx\":{},\"processed_batches\":{},\"avg_compute_ms\":{:.6},\"avg_recv_wait_ms\":{:.6},\"avg_send_wait_ms\":{:.6},\"avg_bridge_write_ms\":{:.6},\"avg_bridge_read_ms\":{:.6}}}",
             stage.stage_idx,
             stage.processed_batches,
             stage.avg_compute_ms,
             stage.avg_recv_wait_ms,
-            stage.avg_send_wait_ms
+            stage.avg_send_wait_ms,
+            stage.avg_bridge_write_ms,
+            stage.avg_bridge_read_ms
         ));
     }
 
@@ -249,7 +300,7 @@ fn tcp_transport_config_from_env() -> TcpTransportConfig {
     let max_inflight_batches = std::env::var("GHOSTLINK_TCP_MAX_INFLIGHT")
         .ok()
         .and_then(|v| v.parse::<usize>().ok())
-        .unwrap_or(64)
+        .unwrap_or(256)
         .max(1);
 
     let reconnect_attempts = std::env::var("GHOSTLINK_TCP_RECONNECT_ATTEMPTS")
@@ -276,12 +327,208 @@ fn tcp_transport_config_from_env() -> TcpTransportConfig {
     }
 }
 
+fn is_env_truthy(name: &str) -> bool {
+    matches!(
+        std::env::var(name)
+            .ok()
+            .map(|v| v.trim().to_ascii_lowercase())
+            .as_deref(),
+        Some("1" | "true" | "yes" | "on")
+    )
+}
+
+fn tcp_autotune_candidates_from_env() -> Vec<usize> {
+    let parsed = std::env::var("GHOSTLINK_TCP_AUTOTUNE_CANDIDATES")
+        .ok()
+        .map(|raw| {
+            raw.split(',')
+                .filter_map(|part| part.trim().parse::<usize>().ok())
+                .filter(|value| *value > 0)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    let mut unique = if parsed.is_empty() {
+        vec![32, 64, 128, 256]
+    } else {
+        parsed
+    };
+    unique.sort_unstable();
+    unique.dedup();
+    unique
+}
+
+fn tcp_autotune_cache_path() -> PathBuf {
+    std::env::var("GHOSTLINK_TCP_AUTOTUNE_CACHE")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("./tmp/tcp_autotune_cache.tsv"))
+}
+
+fn tcp_autotune_key(
+    plan: &PipelinePlan,
+    tune_tokens: usize,
+    tune_micro_batch: usize,
+    candidates: &[usize],
+) -> String {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    tune_tokens.hash(&mut hasher);
+    tune_micro_batch.hash(&mut hasher);
+    candidates.hash(&mut hasher);
+    plan.stages.len().hash(&mut hasher);
+    for stage in &plan.stages {
+        stage.node_id.hash(&mut hasher);
+        stage.start_layer.hash(&mut hasher);
+        stage.end_layer.hash(&mut hasher);
+        stage.device.as_str().hash(&mut hasher);
+    }
+    format!("{:x}", hasher.finish())
+}
+
+fn load_cached_autotune_inflight(cache_key: &str, candidates: &[usize]) -> Option<usize> {
+    let cache_path = tcp_autotune_cache_path();
+    let raw = fs::read_to_string(cache_path).ok()?;
+    for line in raw.lines() {
+        let mut parts = line.splitn(2, '\t');
+        let Some(key) = parts.next() else {
+            continue;
+        };
+        let Some(value) = parts.next() else {
+            continue;
+        };
+        if key != cache_key {
+            continue;
+        }
+        let parsed = value.trim().parse::<usize>().ok()?;
+        if candidates.contains(&parsed) {
+            return Some(parsed);
+        }
+    }
+    None
+}
+
+fn store_cached_autotune_inflight(cache_key: &str, inflight: usize) -> Result<()> {
+    let cache_path = tcp_autotune_cache_path();
+    if let Some(parent) = cache_path.parent() {
+        fs::create_dir_all(parent).map_err(|err| {
+            anyhow::anyhow!(
+                "failed to create autotune cache directory {}: {}",
+                parent.display(),
+                err
+            )
+        })?;
+    }
+
+    let mut lines = Vec::new();
+    if let Ok(existing) = fs::read_to_string(&cache_path) {
+        for line in existing.lines() {
+            if let Some((key, _)) = line.split_once('\t') {
+                if key == cache_key {
+                    continue;
+                }
+            }
+            lines.push(line.to_string());
+        }
+    }
+    lines.push(format!("{}\t{}", cache_key, inflight));
+    fs::write(&cache_path, lines.join("\n") + "\n").map_err(|err| {
+        anyhow::anyhow!(
+            "failed to write autotune cache {}: {}",
+            cache_path.display(),
+            err
+        )
+    })
+}
+
+fn autotune_tcp_transport_config(
+    plan: &PipelinePlan,
+    execution_tokens: usize,
+    micro_batch: usize,
+    base: TcpTransportConfig,
+) -> TcpTransportConfig {
+    let tune_tokens = std::env::var("GHOSTLINK_TCP_AUTOTUNE_TOKENS")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(64)
+        .max(16)
+        .min(execution_tokens.max(16));
+    let tune_micro_batch = std::env::var("GHOSTLINK_TCP_AUTOTUNE_MICRO_BATCH")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(micro_batch)
+        .max(1);
+    let tune_runs = std::env::var("GHOSTLINK_TCP_AUTOTUNE_RUNS")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(3)
+        .max(1);
+    let candidates = tcp_autotune_candidates_from_env();
+    let refresh_cache = is_env_truthy("GHOSTLINK_TCP_AUTOTUNE_REFRESH");
+    let cache_key = tcp_autotune_key(plan, tune_tokens, tune_micro_batch, &candidates);
+
+    if !refresh_cache {
+        if let Some(cached_inflight) = load_cached_autotune_inflight(&cache_key, &candidates) {
+            let mut cached_cfg = base.clone();
+            cached_cfg.max_inflight_batches = cached_inflight;
+            println!(
+                "TCP autotune reused cached max_inflight={} (key={})",
+                cached_inflight, cache_key
+            );
+            return cached_cfg;
+        }
+    }
+
+    let mut best_cfg = base.clone();
+    let mut best_throughput = 0.0_f32;
+    let mut best_p95 = f32::MAX;
+    for candidate in candidates {
+        let mut candidate_cfg = base.clone();
+        candidate_cfg.max_inflight_batches = candidate;
+        let mut throughput_sum = 0.0_f32;
+        let mut p95_sum = 0.0_f32;
+        for _ in 0..tune_runs {
+            let sample = execute_pipeline_tcp_loopback_with_config(
+                plan,
+                tune_tokens,
+                tune_micro_batch,
+                candidate_cfg.clone(),
+            );
+            throughput_sum += sample.throughput_tokens_per_sec;
+            p95_sum += sample.p95_token_latency_ms;
+        }
+
+        let avg_throughput = throughput_sum / tune_runs as f32;
+        let avg_p95 = p95_sum / tune_runs as f32;
+        if avg_throughput > best_throughput
+            || ((avg_throughput - best_throughput).abs() <= 0.01 && avg_p95 < best_p95)
+        {
+            best_throughput = avg_throughput;
+            best_p95 = avg_p95;
+            best_cfg = candidate_cfg;
+        }
+    }
+
+    println!(
+        "TCP autotune selected max_inflight={} from candidate sweep (avg throughput {:.2} tok/s, avg p95 {:.2} ms, runs={})",
+        best_cfg.max_inflight_batches, best_throughput, best_p95, tune_runs
+    );
+
+    let _ = store_cached_autotune_inflight(&cache_key, best_cfg.max_inflight_batches);
+
+    best_cfg
+}
+
 fn print_usage() {
-    eprintln!("Usage: ghost-link <plan|join|dashboard|probe|flow|help>");
+    eprintln!(
+        "Usage: ghost-link <plan|join|listen|gui|gui-check|gui-diagnose|dashboard|probe|flow|help>"
+    );
     eprintln!();
     eprintln!("Commands:");
     eprintln!("  plan      - Generate layer placement plan");
     eprintln!("  join [id] - Broadcast discovery frame to join cluster");
+    eprintln!("  listen [id] [--once] - Reply to UDP discovery requests");
+    eprintln!("  gui [args...] - Launch vendored Mohawk GUI (Python/PyQt6)");
+    eprintln!("  gui-check [--strict] - Validate GUI readiness and dependencies");
+    eprintln!("  gui-diagnose [--strict] - Emit categorized GUI diagnostics report");
     eprintln!("  dashboard - Display ASCII cluster dashboard");
     eprintln!(
         "  probe [id] [fast|full|--fast|--full] - Detect local workers and acceleration profile"
@@ -300,6 +547,10 @@ fn print_help() {
     println!("Commands:");
     println!("  plan      - Generate layer placement plan across nodes");
     println!("  join [id] - Broadcast discovery frame to join cluster");
+    println!("  listen [id] [--once] - Reply to UDP discovery requests");
+    println!("  gui [args...] - Launch vendored Mohawk GUI (Python/PyQt6)");
+    println!("  gui-check [--strict] - Validate GUI readiness and dependencies");
+    println!("  gui-diagnose [--strict] - Emit categorized GUI diagnostics report");
     println!("  dashboard - Display ASCII cluster dashboard");
     println!(
         "  probe [id] [fast|full|--fast|--full] - Detect local workers and acceleration profile"
@@ -312,6 +563,10 @@ fn print_help() {
     println!("Examples:");
     println!("  $ ghost-link plan");
     println!("  $ ghost-link join node-02");
+    println!("  $ ghost-link listen workstation-a --once");
+    println!("  $ ghost-link gui --host 0.0.0.0 --port 8003");
+    println!("  $ ghost-link gui-check --strict");
+    println!("  $ ghost-link gui-diagnose --strict");
     println!("  $ ghost-link dashboard");
     println!("  $ ghost-link probe workstation-a fast");
     println!("  $ ghost-link probe workstation-a --full");
@@ -381,12 +636,25 @@ fn print_flow(
     let schedule_preview_tokens = execution_tokens.min(8);
     let token_schedule = build_token_schedule(pipeline_plan.stages.len(), schedule_preview_tokens);
     let execution = match transport_mode {
-        FlowTransportMode::TcpLoopback => execute_pipeline_tcp_loopback_with_config(
-            &pipeline_plan,
-            execution_tokens,
-            micro_batch,
-            tcp_transport_config_from_env(),
-        ),
+        FlowTransportMode::TcpLoopback => {
+            let base_tcp_cfg = tcp_transport_config_from_env();
+            let tcp_cfg = if is_env_truthy("GHOSTLINK_TCP_AUTOTUNE") {
+                autotune_tcp_transport_config(
+                    &pipeline_plan,
+                    execution_tokens,
+                    micro_batch,
+                    base_tcp_cfg,
+                )
+            } else {
+                base_tcp_cfg
+            };
+            execute_pipeline_tcp_loopback_with_config(
+                &pipeline_plan,
+                execution_tokens,
+                micro_batch,
+                tcp_cfg,
+            )
+        }
         FlowTransportMode::InMemory => {
             execute_pipeline(&pipeline_plan, execution_tokens, micro_batch)
         }
@@ -446,7 +714,7 @@ fn print_flow(
 
     if matches!(transport_mode, FlowTransportMode::TcpLoopback) {
         println!(
-            "TCP transport controls: GHOSTLINK_TCP_MAX_INFLIGHT, GHOSTLINK_TCP_RECONNECT_ATTEMPTS, GHOSTLINK_TCP_RECONNECT_BACKOFF_MS, GHOSTLINK_TCP_AUTH_TOKEN\n"
+            "TCP transport controls: GHOSTLINK_TCP_MAX_INFLIGHT, GHOSTLINK_TCP_RECONNECT_ATTEMPTS, GHOSTLINK_TCP_RECONNECT_BACKOFF_MS, GHOSTLINK_TCP_AUTH_TOKEN, GHOSTLINK_TCP_AUTOTUNE\n"
         );
     }
 
@@ -541,6 +809,27 @@ fn print_join(node_id: &str) -> Result<()> {
     let encoded = frame.encode();
     let decoded = DiscoveryFrame::decode(&encoded).map_err(|e| anyhow::anyhow!(e))?;
 
+    let auth_token = std::env::var("GHOSTLINK_DISCOVERY_AUTH_TOKEN")
+        .ok()
+        .filter(|token| !token.is_empty());
+    let broadcast_addr = std::env::var("GHOSTLINK_DISCOVERY_BROADCAST")
+        .ok()
+        .and_then(|raw| raw.parse::<SocketAddr>().ok())
+        .unwrap_or_else(|| SocketAddr::from(([255, 255, 255, 255], DEFAULT_DISCOVERY_PORT)));
+    let timeout_ms = std::env::var("GHOSTLINK_DISCOVERY_TIMEOUT_MS")
+        .ok()
+        .and_then(|raw| raw.parse::<u64>().ok())
+        .unwrap_or(750);
+    let discovery_cfg = UdpDiscoveryConfig {
+        broadcast_addr,
+        response_timeout: Duration::from_millis(timeout_ms),
+        auth_token,
+        ..UdpDiscoveryConfig::default()
+    };
+
+    let discovery_replies = broadcast_and_collect(&frame, &discovery_cfg)
+        .map_err(|e| anyhow::anyhow!("UDP discovery broadcast failed: {e}"))?;
+
     println!("Broadcasting Ghost-Link Join Frame\n");
     println!("====================================\n");
     println!("Frame Size: {} bytes", encoded.len());
@@ -553,6 +842,28 @@ fn print_join(node_id: &str) -> Result<()> {
     println!("  Compute Capability: {}", decoded.node.compute_capability);
     println!("  Recommended Workers: {}", profile.recommended_workers);
     println!("  Acceleration: {}", profile.acceleration_mode.as_str());
+    println!("  UDP Broadcast Target: {}", discovery_cfg.broadcast_addr);
+    println!("  Discovery Timeout: {} ms", timeout_ms);
+    println!(
+        "  Discovery Auth: {}",
+        if discovery_cfg.auth_token.is_some() {
+            "enabled"
+        } else {
+            "disabled"
+        }
+    );
+    println!("  Replies Received: {}", discovery_replies.len());
+
+    for peer in discovery_replies {
+        println!(
+            "    - {} (VRAM {:.1} GB, RAM {:.1} GB, CC {}, GPU {})",
+            peer.node.id,
+            peer.node.vram_gb,
+            peer.node.system_memory_gb,
+            peer.node.compute_capability,
+            peer.node.gpu_name.as_deref().unwrap_or("unknown")
+        );
+    }
 
     // Show encoded frame (first 50 bytes for brevity)
     if !encoded.is_empty() {
@@ -562,6 +873,76 @@ fn print_join(node_id: &str) -> Result<()> {
             print!("{:02x} ", byte);
         }
         println!();
+    }
+
+    Ok(())
+}
+
+fn print_discovery_listener(node_id: &str, once: bool) -> Result<()> {
+    let profile = detect_runtime_profile(node_id);
+
+    let auth_token = std::env::var("GHOSTLINK_DISCOVERY_AUTH_TOKEN")
+        .ok()
+        .filter(|token| !token.is_empty());
+    let listen_addr = std::env::var("GHOSTLINK_DISCOVERY_LISTEN")
+        .ok()
+        .and_then(|raw| raw.parse::<SocketAddr>().ok())
+        .unwrap_or_else(|| SocketAddr::from(([0, 0, 0, 0], DEFAULT_DISCOVERY_PORT)));
+    let timeout_ms = std::env::var("GHOSTLINK_DISCOVERY_TIMEOUT_MS")
+        .ok()
+        .and_then(|raw| raw.parse::<u64>().ok())
+        .unwrap_or(1000);
+    let max_replies = std::env::var("GHOSTLINK_DISCOVERY_MAX_REPLIES")
+        .ok()
+        .and_then(|raw| raw.parse::<usize>().ok())
+        .filter(|value| *value > 0);
+
+    let config = UdpDiscoveryConfig {
+        bind_addr: listen_addr,
+        response_timeout: Duration::from_millis(timeout_ms),
+        auth_token,
+        ..UdpDiscoveryConfig::default()
+    };
+
+    println!("Ghost-Link Discovery Listener\n");
+    println!("===========================\n");
+    println!("Node ID: {}", profile.node_resources.id);
+    println!("Listen Address: {}", config.bind_addr);
+    println!("Timeout: {} ms", timeout_ms);
+    println!(
+        "Auth Token: {}",
+        if config.auth_token.is_some() {
+            "enabled"
+        } else {
+            "disabled"
+        }
+    );
+
+    if once {
+        println!("Mode: one-shot\n");
+        match respond_once(&profile.node_resources, &config)
+            .map_err(|e| anyhow::anyhow!("UDP discovery listener failed: {e}"))?
+        {
+            Some(peer) => println!("Replied to discovery request from {}", peer),
+            None => println!("No discovery request received before timeout"),
+        }
+        return Ok(());
+    }
+
+    println!("Mode: service loop\n");
+    if let Some(limit) = max_replies {
+        println!("Max Replies: {}", limit);
+        let stats = serve_discovery_with_stats(&profile.node_resources, &config, Some(limit))
+            .map_err(|e| anyhow::anyhow!("UDP discovery listener failed: {e}"))?;
+        println!("Listener stopped after {} replies", stats.replies_sent);
+        println!("Drop Counters:");
+        println!("  malformed: {}", stats.drops.malformed);
+        println!("  auth_mismatch: {}", stats.drops.auth_mismatch);
+        println!("  unsupported_kind: {}", stats.drops.unsupported_kind);
+    } else {
+        println!("Max Replies: unlimited (Ctrl+C to stop)");
+        let _ = serve_discovery(&profile.node_resources, &config, None)
+            .map_err(|e| anyhow::anyhow!("UDP discovery listener failed: {e}"))?;
     }
 
     Ok(())
@@ -646,6 +1027,393 @@ fn print_probe(node_id: &str, probe_mode: ProbeMode) -> Result<()> {
     Ok(())
 }
 
+fn launch_mohawk_gui(args: &[String]) -> Result<()> {
+    let skip_preflight = args.iter().any(|arg| arg == "--help" || arg == "-h");
+
+    let crate_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let gui_entry = crate_root
+        .join("..")
+        .join("..")
+        .join("third_party")
+        .join("mohawk_gui")
+        .join("main.py");
+
+    if !gui_entry.exists() {
+        anyhow::bail!(
+            "Mohawk GUI entrypoint not found at {}. Ensure third_party/mohawk_gui is present.",
+            gui_entry.display()
+        );
+    }
+
+    let python = std::env::var("GHOSTLINK_PYTHON").unwrap_or_else(|_| "python3".to_string());
+
+    if !skip_preflight {
+        run_gui_preflight_checks()?;
+        run_gui_python_preflight(&python)?;
+    }
+
+    println!("Launching Mohawk GUI from {}", gui_entry.display());
+    println!("Python executable: {}", python);
+
+    let status = Command::new(&python)
+        .arg(&gui_entry)
+        .args(args)
+        .status()
+        .map_err(|err| anyhow::anyhow!("failed to launch Mohawk GUI with {}: {}", python, err))?;
+
+    if !status.success() {
+        anyhow::bail!(
+            "Mohawk GUI exited with status {}. Install dependencies from third_party/mohawk_gui and retry.",
+            status
+        );
+    }
+
+    Ok(())
+}
+
+fn run_gui_python_preflight(python: &str) -> Result<()> {
+    let missing = detect_missing_gui_python_modules(python)?;
+    if !missing.is_empty() {
+        anyhow::bail!(
+            "GUI preflight failed: required Python GUI modules are missing: {}. Install with: {} -m pip install -r third_party/mohawk_gui/requirements.txt",
+            missing.join(", "),
+            python,
+        );
+    }
+
+    Ok(())
+}
+
+fn print_gui_diagnostics(strict: bool) -> Result<()> {
+    let crate_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let gui_entry = crate_root
+        .join("..")
+        .join("..")
+        .join("third_party")
+        .join("mohawk_gui")
+        .join("main.py");
+    let requirements = crate_root
+        .join("..")
+        .join("..")
+        .join("third_party")
+        .join("mohawk_gui")
+        .join("requirements.txt");
+    let python = std::env::var("GHOSTLINK_PYTHON").unwrap_or_else(|_| "python3".to_string());
+
+    let mut categories: Vec<(String, String)> = Vec::new();
+    if !gui_entry.exists() {
+        categories.push((
+            "missing_files".to_string(),
+            format!("Missing GUI entrypoint: {}", gui_entry.display()),
+        ));
+    }
+    if !requirements.exists() {
+        categories.push((
+            "missing_files".to_string(),
+            format!("Missing requirements file: {}", requirements.display()),
+        ));
+    }
+    if Command::new(&python).arg("--version").output().is_err() {
+        categories.push((
+            "python_runtime".to_string(),
+            format!("Python executable is not runnable: {}", python),
+        ));
+    }
+
+    match detect_missing_gui_python_modules(&python) {
+        Ok(missing) if !missing.is_empty() => categories.push((
+            "python_modules".to_string(),
+            format!("Missing Python modules: {}", missing.join(", ")),
+        )),
+        Err(err) => categories.push((
+            "python_modules".to_string(),
+            format!("Python module probe failed: {}", err),
+        )),
+        _ => {}
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        if !has_linux_libgl() {
+            categories.push((
+                "system_libs".to_string(),
+                "Missing libGL.so.1 (install libgl1)".to_string(),
+            ));
+        }
+        if !has_linux_libxkbcommon() {
+            categories.push((
+                "system_libs".to_string(),
+                "Missing libxkbcommon.so.0 (install libxkbcommon0)".to_string(),
+            ));
+        }
+    }
+
+    let has_display = std::env::var("DISPLAY")
+        .ok()
+        .filter(|v| !v.is_empty())
+        .is_some()
+        || std::env::var("WAYLAND_DISPLAY")
+            .ok()
+            .filter(|v| !v.is_empty())
+            .is_some();
+    if !has_display {
+        categories.push((
+            "display_session".to_string(),
+            "No DISPLAY/WAYLAND session detected (headless)".to_string(),
+        ));
+    }
+
+    println!("Ghost-Link GUI Diagnostics\n");
+    println!("==========================\n");
+    println!("GUI entry: {}", gui_entry.display());
+    println!("Requirements: {}", requirements.display());
+    println!("Python executable: {}", python);
+    println!("Display session: {}", if has_display { "detected" } else { "none" });
+
+    if categories.is_empty() {
+        println!("\nDiagnostics: PASS");
+    } else {
+        println!("\nDiagnostics: FAIL");
+        for (kind, message) in &categories {
+            println!("- [{}] {}", kind, message);
+        }
+    }
+
+    if let Some(path) = std::env::var("GHOSTLINK_GUI_DIAG_JSON")
+        .ok()
+        .filter(|value| !value.is_empty())
+    {
+        let escaped = categories
+            .iter()
+            .map(|(kind, msg)| {
+                format!(
+                    "{{\"category\":\"{}\",\"message\":\"{}\"}}",
+                    kind.replace('"', "\\\""),
+                    msg.replace('"', "\\\"")
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        let payload = format!(
+            "{{\"ok\":{},\"python\":\"{}\",\"gui_entry\":\"{}\",\"requirements\":\"{}\",\"has_display\":{},\"issues\":[{}]}}\n",
+            if categories.is_empty() { "true" } else { "false" },
+            python.replace('"', "\\\""),
+            gui_entry.display().to_string().replace('"', "\\\""),
+            requirements.display().to_string().replace('"', "\\\""),
+            if has_display { "true" } else { "false" },
+            escaped
+        );
+        fs::write(&path, payload).map_err(|err| {
+            anyhow::anyhow!("failed to write GUI diagnostics JSON to {}: {}", path, err)
+        })?;
+        println!("Diagnostics JSON written to: {}", path);
+    }
+
+    if strict && !categories.is_empty() {
+        anyhow::bail!("GUI diagnostics failed in strict mode");
+    }
+
+    Ok(())
+}
+
+fn print_gui_readiness(strict: bool) -> Result<()> {
+    let crate_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let gui_entry = crate_root
+        .join("..")
+        .join("..")
+        .join("third_party")
+        .join("mohawk_gui")
+        .join("main.py");
+    let requirements = crate_root
+        .join("..")
+        .join("..")
+        .join("third_party")
+        .join("mohawk_gui")
+        .join("requirements.txt");
+    let python = std::env::var("GHOSTLINK_PYTHON").unwrap_or_else(|_| "python3".to_string());
+
+    let mut issues: Vec<String> = Vec::new();
+
+    println!("Ghost-Link GUI Readiness Report\n");
+    println!("===============================\n");
+    println!("GUI entry: {}", gui_entry.display());
+    println!("Requirements: {}", requirements.display());
+    println!("Python executable: {}", python);
+
+    if !gui_entry.exists() {
+        issues.push(format!("Missing GUI entrypoint: {}", gui_entry.display()));
+    }
+
+    if !requirements.exists() {
+        issues.push(format!(
+            "Missing GUI requirements file: {}",
+            requirements.display()
+        ));
+    }
+
+    match Command::new(&python).arg("--version").output() {
+        Ok(output) => {
+            let version = String::from_utf8_lossy(if output.stdout.is_empty() {
+                &output.stderr
+            } else {
+                &output.stdout
+            });
+            println!("Python version: {}", version.trim());
+        }
+        Err(err) => {
+            issues.push(format!("Python executable is not runnable: {}", err));
+        }
+    }
+
+    match detect_missing_gui_python_modules(&python) {
+        Ok(missing) if missing.is_empty() => {
+            println!("Python modules: OK (PyQt6, requests, pyqtgraph)");
+        }
+        Ok(missing) => {
+            issues.push(format!("Missing Python modules: {}", missing.join(", ")));
+        }
+        Err(err) => {
+            issues.push(format!("Unable to validate Python modules: {}", err));
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        let has_libgl = has_linux_libgl();
+        let has_libxkb = has_linux_libxkbcommon();
+        println!(
+            "Linux OpenGL runtime (libGL.so.1): {}",
+            if has_libgl { "present" } else { "missing" }
+        );
+        println!(
+            "Linux XKB runtime (libxkbcommon.so.0): {}",
+            if has_libxkb { "present" } else { "missing" }
+        );
+        if !has_libgl {
+            issues.push("Missing libGL.so.1 system dependency (install `libgl1`)".to_string());
+        }
+        if !has_libxkb {
+            issues.push(
+                "Missing libxkbcommon.so.0 system dependency (install `libxkbcommon0`)".to_string(),
+            );
+        }
+    }
+
+    let has_display = std::env::var("DISPLAY")
+        .ok()
+        .filter(|v| !v.is_empty())
+        .is_some()
+        || std::env::var("WAYLAND_DISPLAY")
+            .ok()
+            .filter(|v| !v.is_empty())
+            .is_some();
+    println!(
+        "Display session: {}",
+        if has_display {
+            "detected"
+        } else {
+            "not detected (headless)"
+        }
+    );
+
+    if issues.is_empty() {
+        println!("\nReadiness: PASS");
+        return Ok(());
+    }
+
+    println!("\nReadiness: FAIL");
+    println!("Issues:");
+    for issue in &issues {
+        println!("- {}", issue);
+    }
+
+    println!("\nSuggested fixes:");
+    println!(
+        "- Install Python deps: {} -m pip install -r {}",
+        python,
+        requirements.display()
+    );
+    #[cfg(target_os = "linux")]
+    println!(
+        "- Install system libs: sudo apt-get update && sudo apt-get install -y libgl1 libxkbcommon0"
+    );
+
+    if strict {
+        anyhow::bail!("GUI readiness check failed in strict mode");
+    }
+
+    Ok(())
+}
+
+fn detect_missing_gui_python_modules(python: &str) -> Result<Vec<String>> {
+    let output = Command::new(python)
+        .args([
+            "-c",
+            "import importlib.util as u;mods=['PyQt6','requests','pyqtgraph'];missing=[m for m in mods if u.find_spec(m) is None];print(','.join(missing))",
+        ])
+        .output()
+        .map_err(|err| anyhow::anyhow!("unable to execute Python '{}': {}", python, err))?;
+
+    if !output.status.success() {
+        return Err(anyhow::anyhow!(
+            "python module check failed with status {}",
+            output.status
+        ));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let missing = stdout
+        .trim()
+        .split(',')
+        .filter(|entry| !entry.is_empty())
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    Ok(missing)
+}
+
+#[cfg(target_os = "linux")]
+fn has_linux_libgl() -> bool {
+    let libgl_candidates = [
+        "/usr/lib/x86_64-linux-gnu/libGL.so.1",
+        "/usr/lib64/libGL.so.1",
+        "/usr/lib/libGL.so.1",
+    ];
+
+    libgl_candidates.iter().any(|path| Path::new(path).exists())
+}
+
+#[cfg(target_os = "linux")]
+fn has_linux_libxkbcommon() -> bool {
+    let xkb_candidates = [
+        "/usr/lib/x86_64-linux-gnu/libxkbcommon.so.0",
+        "/usr/lib64/libxkbcommon.so.0",
+        "/usr/lib/libxkbcommon.so.0",
+    ];
+
+    xkb_candidates.iter().any(|path| Path::new(path).exists())
+}
+
+fn run_gui_preflight_checks() -> Result<()> {
+    #[cfg(target_os = "linux")]
+    {
+        if !has_linux_libgl() {
+            anyhow::bail!(
+                "GUI preflight failed: required OpenGL runtime library libGL.so.1 is missing. \
+Install system dependency (Debian/Ubuntu): sudo apt-get update && sudo apt-get install -y libgl1"
+            );
+        }
+
+        if !has_linux_libxkbcommon() {
+            anyhow::bail!(
+                "GUI preflight failed: required XKB runtime library libxkbcommon.so.0 is missing. \
+Install system dependency (Debian/Ubuntu): sudo apt-get update && sudo apt-get install -y libxkbcommon0"
+            );
+        }
+    }
+
+    Ok(())
+}
+
 // Re-export protocol module for use in main.rs
 mod protocol {
     pub use ghostlink_core::protocol::GHOSTLINK_ETHERTYPE;
@@ -654,6 +1422,9 @@ mod protocol {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ghostlink_core::host::AccelerationMode;
+    use ghostlink_core::host::RuntimeProfile;
+    use ghostlink_core::protocol::NodeResources;
 
     fn args(values: &[&str]) -> std::vec::IntoIter<String> {
         values
@@ -671,6 +1442,27 @@ mod tests {
             CliCommand::Join {
                 node_id: "node-a".to_string()
             }
+        );
+        assert_eq!(
+            parse_cli(args(&["listen", "node-l", "--once"])).unwrap(),
+            CliCommand::Listen {
+                node_id: "node-l".to_string(),
+                once: true,
+            }
+        );
+        assert_eq!(
+            parse_cli(args(&["gui", "--port", "8003"])).unwrap(),
+            CliCommand::Gui {
+                args: vec!["--port".to_string(), "8003".to_string()],
+            }
+        );
+        assert_eq!(
+            parse_cli(args(&["gui-check", "--strict"])).unwrap(),
+            CliCommand::GuiCheck { strict: true }
+        );
+        assert_eq!(
+            parse_cli(args(&["gui-diagnose", "--strict"])).unwrap(),
+            CliCommand::GuiDiagnose { strict: true }
         );
         assert_eq!(
             parse_cli(args(&["probe", "n1", "full"])).unwrap(),
@@ -714,6 +1506,25 @@ mod tests {
             }
         );
         assert_eq!(
+            parse_cli(args(&["listen"])).unwrap(),
+            CliCommand::Listen {
+                node_id: "local-node".to_string(),
+                once: false,
+            }
+        );
+        assert_eq!(
+            parse_cli(args(&["gui"])).unwrap(),
+            CliCommand::Gui { args: vec![] }
+        );
+        assert_eq!(
+            parse_cli(args(&["gui-check"])).unwrap(),
+            CliCommand::GuiCheck { strict: false }
+        );
+        assert_eq!(
+            parse_cli(args(&["gui-diagnose"])).unwrap(),
+            CliCommand::GuiDiagnose { strict: false }
+        );
+        assert_eq!(
             parse_cli(args(&["probe"])).unwrap(),
             CliCommand::Probe {
                 node_id: "local-node".to_string(),
@@ -741,5 +1552,22 @@ mod tests {
         assert!(parse_cli(args(&["probe", "n1", "nonsense"])).is_err());
         assert!(parse_cli(args(&["flow", "a", "b", "32", "64", "bad"])).is_err());
         assert!(parse_cli(args(&["flow", "a", "b", "32", "64", "64", "2", "bad-mode"])).is_err());
+    }
+
+    #[test]
+    fn maps_neon_profile_to_npu_device_kind() {
+        let profile = RuntimeProfile {
+            node_resources: NodeResources::new("local", 0.0, 16.0, "cpu", None),
+            logical_cores: 8,
+            recommended_workers: 4,
+            acceleration_mode: AccelerationMode::Neon,
+            xdp_supported: true,
+            detection_source: "test".to_string(),
+            probe_mode: ProbeMode::Fast,
+        };
+
+        let map = build_device_map(&profile, "local", "remote");
+        assert_eq!(map.get("local"), Some(&DeviceKind::Npu));
+        assert_eq!(map.get("remote"), Some(&DeviceKind::Gpu));
     }
 }

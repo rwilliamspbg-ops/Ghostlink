@@ -52,6 +52,13 @@ jobs:
           mkdir -p artifacts
           cargo bench -p ghostlink-core --bench criterion -- --warm-up-time 1 --measurement-time 1 | tee artifacts/criterion.log
 
+      - name: Summarize benchmark estimates
+        shell: bash
+        run: |
+          python3 scripts/summarize_criterion_report.py \
+            --criterion-root target/criterion \
+            --output artifacts/criterion-summary.json
+
       - name: Upload benchmark artifacts
         if: always()
         uses: actions/upload-artifact@v4
@@ -59,5 +66,6 @@ jobs:
           name: criterion-benchmarks
           path: |
             artifacts/criterion.log
+            artifacts/criterion-summary.json
             target/criterion
           retention-days: 14

@@ -47,6 +47,38 @@ def run_once(mode: str, run_index: int, args: argparse.Namespace, output_dir: Pa
     return out_file
 
 
+def run_warmup(mode: str, _warmup_index: int, args: argparse.Namespace) -> None:
+    env = {}
+    if mode == "tcp":
+        env["GHOSTLINK_TCP_AUTH_TOKEN"] = args.tcp_auth_token
+
+    command = [
+        "cargo",
+        "run",
+        "-p",
+        "ghost-link",
+        "--",
+        "flow",
+        args.local_id,
+        args.remote_id,
+        str(args.remote_vram_gb),
+        str(args.remote_mem_gb),
+        str(args.exec_tokens),
+        str(args.micro_batch),
+        mode,
+    ]
+
+    merged_env = dict(os.environ)
+    merged_env.update(env)
+    subprocess.run(
+        command,
+        check=True,
+        cwd=args.repo_root,
+        env=merged_env,
+        stdout=subprocess.DEVNULL,
+    )
+
+
 def summarize(files: list[Path]) -> dict[str, float]:
     values = [json.loads(path.read_text(encoding="utf-8")) for path in files]
     throughput = [float(v["throughput_tokens_per_sec"]) for v in values]
@@ -76,17 +108,27 @@ def main() -> int:
     parser.add_argument("--remote-mem-gb", type=float, default=32.0)
     parser.add_argument("--exec-tokens", type=int, default=256)
     parser.add_argument("--micro-batch", type=int, default=4)
+    parser.add_argument(
+        "--warmup-runs",
+        type=int,
+        default=1,
+        help="Warmup executions per mode (not included in summary)",
+    )
     parser.add_argument("--tcp-auth-token", default="local-token")
     args = parser.parse_args()
 
     if args.runs <= 0:
         parser.error("--runs must be greater than 0")
+    if args.warmup_runs < 0:
+        parser.error("--warmup-runs must be 0 or greater")
 
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     all_summary = {}
     for mode in args.modes:
+        for warmup_idx in range(1, args.warmup_runs + 1):
+            run_warmup(mode, warmup_idx, args)
         files: list[Path] = []
         for i in range(1, args.runs + 1):
             files.append(run_once(mode, i, args, output_dir))

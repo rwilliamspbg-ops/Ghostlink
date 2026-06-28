@@ -15,6 +15,7 @@ on:
       - 'crates/**'
       - 'scripts/**'
       - 'docs/PERF_BASELINE.json'
+      - 'docs/PERF_BASELINE_STRESS.json'
       - 'README.md'
       - 'TESTING.md'
       - '.github/workflows/production-gate.yml'
@@ -26,6 +27,7 @@ on:
       - 'crates/**'
       - 'scripts/**'
       - 'docs/PERF_BASELINE.json'
+      - 'docs/PERF_BASELINE_STRESS.json'
       - 'README.md'
       - 'TESTING.md'
       - '.github/workflows/production-gate.yml'
@@ -99,6 +101,7 @@ jobs:
           GHOSTLINK_TCP_AUTH_TOKEN: "ci-production-gate-token"
         run: |
           python3 scripts/flow_perf_snapshot.py \
+            --warmup-runs 1 \
             --runs 3 \
             --output-dir ./tmp/perf_snapshot_ci
 
@@ -108,9 +111,64 @@ jobs:
             --baseline ./docs/PERF_BASELINE.json \
             --current ./tmp/perf_snapshot_ci/summary.json
 
+      - name: Stage Tail Gate (TCP deterministic)
+        run: |
+          python3 scripts/validate_stage_tail_metrics.py \
+            --glob './tmp/perf_snapshot_ci/tcp-*.json' \
+            --pctl 0.95 \
+            --max-bridge-read-ms 0.30 \
+            --max-bridge-write-ms 0.10 \
+            --max-recv-wait-ms 0.30 \
+            --max-send-wait-ms 0.12
+
+      - name: Canary Guardrails (Deterministic)
+        run: |
+          python3 scripts/validate_flow_canary.py \
+            --summary ./tmp/perf_snapshot_ci/summary.json \
+            --profile production
+
+      - name: Perf Snapshot (Stress)
+        env:
+          GHOSTLINK_TCP_AUTH_TOKEN: "ci-production-gate-token"
+          GHOSTLINK_TCP_AUTOTUNE: "1"
+          GHOSTLINK_TCP_AUTOTUNE_RUNS: "3"
+          GHOSTLINK_TCP_AUTOTUNE_CANDIDATES: "16,32,64,128,256"
+        run: |
+          python3 scripts/flow_perf_snapshot.py \
+            --warmup-runs 1 \
+            --runs 4 \
+            --modes tcp inmem \
+            --exec-tokens 512 \
+            --micro-batch 8 \
+            --output-dir ./tmp/perf_snapshot_stress_ci
+
+      - name: Perf Drift Check (Stress)
+        run: |
+          python3 scripts/check_perf_drift.py \
+            --baseline ./docs/PERF_BASELINE_STRESS.json \
+            --current ./tmp/perf_snapshot_stress_ci/summary.json
+
+      - name: Stage Tail Gate (TCP stress)
+        run: |
+          python3 scripts/validate_stage_tail_metrics.py \
+            --glob './tmp/perf_snapshot_stress_ci/tcp-*.json' \
+            --pctl 0.95 \
+            --max-bridge-read-ms 0.35 \
+            --max-bridge-write-ms 0.12 \
+            --max-recv-wait-ms 0.35 \
+            --max-send-wait-ms 0.15
+
+      - name: Canary Guardrails (Stress)
+        run: |
+          python3 scripts/validate_flow_canary.py \
+            --summary ./tmp/perf_snapshot_stress_ci/summary.json \
+            --profile stress
+
       - name: Upload Perf Snapshot Artifacts
         uses: actions/upload-artifact@v4
         with:
           name: flow-perf-snapshot
-          path: ./tmp/perf_snapshot_ci/
+          path: |
+            ./tmp/perf_snapshot_ci/
+            ./tmp/perf_snapshot_stress_ci/
           retention-days: 14
