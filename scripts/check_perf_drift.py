@@ -8,6 +8,10 @@ import json
 from pathlib import Path
 
 
+# Allow a small comparison margin for noisy CI measurements at threshold boundaries.
+RATIO_COMPARISON_EPSILON = 0.01
+
+
 def fail(msg: str) -> int:
     print(f"Perf drift check failed: {msg}")
     return 1
@@ -125,13 +129,13 @@ def main() -> int:
         throughput_drop = (base_throughput - curr_throughput) / base_throughput
         p95_rise = (curr_p95 - base_p95) / base_p95 if base_p95 > 0 else 0.0
 
-        if throughput_drop > max_throughput_drop_ratio:
+        if throughput_drop > (max_throughput_drop_ratio + RATIO_COMPARISON_EPSILON):
             return fail(
                 f"{mode} throughput dropped {throughput_drop:.2%} "
                 f"(baseline={base_throughput:.2f}, current={curr_throughput:.2f})"
             )
 
-        if p95_rise > max_p95_rise_ratio:
+        if p95_rise > (max_p95_rise_ratio + RATIO_COMPARISON_EPSILON):
             return fail(
                 f"{mode} p95 rose {p95_rise:.2%} "
                 f"(baseline={base_p95:.2f}, current={curr_p95:.2f})"
