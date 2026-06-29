@@ -6,6 +6,7 @@
 [![Lint](https://github.com/rwilliamspbg-ops/Ghostlink/actions/workflows/lint.yml/badge.svg?branch=main)](https://github.com/rwilliamspbg-ops/Ghostlink/actions/workflows/lint.yml)
 [![Tests](https://github.com/rwilliamspbg-ops/Ghostlink/actions/workflows/tests.yml/badge.svg?branch=main)](https://github.com/rwilliamspbg-ops/Ghostlink/actions/workflows/tests.yml)
 [![Docs](https://github.com/rwilliamspbg-ops/Ghostlink/actions/workflows/docs.yml/badge.svg?branch=main)](https://github.com/rwilliamspbg-ops/Ghostlink/actions/workflows/docs.yml)
+[![Security](https://github.com/rwilliamspbg-ops/Ghostlink/actions/workflows/security.yml/badge.svg?branch=main)](https://github.com/rwilliamspbg-ops/Ghostlink/actions/workflows/security.yml)
 [![HF Model Verify](https://github.com/rwilliamspbg-ops/Ghostlink/actions/workflows/hf-model-verify.yml/badge.svg?branch=main)](https://github.com/rwilliamspbg-ops/Ghostlink/actions/workflows/hf-model-verify.yml)
 [![Benchmarks](https://github.com/rwilliamspbg-ops/Ghostlink/actions/workflows/benchmarks.yml/badge.svg?branch=main)](https://github.com/rwilliamspbg-ops/Ghostlink/actions/workflows/benchmarks.yml)
 [![codecov](https://codecov.io/gh/rwilliamspbg-ops/Ghostlink/branch/main/graph/badge.svg)](https://codecov.io/gh/rwilliamspbg-ops/Ghostlink)
@@ -14,10 +15,17 @@
 
 Ghost-Link is an open-source LAN fabric for turning spare local GPUs and CPU hosts into a shared execution surface for large-model inference and training. The project focuses on low-overhead runtime primitives, binary discovery, host-aware autotuning, and runtime-selected execution backends rather than heavy orchestration.
 
+## Current Readiness Level
+
+- Current level: advanced prototype with strong local/dev validation gates.
+- Recommended use now: local multi-process runs, development validation, and non-critical cluster experiments.
+- Not yet fully qualified for broad production LAN deployment without additional multi-host soak and hardware matrix validation.
+- Security baseline includes auth tokens and CI security scans; optional mTLS and stronger discovery-frame authentication remain roadmap items.
+
 ## Features
 
 - Zero-copy SPSC ring buffers with backpressure handling
-- Binary Layer-2 discovery protocol with CRC32 validation
+- Binary Layer-2 discovery protocol with versioned HMAC-SHA256 authentication
 - Thread-safe cluster state with live metrics and fault tracking
 - Runtime-aware planning, load balancing, and health thresholds
 - Fast and full hardware probe modes with cached host detection
@@ -39,14 +47,53 @@ cd Ghostlink
 cargo build --workspace
 ```
 
+## Start Here (Fastest Path)
+
+```bash
+bash scripts/quickstart.sh
+```
+
+This command checks prerequisites, bootstraps `ghostlink.toml`, runs a local smoke flow, and prints the next commands to continue.
+For copy/paste onboarding and common first-run fixes, see [docs/QUICKSTART.md](docs/QUICKSTART.md).
+
+Run a single consolidated readiness report:
+
+```bash
+cargo run -p ghost-link -- doctor
+```
+
+Export a machine-readable doctor report:
+
+```bash
+cargo run -p ghost-link -- doctor --strict --json ./tmp/doctor-report.json
+```
+
+Optionally test connectivity to a target endpoint:
+
+```bash
+cargo run -p ghost-link -- doctor --network-probe --network-target 127.0.0.1:8003
+```
+
 ## Usage
 
 ```bash
 # Run the full workspace test suite
 cargo test --workspace
 
+# Use TOML config defaults (CLI args and env vars still override)
+cargo run -p ghost-link -- --config ./ghostlink.example.toml flow
+
 # Run the package-owned integration suite
 cargo test -p ghostlink-core --test integration
+
+# Run unified troubleshooting report (env/readiness/accessibility/accuracy)
+cargo run -p ghost-link -- doctor --strict
+
+# Export doctor report JSON for CI/artifact consumers
+cargo run -p ghost-link -- doctor --strict --json ./tmp/doctor-report.json
+
+# Include optional lightweight connectivity probe
+cargo run -p ghost-link -- doctor --network-probe --network-target 127.0.0.1:8003
 
 # Generate a layer placement plan
 cargo run -p ghost-link -- plan
@@ -61,7 +108,7 @@ cargo run -p ghost-link -- listen local-node
 cargo run -p ghost-link -- dashboard
 
 # Launch vendored Mohawk GUI (requires Python + PyQt6 deps)
-python3 -m pip install -r third_party/mohawk_gui/requirements.txt
+python3 -m pip install -r third_party/mohawk_gui/requirements-runtime.txt
 # Linux containers may also require: sudo apt-get install -y libgl1
 cargo run -p ghost-link -- gui --host localhost --port 8003
 
@@ -154,7 +201,28 @@ python3 scripts/summarize_criterion_report.py --criterion-root target/criterion 
 
 # Validate that GUI API calls in main_window are implemented by mock backend
 python3 scripts/validate_gui_api_contract.py
+
+# Start a local multi-node discovery validation cluster
+cargo run -p ghost-link -- cluster-start 3 46000
+
+# Run quick fault-injection style matrix against flow runtime
+python3 scripts/fault_injection_matrix.py --output-dir ./tmp/fault_matrix --strict
+
+# Collect AF_XDP/eBPF preflight capability signals
+python3 scripts/xdp_preflight_check.py --output ./tmp/xdp-preflight.json
+
+# Run active TCP probes and emit JSON summary
+python3 scripts/active_network_probe.py --target 127.0.0.1:8003 --max-failure-ratio 0.0
+
+# Build release binary bundle + checksums (+ optional GPG signature)
+bash scripts/release_bundle.sh ./artifacts/release
 ```
+
+Configuration files:
+
+- `--config <path>` loads command defaults from TOML.
+- `GHOSTLINK_CONFIG=<path>` provides an environment-based fallback.
+- See `ghostlink.example.toml` for a complete sample.
 
 The Mohawk GUI sources are vendored under [third_party/mohawk_gui](third_party/mohawk_gui). Use the `ghost-link gui` command to launch it from this repository.
 Use `ghost-link gui-check` for readiness checks and `ghost-link gui-diagnose --strict` for categorized failure diagnostics suitable for CI artifacts.
@@ -175,13 +243,20 @@ If the host does not provide tools such as `nvidia-smi` or `lspci`, full mode fa
 - [TESTING.md](TESTING.md): validated commands, CI gates, and known gaps.
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): component-level architecture and responsibilities.
 - [docs/EXAMPLES.md](docs/EXAMPLES.md): runnable CLI and API usage examples.
+- [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md): deployment guide for single-node, local cluster, and staged LAN rollout.
 - [docs/MOHAWK_GUI.md](docs/MOHAWK_GUI.md): GUI setup, diagnostics, MCP JSON wiring, and troubleshooting.
 - [docs/SECURITY_MODEL.md](docs/SECURITY_MODEL.md): threat model and production hardening guidance.
+- [docs/SECURITY_SECRETS_REMEDIATION.md](docs/SECURITY_SECRETS_REMEDIATION.md): credential rotation and git history cleanup runbook.
 - [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md): operational troubleshooting and debugging tips.
 - [docs/PRODUCTION_READINESS.md](docs/PRODUCTION_READINESS.md): release and operations readiness review checklist.
+- [docs/PRODUCTION_REMEDIATION_PLAN.md](docs/PRODUCTION_REMEDIATION_PLAN.md): phased plan to close production gaps and track exit criteria.
+- [docs/GHOSTLINK_STUDIO_PRODUCT_VISION.md](docs/GHOSTLINK_STUDIO_PRODUCT_VISION.md): standalone desktop product vision and UX goals.
+- [docs/GHOSTLINK_STUDIO_EXECUTION_PLAN.md](docs/GHOSTLINK_STUDIO_EXECUTION_PLAN.md): sprint-by-sprint delivery plan for Ghostlink Studio.
 - [docs/archive/INDEX.md](docs/archive/INDEX.md): archived historical docs and migration notes.
 - [CONTRIBUTING.md](CONTRIBUTING.md): contributor setup and pre-PR checks.
 - [CHANGELOG.md](CHANGELOG.md): release-oriented change history.
+- [deploy/systemd/ghost-link-listener@.service](deploy/systemd/ghost-link-listener@.service): systemd listener template.
+- [deploy/docker/docker-compose.local.yml](deploy/docker/docker-compose.local.yml): local multi-container demo deployment.
 
 ## Repository Layout
 

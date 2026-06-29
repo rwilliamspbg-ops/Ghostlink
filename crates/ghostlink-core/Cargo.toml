@@ -6,7 +6,7 @@ authors = ["Ryan K Williams"]
 description = "High-performance, low-level network fabric utilizing zero-copy SPSC buffers and AF_XDP kernel bypass."
 repository = "https://github.com/rwilliamspbg-ops/Ghostlink"
 readme = "../../README.md"
-license = "Apache-2.0" # Change to your preferred license
+license = "MIT"
 keywords = ["networking", "xdp", "zero-copy", "async"]
 categories = ["asynchronous", "network-programming"]
 
@@ -14,7 +14,10 @@ categories = ["asynchronous", "network-programming"]
 # Zero-copy pinned allocations
 pin-utils = "0.1"
 
-# Fast CRC32 checksums
+# HMAC-based discovery frame authentication
+hmac = "0.12"
+sha2 = "0.10"
+rand = "0.8"
 crc32fast = "1.5"
 
 # Error types

@@ -21,6 +21,8 @@ on:
       - 'docs/SECURITY_MODEL.md'
       - '.github/workflows/ci.yml'
       - '.github/workflows/production-gate.yml'
+      - '.github/workflows/security.yml'
+      - '.github/workflows/release-artifacts.yml'
   pull_request:
     branches:
       - main
@@ -37,6 +39,8 @@ on:
       - 'docs/SECURITY_MODEL.md'
       - '.github/workflows/ci.yml'
       - '.github/workflows/production-gate.yml'
+      - '.github/workflows/security.yml'
+      - '.github/workflows/release-artifacts.yml'
 
 env:
   CARGO_TERM_COLOR: always
@@ -47,6 +51,35 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  doctor-preflight:
+    name: Doctor Preflight
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Run doctor strict with JSON report
+        run: |
+          mkdir -p ./tmp
+          cargo run -p ghost-link -- doctor --strict --json ./tmp/doctor-report.json
+
+      - name: Upload doctor report artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: doctor-report
+          path: ./tmp/doctor-report.json
+          retention-days: 14
+
+  license-consistency:
+    name: License Consistency
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate workspace/crate license alignment
+        run: bash scripts/check_license_consistency.sh
+
   docs:
     name: Docs
     uses: ./.github/workflows/docs.yml
@@ -88,6 +121,10 @@ jobs:
     name: Production Gate
     uses: ./.github/workflows/production-gate.yml
 
+  security:
+    name: Security
+    uses: ./.github/workflows/security.yml
+
   coverage:
     name: Code Coverage
     runs-on: ubuntu-latest
@@ -105,7 +142,7 @@ jobs:
       - name: Generate coverage report
         run: |
           cargo tarpaulin --workspace --out Lcov --output-dir coverage \
-            --timeout 300 --exclude-files benches/*
+            --timeout 300 --exclude-files benches/* --fail-under 35
 
       - name: Verify coverage artifact
         run: |
@@ -117,6 +154,8 @@ jobs:
           files: ./coverage/lcov.info
           token: ${{ secrets.CODECOV_TOKEN }}
           use_oidc: true
+          # Keep coverage generation strict, but do not fail CI on external Codecov
+          # repository/authorization service errors.
           fail_ci_if_error: false
           verbose: true
 

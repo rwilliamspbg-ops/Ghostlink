@@ -1,0 +1,18 @@
+[Unit]
+Description=Ghost-Link Discovery Listener (%i)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/ghostlink
+Environment=RUST_LOG=info
+Environment=GHOSTLINK_DISCOVERY_LISTEN=0.0.0.0:45885
+ExecStart=/opt/ghostlink/target/release/ghost-link listen %i
+Restart=on-failure
+RestartSec=2
+User=ghostlink
+Group=ghostlink
+
+[Install]
+WantedBy=multi-user.target

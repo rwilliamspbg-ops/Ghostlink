@@ -7,7 +7,7 @@ Ghostlink includes a vendored copy of the Mohawk GUI sources in [third_party/moh
 1. Install Python dependencies:
 
 ```bash
-python3 -m pip install -r third_party/mohawk_gui/requirements.txt
+python3 -m pip install -r third_party/mohawk_gui/requirements-runtime.txt
 ```
 
 If you are in a Linux container, also install system OpenGL runtime packages:

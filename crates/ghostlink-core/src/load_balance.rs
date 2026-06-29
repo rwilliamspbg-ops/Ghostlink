@@ -27,7 +27,7 @@ impl Default for LoadBalanceConfig {
     fn default() -> Self {
         Self {
             lock_timeout_us: 1000, // 1ms
-            min_load_threshold: 0.8,
+            min_load_threshold: 1.25,
             max_layers_per_assignment: 100,
             max_concurrent_rebalances: 1,
         }
@@ -250,26 +250,32 @@ impl LoadBalancer {
             return false;
         }
 
-        // Calculate average available VRAM across nodes
-        let total_available: f32 = active_nodes
-            .iter()
-            .map(|m| m.available_vram_gb)
-            .sum::<f32>()
-            / active_nodes.len() as f32;
+        let mut min_available = f32::MAX;
+        let mut max_available = 0.0_f32;
 
-        // Check if any node has significantly more available VRAM than average
         for node in &active_nodes {
-            let ratio = node.available_vram_gb / total_available;
+            min_available = min_available.min(node.available_vram_gb.max(0.0));
+            max_available = max_available.max(node.available_vram_gb.max(0.0));
+        }
 
-            if ratio > self.config.min_load_threshold {
-                // Node has excess capacity - mark for rebalancing
-                tracing::info!(
-                    "Node {} has {:.1}% more available VRAM than average",
-                    node.name,
-                    ratio * 100.0
-                );
-                return true;
+        // A large spread in available VRAM indicates load imbalance.
+        let skew_ratio = if min_available <= f32::EPSILON {
+            if max_available > 0.0 {
+                f32::INFINITY
+            } else {
+                1.0
             }
+        } else {
+            max_available / min_available
+        };
+
+        if skew_ratio >= self.config.min_load_threshold {
+            tracing::info!(
+                "Detected load skew ratio {:.2} (threshold {:.2})",
+                skew_ratio,
+                self.config.min_load_threshold
+            );
+            return true;
         }
 
         false
@@ -279,20 +285,20 @@ impl LoadBalancer {
     pub fn shed_load(&self) -> Vec<(String, String)> {
         let mut transfers: Vec<(String, String)> = Vec::new();
 
-        // Find overloaded nodes (using < 50% VRAM utilization as overloaded)
+        // Overloaded nodes are close to exhausted VRAM (low available headroom).
         let overloaded_nodes: Vec<_> = self
             .cluster
             .active_nodes()
             .into_iter()
-            .filter(|m| m.available_vram_gb > m.total_vram_gb * 0.5)
+            .filter(|m| m.available_vram_gb < m.total_vram_gb * 0.2)
             .collect();
 
-        // Find underloaded nodes (using > 80% VRAM utilization as underloaded)
+        // Underloaded nodes have enough available headroom to receive load.
         let underloaded_nodes: Vec<_> = self
             .cluster
             .active_nodes()
             .into_iter()
-            .filter(|m| m.available_vram_gb < m.total_vram_gb * 0.2)
+            .filter(|m| m.available_vram_gb > m.total_vram_gb * 0.5)
             .collect();
 
         // For each overloaded node, find a suitable underloaded target
@@ -581,5 +587,31 @@ mod tests {
         assert_eq!(chunked.distributions[0].1.len(), 3);
         assert_eq!(chunked.distributions[0].1[0].layer_range, (0, 4));
         assert_eq!(chunked.distributions[0].1[2].layer_range, (8, 10));
+    }
+
+    #[test]
+    fn shed_load_moves_from_low_headroom_to_high_headroom_nodes() {
+        let cluster = ClusterState::new();
+        cluster.register(NodeResources::new("node-hot", 24.0, 64.0, "8.9", None));
+        cluster.register(NodeResources::new("node-cool", 24.0, 64.0, "8.9", None));
+
+        // node-hot is overloaded (very low available VRAM)
+        cluster.get_metrics_mut("node-hot", |m| {
+            m.available_vram_gb = 2.0;
+            m.total_vram_gb = 24.0;
+        });
+
+        // node-cool has enough headroom to receive work
+        cluster.get_metrics_mut("node-cool", |m| {
+            m.available_vram_gb = 20.0;
+            m.total_vram_gb = 24.0;
+        });
+
+        let balancer = LoadBalancer::new(Arc::new(cluster), LoadBalanceConfig::default());
+        let transfers = balancer.shed_load();
+
+        assert_eq!(transfers.len(), 1);
+        assert_eq!(transfers[0].0, "node-hot");
+        assert_eq!(transfers[0].1, "node-cool");
     }
 }

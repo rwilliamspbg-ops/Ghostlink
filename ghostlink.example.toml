@@ -1,0 +1,36 @@
+# Ghost-Link example configuration
+#
+# Usage:
+#   cargo run -p ghost-link -- --config ./ghostlink.example.toml flow
+# or:
+#   export GHOSTLINK_CONFIG=./ghostlink.example.toml
+#   cargo run -p ghost-link -- flow
+
+[flow]
+local_id = "iprada-16gb"
+remote_id = "zenbook-32gb"
+remote_vram_gb = 32.0
+remote_system_memory_gb = 32.0
+execution_tokens = 128
+micro_batch = 4
+transport = "tcp"
+
+[cluster_start]
+node_count = 3
+base_port = 46000
+
+[discovery]
+listen = "0.0.0.0:45885"
+broadcast = "255.255.255.255:45885"
+timeout_ms = 1000
+allow_legacy_crc32 = false
+max_replies = 8
+
+[tcp]
+max_inflight = 256
+reconnect_attempts = 3
+reconnect_backoff_ms = 10
+auth_token = "replace-with-secret"
+
+[gui]
+python = "python3"

@@ -42,6 +42,9 @@ jobs:
           test -f docs/ARCHITECTURE.md
           test -f docs/EXAMPLES.md
           test -f docs/TROUBLESHOOTING.md
+          test -f docs/SECURITY_SECRETS_REMEDIATION.md
+          test -f docs/GHOSTLINK_STUDIO_PRODUCT_VISION.md
+          test -f docs/GHOSTLINK_STUDIO_EXECUTION_PLAN.md
 
       - name: Verify README references key checks
         shell: bash

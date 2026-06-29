@@ -6,7 +6,7 @@ authors = ["Ryan K Williams"]
 description = "High-performance, low-level network fabric utilizing zero-copy SPSC buffers and AF_XDP kernel bypass."
 repository = "https://github.com/rwilliamspbg-ops/Ghostlink"
 readme = "../../README.md"
-license = "Apache-2.0"
+license = "MIT"
 keywords = ["networking", "xdp", "zero-copy", "async"]
 categories = ["asynchronous", "network-programming"]
 
@@ -19,3 +19,5 @@ anyhow = "1"
 # Logging
 tracing = "0.1"
 tracing-subscriber = "0.3"
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"

@@ -1,0 +1,34 @@
+name: Markdown Lint
+
+'on':
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - docs/runtime-probe-docs
+      - 'release/**'
+      - 'hotfix/**'
+    paths:
+      - '**/*.md'
+      - '.markdownlint.json'
+      - '.github/workflows/markdownlint.yml'
+  pull_request:
+    branches:
+      - main
+    paths:
+      - '**/*.md'
+      - '.markdownlint.json'
+      - '.github/workflows/markdownlint.yml'
+
+jobs:
+  markdownlint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: DavidAnson/markdownlint-cli2-action@v17
+        with:
+          globs: |
+            **/*.md
+            !tmp/**
+            !target/**
+            !third_party/**

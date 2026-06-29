@@ -10,6 +10,9 @@ This checklist covers runtime reliability, CI gate coverage, GUI readiness, and 
 - Runtime smoke + SLO validation gates are enforced via `production-gate.yml`.
 - GUI launch/readiness/diagnostics and mock backend contract checks are now validated.
 - Coverage artifact generation is configured in CI.
+- Security workflow now enforces secret scanning and dependency advisory checks.
+- Production gate now includes fault-matrix runs, active network probes, and XDP/eBPF preflight signal collection.
+- Release workflow and local release bundle script are available for reproducible artifact packaging.
 
 ## Release Gates
 
@@ -49,6 +52,6 @@ python3 scripts/verify_hf_models.py
 ## Upgrade Backlog
 
 1. Add a dedicated CI job for GUI function-matrix execution in headless mode.
-2. Introduce signed release artifacts for Rust binaries and optional GUI bundle.
-3. Add explicit secret/key material scanning to CI pre-merge checks.
+2. Expand release artifacts from checksums to mandatory cryptographic signing in CI runners.
+3. Extend fault-injection coverage to real multi-node LAN and partition simulations.
 4. Publish SLO dashboards from uploaded metrics artifacts.

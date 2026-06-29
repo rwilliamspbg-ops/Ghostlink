@@ -24,6 +24,7 @@ use ghostlink_core::runtime::{
     build_token_schedule, execute_pipeline, execute_pipeline_tcp_loopback_with_config, DeviceKind,
     PipelinePlan, TcpTransportConfig,
 };
+use serde::Deserialize;
 use std::collections::HashMap;
 use std::fs;
 use std::hash::{Hash, Hasher};
@@ -33,6 +34,61 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Arc;
 use std::time::Duration;
+
+#[derive(Debug, Default, Deserialize)]
+struct FileConfig {
+    flow: Option<FlowDefaults>,
+    cluster_start: Option<ClusterStartDefaults>,
+    discovery: Option<DiscoveryDefaults>,
+    tcp: Option<TcpDefaults>,
+    gui: Option<GuiDefaults>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct FlowDefaults {
+    local_id: Option<String>,
+    remote_id: Option<String>,
+    remote_vram_gb: Option<f32>,
+    remote_system_memory_gb: Option<f32>,
+    execution_tokens: Option<usize>,
+    micro_batch: Option<usize>,
+    transport: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct ClusterStartDefaults {
+    node_count: Option<usize>,
+    base_port: Option<u16>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct DiscoveryDefaults {
+    listen: Option<String>,
+    broadcast: Option<String>,
+    timeout_ms: Option<u64>,
+    auth_token: Option<String>,
+    allow_legacy_crc32: Option<bool>,
+    max_replies: Option<usize>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct TcpDefaults {
+    max_inflight: Option<usize>,
+    reconnect_attempts: Option<usize>,
+    reconnect_backoff_ms: Option<u64>,
+    auth_token: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct GuiDefaults {
+    python: Option<String>,
+}
+
+#[derive(Debug)]
+struct BootstrapArgs {
+    command_args: Vec<String>,
+    config_path: Option<PathBuf>,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FlowTransportMode {
@@ -53,7 +109,16 @@ fn main() -> Result<()> {
     // Initialize logging
     tracing_subscriber::fmt().init();
 
-    let command = match parse_cli(std::env::args().skip(1)) {
+    let raw_args = std::env::args().skip(1).collect::<Vec<_>>();
+    let bootstrap = extract_bootstrap_args(raw_args)?;
+
+    if let Some(config_path) = resolve_config_path(bootstrap.config_path.as_deref()) {
+        let config = load_file_config(&config_path)?;
+        apply_file_config_to_env(&config);
+        println!("Loaded config defaults from {}", config_path.display());
+    }
+
+    let command = match parse_cli(bootstrap.command_args.into_iter()) {
         Ok(command) => command,
         Err(err) => {
             eprintln!("Error: {err}");
@@ -68,6 +133,200 @@ fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+fn extract_bootstrap_args(args: Vec<String>) -> Result<BootstrapArgs> {
+    let mut command_args = Vec::new();
+    let mut config_path = None;
+    let mut i = 0usize;
+
+    while i < args.len() {
+        let arg = &args[i];
+        if arg == "--config" {
+            let Some(value) = args.get(i + 1) else {
+                anyhow::bail!("--config requires a path value");
+            };
+            config_path = Some(PathBuf::from(value));
+            i += 2;
+            continue;
+        }
+        if let Some(value) = arg.strip_prefix("--config=") {
+            if value.is_empty() {
+                anyhow::bail!("--config requires a non-empty path value");
+            }
+            config_path = Some(PathBuf::from(value));
+            i += 1;
+            continue;
+        }
+
+        command_args.push(arg.clone());
+        i += 1;
+    }
+
+    Ok(BootstrapArgs {
+        command_args,
+        config_path,
+    })
+}
+
+fn resolve_config_path(cli_path: Option<&Path>) -> Option<PathBuf> {
+    if let Some(path) = cli_path {
+        return Some(path.to_path_buf());
+    }
+
+    if let Some(path) = std::env::var("GHOSTLINK_CONFIG")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+    {
+        return Some(PathBuf::from(path));
+    }
+
+    let default_path = PathBuf::from("./ghostlink.toml");
+    if default_path.exists() {
+        return Some(default_path);
+    }
+
+    None
+}
+
+fn load_file_config(path: &Path) -> Result<FileConfig> {
+    let raw = fs::read_to_string(path)
+        .map_err(|err| anyhow::anyhow!("failed to read config {}: {}", path.display(), err))?;
+    toml::from_str::<FileConfig>(&raw)
+        .map_err(|err| anyhow::anyhow!("failed to parse config {}: {}", path.display(), err))
+}
+
+fn set_env_if_absent(key: &str, value: String) {
+    if std::env::var(key)
+        .ok()
+        .filter(|existing| !existing.trim().is_empty())
+        .is_none()
+    {
+        std::env::set_var(key, value);
+    }
+}
+
+fn apply_file_config_to_env(config: &FileConfig) {
+    if let Some(flow) = &config.flow {
+        if let Some(value) = &flow.local_id {
+            set_env_if_absent("GHOSTLINK_FLOW_DEFAULT_LOCAL_ID", value.clone());
+        }
+        if let Some(value) = &flow.remote_id {
+            set_env_if_absent("GHOSTLINK_FLOW_DEFAULT_REMOTE_ID", value.clone());
+        }
+        if let Some(value) = flow.remote_vram_gb {
+            set_env_if_absent("GHOSTLINK_FLOW_DEFAULT_REMOTE_VRAM_GB", value.to_string());
+        }
+        if let Some(value) = flow.remote_system_memory_gb {
+            set_env_if_absent("GHOSTLINK_FLOW_DEFAULT_REMOTE_MEM_GB", value.to_string());
+        }
+        if let Some(value) = flow.execution_tokens {
+            set_env_if_absent("GHOSTLINK_FLOW_DEFAULT_EXEC_TOKENS", value.to_string());
+        }
+        if let Some(value) = flow.micro_batch {
+            set_env_if_absent("GHOSTLINK_FLOW_DEFAULT_MICRO_BATCH", value.to_string());
+        }
+        if let Some(value) = &flow.transport {
+            set_env_if_absent("GHOSTLINK_FLOW_DEFAULT_TRANSPORT", value.clone());
+        }
+    }
+
+    if let Some(cluster_start) = &config.cluster_start {
+        if let Some(value) = cluster_start.node_count {
+            set_env_if_absent(
+                "GHOSTLINK_CLUSTER_START_DEFAULT_NODE_COUNT",
+                value.to_string(),
+            );
+        }
+        if let Some(value) = cluster_start.base_port {
+            set_env_if_absent(
+                "GHOSTLINK_CLUSTER_START_DEFAULT_BASE_PORT",
+                value.to_string(),
+            );
+        }
+    }
+
+    if let Some(discovery) = &config.discovery {
+        if let Some(value) = &discovery.listen {
+            set_env_if_absent("GHOSTLINK_DISCOVERY_LISTEN", value.clone());
+        }
+        if let Some(value) = &discovery.broadcast {
+            set_env_if_absent("GHOSTLINK_DISCOVERY_BROADCAST", value.clone());
+        }
+        if let Some(value) = discovery.timeout_ms {
+            set_env_if_absent("GHOSTLINK_DISCOVERY_TIMEOUT_MS", value.to_string());
+        }
+        if let Some(value) = &discovery.auth_token {
+            set_env_if_absent("GHOSTLINK_DISCOVERY_AUTH_TOKEN", value.clone());
+        }
+        if let Some(value) = discovery.allow_legacy_crc32 {
+            set_env_if_absent("GHOSTLINK_DISCOVERY_ALLOW_LEGACY_CRC32", value.to_string());
+        }
+        if let Some(value) = discovery.max_replies {
+            set_env_if_absent("GHOSTLINK_DISCOVERY_MAX_REPLIES", value.to_string());
+        }
+    }
+
+    if let Some(tcp) = &config.tcp {
+        if let Some(value) = tcp.max_inflight {
+            set_env_if_absent("GHOSTLINK_TCP_MAX_INFLIGHT", value.to_string());
+        }
+        if let Some(value) = tcp.reconnect_attempts {
+            set_env_if_absent("GHOSTLINK_TCP_RECONNECT_ATTEMPTS", value.to_string());
+        }
+        if let Some(value) = tcp.reconnect_backoff_ms {
+            set_env_if_absent("GHOSTLINK_TCP_RECONNECT_BACKOFF_MS", value.to_string());
+        }
+        if let Some(value) = &tcp.auth_token {
+            set_env_if_absent("GHOSTLINK_TCP_AUTH_TOKEN", value.clone());
+        }
+    }
+
+    if let Some(gui) = &config.gui {
+        if let Some(value) = &gui.python {
+            set_env_if_absent("GHOSTLINK_PYTHON", value.clone());
+        }
+    }
+}
+
+fn env_default_string(key: &str, fallback: &str) -> String {
+    std::env::var(key)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| fallback.to_string())
+}
+
+fn env_default_f32(key: &str, fallback: f32) -> f32 {
+    std::env::var(key)
+        .ok()
+        .and_then(|value| value.parse::<f32>().ok())
+        .unwrap_or(fallback)
+}
+
+fn env_default_usize(key: &str, fallback: usize) -> usize {
+    std::env::var(key)
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(fallback)
+}
+
+fn env_default_u16(key: &str, fallback: u16) -> u16 {
+    std::env::var(key)
+        .ok()
+        .and_then(|value| value.parse::<u16>().ok())
+        .unwrap_or(fallback)
+}
+
+fn env_default_bool(key: &str, fallback: bool) -> bool {
+    std::env::var(key)
+        .ok()
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(fallback)
 }
 
 #[derive(Debug, PartialEq)]
@@ -89,7 +348,12 @@ enum CliCommand {
     GuiDiagnose {
         strict: bool,
     },
+    Doctor(DoctorOptions),
     Dashboard,
+    ClusterStart {
+        node_count: usize,
+        base_port: u16,
+    },
     Probe {
         node_id: String,
         mode: ProbeMode,
@@ -106,6 +370,14 @@ enum CliCommand {
     Help,
 }
 
+#[derive(Debug, PartialEq)]
+struct DoctorOptions {
+    strict: bool,
+    json_out: Option<PathBuf>,
+    network_probe: bool,
+    network_target: String,
+}
+
 fn execute_command(command: CliCommand) -> Result<()> {
     match command {
         CliCommand::Plan => print_plan()?,
@@ -114,7 +386,12 @@ fn execute_command(command: CliCommand) -> Result<()> {
         CliCommand::Gui { args } => launch_mohawk_gui(&args)?,
         CliCommand::GuiCheck { strict } => print_gui_readiness(strict)?,
         CliCommand::GuiDiagnose { strict } => print_gui_diagnostics(strict)?,
+        CliCommand::Doctor(options) => print_doctor_report(&options)?,
         CliCommand::Dashboard => print_dashboard()?,
+        CliCommand::ClusterStart {
+            node_count,
+            base_port,
+        } => print_cluster_start(node_count, base_port)?,
         CliCommand::Probe { node_id, mode } => print_probe(&node_id, mode)?,
         CliCommand::Flow {
             local_id,
@@ -150,10 +427,14 @@ where
     match command.as_str() {
         "plan" => Ok(CliCommand::Plan),
         "join" => Ok(CliCommand::Join {
-            node_id: args.next().unwrap_or_else(|| "node-01".to_string()),
+            node_id: args
+                .next()
+                .unwrap_or_else(|| env_default_string("GHOSTLINK_JOIN_DEFAULT_NODE_ID", "node-01")),
         }),
         "listen" => {
-            let node_id = args.next().unwrap_or_else(|| "local-node".to_string());
+            let node_id = args.next().unwrap_or_else(|| {
+                env_default_string("GHOSTLINK_LISTEN_DEFAULT_NODE_ID", "local-node")
+            });
             let once = args.any(|arg| arg == "--once");
             Ok(CliCommand::Listen { node_id, once })
         }
@@ -168,41 +449,74 @@ where
             let strict = args.any(|arg| arg == "--strict");
             Ok(CliCommand::GuiDiagnose { strict })
         }
+        "doctor" => Ok(CliCommand::Doctor(parse_doctor_options(args)?)),
         "dashboard" => Ok(CliCommand::Dashboard),
+        "cluster-start" => {
+            let node_count = args
+                .next()
+                .as_deref()
+                .map(parse_usize_arg)
+                .transpose()?
+                .unwrap_or_else(|| {
+                    env_default_usize("GHOSTLINK_CLUSTER_START_DEFAULT_NODE_COUNT", 3)
+                })
+                .max(1);
+            let base_port = args
+                .next()
+                .as_deref()
+                .map(parse_u16_arg)
+                .transpose()?
+                .unwrap_or_else(|| {
+                    env_default_u16("GHOSTLINK_CLUSTER_START_DEFAULT_BASE_PORT", 46000)
+                });
+            Ok(CliCommand::ClusterStart {
+                node_count,
+                base_port,
+            })
+        }
         "probe" => {
-            let node_id = args.next().unwrap_or_else(|| "local-node".to_string());
+            let node_id = args.next().unwrap_or_else(|| {
+                env_default_string("GHOSTLINK_PROBE_DEFAULT_NODE_ID", "local-node")
+            });
             let mode = parse_probe_mode(args.next().as_deref())?;
             Ok(CliCommand::Probe { node_id, mode })
         }
         "flow" => {
-            let local_id = args.next().unwrap_or_else(|| "iprada-16gb".to_string());
-            let remote_id = args.next().unwrap_or_else(|| "zenbook-32gb".to_string());
+            let local_id = args.next().unwrap_or_else(|| {
+                env_default_string("GHOSTLINK_FLOW_DEFAULT_LOCAL_ID", "iprada-16gb")
+            });
+            let remote_id = args.next().unwrap_or_else(|| {
+                env_default_string("GHOSTLINK_FLOW_DEFAULT_REMOTE_ID", "zenbook-32gb")
+            });
             let remote_vram_gb = args
                 .next()
                 .as_deref()
                 .map(parse_f32_arg)
                 .transpose()?
-                .unwrap_or(32.0);
+                .unwrap_or_else(|| env_default_f32("GHOSTLINK_FLOW_DEFAULT_REMOTE_VRAM_GB", 32.0));
             let remote_system_memory_gb = args
                 .next()
                 .as_deref()
                 .map(parse_f32_arg)
                 .transpose()?
-                .unwrap_or(32.0);
+                .unwrap_or_else(|| env_default_f32("GHOSTLINK_FLOW_DEFAULT_REMOTE_MEM_GB", 32.0));
             let execution_tokens = args
                 .next()
                 .as_deref()
                 .map(parse_usize_arg)
                 .transpose()?
-                .unwrap_or(32);
+                .unwrap_or_else(|| env_default_usize("GHOSTLINK_FLOW_DEFAULT_EXEC_TOKENS", 32));
             let micro_batch = args
                 .next()
                 .as_deref()
                 .map(parse_usize_arg)
                 .transpose()?
-                .unwrap_or(1)
+                .unwrap_or_else(|| env_default_usize("GHOSTLINK_FLOW_DEFAULT_MICRO_BATCH", 1))
                 .max(1);
-            let transport_mode = parse_flow_transport_mode(args.next().as_deref())?;
+            let env_transport = std::env::var("GHOSTLINK_FLOW_DEFAULT_TRANSPORT").ok();
+            let cli_transport = args.next();
+            let transport_mode =
+                parse_flow_transport_mode(cli_transport.as_deref().or(env_transport.as_deref()))?;
 
             Ok(CliCommand::Flow {
                 local_id,
@@ -245,6 +559,70 @@ fn parse_usize_arg(value: &str) -> Result<usize> {
     value
         .parse::<usize>()
         .map_err(|_| anyhow::anyhow!("invalid integer value: {value}"))
+}
+
+fn parse_u16_arg(value: &str) -> Result<u16> {
+    value
+        .parse::<u16>()
+        .map_err(|_| anyhow::anyhow!("invalid port value: {value}"))
+}
+
+fn parse_doctor_options<I>(args: I) -> Result<DoctorOptions>
+where
+    I: Iterator<Item = String>,
+{
+    let mut strict = false;
+    let mut json_out = None;
+    let mut network_probe = false;
+    let mut network_target = "127.0.0.1:8003".to_string();
+
+    let mut iter = args.peekable();
+    while let Some(arg) = iter.next() {
+        match arg.as_str() {
+            "--strict" => strict = true,
+            "--network-probe" => network_probe = true,
+            "--json" => {
+                let Some(path) = iter.next() else {
+                    anyhow::bail!("--json requires a file path");
+                };
+                if path.trim().is_empty() {
+                    anyhow::bail!("--json requires a non-empty file path");
+                }
+                json_out = Some(PathBuf::from(path));
+            }
+            "--network-target" => {
+                let Some(target) = iter.next() else {
+                    anyhow::bail!("--network-target requires a host:port value");
+                };
+                if target.trim().is_empty() {
+                    anyhow::bail!("--network-target requires a non-empty host:port value");
+                }
+                network_target = target;
+            }
+            _ if arg.starts_with("--json=") => {
+                let value = arg.trim_start_matches("--json=");
+                if value.trim().is_empty() {
+                    anyhow::bail!("--json requires a non-empty file path");
+                }
+                json_out = Some(PathBuf::from(value));
+            }
+            _ if arg.starts_with("--network-target=") => {
+                let value = arg.trim_start_matches("--network-target=");
+                if value.trim().is_empty() {
+                    anyhow::bail!("--network-target requires a non-empty host:port value");
+                }
+                network_target = value.to_string();
+            }
+            _ => anyhow::bail!("unknown doctor option: {}", arg),
+        }
+    }
+
+    Ok(DoctorOptions {
+        strict,
+        json_out,
+        network_probe,
+        network_target,
+    })
 }
 
 fn maybe_write_flow_metrics_json(
@@ -519,7 +897,7 @@ fn autotune_tcp_transport_config(
 
 fn print_usage() {
     eprintln!(
-        "Usage: ghost-link <plan|join|listen|gui|gui-check|gui-diagnose|dashboard|probe|flow|help>"
+        "Usage: ghost-link [--config <path>] <plan|join|listen|gui|gui-check|gui-diagnose|doctor|dashboard|cluster-start|probe|flow|help>"
     );
     eprintln!();
     eprintln!("Commands:");
@@ -529,7 +907,13 @@ fn print_usage() {
     eprintln!("  gui [args...] - Launch vendored Mohawk GUI (Python/PyQt6)");
     eprintln!("  gui-check [--strict] - Validate GUI readiness and dependencies");
     eprintln!("  gui-diagnose [--strict] - Emit categorized GUI diagnostics report");
+    eprintln!(
+        "  doctor [--strict] [--json <path>] [--network-probe] [--network-target <host:port>] - Run unified troubleshooting checks"
+    );
     eprintln!("  dashboard - Display ASCII cluster dashboard");
+    eprintln!(
+        "  cluster-start [node_count] [base_port] - Start local discovery listeners and run a quick join/reply validation"
+    );
     eprintln!(
         "  probe [id] [fast|full|--fast|--full] - Detect local workers and acceleration profile"
     );
@@ -537,6 +921,10 @@ fn print_usage() {
         "  flow [local_id] [remote_id] [remote_vram_gb] [remote_mem_gb] [exec_tokens] [micro_batch] [transport=tcp|inmem] - Run full 30B planning flow"
     );
     eprintln!("  help      - Show this help message");
+    eprintln!();
+    eprintln!("Config:");
+    eprintln!("  --config <path> - Load default values from a TOML config file");
+    eprintln!("  Env fallback     - Set GHOSTLINK_CONFIG to a config file path");
 }
 
 fn print_help() {
@@ -551,7 +939,13 @@ fn print_help() {
     println!("  gui [args...] - Launch vendored Mohawk GUI (Python/PyQt6)");
     println!("  gui-check [--strict] - Validate GUI readiness and dependencies");
     println!("  gui-diagnose [--strict] - Emit categorized GUI diagnostics report");
+    println!(
+        "  doctor [--strict] [--json <path>] [--network-probe] [--network-target <host:port>] - Run unified troubleshooting checks"
+    );
     println!("  dashboard - Display ASCII cluster dashboard");
+    println!(
+        "  cluster-start [node_count] [base_port] - Start local discovery listeners and run a quick join/reply validation"
+    );
     println!(
         "  probe [id] [fast|full|--fast|--full] - Detect local workers and acceleration profile"
     );
@@ -560,6 +954,10 @@ fn print_help() {
     );
     println!("  help      - Show this help message");
     println!();
+    println!("Config:");
+    println!("  --config <path> - Load default values from a TOML config file");
+    println!("  Env fallback     - Set GHOSTLINK_CONFIG to a config file path");
+    println!();
     println!("Examples:");
     println!("  $ ghost-link plan");
     println!("  $ ghost-link join node-02");
@@ -567,7 +965,12 @@ fn print_help() {
     println!("  $ ghost-link gui --host 0.0.0.0 --port 8003");
     println!("  $ ghost-link gui-check --strict");
     println!("  $ ghost-link gui-diagnose --strict");
+    println!("  $ ghost-link doctor --strict");
+    println!("  $ ghost-link doctor --strict --json ./tmp/doctor-report.json");
+    println!("  $ ghost-link doctor --network-probe --network-target 127.0.0.1:8003");
     println!("  $ ghost-link dashboard");
+    println!("  $ ghost-link cluster-start 3 46000");
+    println!("  $ ghost-link --config ./ghostlink.toml flow");
     println!("  $ ghost-link probe workstation-a fast");
     println!("  $ ghost-link probe workstation-a --full");
     println!("  $ ghost-link flow iprada-16gb zenbook-32gb 32 32 64 4 tcp");
@@ -824,6 +1227,7 @@ fn print_join(node_id: &str) -> Result<()> {
         broadcast_addr,
         response_timeout: Duration::from_millis(timeout_ms),
         auth_token,
+        allow_legacy_crc32: env_default_bool("GHOSTLINK_DISCOVERY_ALLOW_LEGACY_CRC32", false),
         ..UdpDiscoveryConfig::default()
     };
 
@@ -901,6 +1305,7 @@ fn print_discovery_listener(node_id: &str, once: bool) -> Result<()> {
         bind_addr: listen_addr,
         response_timeout: Duration::from_millis(timeout_ms),
         auth_token,
+        allow_legacy_crc32: env_default_bool("GHOSTLINK_DISCOVERY_ALLOW_LEGACY_CRC32", false),
         ..UdpDiscoveryConfig::default()
     };
 
@@ -1018,12 +1423,718 @@ fn print_dashboard() -> Result<()> {
     Ok(())
 }
 
+fn print_cluster_start(node_count: usize, base_port: u16) -> Result<()> {
+    let mut listeners = Vec::new();
+    let self_exe = std::env::current_exe()
+        .map_err(|err| anyhow::anyhow!("failed to locate current executable: {}", err))?;
+
+    println!("Ghost-Link Local Cluster Start\n");
+    println!("===============================\n");
+    println!("Node count: {}", node_count);
+    println!("Base port: {}", base_port);
+
+    for i in 0..node_count {
+        let node_id = format!("local-node-{}", i + 1);
+        let port = base_port.saturating_add(i as u16);
+        let listen_addr = format!("127.0.0.1:{}", port);
+
+        let child = Command::new(&self_exe)
+            .arg("listen")
+            .arg(&node_id)
+            .arg("--once")
+            .env("GHOSTLINK_DISCOVERY_LISTEN", &listen_addr)
+            .env("GHOSTLINK_DISCOVERY_TIMEOUT_MS", "2500")
+            .spawn()
+            .map_err(|err| {
+                anyhow::anyhow!(
+                    "failed to spawn listener {} at {}: {}",
+                    node_id,
+                    listen_addr,
+                    err
+                )
+            })?;
+        listeners.push((node_id, listen_addr, child));
+    }
+
+    std::thread::sleep(Duration::from_millis(300));
+
+    let controller = detect_runtime_profile("cluster-controller");
+    let join = DiscoveryFrame {
+        kind: FrameKind::Join,
+        node: controller.node_resources,
+    };
+
+    let mut total_replies = 0usize;
+    for (node_id, listen_addr, _child) in &listeners {
+        let target = listen_addr
+            .parse::<SocketAddr>()
+            .map_err(|err| anyhow::anyhow!("invalid listen addr {}: {}", listen_addr, err))?;
+
+        let cfg = UdpDiscoveryConfig {
+            bind_addr: SocketAddr::from(([127, 0, 0, 1], 0)),
+            broadcast_addr: target,
+            response_timeout: Duration::from_millis(800),
+            allow_legacy_crc32: env_default_bool("GHOSTLINK_DISCOVERY_ALLOW_LEGACY_CRC32", false),
+            ..UdpDiscoveryConfig::default()
+        };
+
+        let replies = broadcast_and_collect(&join, &cfg)
+            .map_err(|err| anyhow::anyhow!("join probe failed for {}: {}", node_id, err))?;
+        println!(
+            "{} at {} replied {} time(s)",
+            node_id,
+            listen_addr,
+            replies.len()
+        );
+        total_replies += replies.len();
+    }
+
+    for (node_id, listen_addr, mut child) in listeners {
+        let status = child.wait().map_err(|err| {
+            anyhow::anyhow!(
+                "failed waiting for listener {} ({}) to exit: {}",
+                node_id,
+                listen_addr,
+                err
+            )
+        })?;
+        if !status.success() {
+            anyhow::bail!(
+                "listener {} ({}) exited with status {}",
+                node_id,
+                listen_addr,
+                status
+            );
+        }
+    }
+
+    if total_replies < node_count {
+        anyhow::bail!(
+            "cluster-start validation incomplete: expected at least {} replies, got {}",
+            node_count,
+            total_replies
+        );
+    }
+
+    println!(
+        "\nCluster-start validation passed: {} replies across {} local nodes",
+        total_replies, node_count
+    );
+    Ok(())
+}
+
 fn print_probe(node_id: &str, probe_mode: ProbeMode) -> Result<()> {
     let profile = match probe_mode {
         ProbeMode::Fast => detect_runtime_profile(node_id),
         ProbeMode::Full => detect_runtime_profile_full(node_id),
     };
     println!("{}", profile.summary());
+    Ok(())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DoctorStatus {
+    Pass,
+    Warn,
+    Fail,
+}
+
+impl DoctorStatus {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Pass => "PASS",
+            Self::Warn => "WARN",
+            Self::Fail => "FAIL",
+        }
+    }
+}
+
+#[derive(Debug)]
+struct DoctorCheck {
+    area: &'static str,
+    name: &'static str,
+    status: DoctorStatus,
+    detail: String,
+    fix: Option<String>,
+}
+
+fn push_doctor_check(
+    checks: &mut Vec<DoctorCheck>,
+    area: &'static str,
+    name: &'static str,
+    status: DoctorStatus,
+    detail: impl Into<String>,
+    fix: Option<String>,
+) {
+    checks.push(DoctorCheck {
+        area,
+        name,
+        status,
+        detail: detail.into(),
+        fix,
+    });
+}
+
+fn run_command_capture(program: &str, args: &[&str]) -> Result<String> {
+    let output = Command::new(program)
+        .args(args)
+        .output()
+        .map_err(|err| anyhow::anyhow!("failed to execute {}: {}", program, err))?;
+
+    if !output.status.success() {
+        anyhow::bail!(
+            "{} exited with status {}",
+            program,
+            output
+                .status
+                .code()
+                .map(|code| code.to_string())
+                .unwrap_or_else(|| "terminated by signal".to_string())
+        );
+    }
+
+    let text = if output.stdout.is_empty() {
+        String::from_utf8_lossy(&output.stderr).to_string()
+    } else {
+        String::from_utf8_lossy(&output.stdout).to_string()
+    };
+    Ok(text.trim().to_string())
+}
+
+fn run_planner_accuracy_check() -> Result<String> {
+    let profile = detect_runtime_profile("doctor-local");
+    let local_id = "doctor-local";
+    let remote_id = "doctor-remote";
+    let nodes = vec![
+        NodeResources::new(
+            local_id,
+            profile.node_resources.vram_gb.max(16.0),
+            profile.node_resources.system_memory_gb.max(16.0),
+            profile.node_resources.compute_capability.clone(),
+            profile.node_resources.gpu_name.clone(),
+        ),
+        NodeResources::new(
+            remote_id,
+            32.0,
+            32.0,
+            "auto",
+            Some("remote-host".to_string()),
+        ),
+    ];
+    let layers: Vec<LayerSpec> = (0..60)
+        .map(|index| LayerSpec {
+            index,
+            vram_gb: 0.5,
+            num_weights: 500_000_000 / 60,
+        })
+        .collect();
+    let assignments = assign_layers_with_runtime_profile(&nodes, &layers, &profile)
+        .map_err(|err| anyhow::anyhow!(err))?;
+
+    let mut coverage = vec![0usize; layers.len()];
+    for assignment in &assignments {
+        for layer in assignment.start_layer..assignment.end_layer {
+            if let Some(entry) = coverage.get_mut(layer) {
+                *entry += 1;
+            } else {
+                anyhow::bail!("assignment references out-of-range layer index {}", layer);
+            }
+        }
+    }
+
+    let missing = coverage.iter().filter(|count| **count == 0).count();
+    let overlaps = coverage.iter().filter(|count| **count > 1).count();
+    if missing > 0 || overlaps > 0 {
+        anyhow::bail!(
+            "planner coverage mismatch (missing_layers={}, overlapped_layers={})",
+            missing,
+            overlaps
+        );
+    }
+
+    Ok(format!(
+        "{} assignments cover {} layers with no gaps/overlap",
+        assignments.len(),
+        layers.len()
+    ))
+}
+
+fn json_escape(value: &str) -> String {
+    value
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', "\\n")
+        .replace('\r', "\\r")
+}
+
+fn write_doctor_report_json(
+    path: &Path,
+    checks: &[DoctorCheck],
+    pass_count: usize,
+    warn_count: usize,
+    fail_count: usize,
+) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent).map_err(|err| {
+                anyhow::anyhow!(
+                    "failed to create doctor report directory {}: {}",
+                    parent.display(),
+                    err
+                )
+            })?;
+        }
+    }
+
+    let checks_json = checks
+        .iter()
+        .map(|check| {
+            let fix_json = check
+                .fix
+                .as_ref()
+                .map(|value| format!("\"{}\"", json_escape(value)))
+                .unwrap_or_else(|| "null".to_string());
+            format!(
+                "{{\"area\":\"{}\",\"name\":\"{}\",\"status\":\"{}\",\"detail\":\"{}\",\"fix\":{}}}",
+                json_escape(check.area),
+                json_escape(check.name),
+                check.status.as_str(),
+                json_escape(&check.detail),
+                fix_json
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+
+    let payload = format!(
+        "{{\n  \"summary\": {{\"pass\": {}, \"warn\": {}, \"fail\": {}}},\n  \"checks\": [{}]\n}}\n",
+        pass_count, warn_count, fail_count, checks_json
+    );
+
+    fs::write(path, payload).map_err(|err| {
+        anyhow::anyhow!(
+            "failed to write doctor report JSON {}: {}",
+            path.display(),
+            err
+        )
+    })
+}
+
+fn run_optional_network_probe(target: &str, checks: &mut Vec<DoctorCheck>) {
+    if target.parse::<SocketAddr>().is_err() {
+        push_doctor_check(
+            checks,
+            "accessibility",
+            "network-probe",
+            DoctorStatus::Warn,
+            format!("invalid network target '{}', expected host:port", target),
+            Some("Use --network-target <host:port> with a valid socket address".to_string()),
+        );
+        return;
+    }
+
+    match run_command_capture(
+        "python3",
+        &[
+            "-c",
+            "import socket,sys;host,port=sys.argv[1].rsplit(':',1);s=socket.socket();s.settimeout(0.35);rc=s.connect_ex((host,int(port)));s.close();print('reachable' if rc==0 else f'unreachable({rc})');sys.exit(0 if rc==0 else 1)",
+            target,
+        ],
+    ) {
+        Ok(output) => push_doctor_check(
+            checks,
+            "accessibility",
+            "network-probe",
+            DoctorStatus::Pass,
+            format!("{} target {}", output, target),
+            None,
+        ),
+        Err(err) => push_doctor_check(
+            checks,
+            "accessibility",
+            "network-probe",
+            DoctorStatus::Warn,
+            format!("target {} not reachable ({})", target, err),
+            Some(
+                "Start a listener on the target and retry with --network-probe --network-target <host:port>"
+                    .to_string(),
+            ),
+        ),
+    }
+}
+
+fn print_doctor_report(options: &DoctorOptions) -> Result<()> {
+    let mut checks: Vec<DoctorCheck> = Vec::new();
+    let crate_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let repo_root = crate_root.join("..").join("..");
+
+    let python = std::env::var("GHOSTLINK_PYTHON").unwrap_or_else(|_| "python3".to_string());
+
+    match run_command_capture("cargo", &["--version"]) {
+        Ok(version) => push_doctor_check(
+            &mut checks,
+            "environment",
+            "cargo",
+            DoctorStatus::Pass,
+            version,
+            None,
+        ),
+        Err(err) => push_doctor_check(
+            &mut checks,
+            "environment",
+            "cargo",
+            DoctorStatus::Warn,
+            err.to_string(),
+            Some("Install Rust: curl https://sh.rustup.rs -sSf | sh -s -- -y".to_string()),
+        ),
+    }
+
+    let python_ok = match run_command_capture(&python, &["--version"]) {
+        Ok(version) => {
+            push_doctor_check(
+                &mut checks,
+                "environment",
+                "python-runtime",
+                DoctorStatus::Pass,
+                version,
+                None,
+            );
+            true
+        }
+        Err(err) => {
+            push_doctor_check(
+                &mut checks,
+                "environment",
+                "python-runtime",
+                DoctorStatus::Warn,
+                err.to_string(),
+                Some("Install Python 3.10+ and set GHOSTLINK_PYTHON if needed".to_string()),
+            );
+            false
+        }
+    };
+
+    let example_config = repo_root.join("ghostlink.example.toml");
+    if example_config.exists() {
+        push_doctor_check(
+            &mut checks,
+            "readiness",
+            "config-template",
+            DoctorStatus::Pass,
+            format!("found {}", example_config.display()),
+            None,
+        );
+    } else {
+        push_doctor_check(
+            &mut checks,
+            "readiness",
+            "config-template",
+            DoctorStatus::Fail,
+            format!("missing {}", example_config.display()),
+            Some("Restore ghostlink.example.toml from repository".to_string()),
+        );
+    }
+
+    let local_config = repo_root.join("ghostlink.toml");
+    push_doctor_check(
+        &mut checks,
+        "readiness",
+        "local-config",
+        if local_config.exists() {
+            DoctorStatus::Pass
+        } else {
+            DoctorStatus::Warn
+        },
+        if local_config.exists() {
+            format!("using {}", local_config.display())
+        } else {
+            "not found (quickstart will auto-create it)".to_string()
+        },
+        if local_config.exists() {
+            None
+        } else {
+            Some("Run: bash scripts/quickstart.sh".to_string())
+        },
+    );
+
+    let gui_entry = repo_root
+        .join("third_party")
+        .join("mohawk_gui")
+        .join("main.py");
+    let gui_requirements = repo_root
+        .join("third_party")
+        .join("mohawk_gui")
+        .join("requirements.txt");
+    if gui_entry.exists() && gui_requirements.exists() {
+        push_doctor_check(
+            &mut checks,
+            "readiness",
+            "gui-assets",
+            DoctorStatus::Pass,
+            "GUI entrypoint and requirements present".to_string(),
+            None,
+        );
+    } else {
+        push_doctor_check(
+            &mut checks,
+            "readiness",
+            "gui-assets",
+            DoctorStatus::Fail,
+            "missing vendored GUI files".to_string(),
+            Some("Ensure third_party/mohawk_gui is checked out".to_string()),
+        );
+    }
+
+    if python_ok {
+        match detect_missing_gui_python_modules(&python) {
+            Ok(missing) if missing.is_empty() => push_doctor_check(
+                &mut checks,
+                "readiness",
+                "gui-python-modules",
+                DoctorStatus::Pass,
+                "PyQt6, requests, pyqtgraph available".to_string(),
+                None,
+            ),
+            Ok(missing) => push_doctor_check(
+                &mut checks,
+                "readiness",
+                "gui-python-modules",
+                DoctorStatus::Warn,
+                format!("missing: {}", missing.join(", ")),
+                Some(format!(
+                    "Install with: {} -m pip install -r third_party/mohawk_gui/requirements-runtime.txt",
+                    python
+                )),
+            ),
+            Err(err) => push_doctor_check(
+                &mut checks,
+                "readiness",
+                "gui-python-modules",
+                DoctorStatus::Warn,
+                err.to_string(),
+                Some("Verify Python environment and package installation".to_string()),
+            ),
+        }
+    }
+
+    let has_display = std::env::var("DISPLAY")
+        .ok()
+        .filter(|v| !v.is_empty())
+        .is_some()
+        || std::env::var("WAYLAND_DISPLAY")
+            .ok()
+            .filter(|v| !v.is_empty())
+            .is_some();
+
+    if has_display {
+        push_doctor_check(
+            &mut checks,
+            "accessibility",
+            "display-session",
+            DoctorStatus::Pass,
+            "DISPLAY/WAYLAND session detected".to_string(),
+            None,
+        );
+    } else {
+        let xvfb_ok = run_command_capture("xvfb-run", &["--help"]).is_ok();
+        push_doctor_check(
+            &mut checks,
+            "accessibility",
+            "display-session",
+            if xvfb_ok {
+                DoctorStatus::Warn
+            } else {
+                DoctorStatus::Fail
+            },
+            if xvfb_ok {
+                "headless session; xvfb-run available for GUI diagnostics".to_string()
+            } else {
+                "headless session and xvfb-run unavailable".to_string()
+            },
+            if xvfb_ok {
+                Some("Run GUI checks with: xvfb-run -a cargo run -p ghost-link -- gui-diagnose --strict".to_string())
+            } else {
+                Some("Install xvfb and rerun GUI diagnostics for headless hosts".to_string())
+            },
+        );
+    }
+
+    for (name, rel_path) in [
+        ("deployment-guide", "docs/DEPLOYMENT.md"),
+        (
+            "systemd-template",
+            "deploy/systemd/ghost-link-listener@.service",
+        ),
+        (
+            "docker-local-demo",
+            "deploy/docker/docker-compose.local.yml",
+        ),
+    ] {
+        let path = repo_root.join(rel_path);
+        push_doctor_check(
+            &mut checks,
+            "accessibility",
+            name,
+            if path.exists() {
+                DoctorStatus::Pass
+            } else {
+                DoctorStatus::Warn
+            },
+            if path.exists() {
+                format!("found {}", path.display())
+            } else {
+                format!("missing {}", path.display())
+            },
+            if path.exists() {
+                None
+            } else {
+                Some("Restore deployment assets for multi-device onboarding".to_string())
+            },
+        );
+    }
+
+    if options.network_probe {
+        run_optional_network_probe(&options.network_target, &mut checks);
+    }
+
+    match run_planner_accuracy_check() {
+        Ok(summary) => push_doctor_check(
+            &mut checks,
+            "accuracy",
+            "planner-layer-coverage",
+            DoctorStatus::Pass,
+            summary,
+            None,
+        ),
+        Err(err) => push_doctor_check(
+            &mut checks,
+            "accuracy",
+            "planner-layer-coverage",
+            DoctorStatus::Fail,
+            err.to_string(),
+            Some("Inspect assign_layers_with_runtime_profile behavior".to_string()),
+        ),
+    }
+
+    for rel_path in [
+        "scripts/validate_flow_metrics.py",
+        "scripts/validate_stage_tail_metrics.py",
+        "scripts/validate_flow_canary.py",
+        "docs/PERF_BASELINE.json",
+    ] {
+        let path = repo_root.join(rel_path);
+        push_doctor_check(
+            &mut checks,
+            "accuracy",
+            "validation-artifacts",
+            if path.exists() {
+                DoctorStatus::Pass
+            } else {
+                DoctorStatus::Warn
+            },
+            if path.exists() {
+                format!("found {}", path.display())
+            } else {
+                format!("missing {}", path.display())
+            },
+            None,
+        );
+    }
+
+    if python_ok {
+        let api_contract_script = repo_root
+            .join("scripts")
+            .join("validate_gui_api_contract.py");
+        match Command::new(&python).arg(&api_contract_script).status() {
+            Ok(status) if status.success() => push_doctor_check(
+                &mut checks,
+                "accuracy",
+                "gui-api-contract",
+                DoctorStatus::Pass,
+                "validate_gui_api_contract.py passed".to_string(),
+                None,
+            ),
+            Ok(status) => push_doctor_check(
+                &mut checks,
+                "accuracy",
+                "gui-api-contract",
+                DoctorStatus::Fail,
+                format!("script exited with status {}", status),
+                Some(
+                    "Run python3 scripts/validate_gui_api_contract.py and review missing APIs"
+                        .to_string(),
+                ),
+            ),
+            Err(err) => push_doctor_check(
+                &mut checks,
+                "accuracy",
+                "gui-api-contract",
+                DoctorStatus::Warn,
+                format!("failed to execute: {}", err),
+                Some("Verify Python executable and script path".to_string()),
+            ),
+        }
+    }
+
+    println!("Ghost-Link Doctor Report\n");
+    println!("========================\n");
+
+    for area in ["environment", "readiness", "accessibility", "accuracy"] {
+        println!("{}:", area);
+        for check in checks.iter().filter(|check| check.area == area) {
+            println!(
+                "- [{}] {}: {}",
+                check.status.as_str(),
+                check.name,
+                check.detail
+            );
+            if let Some(fix) = &check.fix {
+                println!("  FIX: {}", fix);
+            }
+        }
+        println!();
+    }
+
+    let pass_count = checks
+        .iter()
+        .filter(|check| check.status == DoctorStatus::Pass)
+        .count();
+    let warn_count = checks
+        .iter()
+        .filter(|check| check.status == DoctorStatus::Warn)
+        .count();
+    let fail_count = checks
+        .iter()
+        .filter(|check| check.status == DoctorStatus::Fail)
+        .count();
+
+    println!(
+        "Summary: {} pass, {} warn, {} fail",
+        pass_count, warn_count, fail_count
+    );
+
+    if let Some(path) = options.json_out.as_deref() {
+        write_doctor_report_json(path, &checks, pass_count, warn_count, fail_count)?;
+        println!("Doctor report JSON written to: {}", path.display());
+    }
+
+    println!("\nReview areas for multi-device accessibility:");
+    println!("- GUI path: desktop display or headless xvfb-run fallback");
+    println!("- Deployment path: Docker local demo, systemd service template, staged LAN guide");
+    println!("- Discovery path: cluster-start for local multi-node behavior");
+
+    println!("\nReview areas for accuracy:");
+    println!("- Planner layer coverage integrity (no gaps/overlap)");
+    println!("- GUI API contract parity checks");
+    println!("- Runtime SLO/canary/perf-drift validators and baseline presence");
+
+    if options.strict && fail_count > 0 {
+        anyhow::bail!(
+            "doctor strict mode failed with {} failing checks",
+            fail_count
+        );
+    }
+
     Ok(())
 }
 
@@ -1075,7 +2186,7 @@ fn run_gui_python_preflight(python: &str) -> Result<()> {
     let missing = detect_missing_gui_python_modules(python)?;
     if !missing.is_empty() {
         anyhow::bail!(
-            "GUI preflight failed: required Python GUI modules are missing: {}. Install with: {} -m pip install -r third_party/mohawk_gui/requirements.txt",
+            "GUI preflight failed: required Python GUI modules are missing: {}. Install with: {} -m pip install -r third_party/mohawk_gui/requirements-runtime.txt",
             missing.join(", "),
             python,
         );
@@ -1468,6 +2579,40 @@ mod tests {
             CliCommand::GuiDiagnose { strict: true }
         );
         assert_eq!(
+            parse_cli(args(&["doctor", "--strict"])).unwrap(),
+            CliCommand::Doctor(DoctorOptions {
+                strict: true,
+                json_out: None,
+                network_probe: false,
+                network_target: "127.0.0.1:8003".to_string(),
+            })
+        );
+        assert_eq!(
+            parse_cli(args(&[
+                "doctor",
+                "--strict",
+                "--network-probe",
+                "--network-target",
+                "127.0.0.1:18765",
+                "--json",
+                "./tmp/doctor.json",
+            ]))
+            .unwrap(),
+            CliCommand::Doctor(DoctorOptions {
+                strict: true,
+                json_out: Some(PathBuf::from("./tmp/doctor.json")),
+                network_probe: true,
+                network_target: "127.0.0.1:18765".to_string(),
+            })
+        );
+        assert_eq!(
+            parse_cli(args(&["cluster-start", "4", "46010"])).unwrap(),
+            CliCommand::ClusterStart {
+                node_count: 4,
+                base_port: 46010,
+            }
+        );
+        assert_eq!(
             parse_cli(args(&["probe", "n1", "full"])).unwrap(),
             CliCommand::Probe {
                 node_id: "n1".to_string(),
@@ -1528,6 +2673,22 @@ mod tests {
             CliCommand::GuiDiagnose { strict: false }
         );
         assert_eq!(
+            parse_cli(args(&["doctor"])).unwrap(),
+            CliCommand::Doctor(DoctorOptions {
+                strict: false,
+                json_out: None,
+                network_probe: false,
+                network_target: "127.0.0.1:8003".to_string(),
+            })
+        );
+        assert_eq!(
+            parse_cli(args(&["cluster-start"])).unwrap(),
+            CliCommand::ClusterStart {
+                node_count: 3,
+                base_port: 46000,
+            }
+        );
+        assert_eq!(
             parse_cli(args(&["probe"])).unwrap(),
             CliCommand::Probe {
                 node_id: "local-node".to_string(),
@@ -1555,6 +2716,10 @@ mod tests {
         assert!(parse_cli(args(&["probe", "n1", "nonsense"])).is_err());
         assert!(parse_cli(args(&["flow", "a", "b", "32", "64", "bad"])).is_err());
         assert!(parse_cli(args(&["flow", "a", "b", "32", "64", "64", "2", "bad-mode"])).is_err());
+        assert!(parse_cli(args(&["cluster-start", "2", "not-a-port"])).is_err());
+        assert!(parse_cli(args(&["doctor", "--json"])).is_err());
+        assert!(parse_cli(args(&["doctor", "--network-target"])).is_err());
+        assert!(parse_cli(args(&["doctor", "--nope"])).is_err());
     }
 
     #[test]
@@ -1572,5 +2737,28 @@ mod tests {
         let map = build_device_map(&profile, "local", "remote");
         assert_eq!(map.get("local"), Some(&DeviceKind::Npu));
         assert_eq!(map.get("remote"), Some(&DeviceKind::Gpu));
+    }
+
+    #[test]
+    fn bootstrap_extracts_config_argument() {
+        let bootstrap = extract_bootstrap_args(vec![
+            "--config".to_string(),
+            "./ghostlink.toml".to_string(),
+            "flow".to_string(),
+            "node-a".to_string(),
+        ])
+        .unwrap();
+
+        assert_eq!(
+            bootstrap.config_path,
+            Some(PathBuf::from("./ghostlink.toml"))
+        );
+        assert_eq!(bootstrap.command_args, vec!["flow", "node-a"]);
+    }
+
+    #[test]
+    fn bootstrap_rejects_missing_config_value() {
+        let result = extract_bootstrap_args(vec!["--config".to_string()]);
+        assert!(result.is_err());
     }
 }

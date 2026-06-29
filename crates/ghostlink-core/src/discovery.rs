@@ -6,6 +6,12 @@
 use std::io;
 use std::net::{SocketAddr, UdpSocket};
 use std::time::{Duration, Instant};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use hmac::{Hmac, Mac};
+use rand::rngs::OsRng;
+use rand::RngCore;
+use sha2::Sha256;
 
 use crc32fast::Hasher;
 
@@ -28,6 +34,9 @@ pub struct DiscoveryServeStats {
 enum DatagramDecodeError {
     DatagramTooShortForAuth,
     InvalidAuthTrailerLength,
+    UnsupportedAuthProtocolVersion(u8),
+    AuthTimestampOutsideWindow,
+    ReplayNonceDetected,
     AuthTagMismatch,
     FrameDecode(String),
 }
@@ -39,9 +48,55 @@ impl std::fmt::Display for DatagramDecodeError {
                 write!(f, "discovery datagram too short for auth trailer")
             }
             Self::InvalidAuthTrailerLength => write!(f, "invalid auth trailer length"),
+            Self::UnsupportedAuthProtocolVersion(version) => {
+                write!(f, "unsupported discovery auth protocol version {}", version)
+            }
+            Self::AuthTimestampOutsideWindow => {
+                write!(
+                    f,
+                    "discovery datagram auth timestamp outside allowed window"
+                )
+            }
+            Self::ReplayNonceDetected => {
+                write!(f, "discovery datagram replay nonce detected")
+            }
             Self::AuthTagMismatch => write!(f, "discovery datagram auth tag mismatch"),
             Self::FrameDecode(message) => write!(f, "{message}"),
         }
+    }
+}
+
+const DISCOVERY_AUTH_PROTOCOL_VERSION: u8 = 2;
+const DISCOVERY_AUTH_MARKER: [u8; 2] = *b"GL";
+const DISCOVERY_AUTH_TAG_LEN: usize = 32;
+const DISCOVERY_NONCE_LEN: usize = 16;
+const DISCOVERY_AUTH_TRAILER_LEN: usize = 2 + 1 + 8 + DISCOVERY_NONCE_LEN + DISCOVERY_AUTH_TAG_LEN;
+const DISCOVERY_AUTH_MAX_SKEW_SECS: u64 = 30;
+const DISCOVERY_NONCE_CACHE_CAPACITY: usize = 4096;
+
+type HmacSha256 = Hmac<Sha256>;
+
+#[derive(Default)]
+struct ReplayCache {
+    nonces: std::collections::HashSet<u128>,
+    order: std::collections::VecDeque<u128>,
+}
+
+impl ReplayCache {
+    fn check_and_insert(&mut self, nonce: u128) -> bool {
+        if self.nonces.contains(&nonce) {
+            return false;
+        }
+
+        self.nonces.insert(nonce);
+        self.order.push_back(nonce);
+        while self.order.len() > DISCOVERY_NONCE_CACHE_CAPACITY {
+            if let Some(evicted) = self.order.pop_front() {
+                self.nonces.remove(&evicted);
+            }
+        }
+
+        true
     }
 }
 
@@ -59,6 +114,8 @@ pub struct UdpDiscoveryConfig {
     pub response_timeout: Duration,
     /// Optional shared token used to authenticate datagrams.
     pub auth_token: Option<String>,
+    /// Allow decode fallback to legacy CRC32 auth tags during migration.
+    pub allow_legacy_crc32: bool,
     /// Maximum datagram size expected during receive.
     pub max_datagram_size: usize,
 }
@@ -70,6 +127,7 @@ impl Default for UdpDiscoveryConfig {
             broadcast_addr: SocketAddr::from(([255, 255, 255, 255], DEFAULT_DISCOVERY_PORT)),
             response_timeout: Duration::from_millis(750),
             auth_token: None,
+            allow_legacy_crc32: false,
             max_datagram_size: 2048,
         }
     }
@@ -97,12 +155,18 @@ pub fn broadcast_and_collect(
     let mut peers = Vec::new();
     let mut recv_buf = vec![0_u8; config.max_datagram_size.max(256)];
     let deadline = Instant::now() + config.response_timeout;
+    let mut replay_cache = ReplayCache::default();
 
     while Instant::now() < deadline {
         match socket.recv_from(&mut recv_buf) {
             Ok((read, _addr)) => {
                 let datagram = &recv_buf[..read];
-                if let Ok(decoded) = decode_datagram(datagram, config.auth_token.as_deref()) {
+                if let Ok(decoded) = decode_datagram_with_options(
+                    datagram,
+                    config.auth_token.as_deref(),
+                    config.allow_legacy_crc32,
+                    Some(&mut replay_cache),
+                ) {
                     peers.push(decoded);
                 }
             }
@@ -134,6 +198,7 @@ pub fn respond_once(
 
     let mut recv_buf = vec![0_u8; config.max_datagram_size.max(256)];
     let deadline = Instant::now() + config.response_timeout;
+    let mut replay_cache = ReplayCache::default();
 
     while Instant::now() < deadline {
         let (read, peer_addr) = match socket.recv_from(&mut recv_buf) {
@@ -153,7 +218,12 @@ pub fn respond_once(
             }
         };
 
-        let Ok(incoming) = decode_datagram(&recv_buf[..read], config.auth_token.as_deref()) else {
+        let Ok(incoming) = decode_datagram_with_options(
+            &recv_buf[..read],
+            config.auth_token.as_deref(),
+            config.allow_legacy_crc32,
+            Some(&mut replay_cache),
+        ) else {
             // Ignore malformed/auth-mismatched datagrams and keep listening.
             continue;
         };
@@ -208,6 +278,7 @@ pub fn serve_discovery_with_stats(
 
     let mut stats = DiscoveryServeStats::default();
     let mut recv_buf = vec![0_u8; config.max_datagram_size.max(256)];
+    let mut replay_cache = ReplayCache::default();
 
     loop {
         if let Some(limit) = max_replies {
@@ -218,7 +289,12 @@ pub fn serve_discovery_with_stats(
 
         match socket.recv_from(&mut recv_buf) {
             Ok((read, peer_addr)) => {
-                match decode_datagram(&recv_buf[..read], config.auth_token.as_deref()) {
+                match decode_datagram_with_options(
+                    &recv_buf[..read],
+                    config.auth_token.as_deref(),
+                    config.allow_legacy_crc32,
+                    Some(&mut replay_cache),
+                ) {
                     Ok(incoming)
                         if matches!(incoming.kind, FrameKind::Join | FrameKind::Discovery) =>
                     {
@@ -255,43 +331,167 @@ fn encode_datagram(frame: &DiscoveryFrame, auth_token: Option<&str>) -> Vec<u8> 
     let frame_bytes = frame.encode();
     if let Some(token) = auth_token {
         let mut datagram = frame_bytes;
-        datagram.extend_from_slice(&auth_tag(&datagram, token).to_le_bytes());
+        let timestamp_secs = current_unix_timestamp_secs();
+        let nonce = random_nonce();
+        let tag = auth_tag_v2(&datagram, token, timestamp_secs, nonce);
+        datagram.extend_from_slice(&DISCOVERY_AUTH_MARKER);
+        datagram.push(DISCOVERY_AUTH_PROTOCOL_VERSION);
+        datagram.extend_from_slice(&timestamp_secs.to_le_bytes());
+        datagram.extend_from_slice(&nonce.to_le_bytes());
+        datagram.extend_from_slice(&tag);
         datagram
     } else {
         frame_bytes
     }
 }
 
+#[cfg(test)]
 fn decode_datagram(
     datagram: &[u8],
     auth_token: Option<&str>,
 ) -> Result<DiscoveryFrame, DatagramDecodeError> {
+    decode_datagram_with_options(datagram, auth_token, false, None)
+}
+
+fn decode_datagram_with_options(
+    datagram: &[u8],
+    auth_token: Option<&str>,
+    allow_legacy_crc32: bool,
+    replay_cache: Option<&mut ReplayCache>,
+) -> Result<DiscoveryFrame, DatagramDecodeError> {
     if let Some(token) = auth_token {
-        if datagram.len() < 12 {
+        if datagram.len() < DISCOVERY_AUTH_TRAILER_LEN {
             return Err(DatagramDecodeError::DatagramTooShortForAuth);
         }
 
-        let (frame_bytes, tag_bytes) = datagram.split_at(datagram.len() - 4);
-        let expected = auth_tag(frame_bytes, token);
-        let received = u32::from_le_bytes(
-            tag_bytes
-                .try_into()
-                .map_err(|_| DatagramDecodeError::InvalidAuthTrailerLength)?,
-        );
-        if expected != received {
-            return Err(DatagramDecodeError::AuthTagMismatch);
+        let v2_result = decode_v2_auth_datagram(datagram, token, replay_cache);
+        if v2_result.is_ok() {
+            return v2_result;
         }
-        DiscoveryFrame::decode(frame_bytes).map_err(DatagramDecodeError::FrameDecode)
+
+        if allow_legacy_crc32 {
+            return decode_legacy_crc32_datagram(datagram, token);
+        }
+
+        v2_result
     } else {
         DiscoveryFrame::decode(datagram).map_err(DatagramDecodeError::FrameDecode)
     }
 }
 
-fn auth_tag(frame_bytes: &[u8], token: &str) -> u32 {
+fn decode_v2_auth_datagram(
+    datagram: &[u8],
+    token: &str,
+    replay_cache: Option<&mut ReplayCache>,
+) -> Result<DiscoveryFrame, DatagramDecodeError> {
+    let (frame_bytes, trailer) = datagram.split_at(datagram.len() - DISCOVERY_AUTH_TRAILER_LEN);
+
+    let marker = trailer
+        .get(0..2)
+        .ok_or(DatagramDecodeError::InvalidAuthTrailerLength)?;
+    if marker != DISCOVERY_AUTH_MARKER {
+        return Err(DatagramDecodeError::InvalidAuthTrailerLength);
+    }
+
+    let version = *trailer
+        .get(2)
+        .ok_or(DatagramDecodeError::InvalidAuthTrailerLength)?;
+    if version != DISCOVERY_AUTH_PROTOCOL_VERSION {
+        return Err(DatagramDecodeError::UnsupportedAuthProtocolVersion(version));
+    }
+
+    let timestamp_bytes: [u8; 8] = trailer
+        .get(3..11)
+        .ok_or(DatagramDecodeError::InvalidAuthTrailerLength)?
+        .try_into()
+        .map_err(|_| DatagramDecodeError::InvalidAuthTrailerLength)?;
+    let timestamp_secs = u64::from_le_bytes(timestamp_bytes);
+    if !timestamp_in_window(timestamp_secs) {
+        return Err(DatagramDecodeError::AuthTimestampOutsideWindow);
+    }
+
+    let nonce_bytes: [u8; 16] = trailer
+        .get(11..27)
+        .ok_or(DatagramDecodeError::InvalidAuthTrailerLength)?
+        .try_into()
+        .map_err(|_| DatagramDecodeError::InvalidAuthTrailerLength)?;
+    let nonce = u128::from_le_bytes(nonce_bytes);
+    if let Some(cache) = replay_cache {
+        if !cache.check_and_insert(nonce) {
+            return Err(DatagramDecodeError::ReplayNonceDetected);
+        }
+    }
+
+    let received_tag = trailer
+        .get(27..)
+        .ok_or(DatagramDecodeError::InvalidAuthTrailerLength)?;
+    let expected_tag = auth_tag_v2(frame_bytes, token, timestamp_secs, nonce);
+    if received_tag != expected_tag.as_slice() {
+        return Err(DatagramDecodeError::AuthTagMismatch);
+    }
+
+    DiscoveryFrame::decode(frame_bytes).map_err(DatagramDecodeError::FrameDecode)
+}
+
+fn decode_legacy_crc32_datagram(
+    datagram: &[u8],
+    token: &str,
+) -> Result<DiscoveryFrame, DatagramDecodeError> {
+    if datagram.len() < 12 {
+        return Err(DatagramDecodeError::DatagramTooShortForAuth);
+    }
+
+    let (frame_bytes, tag_bytes) = datagram.split_at(datagram.len() - 4);
+    let expected = legacy_auth_tag(frame_bytes, token);
+    let received = u32::from_le_bytes(
+        tag_bytes
+            .try_into()
+            .map_err(|_| DatagramDecodeError::InvalidAuthTrailerLength)?,
+    );
+    if expected != received {
+        return Err(DatagramDecodeError::AuthTagMismatch);
+    }
+    DiscoveryFrame::decode(frame_bytes).map_err(DatagramDecodeError::FrameDecode)
+}
+
+fn legacy_auth_tag(frame_bytes: &[u8], token: &str) -> u32 {
     let mut hasher = Hasher::new();
     hasher.update(frame_bytes);
     hasher.update(token.as_bytes());
     hasher.finalize()
+}
+
+fn auth_tag_v2(frame_bytes: &[u8], token: &str, timestamp_secs: u64, nonce: u128) -> [u8; 32] {
+    let mut mac = HmacSha256::new_from_slice(token.as_bytes())
+        .expect("HMAC key setup for discovery auth failed");
+    mac.update(frame_bytes);
+    mac.update(&DISCOVERY_AUTH_MARKER);
+    mac.update(&[DISCOVERY_AUTH_PROTOCOL_VERSION]);
+    mac.update(&timestamp_secs.to_le_bytes());
+    mac.update(&nonce.to_le_bytes());
+    mac.finalize().into_bytes().into()
+}
+
+fn current_unix_timestamp_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+fn timestamp_in_window(timestamp_secs: u64) -> bool {
+    let now = current_unix_timestamp_secs();
+    if now >= timestamp_secs {
+        now - timestamp_secs <= DISCOVERY_AUTH_MAX_SKEW_SECS
+    } else {
+        timestamp_secs - now <= DISCOVERY_AUTH_MAX_SKEW_SECS
+    }
+}
+
+fn random_nonce() -> u128 {
+    let mut bytes = [0_u8; 16];
+    OsRng.fill_bytes(&mut bytes);
+    u128::from_le_bytes(bytes)
 }
 
 #[cfg(test)]

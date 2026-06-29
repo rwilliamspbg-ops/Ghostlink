@@ -2,6 +2,51 @@
 
 ## Common Issues and Solutions
 
+### Doctor Report Triage (PASS/WARN/FAIL)
+
+Use this flow when reviewing `ghost-link doctor` output in local runs or CI artifacts.
+
+Run command:
+
+```bash
+cargo run -p ghost-link -- doctor --strict --json ./tmp/doctor-report.json
+```
+
+Status interpretation:
+
+- `PASS`: healthy for the current environment. No immediate action required.
+
+- `WARN`: non-blocking risk or missing optional capability.
+   Expected warning example: headless GUI environment in CI.
+   Action: document rationale if expected, otherwise apply the `FIX` guidance and rerun doctor.
+
+- `FAIL`: blocking readiness or accuracy issue.
+   Action: treat as release blocker and do not merge until fail count is zero.
+
+Area-based triage priorities:
+
+- `accuracy`: highest priority. Any failure can invalidate runtime conclusions.
+
+- `readiness`: missing runtime prerequisites and configuration gaps.
+
+- `accessibility`: multi-device/operator usability checks; headless warnings may be expected with validated fallback.
+
+- `environment`: toolchain/runtime availability checks.
+
+Suggested reviewer checklist:
+
+- Confirm `Summary` reports `fail = 0`.
+
+- Review each `WARN` and classify as expected or fix-required.
+
+- If network behavior matters for the change, run:
+
+```bash
+cargo run -p ghost-link -- doctor --network-probe --network-target <host:port>
+```
+
+- Attach or upload `./tmp/doctor-report.json` to the PR for traceability.
+
 ### Ring Buffer Issues
 
 #### Issue: "Ring buffer is full" errors from producer
