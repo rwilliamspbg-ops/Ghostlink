@@ -137,9 +137,7 @@ jobs:
       - name: Perf Snapshot (Stress)
         env:
           GHOSTLINK_TCP_AUTH_TOKEN: "ci-production-gate-token"
-          GHOSTLINK_TCP_AUTOTUNE: "1"
-          GHOSTLINK_TCP_AUTOTUNE_RUNS: "3"
-          GHOSTLINK_TCP_AUTOTUNE_CANDIDATES: "16,32,64,128,256"
+          GHOSTLINK_TCP_MAX_INFLIGHT: "256"
         run: |
           python3 scripts/flow_perf_snapshot.py \
             --warmup-runs 1 \
