@@ -135,6 +135,27 @@ button.primary {
   color: var(--muted);
 }
 
+.details .cmd {
+  color: #b8f8de;
+  font-family: "JetBrains Mono", "Fira Code", monospace;
+  font-size: 0.82rem;
+  word-break: break-word;
+}
+
+.details pre {
+  margin: 0;
+  margin-top: 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.28);
+  color: #d8e7f5;
+  padding: 0.7rem;
+  max-height: 52vh;
+  overflow: auto;
+  white-space: pre-wrap;
+  font-size: 0.78rem;
+}
+
 @media (max-width: 1100px) {
   .studio-shell {
     grid-template-columns: 1fr;
