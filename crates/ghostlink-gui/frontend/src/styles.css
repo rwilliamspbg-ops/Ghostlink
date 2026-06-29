@@ -415,6 +415,26 @@ button:disabled {
   gap: 0.35rem;
 }
 
+.profile-portability {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: rgba(16, 39, 55, 0.6);
+  padding: 0.75rem;
+  display: grid;
+  gap: 0.45rem;
+}
+
+.profile-portability h3 {
+  margin: 0;
+  font-size: 0.95rem;
+}
+
+.profile-portability p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.84rem;
+}
+
 .settings-editor .config-path {
   color: var(--muted);
   font-size: 0.84rem;

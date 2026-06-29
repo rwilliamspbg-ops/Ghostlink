@@ -22,6 +22,7 @@ This directory contains the Ghostlink Studio desktop application scaffold.
 - First-launch onboarding modal guides users through Cluster/Models/Chat/Doctor flow
 - Settings tab now includes theme, font scaling, reduced-motion, and high-contrast preferences persisted locally
 - Home tab now supports one-click `fast` and `full` validation tiers with structured step results
+- Settings now supports profile export/import bundles for portable Studio + config defaults
 
 ## Dev Notes
 

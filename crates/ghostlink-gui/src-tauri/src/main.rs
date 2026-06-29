@@ -1,6 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::fs;
 use std::path::PathBuf;
@@ -35,6 +35,8 @@ fn main() {
             run_validation_tier,
             load_ghostlink_config,
             save_ghostlink_config,
+            export_studio_profile,
+            import_studio_profile,
             run_doctor,
             run_doctor_with_json,
             run_probe,
@@ -233,6 +235,25 @@ struct ModelPreset {
     quant: String,
 }
 
+#[derive(Serialize, Deserialize)]
+struct StudioProfile {
+    profile_name: String,
+    ui_theme: String,
+    font_scale: f32,
+    reduced_motion: bool,
+    high_contrast: bool,
+    model_repo: String,
+    model_file: String,
+    chat_model: String,
+    chat_distributed: bool,
+    config_content: String,
+}
+
+#[derive(Serialize)]
+struct StudioProfileExportResult {
+    profile_path: String,
+}
+
 #[tauri::command]
 fn cluster_preview(node_id: String, full: bool) -> Result<ClusterPreview, String> {
     let command = run_ghostlink_command(if full {
@@ -399,6 +420,70 @@ fn save_ghostlink_config(content: String) -> Result<ConfigFileState, String> {
         exists: true,
         content,
     })
+}
+
+#[allow(clippy::too_many_arguments)]
+#[tauri::command]
+fn export_studio_profile(
+    profile_name: String,
+    ui_theme: String,
+    font_scale: f32,
+    reduced_motion: bool,
+    high_contrast: bool,
+    model_repo: String,
+    model_file: String,
+    chat_model: String,
+    chat_distributed: bool,
+    config_content: String,
+) -> Result<StudioProfileExportResult, String> {
+    let root = repo_root();
+    let sanitized = sanitize_profile_name(profile_name.as_str());
+    let profile_dir = root.join("tmp").join("studio-profiles");
+    fs::create_dir_all(&profile_dir).map_err(|err| {
+        format!(
+            "failed to create profile directory {}: {}",
+            profile_dir.display(),
+            err
+        )
+    })?;
+
+    let profile = StudioProfile {
+        profile_name: sanitized.clone(),
+        ui_theme,
+        font_scale,
+        reduced_motion,
+        high_contrast,
+        model_repo,
+        model_file,
+        chat_model,
+        chat_distributed,
+        config_content,
+    };
+
+    let out_path = profile_dir.join(format!("{}.json", sanitized));
+    let payload = serde_json::to_string_pretty(&profile)
+        .map_err(|err| format!("failed to serialize profile: {}", err))?;
+    fs::write(&out_path, payload)
+        .map_err(|err| format!("failed to write profile {}: {}", out_path.display(), err))?;
+
+    Ok(StudioProfileExportResult {
+        profile_path: out_path.display().to_string(),
+    })
+}
+
+#[tauri::command]
+fn import_studio_profile(profile_path: String) -> Result<StudioProfile, String> {
+    let root = repo_root();
+    let resolved = if profile_path.trim().starts_with("/") {
+        PathBuf::from(profile_path.trim())
+    } else {
+        root.join(profile_path.trim())
+    };
+
+    let raw = fs::read_to_string(&resolved)
+        .map_err(|err| format!("failed to read profile {}: {}", resolved.display(), err))?;
+    serde_json::from_str::<StudioProfile>(&raw)
+        .map_err(|err| format!("failed to parse profile {}: {}", resolved.display(), err))
 }
 
 #[tauri::command]
@@ -726,4 +811,28 @@ fn parse_probe_to_node(output: &str) -> Option<ClusterNodeCard> {
         gpu_vram_gb: vram,
         health: if vram > 0.0 { "healthy" } else { "degraded" }.to_string(),
     })
+}
+
+fn sanitize_profile_name(value: &str) -> String {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return "studio-profile".to_string();
+    }
+
+    let cleaned = trimmed
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+                ch
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>();
+
+    if cleaned.is_empty() {
+        "studio-profile".to_string()
+    } else {
+        cleaned
+    }
 }

@@ -35,6 +35,8 @@
   let clusterSummary = 'No cluster preview loaded.';
   let validationTier = 'fast';
   let validationReport = null;
+  let profileName = 'local-default';
+  let profilePath = './tmp/studio-profiles/local-default.json';
   let uiTheme = 'neon';
   let fontScale = 1;
   let reducedMotion = false;
@@ -90,6 +92,59 @@
     highContrast = false;
     applyVisualPreferences();
     persistPreferences();
+  }
+
+  async function exportProfile() {
+    busy = true;
+    try {
+      const result = await invoke('export_studio_profile', {
+        profileName,
+        uiTheme,
+        fontScale: Number(fontScale),
+        reducedMotion,
+        highContrast,
+        modelRepo,
+        modelFile,
+        chatModel,
+        chatDistributed,
+        configContent,
+      });
+      profilePath = result.profilePath;
+      status = 'Studio profile exported';
+      output = `Profile written to ${result.profilePath}`;
+    } catch (err) {
+      status = 'Profile export failed';
+      output = String(err);
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function importProfile() {
+    busy = true;
+    try {
+      const profile = await invoke('import_studio_profile', { profilePath });
+      profileName = profile.profileName;
+      uiTheme = profile.uiTheme;
+      fontScale = Number(profile.fontScale);
+      reducedMotion = Boolean(profile.reducedMotion);
+      highContrast = Boolean(profile.highContrast);
+      modelRepo = profile.modelRepo;
+      modelFile = profile.modelFile;
+      chatModel = profile.chatModel;
+      chatDistributed = Boolean(profile.chatDistributed);
+      configContent = profile.configContent;
+      configLoaded = true;
+      applyVisualPreferences();
+      persistPreferences();
+      status = 'Studio profile imported';
+      output = `Applied profile ${profile.profileName}`;
+    } catch (err) {
+      status = 'Profile import failed';
+      output = String(err);
+    } finally {
+      busy = false;
+    }
   }
 
   async function loadSnapshot() {
@@ -503,6 +558,16 @@
         </label>
         <label class="checkbox"><input type="checkbox" bind:checked={reducedMotion} /> Reduced Motion</label>
         <label class="checkbox"><input type="checkbox" bind:checked={highContrast} /> High Contrast</label>
+      </section>
+      <section class="profile-portability">
+        <h3>Profile Portability</h3>
+        <p>Export or import a Studio profile bundle (UI preferences + model/chat defaults + TOML content).</p>
+        <div class="actions">
+          <input bind:value={profileName} placeholder="profile name" />
+          <input bind:value={profilePath} placeholder="profile path" />
+          <button on:click={exportProfile} disabled={busy}>Export Profile</button>
+          <button on:click={importProfile} disabled={busy}>Import Profile</button>
+        </div>
       </section>
       <section class="settings-editor">
         <p class="config-path">Target: {configPath || 'unresolved'}</p>
