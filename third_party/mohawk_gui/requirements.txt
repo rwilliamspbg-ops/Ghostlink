@@ -56,7 +56,7 @@ tomli>=2.0.1
 pyqtgraph>=0.13.0
 
 # Gradio for alternative web UI (optional)
-gradio>=4.0.0
+gradio>=6.19.0
 plotly>=6.8.0
 
 # =============================================================================
