@@ -21,8 +21,18 @@ cp "$BIN_PATH" "$OUT_DIR/"
 pushd "$OUT_DIR" >/dev/null
 sha256sum ghost-link > SHA256SUMS
 
-# Optional signature when GPG is configured on runner.
-if command -v gpg >/dev/null 2>&1 && gpg --list-secret-keys >/dev/null 2>&1; then
+if ! command -v gpg >/dev/null 2>&1; then
+  echo "gpg is required for signed release bundles" >&2
+  exit 1
+fi
+if ! gpg --list-secret-keys >/dev/null 2>&1; then
+  echo "no gpg secret key found for release signing" >&2
+  exit 1
+fi
+
+if [[ -n "${GPG_PASSPHRASE:-}" ]]; then
+  gpg --batch --yes --pinentry-mode loopback --passphrase "$GPG_PASSPHRASE" --armor --detach-sign SHA256SUMS
+else
   gpg --batch --yes --armor --detach-sign SHA256SUMS
 fi
 popd >/dev/null

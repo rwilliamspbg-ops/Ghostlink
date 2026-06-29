@@ -25,7 +25,7 @@ Ghost-Link is an open-source LAN fabric for turning spare local GPUs and CPU hos
 ## Features
 
 - Zero-copy SPSC ring buffers with backpressure handling
-- Binary Layer-2 discovery protocol with CRC32 validation
+- Binary Layer-2 discovery protocol with versioned HMAC-SHA256 authentication
 - Thread-safe cluster state with live metrics and fault tracking
 - Runtime-aware planning, load balancing, and health thresholds
 - Fast and full hardware probe modes with cached host detection
@@ -108,7 +108,7 @@ cargo run -p ghost-link -- listen local-node
 cargo run -p ghost-link -- dashboard
 
 # Launch vendored Mohawk GUI (requires Python + PyQt6 deps)
-python3 -m pip install -r third_party/mohawk_gui/requirements.txt
+python3 -m pip install -r third_party/mohawk_gui/requirements-runtime.txt
 # Linux containers may also require: sudo apt-get install -y libgl1
 cargo run -p ghost-link -- gui --host localhost --port 8003
 
@@ -246,9 +246,12 @@ If the host does not provide tools such as `nvidia-smi` or `lspci`, full mode fa
 - [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md): deployment guide for single-node, local cluster, and staged LAN rollout.
 - [docs/MOHAWK_GUI.md](docs/MOHAWK_GUI.md): GUI setup, diagnostics, MCP JSON wiring, and troubleshooting.
 - [docs/SECURITY_MODEL.md](docs/SECURITY_MODEL.md): threat model and production hardening guidance.
+- [docs/SECURITY_SECRETS_REMEDIATION.md](docs/SECURITY_SECRETS_REMEDIATION.md): credential rotation and git history cleanup runbook.
 - [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md): operational troubleshooting and debugging tips.
 - [docs/PRODUCTION_READINESS.md](docs/PRODUCTION_READINESS.md): release and operations readiness review checklist.
 - [docs/PRODUCTION_REMEDIATION_PLAN.md](docs/PRODUCTION_REMEDIATION_PLAN.md): phased plan to close production gaps and track exit criteria.
+- [docs/GHOSTLINK_STUDIO_PRODUCT_VISION.md](docs/GHOSTLINK_STUDIO_PRODUCT_VISION.md): standalone desktop product vision and UX goals.
+- [docs/GHOSTLINK_STUDIO_EXECUTION_PLAN.md](docs/GHOSTLINK_STUDIO_EXECUTION_PLAN.md): sprint-by-sprint delivery plan for Ghostlink Studio.
 - [docs/archive/INDEX.md](docs/archive/INDEX.md): archived historical docs and migration notes.
 - [CONTRIBUTING.md](CONTRIBUTING.md): contributor setup and pre-PR checks.
 - [CHANGELOG.md](CHANGELOG.md): release-oriented change history.

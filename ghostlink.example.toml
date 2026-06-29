@@ -23,6 +23,7 @@ base_port = 46000
 listen = "0.0.0.0:45885"
 broadcast = "255.255.255.255:45885"
 timeout_ms = 1000
+allow_legacy_crc32 = false
 max_replies = 8
 
 [tcp]

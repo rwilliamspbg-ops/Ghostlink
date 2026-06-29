@@ -10,13 +10,13 @@ This document summarizes current security assumptions for Ghost-Link runtime and
 
 ## Current Controls
 
-- Binary protocol framing with CRC32 integrity checks for corruption detection.
+- Versioned discovery-frame authentication using HMAC-SHA256 with timestamp and nonce replay guards.
 - Optional transport auth token controls for TCP flow runs.
 - GUI readiness diagnostics and environment preflight checks.
 
 ## Threats and Risks
 
-- Discovery spoofing on untrusted LAN segments.
+- Discovery spoofing or replay on untrusted LAN segments.
 - Token leakage or weak token management for authenticated transport.
 - MITM/tampering on networks where integrity and confidentiality controls are insufficient.
 - Environment-dependent performance baselines causing noisy deployment decisions.
@@ -46,12 +46,12 @@ This document summarizes current security assumptions for Ghost-Link runtime and
 ## Non-Goals (Current)
 
 - Internet-exposed, zero-trust-ready deployment by default.
-- Cryptographic authenticity guarantees for all discovery paths.
+- Full zero-trust discovery posture by default (legacy CRC32 compatibility mode still exists for staged migration only).
 
 ## Roadmap Notes
 
 Future security milestones should include:
 
 - Optional mTLS mode in runtime transport.
-- Stronger discovery auth/anti-spoofing primitives.
+- Enforced deprecation timeline for legacy CRC32 compatibility mode.
 - Formal threat model review cadence tied to release checkpoints.

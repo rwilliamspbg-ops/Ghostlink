@@ -106,7 +106,7 @@ python3 scripts/xdp_preflight_check.py --output ./tmp/xdp-preflight.json
 cargo install cargo-audit --locked
 cargo audit
 python3 -m pip install --upgrade pip-audit
-pip-audit -r third_party/mohawk_gui/requirements.txt
+pip-audit -r third_party/mohawk_gui/requirements-runtime.txt
 
 # Build signed/checksummed release bundle
 bash scripts/release_bundle.sh ./artifacts/release

@@ -67,6 +67,7 @@ struct DiscoveryDefaults {
     broadcast: Option<String>,
     timeout_ms: Option<u64>,
     auth_token: Option<String>,
+    allow_legacy_crc32: Option<bool>,
     max_replies: Option<usize>,
 }
 
@@ -258,6 +259,12 @@ fn apply_file_config_to_env(config: &FileConfig) {
         if let Some(value) = &discovery.auth_token {
             set_env_if_absent("GHOSTLINK_DISCOVERY_AUTH_TOKEN", value.clone());
         }
+        if let Some(value) = discovery.allow_legacy_crc32 {
+            set_env_if_absent(
+                "GHOSTLINK_DISCOVERY_ALLOW_LEGACY_CRC32",
+                value.to_string(),
+            );
+        }
         if let Some(value) = discovery.max_replies {
             set_env_if_absent("GHOSTLINK_DISCOVERY_MAX_REPLIES", value.to_string());
         }
@@ -310,6 +317,13 @@ fn env_default_u16(key: &str, fallback: u16) -> u16 {
     std::env::var(key)
         .ok()
         .and_then(|value| value.parse::<u16>().ok())
+        .unwrap_or(fallback)
+}
+
+fn env_default_bool(key: &str, fallback: bool) -> bool {
+    std::env::var(key)
+        .ok()
+        .map(|value| matches!(value.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
         .unwrap_or(fallback)
 }
 
@@ -1211,6 +1225,7 @@ fn print_join(node_id: &str) -> Result<()> {
         broadcast_addr,
         response_timeout: Duration::from_millis(timeout_ms),
         auth_token,
+        allow_legacy_crc32: env_default_bool("GHOSTLINK_DISCOVERY_ALLOW_LEGACY_CRC32", false),
         ..UdpDiscoveryConfig::default()
     };
 
@@ -1288,6 +1303,7 @@ fn print_discovery_listener(node_id: &str, once: bool) -> Result<()> {
         bind_addr: listen_addr,
         response_timeout: Duration::from_millis(timeout_ms),
         auth_token,
+        allow_legacy_crc32: env_default_bool("GHOSTLINK_DISCOVERY_ALLOW_LEGACY_CRC32", false),
         ..UdpDiscoveryConfig::default()
     };
 
@@ -1456,6 +1472,10 @@ fn print_cluster_start(node_count: usize, base_port: u16) -> Result<()> {
             bind_addr: SocketAddr::from(([127, 0, 0, 1], 0)),
             broadcast_addr: target,
             response_timeout: Duration::from_millis(800),
+            allow_legacy_crc32: env_default_bool(
+                "GHOSTLINK_DISCOVERY_ALLOW_LEGACY_CRC32",
+                false,
+            ),
             ..UdpDiscoveryConfig::default()
         };
 
@@ -1883,7 +1903,7 @@ fn print_doctor_report(options: &DoctorOptions) -> Result<()> {
                 DoctorStatus::Warn,
                 format!("missing: {}", missing.join(", ")),
                 Some(format!(
-                    "Install with: {} -m pip install -r third_party/mohawk_gui/requirements.txt",
+                    "Install with: {} -m pip install -r third_party/mohawk_gui/requirements-runtime.txt",
                     python
                 )),
             ),
@@ -2167,7 +2187,7 @@ fn run_gui_python_preflight(python: &str) -> Result<()> {
     let missing = detect_missing_gui_python_modules(python)?;
     if !missing.is_empty() {
         anyhow::bail!(
-            "GUI preflight failed: required Python GUI modules are missing: {}. Install with: {} -m pip install -r third_party/mohawk_gui/requirements.txt",
+            "GUI preflight failed: required Python GUI modules are missing: {}. Install with: {} -m pip install -r third_party/mohawk_gui/requirements-runtime.txt",
             missing.join(", "),
             python,
         );

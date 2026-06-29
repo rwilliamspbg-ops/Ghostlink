@@ -1,0 +1,9 @@
+-r requirements-runtime.txt
+pytest
+pytest-asyncio
+black
+flake8
+mypy
+bandit
+safety
+python-dotenv

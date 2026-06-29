@@ -72,6 +72,14 @@ jobs:
           path: ./tmp/doctor-report.json
           retention-days: 14
 
+  license-consistency:
+    name: License Consistency
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate workspace/crate license alignment
+        run: bash scripts/check_license_consistency.sh
+
   docs:
     name: Docs
     uses: ./.github/workflows/docs.yml
@@ -146,7 +154,7 @@ jobs:
           files: ./coverage/lcov.info
           token: ${{ secrets.CODECOV_TOKEN }}
           use_oidc: true
-          fail_ci_if_error: false
+          fail_ci_if_error: true
           verbose: true
 
       - name: Upload coverage artifacts

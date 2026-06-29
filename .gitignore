@@ -1,4 +1,7 @@
 /target
+.env
+.env.*
+!.env.example
 
 # Python local environment artifacts
 .venv/

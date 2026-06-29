@@ -34,7 +34,7 @@ log "Upgrading pip/setuptools/wheel"
 "$VENV_PYTHON" -m pip install --upgrade pip setuptools wheel
 
 log "Installing Mohawk GUI Python dependencies"
-"$VENV_PYTHON" -m pip install -r "${ROOT_DIR}/third_party/mohawk_gui/requirements.txt"
+"$VENV_PYTHON" -m pip install -r "${ROOT_DIR}/third_party/mohawk_gui/requirements-runtime.txt"
 
 if [[ "$(uname -s)" == "Linux" ]]; then
   if [[ (! -e /usr/lib/x86_64-linux-gnu/libGL.so.1 && ! -e /usr/lib64/libGL.so.1 && ! -e /usr/lib/libGL.so.1) || (! -e /usr/lib/x86_64-linux-gnu/libxkbcommon.so.0 && ! -e /usr/lib64/libxkbcommon.so.0 && ! -e /usr/lib/libxkbcommon.so.0) ]]; then
@@ -56,6 +56,14 @@ fi
 
 log "Environment readiness check"
 cd "$ROOT_DIR"
-GHOSTLINK_PYTHON="$VENV_PYTHON" cargo run -p ghost-link -- gui-check || true
+if ! GHOSTLINK_PYTHON="$VENV_PYTHON" cargo run -p ghost-link -- gui-check --strict; then
+  warn "GUI readiness check failed"
+  if [[ "${GHOSTLINK_SETUP_ALLOW_DEGRADED:-0}" == "1" ]]; then
+    warn "Continuing in degraded mode because GHOSTLINK_SETUP_ALLOW_DEGRADED=1"
+  else
+    warn "Set GHOSTLINK_SETUP_ALLOW_DEGRADED=1 to continue with a degraded setup"
+    exit 1
+  fi
+fi
 
 log "Setup complete"
