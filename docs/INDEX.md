@@ -8,6 +8,7 @@ This index is the source of truth for active documentation in Ghost-Link.
 - [../TESTING.md](../TESTING.md): validated commands, CI gate checks, and known gaps.
 - [ARCHITECTURE.md](ARCHITECTURE.md): architecture and module responsibilities.
 - [EXAMPLES.md](EXAMPLES.md): runnable CLI and API examples.
+- [DEPLOYMENT.md](DEPLOYMENT.md): deployment path from single-node validation to staged LAN rollout.
 - [MOHAWK_GUI.md](MOHAWK_GUI.md): GUI launch, diagnostics, MCP JSON usage, and troubleshooting.
 - [SECURITY_MODEL.md](SECURITY_MODEL.md): threat model and security posture guidance.
 - [TROUBLESHOOTING.md](TROUBLESHOOTING.md): common failures and operational fixes.

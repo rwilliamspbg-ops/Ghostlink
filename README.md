@@ -207,6 +207,7 @@ If the host does not provide tools such as `nvidia-smi` or `lspci`, full mode fa
 - [TESTING.md](TESTING.md): validated commands, CI gates, and known gaps.
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): component-level architecture and responsibilities.
 - [docs/EXAMPLES.md](docs/EXAMPLES.md): runnable CLI and API usage examples.
+- [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md): deployment guide for single-node, local cluster, and staged LAN rollout.
 - [docs/MOHAWK_GUI.md](docs/MOHAWK_GUI.md): GUI setup, diagnostics, MCP JSON wiring, and troubleshooting.
 - [docs/SECURITY_MODEL.md](docs/SECURITY_MODEL.md): threat model and production hardening guidance.
 - [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md): operational troubleshooting and debugging tips.
@@ -215,6 +216,8 @@ If the host does not provide tools such as `nvidia-smi` or `lspci`, full mode fa
 - [docs/archive/INDEX.md](docs/archive/INDEX.md): archived historical docs and migration notes.
 - [CONTRIBUTING.md](CONTRIBUTING.md): contributor setup and pre-PR checks.
 - [CHANGELOG.md](CHANGELOG.md): release-oriented change history.
+- [deploy/systemd/ghost-link-listener@.service](deploy/systemd/ghost-link-listener@.service): systemd listener template.
+- [deploy/docker/docker-compose.local.yml](deploy/docker/docker-compose.local.yml): local multi-container demo deployment.
 
 ## Repository Layout
 
