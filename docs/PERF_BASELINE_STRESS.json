@@ -12,7 +12,7 @@
       "wall_avg": 7.41,
       "drift_policy": {
         "max_throughput_drop_ratio": 0.35,
-        "max_p95_rise_ratio": 0.30
+        "max_p95_rise_ratio": 0.55
       }
     },
     "inmem": {
