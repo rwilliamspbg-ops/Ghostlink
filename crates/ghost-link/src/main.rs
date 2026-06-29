@@ -260,10 +260,7 @@ fn apply_file_config_to_env(config: &FileConfig) {
             set_env_if_absent("GHOSTLINK_DISCOVERY_AUTH_TOKEN", value.clone());
         }
         if let Some(value) = discovery.allow_legacy_crc32 {
-            set_env_if_absent(
-                "GHOSTLINK_DISCOVERY_ALLOW_LEGACY_CRC32",
-                value.to_string(),
-            );
+            set_env_if_absent("GHOSTLINK_DISCOVERY_ALLOW_LEGACY_CRC32", value.to_string());
         }
         if let Some(value) = discovery.max_replies {
             set_env_if_absent("GHOSTLINK_DISCOVERY_MAX_REPLIES", value.to_string());
@@ -323,7 +320,12 @@ fn env_default_u16(key: &str, fallback: u16) -> u16 {
 fn env_default_bool(key: &str, fallback: bool) -> bool {
     std::env::var(key)
         .ok()
-        .map(|value| matches!(value.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
         .unwrap_or(fallback)
 }
 
@@ -1472,10 +1474,7 @@ fn print_cluster_start(node_count: usize, base_port: u16) -> Result<()> {
             bind_addr: SocketAddr::from(([127, 0, 0, 1], 0)),
             broadcast_addr: target,
             response_timeout: Duration::from_millis(800),
-            allow_legacy_crc32: env_default_bool(
-                "GHOSTLINK_DISCOVERY_ALLOW_LEGACY_CRC32",
-                false,
-            ),
+            allow_legacy_crc32: env_default_bool("GHOSTLINK_DISCOVERY_ALLOW_LEGACY_CRC32", false),
             ..UdpDiscoveryConfig::default()
         };
 

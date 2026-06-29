@@ -5,8 +5,8 @@
 
 use std::io;
 use std::net::{SocketAddr, UdpSocket};
-use std::time::{SystemTime, UNIX_EPOCH};
 use std::time::{Duration, Instant};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use hmac::{Hmac, Mac};
 use rand::rngs::OsRng;
@@ -52,7 +52,10 @@ impl std::fmt::Display for DatagramDecodeError {
                 write!(f, "unsupported discovery auth protocol version {}", version)
             }
             Self::AuthTimestampOutsideWindow => {
-                write!(f, "discovery datagram auth timestamp outside allowed window")
+                write!(
+                    f,
+                    "discovery datagram auth timestamp outside allowed window"
+                )
             }
             Self::ReplayNonceDetected => {
                 write!(f, "discovery datagram replay nonce detected")
@@ -67,8 +70,7 @@ const DISCOVERY_AUTH_PROTOCOL_VERSION: u8 = 2;
 const DISCOVERY_AUTH_MARKER: [u8; 2] = *b"GL";
 const DISCOVERY_AUTH_TAG_LEN: usize = 32;
 const DISCOVERY_NONCE_LEN: usize = 16;
-const DISCOVERY_AUTH_TRAILER_LEN: usize =
-    2 + 1 + 8 + DISCOVERY_NONCE_LEN + DISCOVERY_AUTH_TAG_LEN;
+const DISCOVERY_AUTH_TRAILER_LEN: usize = 2 + 1 + 8 + DISCOVERY_NONCE_LEN + DISCOVERY_AUTH_TAG_LEN;
 const DISCOVERY_AUTH_MAX_SKEW_SECS: u64 = 30;
 const DISCOVERY_NONCE_CACHE_CAPACITY: usize = 4096;
 

@@ -135,10 +135,7 @@ fn studio_snapshot() -> StudioSnapshot {
         ],
         checks_passed: passed,
         checks_warn: warn,
-        summary: format!(
-            "{} checks passed, {} checks need attention",
-            passed, warn
-        ),
+        summary: format!("{} checks passed, {} checks need attention", passed, warn),
     }
 }
 
@@ -269,16 +266,17 @@ fn cluster_preview(node_id: String, full: bool) -> Result<ClusterPreview, String
         ));
     }
 
-    let nodes = vec![
-        parse_probe_to_node(command.stdout.as_str()).unwrap_or_else(|| fallback_node(node_id.as_str())),
-    ];
+    let nodes = vec![parse_probe_to_node(command.stdout.as_str())
+        .unwrap_or_else(|| fallback_node(node_id.as_str()))];
     let healthy = nodes.iter().filter(|node| node.health == "healthy").count();
     let degraded = nodes.len().saturating_sub(healthy);
 
     Ok(ClusterPreview {
         summary: format!(
             "{} nodes total ({} healthy, {} degraded)",
-            nodes.len(), healthy, degraded
+            nodes.len(),
+            healthy,
+            degraded
         ),
         nodes,
     })
@@ -360,10 +358,7 @@ fn run_validation_tier(tier: String) -> Result<ValidationReport, String> {
     Ok(ValidationReport {
         tier: tier_norm,
         ok,
-        summary: format!(
-            "{} step(s) passed, {} step(s) failed",
-            passed, failed
-        ),
+        summary: format!("{} step(s) passed, {} step(s) failed", passed, failed),
         steps,
     })
 }
@@ -496,8 +491,13 @@ fn run_doctor_with_json(strict: bool) -> Result<DoctorJsonSummary, String> {
     }
 
     let command_result = run_ghostlink_command(args)?;
-    let raw = fs::read_to_string(&output_path)
-        .map_err(|err| format!("doctor report missing at {}: {}", output_path.display(), err))?;
+    let raw = fs::read_to_string(&output_path).map_err(|err| {
+        format!(
+            "doctor report missing at {}: {}",
+            output_path.display(),
+            err
+        )
+    })?;
     let value: Value = serde_json::from_str(&raw)
         .map_err(|err| format!("invalid doctor json {}: {}", output_path.display(), err))?;
 
@@ -581,7 +581,16 @@ fn run_probe(node_id: String, full: bool) -> Result<CommandResult, String> {
 
 #[tauri::command]
 fn run_flow_quick() -> Result<CommandResult, String> {
-    run_ghostlink_command(vec!["flow", "studio-local", "studio-remote", "32", "32", "64", "2", "tcp"])
+    run_ghostlink_command(vec![
+        "flow",
+        "studio-local",
+        "studio-remote",
+        "32",
+        "32",
+        "64",
+        "2",
+        "tcp",
+    ])
 }
 
 #[tauri::command]
@@ -629,7 +638,11 @@ fn chat_infer(
         return Err("prompt cannot be empty".to_string());
     }
 
-    let backend = if distributed { "distributed-flow" } else { "single-node-flow" };
+    let backend = if distributed {
+        "distributed-flow"
+    } else {
+        "single-node-flow"
+    };
     let transport = if distributed { "tcp" } else { "inmem" };
     let execution_tokens = max_tokens.clamp(16, 512);
     let execution_tokens_arg = execution_tokens.to_string();
@@ -651,8 +664,7 @@ fn chat_infer(
         let detail = if !stderr.is_empty() { stderr } else { stdout };
         return Err(format!(
             "live flow execution failed (exit code {:?}): {}",
-            command_result.exit_code,
-            detail
+            command_result.exit_code, detail
         ));
     }
 
@@ -774,7 +786,6 @@ fn preferred_python() -> String {
         "python".to_string()
     }
 }
-
 
 fn command_version(program: &str, args: &[&str]) -> Option<String> {
     let output = Command::new(program).args(args).output().ok()?;

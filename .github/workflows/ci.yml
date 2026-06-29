@@ -154,7 +154,9 @@ jobs:
           files: ./coverage/lcov.info
           token: ${{ secrets.CODECOV_TOKEN }}
           use_oidc: true
-          fail_ci_if_error: true
+          # Keep coverage generation strict, but do not fail CI on external Codecov
+          # repository/authorization service errors.
+          fail_ci_if_error: false
           verbose: true
 
       - name: Upload coverage artifacts
