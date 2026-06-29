@@ -128,9 +128,17 @@ class SystemMonitor:
     
     def get_cpu_info(self) -> Dict[str, Any]:
         """Get CPU usage information."""
+        cpu_times = self.process.cpu_times()
+        if hasattr(cpu_times, "_asdict"):
+            times = cpu_times._asdict()
+        else:
+            times = {
+                "user": cpu_times[0] if len(cpu_times) > 0 else 0,
+                "system": cpu_times[1] if len(cpu_times) > 1 else 0,
+            }
         return {
             "percent": self.process.cpu_percent(),
-            "times": dict(self.process.cpu_times())
+            "times": times
         }
     
     def get_disk_usage(self, path: str = "/") -> Dict[str, Any]:

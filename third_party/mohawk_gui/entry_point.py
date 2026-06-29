@@ -9,13 +9,18 @@ or embedded in the PyInstaller executable.
 
 import sys
 import os
+from pathlib import Path
 
 # Add project root to path
 project_root = Path(__file__).parent.parent
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
-from mohawk_gui.main import main
+try:
+    from mohawk_gui.main import main as run_main
+except ImportError:
+    # Support direct execution from within third_party/mohawk_gui.
+    from main import main as run_main
 
 def main():
     """Main entry point for Mohawk Inference Engine GUI."""
@@ -25,38 +30,9 @@ def main():
     print("╚═══════════════════════════════════════════════════════════╝")
     print()
     
-    # Parse command line arguments
-    import argparse
-    
-    parser = argparse.ArgumentParser(
-        description="Mohawk Inference Engine GUI - Production Ready"
-    )
-    parser.add_argument(
-        "--host", 
-        default="localhost",
-        help="Worker host (default: localhost)"
-    )
-    parser.add_argument(
-        "--port", 
-        type=int, 
-        default=8003,
-        help="Worker port (default: 8003)"
-    )
-    parser.add_argument(
-        "--config",
-        default="config.toml",
-        help="Configuration file path"
-    )
-    
-    args = parser.parse_args()
-    
-    # Initialize and run GUI
-    from mohawk_gui.main_window import MohawkGUI
-    
-    gui = MohawkGUI()
-    gui.show()
-    
-    return gui.exec()
+    # Delegate to the canonical launcher so argument parsing and QApplication
+    # lifecycle remain consistent with main.py.
+    return run_main()
 
 if __name__ == "__main__":
     sys.exit(main())

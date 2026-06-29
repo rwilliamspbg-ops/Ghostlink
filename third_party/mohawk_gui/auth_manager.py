@@ -6,7 +6,7 @@ Provides secure JWT-based authentication and mTLS support.
 
 import jwt
 import hashlib
-import base64
+import os
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, Any
 from cryptography.hazmat.primitives.asymmetric import rsa
@@ -33,13 +33,19 @@ class AuthManager:
             secret_key_path: Path to private key file for signing tokens
             key_size: RSA key size in bits (default: 2048)
         """
-        self.secret_key_path = secret_key_path
+        if secret_key_path:
+            self.secret_key_path = secret_key_path
+        else:
+            default_dir = os.path.join(os.path.dirname(__file__), "certs")
+            self.secret_key_path = os.path.join(default_dir, "jwt_private.pem")
+        self.key_size = key_size
         self._generate_key_if_needed()
         self.token_expiry_hours = 24
         self.refresh_window_hours = 1
         
     def _generate_key_if_needed(self):
         """Generate RSA key pair if no existing key."""
+        os.makedirs(os.path.dirname(self.secret_key_path), exist_ok=True)
         try:
             with open(self.secret_key_path, 'rb') as f:
                 # Try to load existing key
@@ -52,7 +58,7 @@ class AuthManager:
             # Generate new RSA key pair
             private_key = rsa.generate_private_key(
                 public_exponent=65537,
-                key_size=2048,
+                key_size=self.key_size,
                 backend=default_backend()
             )
             
