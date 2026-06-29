@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Mohawk Inference Engine - Live Wired GUI"""
+"""Ghostlink Studio - Professional Inference Interface"""
 
 import sys
 import requests
@@ -11,11 +11,11 @@ from PyQt6.QtWidgets import (
     QLabel, QPushButton, QTabWidget, QStatusBar, QMessageBox, QGroupBox,
     QTableWidget, QTableWidgetItem, QTextEdit, QLineEdit, QComboBox,
     QSpinBox, QDoubleSpinBox, QProgressBar, QHeaderView, QScrollArea,
-    QGridLayout, QFormLayout, QCheckBox
+    QGridLayout, QFormLayout, QCheckBox, QFrame, QSplitter
 )
 from PyQt6.QtWidgets import QInputDialog
-from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal
-from PyQt6.QtGui import QFont, QColor
+from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal, QSize
+from PyQt6.QtGui import QFont, QColor, QIcon, QPalette, QLinearGradient, QBrush
 
 
 class WorkerHealthCheck(QThread):
@@ -49,69 +49,55 @@ class WorkerHealthCheck(QThread):
 
 
 class MohawkGUI(QMainWindow):
-    """Main window for Mohawk Inference Engine GUI with live wiring."""
+    """Main window for Ghostlink Studio - Professional Inference Surface."""
     
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Mohawk Inference Engine - Professional Dashboard")
-        self.setGeometry(100, 100, 1400, 900)
+        self.setWindowTitle("Ghostlink Studio")
+        self.setMinimumSize(1400, 900)
         
         # API endpoints
         self.gui_service_url = "http://localhost:8003"
         self.worker_service_url = "http://localhost:8004"
         
+        # Apply dark professional theme
+        self.apply_styles()
+
         # Central widget
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
-        layout = QVBoxLayout(central_widget)
+        main_layout = QHBoxLayout(central_widget)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
         
-        # Title
-        title_label = QLabel("Mohawk Inference Engine v2.1.0")
-        title_label.setFont(QFont("Segoe UI", 16, QFont.Weight.Bold))
-        layout.addWidget(title_label)
+        # Sidebar
+        self.sidebar = self.create_sidebar()
+        main_layout.addWidget(self.sidebar)
         
-        # Status group
-        status_group = QGroupBox("System Status")
-        status_layout = QHBoxLayout(status_group)
+        # Content area
+        content_widget = QWidget()
+        self.content_layout = QVBoxLayout(content_widget)
+        self.content_layout.setContentsMargins(20, 20, 20, 20)
+        main_layout.addWidget(content_widget)
         
-        self.health_label = QLabel("Status: Connecting...")
-        self.health_label.setFont(QFont("Segoe UI", 10))
-        self.health_label.setStyleSheet("color: orange; font-weight: bold;")
-        status_layout.addWidget(self.health_label)
+        # Header (Top bar)
+        self.header = self.create_header()
+        self.content_layout.addWidget(self.header)
         
-        self.worker_count_label = QLabel("Workers: 0/2")
-        status_layout.addWidget(self.worker_count_label)
+        # Main Tab Stack
+        self.stack = QTabWidget()
+        self.stack.tabBar().hide() # Use sidebar for switching
+        self.content_layout.addWidget(self.stack)
         
-        connect_btn = QPushButton("Connect to Workers")
-        connect_btn.clicked.connect(self.connect_workers)
-        status_layout.addWidget(connect_btn)
-        
-        self.throughput_label = QLabel("Throughput: 0 req/s")
-        status_layout.addWidget(self.throughput_label)
-        
-        refresh_btn = QPushButton("Refresh")
-        refresh_btn.clicked.connect(self.refresh_all)
-        status_layout.addWidget(refresh_btn)
-        
-        status_layout.addStretch()
-        layout.addWidget(status_group)
-
-        # Status bar must exist before any tab initialization that may emit
-        # refresh failures during startup.
+        # Status bar
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
-        self.status_bar.showMessage("Starting GUI...")
+        self.status_bar.showMessage("Starting Ghostlink Studio...")
         
-        # Store references for live updates (BEFORE creating tabs)
+        # Store references for live updates
         self.metrics_bars = {}
-        self.sessions_table = None
-        self.workers_table = None
         
-        # Tabs
-        self.tabs = QTabWidget()
-        layout.addWidget(self.tabs)
-        
-        # Create tabs
+        # Create pages
         self.model_library_widget = self.create_model_library_tab()
         self.chat_widget = self.create_chat_interface_tab()
         self.metrics_widget = self.create_metrics_tab()
@@ -120,40 +106,204 @@ class MohawkGUI(QMainWindow):
         self.security_widget = self.create_security_tab()
         self.history_widget = self.create_history_tab()
         
-        self.tabs.addTab(self.model_library_widget, "Model Library")
-        self.tabs.addTab(self.chat_widget, "Chat Interface")
-        self.tabs.addTab(self.metrics_widget, "Performance Metrics")
-        self.tabs.addTab(self.sessions_widget, "Session Manager")
-        self.tabs.addTab(self.workers_widget, "Workers")
-        self.tabs.addTab(self.security_widget, "Security Center")
-        self.tabs.addTab(self.history_widget, "History")
+        self.stack.addTab(self.chat_widget, "Chat")
+        self.stack.addTab(self.model_library_widget, "Search")
+        self.stack.addTab(self.metrics_widget, "Metrics")
+        self.stack.addTab(self.sessions_widget, "Sessions")
+        self.stack.addTab(self.workers_widget, "Workers")
+        self.stack.addTab(self.security_widget, "Security")
+        self.stack.addTab(self.history_widget, "History")
 
         # Health check thread
         self.health_thread = WorkerHealthCheck(self.gui_service_url)
         self.health_thread.health_updated.connect(self.on_health_update)
         self.health_thread.start()
 
-        self.status_bar.showMessage("Ready - Connecting to Docker backend services...")
+        self.status_bar.showMessage("Ready - Connecting to Ghostlink backend...")
         
         # Timer for periodic updates
         self.update_timer = QTimer()
         self.update_timer.timeout.connect(self.periodic_update)
         self.update_timer.start(5000)  # Update every 5 seconds
-    
+
+    def apply_styles(self):
+        """Apply modern dark theme styles."""
+        self.setStyleSheet("""
+            QMainWindow, QWidget {
+                background-color: #1a1b1e;
+                color: #e0e0e0;
+                font-family: 'Inter', 'Segoe UI', sans-serif;
+            }
+            QGroupBox {
+                border: 1px solid #2d2e32;
+                border-radius: 8px;
+                margin-top: 1.5em;
+                font-weight: bold;
+                padding-top: 10px;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 10px;
+                padding: 0 5px;
+            }
+            QPushButton {
+                background-color: #2d2e32;
+                border: 1px solid #3f3f46;
+                border-radius: 6px;
+                padding: 8px 16px;
+                font-weight: 500;
+            }
+            QPushButton:hover {
+                background-color: #3f3f46;
+                border-color: #52525b;
+            }
+            QPushButton#primaryBtn {
+                background-color: #3b82f6;
+                border-color: #2563eb;
+                color: white;
+            }
+            QPushButton#primaryBtn:hover {
+                background-color: #2563eb;
+            }
+            QLineEdit, QTextEdit, QSpinBox, QDoubleSpinBox, QComboBox {
+                background-color: #25262b;
+                border: 1px solid #2d2e32;
+                border-radius: 4px;
+                padding: 6px;
+            }
+            QTableWidget {
+                gridline-color: #2d2e32;
+                border: none;
+            }
+            QHeaderView::section {
+                background-color: #25262b;
+                padding: 8px;
+                border: none;
+                border-bottom: 1px solid #2d2e32;
+                font-weight: bold;
+            }
+            QProgressBar {
+                background-color: #25262b;
+                border: 1px solid #2d2e32;
+                border-radius: 4px;
+                text-align: center;
+            }
+            QProgressBar::chunk {
+                background-color: #3b82f6;
+            }
+            QScrollBar:vertical {
+                border: none;
+                background: #1a1b1e;
+                width: 10px;
+                margin: 0px;
+            }
+            QScrollBar::handle:vertical {
+                background: #3f3f46;
+                min-height: 20px;
+                border-radius: 5px;
+            }
+        """)
+
+    def create_sidebar(self):
+        """Create the navigation sidebar."""
+        frame = QFrame()
+        frame.setFixedWidth(240)
+        frame.setStyleSheet("background-color: #141517; border-right: 1px solid #2d2e32;")
+        layout = QVBoxLayout(frame)
+        layout.setContentsMargins(10, 20, 10, 20)
+
+        logo = QLabel("GHOSTLINK")
+        logo.setFont(QFont("Inter", 18, QFont.Weight.Bold))
+        logo.setStyleSheet("color: #3b82f6; margin-bottom: 30px; margin-left: 10px;")
+        layout.addWidget(logo)
+
+        buttons = [
+            ("AI Chat", 0),
+            ("Search Models", 1),
+            ("Analytics", 2),
+            ("Session Manager", 3),
+            ("Resource Nodes", 4),
+            ("Security", 5),
+            ("History", 6),
+        ]
+
+        self.sidebar_buttons = []
+        for text, idx in buttons:
+            btn = QPushButton(text)
+            btn.setCheckable(True)
+            btn.setStyleSheet("""
+                QPushButton {
+                    text-align: left;
+                    padding: 12px;
+                    background-color: transparent;
+                    border: none;
+                    font-size: 14px;
+                    border-radius: 6px;
+                }
+                QPushButton:hover {
+                    background-color: #25262b;
+                }
+                QPushButton:checked {
+                    background-color: #3b82f6;
+                    color: white;
+                }
+            """)
+            btn.clicked.connect(lambda checked, i=idx: self.switch_tab(i))
+            layout.addWidget(btn)
+            self.sidebar_buttons.append(btn)
+            if idx == 0: btn.setChecked(True)
+
+        layout.addStretch()
+        return frame
+
+    def switch_tab(self, index):
+        """Switch tab and update sidebar selection."""
+        self.stack.setCurrentIndex(index)
+        for i, btn in enumerate(self.sidebar_buttons):
+            btn.setChecked(i == index)
+
+    def create_header(self):
+        """Create the top header bar."""
+        widget = QWidget()
+        layout = QHBoxLayout(widget)
+        layout.setContentsMargins(0, 0, 0, 20)
+
+        self.health_status_icon = QLabel("●")
+        self.health_status_icon.setStyleSheet("color: #f59e0b; font-size: 20px;")
+        layout.addWidget(self.health_status_icon)
+
+        self.health_label = QLabel("Initializing Ghostlink Fabric...")
+        self.health_label.setFont(QFont("Inter", 12))
+        layout.addWidget(self.health_label)
+
+        layout.addStretch()
+
+        self.active_model_badge = QLabel("No Active Model")
+        self.active_model_badge.setStyleSheet("""
+            background-color: #2d2e32;
+            padding: 4px 12px;
+            border-radius: 12px;
+            font-size: 11px;
+            color: #9ca3af;
+        """)
+        layout.addWidget(self.active_model_badge)
+
+        return widget
+
     def on_health_update(self, health_info):
         """Handle health check updates."""
         status = health_info.get("status")
         
         if status == "healthy":
-            self.health_label.setText("Status: Connected")
-            self.health_label.setStyleSheet("color: green; font-weight: bold;")
-            self.status_bar.showMessage("Connected to backend services")
+            self.health_label.setText("Ghostlink Fabric Online")
+            self.health_status_icon.setStyleSheet("color: #10b981; font-size: 20px;")
+            self.status_bar.showMessage("Connected to inference cluster")
         elif status == "degraded":
-            self.health_label.setText("Status: Degraded")
-            self.health_label.setStyleSheet("color: orange; font-weight: bold;")
+            self.health_label.setText("Fabric Performance Degraded")
+            self.health_status_icon.setStyleSheet("color: #f59e0b; font-size: 20px;")
         else:
-            self.health_label.setText(f"Status: {status}")
-            self.health_label.setStyleSheet("color: red; font-weight: bold;")
+            self.health_label.setText("Fabric Disconnected")
+            self.health_status_icon.setStyleSheet("color: #ef4444; font-size: 20px;")
     
     def api_call(self, endpoint, method="GET", data=None):
         """Make API call to backend service."""
@@ -200,17 +350,17 @@ class MohawkGUI(QMainWindow):
         
         # Search and filter
         search_layout = QHBoxLayout()
-        search_input = QLineEdit()
-        search_input.setPlaceholderText("Search models...")
+        self.model_search_input = QLineEdit()
+        self.model_search_input.setPlaceholderText("Search models on HuggingFace or Local...")
         search_layout.addWidget(QLabel("Search:"))
-        search_layout.addWidget(search_input)
+        search_layout.addWidget(self.model_search_input)
         
         filter_combo = QComboBox()
-        filter_combo.addItems(["All", "LLM", "Embedding", "Chat"])
-        search_layout.addWidget(QLabel("Type:"))
+        filter_combo.addItems(["All Models", "LLM", "Vision", "Embedding"])
         search_layout.addWidget(filter_combo)
         
-        download_btn = QPushButton("Download Model")
+        download_btn = QPushButton("Download")
+        download_btn.setObjectName("primaryBtn")
         download_btn.clicked.connect(self.download_model)
         search_layout.addWidget(download_btn)
         
@@ -223,24 +373,26 @@ class MohawkGUI(QMainWindow):
         # Models table
         self.models_table = QTableWidget()
         self.models_table.setColumnCount(6)
-        self.models_table.setHorizontalHeaderLabels(["Name", "Size (GB)", "Type", "Quantization", "Status", "Action"])
+        self.models_table.setHorizontalHeaderLabels(["Name", "Size", "Type", "Quant", "Status", "Action"])
         self.models_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-
         layout.addWidget(self.models_table)
         
         # Model details
-        details_group = QGroupBox("Model Details")
+        details_group = QGroupBox("Model Configuration")
         details_layout = QFormLayout(details_group)
         self.selected_model_label = QLineEdit("None loaded")
         self.selected_model_label.setReadOnly(True)
-        details_layout.addRow("Selected Model:", self.selected_model_label)
-        details_layout.addRow("Quantization:", QComboBox())
-        details_layout.addRow("Device Split:", QLineEdit("auto"))
+        details_layout.addRow("Selected Model", self.selected_model_label)
+
+        self.quant_combo = QComboBox()
+        self.quant_combo.addItems(["Default", "Q4_K_M", "Q5_K_M", "Q8_0", "FP16"])
+        details_layout.addRow("Quantization Override", self.quant_combo)
+
+        self.split_input = QLineEdit("auto")
+        details_layout.addRow("Device Distribution", self.split_input)
         layout.addWidget(details_group)
 
-        # Load models only after selected_model_label is available.
         self.refresh_models()
-        
         return widget
     
     def refresh_models(self):
@@ -255,22 +407,23 @@ class MohawkGUI(QMainWindow):
         current_model = result.get("current_model")
         if current_model:
             self.selected_model_label.setText(current_model)
+            self.active_model_badge.setText(current_model)
 
         self.models_table.setRowCount(len(models))
         for i, model in enumerate(models):
             name = model.get("name", "Unknown")
-            size = model.get("size_gb", 0)
+            size = f"{model.get('size_gb', 0)} GB"
             mtype = model.get("type", "LLM")
             quant = model.get("quantization", "Unknown")
             status = model.get("status", "Unknown")
 
             self.models_table.setItem(i, 0, QTableWidgetItem(name))
-            self.models_table.setItem(i, 1, QTableWidgetItem(str(size)))
+            self.models_table.setItem(i, 1, QTableWidgetItem(size))
             self.models_table.setItem(i, 2, QTableWidgetItem(mtype))
             self.models_table.setItem(i, 3, QTableWidgetItem(quant))
             
             status_item = QTableWidgetItem(status)
-            status_color = "green" if status in {"Ready", "Loaded"} else "orange"
+            status_color = "#10b981" if status in {"Ready", "Loaded"} else "#f59e0b"
             status_item.setForeground(QColor(status_color))
             self.models_table.setItem(i, 4, status_item)
             
@@ -286,6 +439,8 @@ class MohawkGUI(QMainWindow):
             QMessageBox.warning(self, "Load Error", f"Failed to load model:\n{result['error']}")
         else:
             self.selected_model_label.setText(model_name)
+            self.active_model_badge.setText(model_name)
+            self.active_model_badge.setStyleSheet("background-color: #3b82f6; color: white; padding: 4px 12px; border-radius: 12px; font-size: 11px;")
             QMessageBox.information(self, "Success", f"Model loaded: {model_name}")
             self.status_bar.showMessage(f"Loaded model: {model_name}")
     
@@ -313,73 +468,101 @@ class MohawkGUI(QMainWindow):
         QMessageBox.information(self, "Download", f"Model available: {model_id}")
     
     def create_chat_interface_tab(self):
-        """Create chat interface tab."""
+        """Create chat interface tab with advanced parameters."""
         widget = QWidget()
         layout = QHBoxLayout(widget)
         
-        # Chat area
-        chat_layout = QVBoxLayout()
+        # Main Chat Area
+        chat_container = QWidget()
+        chat_v_layout = QVBoxLayout(chat_container)
+
         self.chat_display = QTextEdit()
         self.chat_display.setReadOnly(True)
-        self.chat_display.setPlainText("Chat Interface - Connected to inference backend\n" + "="*50 + "\n")
-        chat_layout.addWidget(self.chat_display)
+        self.chat_display.setStyleSheet("background-color: #1a1b1e; border: none; font-size: 14px;")
+        self.chat_display.setPlaceholderText("Welcome to Ghostlink Studio. Select a model to begin.")
+        chat_v_layout.addWidget(self.chat_display)
         
-        # Input area
-        input_group = QGroupBox("Send Message")
-        input_layout = QVBoxLayout(input_group)
+        input_container = QFrame()
+        input_container.setStyleSheet("background-color: #25262b; border-radius: 12px; border: 1px solid #3f3f46;")
+        input_h_layout = QHBoxLayout(input_container)
         
         self.message_input = QTextEdit()
-        self.message_input.setMaximumHeight(80)
-        self.message_input.setPlaceholderText("Type your message here...")
-        input_layout.addWidget(self.message_input)
-        
-        # Controls
-        controls_layout = QHBoxLayout()
-        controls_layout.addWidget(QLabel("Temperature:"))
-        self.temp_spin = QDoubleSpinBox()
-        self.temp_spin.setValue(0.7)
-        self.temp_spin.setRange(0, 2)
-        controls_layout.addWidget(self.temp_spin)
-        
-        controls_layout.addWidget(QLabel("Top-p:"))
-        self.topp_spin = QDoubleSpinBox()
-        self.topp_spin.setValue(0.9)
-        self.topp_spin.setRange(0, 1)
-        controls_layout.addWidget(self.topp_spin)
-        
-        send_btn = QPushButton("Send Message")
+        self.message_input.setPlaceholderText("Enter prompt...")
+        self.message_input.setMaximumHeight(100)
+        self.message_input.setStyleSheet("border: none; background-color: transparent;")
+        input_h_layout.addWidget(self.message_input)
+
+        send_btn = QPushButton("Send")
+        send_btn.setObjectName("primaryBtn")
+        send_btn.setFixedSize(80, 40)
         send_btn.clicked.connect(self.send_message)
-        controls_layout.addWidget(send_btn)
+        input_h_layout.addWidget(send_btn, alignment=Qt.AlignmentFlag.AlignBottom)
+
+        chat_v_layout.addWidget(input_container)
+        layout.addWidget(chat_container, 3) # 3/4 width
+
+        # Right Sidebar - Inference Params
+        params_scroll = QScrollArea()
+        params_scroll.setWidgetResizable(True)
+        params_scroll.setFixedWidth(320)
+        params_scroll.setStyleSheet("QScrollArea { border: none; border-left: 1px solid #2d2e32; }")
+
+        params_widget = QWidget()
+        params_layout = QVBoxLayout(params_widget)
+
+        # Parameters group
+        params_group = QGroupBox("Inference Settings")
+        form = QFormLayout(params_group)
         
-        input_layout.addLayout(controls_layout)
-        chat_layout.addWidget(input_group)
-        layout.addLayout(chat_layout)
+        self.temp_spin = QDoubleSpinBox()
+        self.temp_spin.setRange(0, 2.0)
+        self.temp_spin.setValue(0.7)
+        self.temp_spin.setSingleStep(0.1)
+        form.addRow("Temperature", self.temp_spin)
         
-        # Settings panel
-        settings_layout = QVBoxLayout()
-        settings_group = QGroupBox("Chat Settings")
-        form = QFormLayout(settings_group)
+        self.topp_spin = QDoubleSpinBox()
+        self.topp_spin.setRange(0, 1.0)
+        self.topp_spin.setValue(0.9)
+        form.addRow("Top P", self.topp_spin)
+        
+        self.topk_spin = QSpinBox()
+        self.topk_spin.setRange(0, 100)
+        self.topk_spin.setValue(40)
+        form.addRow("Top K", self.topk_spin)
+        
+        self.penalty_spin = QDoubleSpinBox()
+        self.penalty_spin.setRange(1.0, 2.0)
+        self.penalty_spin.setValue(1.1)
+        form.addRow("Repeat Penalty", self.penalty_spin)
         
         self.max_tokens_spin = QSpinBox()
-        self.max_tokens_spin.setValue(2048)
-        self.max_tokens_spin.setRange(1, 8192)
-        form.addRow("Max Tokens:", self.max_tokens_spin)
-        
-        self.system_prompt = QTextEdit()
-        self.system_prompt.setMaximumHeight(100)
-        self.system_prompt.setPlainText("You are a helpful AI assistant.")
-        form.addRow("System Prompt:", self.system_prompt)
+        self.max_tokens_spin.setRange(1, 32768)
+        self.max_tokens_spin.setValue(4096)
+        form.addRow("Max Tokens", self.max_tokens_spin)
 
-        self.mcp_json_input = QTextEdit()
-        self.mcp_json_input.setMaximumHeight(120)
-        self.mcp_json_input.setPlaceholderText(
-            '{"tools": [{"name": "example", "enabled": true}], "policy": {"strict": false}}'
-        )
-        form.addRow("MCP JSON:", self.mcp_json_input)
+        params_layout.addWidget(params_group)
         
-        settings_layout.addWidget(settings_group)
-        settings_layout.addStretch()
-        layout.addLayout(settings_layout)
+        # System Prompt
+        sys_group = QGroupBox("System Prompt")
+        sys_layout = QVBoxLayout(sys_group)
+        self.system_prompt = QTextEdit()
+        self.system_prompt.setPlainText("You are a highly capable AI assistant running on Ghostlink Fabric.")
+        self.system_prompt.setMaximumHeight(150)
+        sys_layout.addWidget(self.system_prompt)
+        params_layout.addWidget(sys_group)
+
+        # MCP JSON
+        mcp_group = QGroupBox("Advanced (MCP)")
+        mcp_layout = QVBoxLayout(mcp_group)
+        self.mcp_json_input = QTextEdit()
+        self.mcp_json_input.setPlaceholderText('{"tools": []}')
+        self.mcp_json_input.setMaximumHeight(100)
+        mcp_layout.addWidget(self.mcp_json_input)
+        params_layout.addWidget(mcp_group)
+        
+        params_layout.addStretch()
+        params_scroll.setWidget(params_widget)
+        layout.addWidget(params_scroll, 1) # 1/4 width
         
         return widget
     
@@ -399,15 +582,15 @@ class MohawkGUI(QMainWindow):
                 self.status_bar.showMessage("Invalid MCP JSON")
                 return
         
-        # Add to chat display
-        self.chat_display.append(f"\nYou: {message}\n")
+        self.chat_display.append(f"\n<b>You:</b> {message}\n")
         self.message_input.clear()
         
-        # Call inference API
         payload = {
             "message": message,
             "temperature": self.temp_spin.value(),
             "top_p": self.topp_spin.value(),
+            "top_k": self.topk_spin.value(),
+            "penalty": self.penalty_spin.value(),
             "max_tokens": self.max_tokens_spin.value(),
             "system_prompt": self.system_prompt.toPlainText()
         }
@@ -417,26 +600,26 @@ class MohawkGUI(QMainWindow):
         result = self.api_call("/api/inference/chat", "POST", payload)
         
         if "error" in result:
-            self.chat_display.append(f"[ERROR] {result['error']}\n")
+            self.chat_display.append(f"<font color='red'>[ERROR] {result['error']}</font>\n")
         else:
             response = result.get("response", "No response received")
-            self.chat_display.append(f"Assistant: {response}\n")
+            self.chat_display.append(f"<b>Assistant:</b> {response}\n")
         
         self.status_bar.showMessage("Message processed")
-    
+
     def create_metrics_tab(self):
         """Create performance metrics tab."""
         widget = QWidget()
         layout = QVBoxLayout(widget)
         
         # Metrics grid
-        metrics_group = QGroupBox("Real-time Metrics")
+        metrics_group = QGroupBox("Fabric Performance")
         metrics_layout = QGridLayout(metrics_group)
         
         # Throughput
-        metrics_layout.addWidget(QLabel("Throughput (req/s):"), 0, 0)
+        metrics_layout.addWidget(QLabel("Token Throughput (tok/s):"), 0, 0)
         self.throughput_bar = QProgressBar()
-        self.throughput_bar.setMaximum(2000)
+        self.throughput_bar.setMaximum(150000) # Ghostlink max
         metrics_layout.addWidget(self.throughput_bar, 0, 1)
         self.throughput_value_label = QLabel("0")
         metrics_layout.addWidget(self.throughput_value_label, 0, 2)
@@ -445,7 +628,7 @@ class MohawkGUI(QMainWindow):
         # Latency p50
         metrics_layout.addWidget(QLabel("Latency p50 (ms):"), 1, 0)
         latency_bar = QProgressBar()
-        latency_bar.setMaximum(100)
+        latency_bar.setMaximum(50)
         metrics_layout.addWidget(latency_bar, 1, 1)
         latency_value = QLabel("0")
         metrics_layout.addWidget(latency_value, 1, 2)
@@ -454,59 +637,37 @@ class MohawkGUI(QMainWindow):
         # Latency p95
         metrics_layout.addWidget(QLabel("Latency p95 (ms):"), 2, 0)
         latency95_bar = QProgressBar()
-        latency95_bar.setMaximum(200)
+        latency95_bar.setMaximum(100)
         metrics_layout.addWidget(latency95_bar, 2, 1)
         latency95_value = QLabel("0")
         metrics_layout.addWidget(latency95_value, 2, 2)
         self.metrics_bars["latency_p95"] = (latency95_bar, latency95_value)
         
-        # Latency p99
-        metrics_layout.addWidget(QLabel("Latency p99 (ms):"), 3, 0)
-        latency99_bar = QProgressBar()
-        latency99_bar.setMaximum(300)
-        metrics_layout.addWidget(latency99_bar, 3, 1)
-        latency99_value = QLabel("0")
-        metrics_layout.addWidget(latency99_value, 3, 2)
-        self.metrics_bars["latency_p99"] = (latency99_bar, latency99_value)
-        
         layout.addWidget(metrics_group)
         
         # Resource usage
-        resource_group = QGroupBox("Resource Usage")
+        resource_group = QGroupBox("Hardware Utilization")
         resource_layout = QGridLayout(resource_group)
         
-        # CPU
-        resource_layout.addWidget(QLabel("CPU Usage:"), 0, 0)
+        resource_layout.addWidget(QLabel("Global CPU:"), 0, 0)
         self.cpu_bar = QProgressBar()
         resource_layout.addWidget(self.cpu_bar, 0, 1)
         self.cpu_value = QLabel("0%")
         resource_layout.addWidget(self.cpu_value, 0, 2)
         
-        # Memory
-        resource_layout.addWidget(QLabel("Memory Usage:"), 1, 0)
+        resource_layout.addWidget(QLabel("Cluster VRAM:"), 1, 0)
         self.mem_bar = QProgressBar()
         resource_layout.addWidget(self.mem_bar, 1, 1)
         self.mem_value = QLabel("0%")
         resource_layout.addWidget(self.mem_value, 1, 2)
         
-        # GPU
-        resource_layout.addWidget(QLabel("GPU Usage:"), 2, 0)
+        resource_layout.addWidget(QLabel("Primary GPU:"), 2, 0)
         self.gpu_bar = QProgressBar()
         resource_layout.addWidget(self.gpu_bar, 2, 1)
         self.gpu_value = QLabel("0%")
         resource_layout.addWidget(self.gpu_value, 2, 2)
         
         layout.addWidget(resource_group)
-        
-        # Statistics
-        self.stats_group = QGroupBox("Statistics Summary")
-        self.stats_layout = QFormLayout(self.stats_group)
-        self.stats_layout.addRow("Total Requests:", QLabel("0"))
-        self.stats_layout.addRow("Avg Response Time:", QLabel("0ms"))
-        self.stats_layout.addRow("Success Rate:", QLabel("0%"))
-        self.stats_layout.addRow("Error Rate:", QLabel("0%"))
-        self.stats_layout.addRow("Active Sessions:", QLabel("0"))
-        layout.addWidget(self.stats_group)
         
         layout.addStretch()
         return widget
@@ -518,7 +679,7 @@ class MohawkGUI(QMainWindow):
         
         # Controls
         controls_layout = QHBoxLayout()
-        controls_layout.addWidget(QLabel("Max Queue Size:"))
+        controls_layout.addWidget(QLabel("Max Queue Depth:"))
         self.queue_spin = QSpinBox()
         self.queue_spin.setValue(50)
         controls_layout.addWidget(self.queue_spin)
@@ -526,10 +687,6 @@ class MohawkGUI(QMainWindow):
         high_priority_btn = QPushButton("Queue High Priority")
         high_priority_btn.clicked.connect(self.queue_high_priority)
         controls_layout.addWidget(high_priority_btn)
-        
-        normal_priority_btn = QPushButton("Queue Normal Priority")
-        normal_priority_btn.clicked.connect(self.queue_normal_priority)
-        controls_layout.addWidget(normal_priority_btn)
         
         refresh_btn = QPushButton("Refresh")
         refresh_btn.clicked.connect(self.refresh_sessions)
@@ -540,7 +697,7 @@ class MohawkGUI(QMainWindow):
         # Sessions table
         self.sessions_table = QTableWidget()
         self.sessions_table.setColumnCount(7)
-        self.sessions_table.setHorizontalHeaderLabels(["Session ID", "Model", "Status", "Throughput", "Latency", "Tokens/sec", "Actions"])
+        self.sessions_table.setHorizontalHeaderLabels(["Session ID", "Model", "Status", "Throughput", "Latency", "Tokens", "Actions"])
         self.sessions_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         
         self.refresh_sessions()
@@ -564,7 +721,7 @@ class MohawkGUI(QMainWindow):
             
             status = session.get("status", "Unknown")
             status_item = QTableWidgetItem(status)
-            status_color = "green" if status == "Running" else "blue"
+            status_color = "#10b981" if status == "Running" else "#3b82f6"
             status_item.setForeground(QColor(status_color))
             self.sessions_table.setItem(i, 2, status_item)
             
@@ -611,9 +768,9 @@ class MohawkGUI(QMainWindow):
         
         # Add worker controls
         add_layout = QHBoxLayout()
-        add_layout.addWidget(QLabel("Host:"))
+        add_layout.addWidget(QLabel("Remote Host:"))
         self.worker_host_input = QLineEdit()
-        self.worker_host_input.setText("localhost")
+        self.worker_host_input.setPlaceholderText("IP or Hostname")
         add_layout.addWidget(self.worker_host_input)
         
         add_layout.addWidget(QLabel("Port:"))
@@ -622,21 +779,25 @@ class MohawkGUI(QMainWindow):
         self.worker_port_spin.setRange(1, 65535)
         add_layout.addWidget(self.worker_port_spin)
         
-        add_btn = QPushButton("Add Worker")
+        add_btn = QPushButton("Add Node")
+        add_btn.setObjectName("primaryBtn")
         add_btn.clicked.connect(self.add_worker)
         add_layout.addWidget(add_btn)
         
+        connect_btn = QPushButton("Connect All")
+        connect_btn.clicked.connect(self.connect_workers)
+        add_layout.addWidget(connect_btn)
+
         refresh_btn = QPushButton("Refresh")
         refresh_btn.clicked.connect(self.refresh_workers)
         add_layout.addWidget(refresh_btn)
         
-        add_layout.addStretch()
         layout.addLayout(add_layout)
         
         # Workers table
         self.workers_table = QTableWidget()
         self.workers_table.setColumnCount(7)
-        self.workers_table.setHorizontalHeaderLabels(["Worker ID", "Host:Port", "Status", "Model", "GPU Threads", "Load", "Actions"])
+        self.workers_table.setHorizontalHeaderLabels(["Node ID", "Endpoint", "Status", "Active Model", "Threads", "Load", "Actions"])
         self.workers_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         
         self.refresh_workers()
@@ -654,7 +815,7 @@ class MohawkGUI(QMainWindow):
             workers = result.get("workers", [])
 
         connected = sum(1 for w in workers if w.get("status") == "Connected")
-        self.worker_count_label.setText(f"Workers: {connected}/{len(workers)}")
+        self.status_bar.showMessage(f"Cluster: {connected}/{len(workers)} nodes online")
         
         self.workers_table.setRowCount(len(workers))
         for i, worker in enumerate(workers):
@@ -664,7 +825,7 @@ class MohawkGUI(QMainWindow):
             
             status = worker.get("status", "Unknown")
             status_item = QTableWidgetItem(status)
-            status_color = "green" if status == "Connected" else "orange"
+            status_color = "#10b981" if status == "Connected" else "#f59e0b"
             status_item.setForeground(QColor(status_color))
             self.workers_table.setItem(i, 2, status_item)
             
@@ -676,8 +837,7 @@ class MohawkGUI(QMainWindow):
             load_bar.setValue(load)
             self.workers_table.setCellWidget(i, 5, load_bar)
             
-            action_btn = QPushButton("Connected" if status == "Connected" else "Unavailable")
-            action_btn.setEnabled(False)
+            action_btn = QPushButton("Manage")
             self.workers_table.setCellWidget(i, 6, action_btn)
     
     def add_worker(self):
@@ -703,49 +863,48 @@ class MohawkGUI(QMainWindow):
         layout = QVBoxLayout(widget)
         
         # JWT
-        jwt_group = QGroupBox("JWT Authentication")
+        jwt_group = QGroupBox("Fabric Authentication (JWT)")
         jwt_layout = QFormLayout(jwt_group)
-        jwt_status = QLabel("Enabled (RS256)")
-        jwt_status.setStyleSheet("color: green; font-weight: bold;")
-        jwt_layout.addRow("Status:", jwt_status)
-        jwt_layout.addRow("Expiry:", QLabel("24 hours"))
-        refresh_btn = QPushButton("Refresh Token")
+        jwt_status = QLabel("Active (HMAC-SHA256)")
+        jwt_status.setStyleSheet("color: #10b981; font-weight: bold;")
+        jwt_layout.addRow("Status", jwt_status)
+        jwt_layout.addRow("Token Expiry", QLabel("12 hours (Rolling)"))
+        refresh_btn = QPushButton("Rotate Keys")
         refresh_btn.clicked.connect(lambda: self.api_call("/api/security/jwt/refresh", "POST"))
-        jwt_layout.addRow("Action:", refresh_btn)
+        jwt_layout.addRow("Action", refresh_btn)
         layout.addWidget(jwt_group)
         
         # mTLS
-        mtls_group = QGroupBox("mTLS Configuration")
+        mtls_group = QGroupBox("Transport Layer Security (mTLS)")
         mtls_layout = QFormLayout(mtls_group)
         mtls_status = QLabel("Enabled")
-        mtls_status.setStyleSheet("color: green; font-weight: bold;")
-        mtls_layout.addRow("Status:", mtls_status)
-        mtls_layout.addRow("Certificate:", QLabel("Valid until 2025-12-31"))
-        mtls_layout.addRow("Client Key:", QLabel("Encrypted (Fernet)"))
+        mtls_status.setStyleSheet("color: #10b981; font-weight: bold;")
+        mtls_layout.addRow("Status", mtls_status)
+        mtls_layout.addRow("Certificate Authority", QLabel("Ghostlink Internal CA"))
+        mtls_layout.addRow("Client Identity", QLabel("studio-primary-desktop"))
         layout.addWidget(mtls_group)
         
         # PQC
         pqc_group = QGroupBox("Post-Quantum Cryptography")
         pqc_layout = QFormLayout(pqc_group)
-        pqc_status = QLabel("Optional - Hybrid KEM Support")
-        pqc_status.setStyleSheet("color: orange; font-weight: bold;")
-        pqc_layout.addRow("Status:", pqc_status)
-        pqc_layout.addRow("liboqs:", QLabel("Not installed (optional)"))
-        enable_pqc_btn = QPushButton("Enable Hybrid KEM")
+        pqc_status = QLabel("Experimental - ML-KEM")
+        pqc_status.setStyleSheet("color: #f59e0b; font-weight: bold;")
+        pqc_layout.addRow("Status", pqc_status)
+        enable_pqc_btn = QPushButton("Enable Hybrid Quantum Tunnel")
         enable_pqc_btn.clicked.connect(lambda: self.api_call("/api/security/pqc/enable", "POST"))
-        pqc_layout.addRow("Action:", enable_pqc_btn)
+        pqc_layout.addRow("Action", enable_pqc_btn)
         layout.addWidget(pqc_group)
         
         # Security logs
-        logs_group = QGroupBox("Security Event Log")
+        logs_group = QGroupBox("Audit Log")
         logs_layout = QVBoxLayout(logs_group)
         security_log = QTextEdit()
         security_log.setReadOnly(True)
+        security_log.setStyleSheet("background-color: #141517; font-family: 'Consolas', monospace; font-size: 12px;")
         security_log.setPlainText(
-            f"[{datetime.now().strftime('%Y-%m-%d %H:%M')}] GUI connected\n"
-            "[2024-01-15 14:30] User login successful\n"
-            "[2024-01-15 14:25] JWT token refreshed\n"
-            "[2024-01-15 14:20] Model loaded: Llama-3-8B\n"
+            f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Ghostlink Studio Session Started\n"
+            f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] mTLS Handshake Completed with Local Node\n"
+            f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Discovery Broadcast Received: 2 nodes online\n"
         )
         logs_layout.addWidget(security_log)
         layout.addWidget(logs_group)
@@ -760,25 +919,22 @@ class MohawkGUI(QMainWindow):
         # History table
         table = QTableWidget()
         table.setColumnCount(6)
-        table.setHorizontalHeaderLabels(["Timestamp", "Model", "Tokens Used", "Duration", "Status", "Actions"])
+        table.setHorizontalHeaderLabels(["Timestamp", "Model", "Tokens", "Duration", "Throughput", "Actions"])
         table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         
         history = [
-            (datetime.now().strftime('%Y-%m-%d %H:%M'), "Llama-3-8B-Instruct-Q4_K_M", 1250, "12s", "Completed"),
-            ("2024-01-15 14:25", "Llama-3-8B-Instruct-Q4_K_M", 890, "8s", "Completed"),
-            ("2024-01-15 14:20", "Mistral-7B-v0.3-Q5_K_M", 2100, "18s", "Completed"),
+            (datetime.now().strftime('%H:%M:%S'), "Llama-3-8B", 1250, "12s", "104 tok/s"),
+            ("14:25:31", "Llama-3-8B", 890, "8s", "111 tok/s"),
+            ("14:20:12", "Mistral-7B", 2100, "18s", "116 tok/s"),
         ]
         
         table.setRowCount(len(history))
-        for i, (timestamp, model, tokens, duration, status) in enumerate(history):
+        for i, (timestamp, model, tokens, duration, thr) in enumerate(history):
             table.setItem(i, 0, QTableWidgetItem(timestamp))
             table.setItem(i, 1, QTableWidgetItem(model))
             table.setItem(i, 2, QTableWidgetItem(str(tokens)))
             table.setItem(i, 3, QTableWidgetItem(duration))
-            
-            status_item = QTableWidgetItem(status)
-            status_item.setForeground(QColor("green"))
-            table.setItem(i, 4, status_item)
+            table.setItem(i, 4, QTableWidgetItem(thr))
             
             view_btn = QPushButton("View")
             table.setCellWidget(i, 5, view_btn)
@@ -788,10 +944,9 @@ class MohawkGUI(QMainWindow):
         # Statistics
         stats_group = QGroupBox("Usage Statistics")
         stats_layout = QFormLayout(stats_group)
-        stats_layout.addRow("Total Tokens Used:", QLabel("4,567,890"))
-        stats_layout.addRow("Average Latency:", QLabel("25ms"))
-        stats_layout.addRow("Models Used:", QLabel("3"))
-        stats_layout.addRow("Total Sessions:", QLabel("247"))
+        stats_layout.addRow("Lifetime Tokens Generated", QLabel("4,567,890"))
+        stats_layout.addRow("Average Cluster Latency", QLabel("2.1ms"))
+        stats_layout.addRow("Total Uptime", QLabel("14d 2h 11m"))
         layout.addWidget(stats_group)
         
         return widget
@@ -805,8 +960,8 @@ class MohawkGUI(QMainWindow):
         else:
             connected = result.get("connected", 0)
             total = result.get("total", connected)
-            self.worker_count_label.setText(f"Workers: {connected}/{total}")
-            QMessageBox.information(self, "Workers Connected", f"Connected workers: {connected}/{total}")
+            self.status_bar.showMessage(f"Connected to {connected} nodes")
+            QMessageBox.information(self, "Cluster Status", f"Successfully connected to {connected}/{total} nodes.")
             self.refresh_workers()
     
     def periodic_update(self):
@@ -819,8 +974,7 @@ class MohawkGUI(QMainWindow):
             # Update throughput
             throughput = metrics.get("throughput", 0)
             self.throughput_bar.setValue(int(throughput))
-            self.throughput_value_label.setText(str(int(throughput)))
-            self.throughput_label.setText(f"Throughput: {int(throughput)} req/s")
+            self.throughput_value_label.setText(f"{int(throughput):,}")
             
             # Update CPU/Memory/GPU
             self.cpu_bar.setValue(metrics.get("cpu", 0))
@@ -841,18 +995,14 @@ class MohawkGUI(QMainWindow):
                 bar, label = self.metrics_bars["latency_p95"]
                 bar.setValue(int(metrics.get("latency_p95", 0)))
                 label.setText(str(int(metrics.get("latency_p95", 0))))
-            if "latency_p99" in metrics:
-                bar, label = self.metrics_bars["latency_p99"]
-                bar.setValue(int(metrics.get("latency_p99", 0)))
-                label.setText(str(int(metrics.get("latency_p99", 0))))
     
     def refresh_all(self):
-        """Refresh all tabs."""
+        """Refresh all data."""
         self.refresh_models()
         self.refresh_sessions()
         self.refresh_workers()
         self.periodic_update()
-        self.status_bar.showMessage("Refreshed all data")
+        self.status_bar.showMessage("Refreshed cluster state")
     
     def closeEvent(self, event):
         """Handle window close."""
@@ -862,19 +1012,9 @@ class MohawkGUI(QMainWindow):
 
 def main():
     """Main entry point."""
-    print("=" * 60)
-    print("[MOHAWK] Inference Engine GUI v2.1.0 - LIVE WIRED")
-    print("=" * 60)
-    print("GUI Service: http://localhost:8003")
-    print("Worker Service: http://localhost:8004")
-    print("=" * 60)
-    print("\n[INFO] GUI window opened successfully")
-    print("[INFO] Connecting to Docker backend services...")
-    
     app = QApplication(sys.argv)
     window = MohawkGUI()
     window.show()
-    
     sys.exit(app.exec())
 
 

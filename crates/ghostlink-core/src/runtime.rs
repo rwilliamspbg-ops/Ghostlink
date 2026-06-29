@@ -118,6 +118,27 @@ impl PipelinePlan {
     }
 }
 
+fn run_stage_compute(payload: &mut [f32], stage: &StagePlacement) {
+    let base_rounds = stage.num_layers().max(1) / 4 + 1;
+    let rounds = match stage.device {
+        DeviceKind::Npu => base_rounds,
+        DeviceKind::Gpu => base_rounds * 2,
+        DeviceKind::Cpu => base_rounds * 3,
+    };
+
+    let alpha = match stage.device {
+        DeviceKind::Npu => 1.001_f32,
+        DeviceKind::Gpu => 1.003_f32,
+        DeviceKind::Cpu => 1.005_f32,
+    };
+
+    for _ in 0..rounds {
+        for value in payload.iter_mut() {
+            *value = ((*value * alpha) + 0.125).sin();
+        }
+    }
+}
+
 /// Per-stage runtime telemetry captured from real in-process execution.
 #[derive(Clone, Debug, PartialEq)]
 pub struct StageExecutionStats {
@@ -268,42 +289,28 @@ pub fn execute_pipeline(
         total_send_wait_ms: f32,
     }
 
-    fn run_stage_compute(payload: &mut [f32], stage: &StagePlacement) {
-        let base_rounds = stage.num_layers().max(1) / 4 + 1;
-        let rounds = match stage.device {
-            DeviceKind::Npu => base_rounds,
-            DeviceKind::Gpu => base_rounds * 2,
-            DeviceKind::Cpu => base_rounds * 3,
-        };
+    use crate::ring::{RingConfig, SpscRingBuffer};
+    use std::sync::Arc;
 
-        let alpha = match stage.device {
-            DeviceKind::Npu => 1.001_f32,
-            DeviceKind::Gpu => 1.003_f32,
-            DeviceKind::Cpu => 1.005_f32,
-        };
+    // Use zero-copy SPSC ring buffers for high-throughput in-memory execution.
+    let ring_cfg = RingConfig {
+        capacity: 512,
+        backpressure_threshold: 400,
+    };
 
-        for _ in 0..rounds {
-            for value in payload.iter_mut() {
-                *value = ((*value * alpha) + 0.125).sin();
-            }
-        }
-    }
-
-    let mut senders = Vec::with_capacity(stage_count + 1);
-    let mut receivers = Vec::with_capacity(stage_count + 1);
+    let mut rings = Vec::with_capacity(stage_count + 1);
     for _ in 0..=stage_count {
-        let (tx, rx) = mpsc::channel::<BatchWork>();
-        senders.push(tx);
-        receivers.push(Some(rx));
+        rings.push(Arc::new(SpscRingBuffer::<BatchWork>::new(ring_cfg)));
     }
+
+    // Return ring for recycling payload vectors to reduce allocation churn.
+    let recycler_ring = Arc::new(SpscRingBuffer::<Vec<f32>>::new(ring_cfg));
 
     let mut stage_handles = Vec::with_capacity(stage_count);
     for stage_idx in 0..stage_count {
         let stage = plan.stages[stage_idx].clone();
-        let rx = receivers[stage_idx]
-            .take()
-            .expect("stage receiver should exist");
-        let tx_next = senders[stage_idx + 1].clone();
+        let rx_ring = Arc::clone(&rings[stage_idx]);
+        let tx_ring = Arc::clone(&rings[stage_idx + 1]);
 
         let handle = thread::spawn(move || {
             let mut processed_batches = 0usize;
@@ -313,8 +320,20 @@ pub fn execute_pipeline(
 
             loop {
                 let recv_start = Instant::now();
-                let Ok(mut batch) = rx.recv() else {
-                    break;
+                while rx_ring.is_empty() {
+                    if Arc::strong_count(&rx_ring) <= 1 {
+                        return StageAccumulator {
+                            stage_idx,
+                            processed_batches,
+                            total_compute_ms,
+                            total_recv_wait_ms,
+                            total_send_wait_ms,
+                        };
+                    }
+                    thread::yield_now();
+                }
+                let Some(mut batch) = rx_ring.pop() else {
+                    continue;
                 };
                 total_recv_wait_ms += recv_start.elapsed().as_secs_f32() * 1000.0;
 
@@ -323,63 +342,63 @@ pub fn execute_pipeline(
                 total_compute_ms += compute_start.elapsed().as_secs_f32() * 1000.0;
 
                 let send_start = Instant::now();
-                if tx_next.send(batch).is_err() {
-                    break;
-                }
+                tx_ring.wait_for_space();
+                let _ = tx_ring.push(batch);
                 total_send_wait_ms += send_start.elapsed().as_secs_f32() * 1000.0;
                 processed_batches += 1;
-            }
-
-            StageAccumulator {
-                stage_idx,
-                processed_batches,
-                total_compute_ms,
-                total_recv_wait_ms,
-                total_send_wait_ms,
             }
         });
 
         stage_handles.push(handle);
     }
 
-    let completion_rx = receivers[stage_count]
-        .take()
-        .expect("completion receiver should exist");
-    let entry_tx = senders[0].clone();
-    drop(senders);
+    let completion_ring = Arc::clone(&rings[stage_count]);
+    let entry_ring = Arc::clone(&rings[0]);
+    // Clear rings vector so strong_count can drop once threads finish
+    drop(rings);
+
+    let recycler_ring_c = Arc::clone(&recycler_ring);
+    let latencies_handle = thread::spawn(move || {
+        let mut latencies = Vec::with_capacity(token_count);
+        for _ in 0..batch_count {
+            completion_ring.wait_for_data();
+            if let Some(done_batch) = completion_ring.pop() {
+                let batch_latency_ms = done_batch.started_at.elapsed().as_secs_f32() * 1000.0;
+                for _ in 0..done_batch.tokens_in_batch {
+                    latencies.push(batch_latency_ms);
+                }
+                recycler_ring_c.wait_for_space();
+                let _ = recycler_ring_c.push(done_batch.payload);
+            }
+        }
+        latencies
+    });
 
     let exec_start = Instant::now();
     for batch_idx in 0..batch_count {
         let batch_start_token = batch_idx * micro_batch;
         let tokens_in_batch = (token_count - batch_start_token).min(micro_batch);
         let payload_len = (tokens_in_batch.max(1) * 16).max(32);
-        let payload = (0..payload_len)
-            .map(|idx| (batch_idx as f32 * 0.01) + (idx as f32 * 0.0001))
-            .collect();
 
-        if entry_tx
-            .send(BatchWork {
-                tokens_in_batch,
-                started_at: Instant::now(),
-                payload,
-            })
-            .is_err()
-        {
-            break;
+        let mut payload = recycler_ring
+            .pop()
+            .unwrap_or_else(|| Vec::with_capacity(payload_len));
+        payload.resize(payload_len, 0.0);
+        for (idx, val) in payload.iter_mut().enumerate() {
+            *val = (batch_idx as f32 * 0.01) + (idx as f32 * 0.0001);
         }
-    }
-    drop(entry_tx);
 
-    let mut token_latencies = Vec::with_capacity(token_count);
-    for _ in 0..batch_count {
-        let Ok(done_batch) = completion_rx.recv() else {
-            break;
-        };
-        let batch_latency_ms = done_batch.started_at.elapsed().as_secs_f32() * 1000.0;
-        for _ in 0..done_batch.tokens_in_batch {
-            token_latencies.push(batch_latency_ms);
-        }
+        entry_ring.wait_for_space();
+        let _ = entry_ring.push(BatchWork {
+            tokens_in_batch,
+            started_at: Instant::now(),
+            payload,
+        });
     }
+    // Drop entry ring to signal completion to stage threads
+    drop(entry_ring);
+
+    let token_latencies = latencies_handle.join().unwrap_or_default();
     let total_time_ms = exec_start.elapsed().as_secs_f32() * 1000.0;
 
     let mut stage_stats = Vec::with_capacity(stage_count);
@@ -436,13 +455,19 @@ struct TransportBatch {
     payload: Vec<f32>,
 }
 
-fn auth_tag(batch: &TransportBatch, source_stage: usize, token: Option<&str>) -> u32 {
+fn auth_tag(
+    source_stage: usize,
+    batch_id: usize,
+    tokens_in_batch: usize,
+    payload: &[f32],
+    token: Option<&str>,
+) -> u32 {
     let mut hasher = Hasher::new();
     hasher.update(&(source_stage as u32).to_le_bytes());
-    hasher.update(&(batch.batch_id as u64).to_le_bytes());
-    hasher.update(&(batch.tokens_in_batch as u32).to_le_bytes());
-    hasher.update(&(batch.payload.len() as u32).to_le_bytes());
-    let payload_bytes = payload_as_le_bytes(&batch.payload);
+    hasher.update(&(batch_id as u64).to_le_bytes());
+    hasher.update(&(tokens_in_batch as u32).to_le_bytes());
+    hasher.update(&(payload.len() as u32).to_le_bytes());
+    let payload_bytes = payload_as_le_bytes(payload);
     hasher.update(payload_bytes.as_ref());
     if let Some(token) = token {
         hasher.update(token.as_bytes());
@@ -474,23 +499,31 @@ fn write_transport_batch(
     batch: &TransportBatch,
     source_stage: usize,
     token: Option<&str>,
+    frame_buf: &mut Vec<u8>,
 ) -> io::Result<()> {
     let batch_id = batch.batch_id as u64;
     let tokens = batch.tokens_in_batch as u32;
     let payload_len = batch.payload.len() as u32;
-    let source_stage = source_stage as u16;
-    let tag = auth_tag(batch, source_stage as usize, token);
+    let source_stage_u16 = source_stage as u16;
+    let tag = auth_tag(
+        source_stage,
+        batch.batch_id,
+        batch.tokens_in_batch,
+        &batch.payload,
+        token,
+    );
 
-    // Serialize each frame in a contiguous buffer to minimize write syscalls.
-    let mut frame = Vec::with_capacity(22 + batch.payload.len() * 4);
-    frame.extend_from_slice(&source_stage.to_le_bytes());
-    frame.extend_from_slice(&batch_id.to_le_bytes());
-    frame.extend_from_slice(&tokens.to_le_bytes());
-    frame.extend_from_slice(&payload_len.to_le_bytes());
-    frame.extend_from_slice(&tag.to_le_bytes());
+    // Reuse frame buffer to minimize allocations.
+    frame_buf.clear();
+    frame_buf.reserve(22 + batch.payload.len() * 4);
+    frame_buf.extend_from_slice(&source_stage_u16.to_le_bytes());
+    frame_buf.extend_from_slice(&batch_id.to_le_bytes());
+    frame_buf.extend_from_slice(&tokens.to_le_bytes());
+    frame_buf.extend_from_slice(&payload_len.to_le_bytes());
+    frame_buf.extend_from_slice(&tag.to_le_bytes());
     let payload_bytes = payload_as_le_bytes(&batch.payload);
-    frame.extend_from_slice(payload_bytes.as_ref());
-    writer.write_all(&frame)?;
+    frame_buf.extend_from_slice(payload_bytes.as_ref());
+    writer.write_all(frame_buf)?;
 
     Ok(())
 }
@@ -499,6 +532,7 @@ fn read_transport_batch(
     reader: &mut impl Read,
     expected_source_stage: usize,
     token: Option<&str>,
+    payload_buf: &mut Vec<f32>,
 ) -> io::Result<Option<TransportBatch>> {
     let mut source_stage_bytes = [0u8; 2];
     match reader.read_exact(&mut source_stage_bytes) {
@@ -527,34 +561,29 @@ fn read_transport_batch(
     reader.read_exact(&mut tag_bytes)?;
 
     let payload_len = u32::from_le_bytes(payload_len_bytes) as usize;
-    let payload = if cfg!(target_endian = "little") {
-        let mut payload = vec![0f32; payload_len];
-        // SAFETY: payload points to initialized contiguous f32 memory; we reinterpret as bytes for I/O.
+    payload_buf.resize(payload_len, 0.0);
+
+    if cfg!(target_endian = "little") {
+        // SAFETY: payload_buf points to initialized contiguous f32 memory; we reinterpret as bytes for I/O.
         let payload_bytes = unsafe {
             slice::from_raw_parts_mut(
-                payload.as_mut_ptr() as *mut u8,
+                payload_buf.as_mut_ptr() as *mut u8,
                 payload_len * std::mem::size_of::<f32>(),
             )
         };
         reader.read_exact(payload_bytes)?;
-        payload
     } else {
-        let mut payload = Vec::with_capacity(payload_len);
         let mut payload_bytes = vec![0u8; payload_len * 4];
         reader.read_exact(&mut payload_bytes)?;
-        for chunk in payload_bytes.chunks_exact(4) {
-            payload.push(f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
+        for (i, chunk) in payload_bytes.chunks_exact(4).enumerate() {
+            payload_buf[i] = f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
         }
-        payload
     };
 
-    let batch = TransportBatch {
-        batch_id: u64::from_le_bytes(batch_id_bytes) as usize,
-        tokens_in_batch: u32::from_le_bytes(tokens_bytes) as usize,
-        payload,
-    };
+    let batch_id = u64::from_le_bytes(batch_id_bytes) as usize;
+    let tokens_in_batch = u32::from_le_bytes(tokens_bytes) as usize;
 
-    let expected_tag = auth_tag(&batch, source_stage, token);
+    let expected_tag = auth_tag(source_stage, batch_id, tokens_in_batch, payload_buf, token);
     let received_tag = u32::from_le_bytes(tag_bytes);
     if expected_tag != received_tag {
         return Err(io::Error::new(
@@ -563,7 +592,11 @@ fn read_transport_batch(
         ));
     }
 
-    Ok(Some(batch))
+    Ok(Some(TransportBatch {
+        batch_id,
+        tokens_in_batch,
+        payload: payload_buf.clone(),
+    }))
 }
 
 fn spawn_tcp_loopback_bridge(
@@ -644,6 +677,7 @@ fn spawn_tcp_loopback_bridge(
             let mut writer = BufWriter::with_capacity(64 * 1024, client_stream);
             let mut processed_batches = 0usize;
             let mut total_write_ms = 0.0_f32;
+            let mut frame_buf = Vec::with_capacity(64 * 1024);
             for batch in input_rx {
                 let write_start = Instant::now();
                 if write_transport_batch(
@@ -651,6 +685,7 @@ fn spawn_tcp_loopback_bridge(
                     &batch,
                     source_stage,
                     writer_auth_token.as_deref(),
+                    &mut frame_buf,
                 )
                 .is_err()
                 {
@@ -667,10 +702,16 @@ fn spawn_tcp_loopback_bridge(
         let mut reader = BufReader::with_capacity(64 * 1024, server_stream);
         let mut read_batches = 0usize;
         let mut total_read_ms = 0.0_f32;
+        let mut payload_buf = Vec::with_capacity(16 * 1024);
 
         loop {
             let read_start = Instant::now();
-            match read_transport_batch(&mut reader, source_stage, reader_auth_token.as_deref()) {
+            match read_transport_batch(
+                &mut reader,
+                source_stage,
+                reader_auth_token.as_deref(),
+                &mut payload_buf,
+            ) {
                 Ok(Some(batch)) => {
                     total_read_ms += read_start.elapsed().as_secs_f32() * 1000.0;
                     if output_tx.send(batch).is_err() {
@@ -748,27 +789,6 @@ pub fn execute_pipeline_tcp_loopback_with_config(
             p95_token_latency_ms: 0.0,
             stage_stats: Vec::new(),
         };
-    }
-
-    fn run_stage_compute(payload: &mut [f32], stage: &StagePlacement) {
-        let base_rounds = stage.num_layers().max(1) / 4 + 1;
-        let rounds = match stage.device {
-            DeviceKind::Npu => base_rounds,
-            DeviceKind::Gpu => base_rounds * 2,
-            DeviceKind::Cpu => base_rounds * 3,
-        };
-
-        let alpha = match stage.device {
-            DeviceKind::Npu => 1.001_f32,
-            DeviceKind::Gpu => 1.003_f32,
-            DeviceKind::Cpu => 1.005_f32,
-        };
-
-        for _ in 0..rounds {
-            for value in payload.iter_mut() {
-                *value = ((*value * alpha) + 0.125).sin();
-            }
-        }
     }
 
     #[derive(Debug)]
@@ -1174,10 +1194,13 @@ mod tests {
             payload: vec![0.1, 0.2, 0.3, 0.4],
         };
         let mut encoded = Vec::new();
-        write_transport_batch(&mut encoded, &batch, 0, Some("token-a")).expect("encode frame");
+        let mut frame_buf = Vec::new();
+        write_transport_batch(&mut encoded, &batch, 0, Some("token-a"), &mut frame_buf)
+            .expect("encode frame");
 
         let mut cursor = Cursor::new(encoded);
-        let err = read_transport_batch(&mut cursor, 0, Some("token-b"))
+        let mut payload_buf = Vec::new();
+        let err = read_transport_batch(&mut cursor, 0, Some("token-b"), &mut payload_buf)
             .expect_err("mismatched token should fail");
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
     }
@@ -1190,10 +1213,13 @@ mod tests {
             payload: vec![1.0, 2.0],
         };
         let mut encoded = Vec::new();
-        write_transport_batch(&mut encoded, &batch, 1, Some("token")).expect("encode frame");
+        let mut frame_buf = Vec::new();
+        write_transport_batch(&mut encoded, &batch, 1, Some("token"), &mut frame_buf)
+            .expect("encode frame");
 
         let mut cursor = Cursor::new(encoded);
-        let err = read_transport_batch(&mut cursor, 0, Some("token"))
+        let mut payload_buf = Vec::new();
+        let err = read_transport_batch(&mut cursor, 0, Some("token"), &mut payload_buf)
             .expect_err("source-stage mismatch should fail");
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
     }
