@@ -15,7 +15,7 @@ import random
 @dataclass
 class WebSocketConnection:
     """Represent a pooled WebSocket connection."""
-    ws: Optional[asyncio.WebSocketClientProtocol] = None
+    ws: Optional[Any] = None
     session_id: str = ""
     last_activity: float = field(default_factory=time.time)
     created_at: float = field(default_factory=time.time)

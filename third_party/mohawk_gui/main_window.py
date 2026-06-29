@@ -60,11 +60,6 @@ class MohawkGUI(QMainWindow):
         self.gui_service_url = "http://localhost:8003"
         self.worker_service_url = "http://localhost:8004"
         
-        # Health check thread
-        self.health_thread = WorkerHealthCheck(self.gui_service_url)
-        self.health_thread.health_updated.connect(self.on_health_update)
-        self.health_thread.start()
-        
         # Central widget
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
@@ -100,6 +95,12 @@ class MohawkGUI(QMainWindow):
         
         status_layout.addStretch()
         layout.addWidget(status_group)
+
+        # Status bar must exist before any tab initialization that may emit
+        # refresh failures during startup.
+        self.status_bar = QStatusBar()
+        self.setStatusBar(self.status_bar)
+        self.status_bar.showMessage("Starting GUI...")
         
         # Store references for live updates (BEFORE creating tabs)
         self.metrics_bars = {}
@@ -126,10 +127,12 @@ class MohawkGUI(QMainWindow):
         self.tabs.addTab(self.workers_widget, "Worker Config")
         self.tabs.addTab(self.security_widget, "Security Center")
         self.tabs.addTab(self.history_widget, "History")
-        
-        # Status bar
-        self.status_bar = QStatusBar()
-        self.setStatusBar(self.status_bar)
+
+        # Health check thread
+        self.health_thread = WorkerHealthCheck(self.gui_service_url)
+        self.health_thread.health_updated.connect(self.on_health_update)
+        self.health_thread.start()
+
         self.status_bar.showMessage("Ready - Connecting to Docker backend services...")
         
         # Timer for periodic updates
