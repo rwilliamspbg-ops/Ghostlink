@@ -12,6 +12,8 @@ This directory contains the Ghostlink Studio desktop application scaffold.
 - Initial scaffold created
 - Sprint 1 command bridge wired to `ghost-link` actions (`doctor`, `probe`, `flow`, `cluster-start`)
 - Frontend quick actions invoke real backend commands and render output in details panel
+- Home/Cluster/Doctor tabs are interactive and backed by runtime command calls
+- Startup snapshot now reports environment/config readiness cards from backend checks
 
 ## Dev Notes
 
@@ -28,3 +30,7 @@ The app currently shells out to:
 - `cargo run -p ghost-link -- probe studio-local fast`
 - `cargo run -p ghost-link -- flow ...`
 - `cargo run -p ghost-link -- cluster-start ...`
+
+And reads startup snapshot checks via:
+
+- `studio_snapshot` Tauri command (toolchain/python/config/doctor artifact state)

@@ -64,6 +64,11 @@ body {
   cursor: pointer;
 }
 
+.nav-item.active {
+  border-color: rgba(63, 209, 159, 0.55);
+  background: rgba(63, 209, 159, 0.12);
+}
+
 .dashboard {
   padding: 1.2rem;
   display: flex;
@@ -100,6 +105,11 @@ button.primary {
   background: linear-gradient(120deg, var(--accent), var(--accent-strong));
   color: #062012;
   font-weight: 700;
+}
+
+button:disabled {
+  opacity: 0.6;
+  cursor: wait;
 }
 
 .metrics-grid {
