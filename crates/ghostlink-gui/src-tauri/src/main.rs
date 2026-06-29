@@ -269,24 +269,9 @@ fn cluster_preview(node_id: String, full: bool) -> Result<ClusterPreview, String
         ));
     }
 
-    let local = parse_probe_to_node(command.stdout.as_str())
-        .unwrap_or_else(|| fallback_node(node_id.as_str()));
-
-    // Lightweight preview peer node to visualize placement/health at cluster scale.
-    let peer = ClusterNodeCard {
-        id: format!("{}-peer", local.id),
-        acceleration: "GPU".to_string(),
-        workers: local.workers.max(2),
-        system_memory_gb: (local.system_memory_gb + 8.0).max(16.0),
-        gpu_vram_gb: local.gpu_vram_gb.max(16.0),
-        health: if local.gpu_vram_gb > 0.0 {
-            "healthy".to_string()
-        } else {
-            "degraded".to_string()
-        },
-    };
-
-    let nodes = vec![local, peer];
+    let nodes = vec![
+        parse_probe_to_node(command.stdout.as_str()).unwrap_or_else(|| fallback_node(node_id.as_str())),
+    ];
     let healthy = nodes.iter().filter(|node| node.health == "healthy").count();
     let degraded = nodes.len().saturating_sub(healthy);
 
@@ -639,41 +624,68 @@ fn chat_infer(
     max_tokens: u32,
     distributed: bool,
 ) -> Result<ChatResult, String> {
-    let backend = if distributed {
-        "distributed-flow"
-    } else {
-        "single-node"
-    };
-
     let concise_prompt = prompt.trim();
     if concise_prompt.is_empty() {
         return Err("prompt cannot be empty".to_string());
     }
 
-    let style_hint = if temperature >= 0.9 {
-        "creative"
-    } else if temperature >= 0.6 {
-        "balanced"
-    } else {
-        "deterministic"
-    };
+    let backend = if distributed { "distributed-flow" } else { "single-node-flow" };
+    let transport = if distributed { "tcp" } else { "inmem" };
+    let execution_tokens = max_tokens.clamp(16, 512);
+    let execution_tokens_arg = execution_tokens.to_string();
+
+    let command_result = run_ghostlink_command(vec![
+        "flow",
+        "studio-local",
+        "studio-remote",
+        "32",
+        "32",
+        execution_tokens_arg.as_str(),
+        "1",
+        transport,
+    ])?;
+
+    if !command_result.ok {
+        let stderr = command_result.stderr.trim();
+        let stdout = command_result.stdout.trim();
+        let detail = if !stderr.is_empty() { stderr } else { stdout };
+        return Err(format!(
+            "live flow execution failed (exit code {:?}): {}",
+            command_result.exit_code,
+            detail
+        ));
+    }
+
+    let throughput = extract_metric(command_result.stdout.as_str(), "Throughput:", "tokens/sec")
+        .unwrap_or_else(|| "unknown".to_string());
+    let avg_latency = extract_metric(command_result.stdout.as_str(), "Avg token latency:", "ms")
+        .unwrap_or_else(|| "unknown".to_string());
+    let p95_latency = extract_metric(command_result.stdout.as_str(), "P95:", "ms")
+        .unwrap_or_else(|| "unknown".to_string());
 
     let response = format!(
-        "Model {} ({}) suggests: '{}' -> plan a {} response under {} tokens. This Studio preview uses Ghost-Link orchestration signals and will be replaced with live streaming generation in the next integration slice.",
+        "Live runtime completed for prompt '{}' using model '{}'. Backend={} transport={} temp={:.2}. Metrics: throughput={} tokens/sec, avg_latency={} ms, p95={} ms.",
+        concise_prompt,
         model,
         backend,
-        concise_prompt,
-        style_hint,
-        max_tokens
+        transport,
+        temperature,
+        throughput,
+        avg_latency,
+        p95_latency
     );
 
     let trace = format!(
-        "backend={} temperature={:.2} max_tokens={} distributed={} prompt_len={}",
-        backend,
-        temperature,
-        max_tokens,
-        distributed,
-        concise_prompt.len()
+        "{}\n\n{}\n{}",
+        command_result.command,
+        format!(
+            "prompt_len={} requested_max_tokens={} execution_tokens={} distributed={}",
+            concise_prompt.len(),
+            max_tokens,
+            execution_tokens,
+            distributed
+        ),
+        command_result.stdout.trim()
     );
 
     Ok(ChatResult {
@@ -682,6 +694,25 @@ fn chat_infer(
         response,
         trace,
     })
+}
+
+fn extract_metric(output: &str, prefix: &str, suffix: &str) -> Option<String> {
+    let line = output
+        .lines()
+        .map(str::trim)
+        .find(|line| line.contains(prefix))?;
+    let marker_idx = line.find(prefix)?;
+    let raw = line[(marker_idx + prefix.len())..].trim();
+    let value = if suffix.is_empty() {
+        raw
+    } else {
+        raw.split(suffix).next()?.trim()
+    };
+    if value.is_empty() {
+        None
+    } else {
+        Some(value.to_string())
+    }
 }
 
 fn repo_root() -> PathBuf {

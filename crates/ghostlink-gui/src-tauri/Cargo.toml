@@ -12,3 +12,5 @@ tauri = { version = "2", features = [] }
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
+
+[workspace]

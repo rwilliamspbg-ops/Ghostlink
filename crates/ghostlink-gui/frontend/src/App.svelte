@@ -25,14 +25,14 @@
   let modelPresets = [];
   let modelCheck = null;
   let chatPrompt = '';
-  let chatModel = 'ghostlink-preview-7b';
+  let chatModel = 'ghostlink-live-7b';
   let chatTemperature = 0.7;
   let chatMaxTokens = 256;
   let chatDistributed = true;
   let chatResult = null;
   let chatHistory = [];
   let clusterNodes = [];
-  let clusterSummary = 'No cluster preview loaded.';
+  let clusterSummary = 'No live cluster snapshot loaded.';
   let validationTier = 'fast';
   let validationReport = null;
   let snapshotHistory = [];
@@ -283,12 +283,12 @@
   async function refreshCluster(full = false) {
     busy = true;
     try {
-      const preview = await invoke('cluster_preview', { nodeId: 'studio-local', full });
-      clusterNodes = preview.nodes;
-      clusterSummary = preview.summary;
-      status = 'Cluster preview refreshed';
+      const snapshot = await invoke('cluster_preview', { nodeId: 'studio-local', full });
+      clusterNodes = snapshot.nodes;
+      clusterSummary = snapshot.summary;
+      status = 'Cluster snapshot refreshed';
     } catch (err) {
-      status = 'Cluster preview failed';
+      status = 'Cluster snapshot failed';
       output = String(err);
     } finally {
       busy = false;
@@ -559,7 +559,7 @@
     {:else if activeTab === 'Chat'}
       <header class="hero">
         <h1>Chat / Inference</h1>
-        <p>Preview response behavior while backend streaming integration is in progress.</p>
+        <p>Run live flow-backed inference checks and review runtime metrics.</p>
       </header>
       <section class="chat-panel">
         <label>Model
@@ -641,7 +641,7 @@
     {:else}
       <header class="hero">
         <h1>{activeTab}</h1>
-        <p>This area is scaffolded for Sprint 2 integration.</p>
+        <p>This area is under active integration with the Ghostlink runtime.</p>
       </header>
     {/if}
   </main>
@@ -662,7 +662,7 @@
       <ol>
         <li>Use Cluster tab and run Refresh Cluster.</li>
         <li>Use Models tab and verify a preset repo.</li>
-        <li>Use Chat tab and generate a preview response.</li>
+        <li>Use Chat tab and run a live flow-backed response check.</li>
         <li>Use Doctor tab for preflight health checks.</li>
       </ol>
       <div class="actions">
