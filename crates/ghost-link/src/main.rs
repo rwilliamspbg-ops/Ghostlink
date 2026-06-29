@@ -90,6 +90,10 @@ enum CliCommand {
         strict: bool,
     },
     Dashboard,
+    ClusterStart {
+        node_count: usize,
+        base_port: u16,
+    },
     Probe {
         node_id: String,
         mode: ProbeMode,
@@ -115,6 +119,10 @@ fn execute_command(command: CliCommand) -> Result<()> {
         CliCommand::GuiCheck { strict } => print_gui_readiness(strict)?,
         CliCommand::GuiDiagnose { strict } => print_gui_diagnostics(strict)?,
         CliCommand::Dashboard => print_dashboard()?,
+        CliCommand::ClusterStart {
+            node_count,
+            base_port,
+        } => print_cluster_start(node_count, base_port)?,
         CliCommand::Probe { node_id, mode } => print_probe(&node_id, mode)?,
         CliCommand::Flow {
             local_id,
@@ -169,6 +177,25 @@ where
             Ok(CliCommand::GuiDiagnose { strict })
         }
         "dashboard" => Ok(CliCommand::Dashboard),
+        "cluster-start" => {
+            let node_count = args
+                .next()
+                .as_deref()
+                .map(parse_usize_arg)
+                .transpose()?
+                .unwrap_or(3)
+                .max(1);
+            let base_port = args
+                .next()
+                .as_deref()
+                .map(parse_u16_arg)
+                .transpose()?
+                .unwrap_or(46000);
+            Ok(CliCommand::ClusterStart {
+                node_count,
+                base_port,
+            })
+        }
         "probe" => {
             let node_id = args.next().unwrap_or_else(|| "local-node".to_string());
             let mode = parse_probe_mode(args.next().as_deref())?;
@@ -245,6 +272,12 @@ fn parse_usize_arg(value: &str) -> Result<usize> {
     value
         .parse::<usize>()
         .map_err(|_| anyhow::anyhow!("invalid integer value: {value}"))
+}
+
+fn parse_u16_arg(value: &str) -> Result<u16> {
+    value
+        .parse::<u16>()
+        .map_err(|_| anyhow::anyhow!("invalid port value: {value}"))
 }
 
 fn maybe_write_flow_metrics_json(
@@ -519,7 +552,7 @@ fn autotune_tcp_transport_config(
 
 fn print_usage() {
     eprintln!(
-        "Usage: ghost-link <plan|join|listen|gui|gui-check|gui-diagnose|dashboard|probe|flow|help>"
+        "Usage: ghost-link <plan|join|listen|gui|gui-check|gui-diagnose|dashboard|cluster-start|probe|flow|help>"
     );
     eprintln!();
     eprintln!("Commands:");
@@ -530,6 +563,9 @@ fn print_usage() {
     eprintln!("  gui-check [--strict] - Validate GUI readiness and dependencies");
     eprintln!("  gui-diagnose [--strict] - Emit categorized GUI diagnostics report");
     eprintln!("  dashboard - Display ASCII cluster dashboard");
+    eprintln!(
+        "  cluster-start [node_count] [base_port] - Start local discovery listeners and run a quick join/reply validation"
+    );
     eprintln!(
         "  probe [id] [fast|full|--fast|--full] - Detect local workers and acceleration profile"
     );
@@ -553,6 +589,9 @@ fn print_help() {
     println!("  gui-diagnose [--strict] - Emit categorized GUI diagnostics report");
     println!("  dashboard - Display ASCII cluster dashboard");
     println!(
+        "  cluster-start [node_count] [base_port] - Start local discovery listeners and run a quick join/reply validation"
+    );
+    println!(
         "  probe [id] [fast|full|--fast|--full] - Detect local workers and acceleration profile"
     );
     println!(
@@ -568,6 +607,7 @@ fn print_help() {
     println!("  $ ghost-link gui-check --strict");
     println!("  $ ghost-link gui-diagnose --strict");
     println!("  $ ghost-link dashboard");
+    println!("  $ ghost-link cluster-start 3 46000");
     println!("  $ ghost-link probe workstation-a fast");
     println!("  $ ghost-link probe workstation-a --full");
     println!("  $ ghost-link flow iprada-16gb zenbook-32gb 32 32 64 4 tcp");
@@ -1015,6 +1055,105 @@ fn print_dashboard() -> Result<()> {
         println!("Autotuned distribution nodes: {}", plan.distributions.len());
     }
 
+    Ok(())
+}
+
+fn print_cluster_start(node_count: usize, base_port: u16) -> Result<()> {
+    let mut listeners = Vec::new();
+    let self_exe = std::env::current_exe()
+        .map_err(|err| anyhow::anyhow!("failed to locate current executable: {}", err))?;
+
+    println!("Ghost-Link Local Cluster Start\n");
+    println!("===============================\n");
+    println!("Node count: {}", node_count);
+    println!("Base port: {}", base_port);
+
+    for i in 0..node_count {
+        let node_id = format!("local-node-{}", i + 1);
+        let port = base_port.saturating_add(i as u16);
+        let listen_addr = format!("127.0.0.1:{}", port);
+
+        let child = Command::new(&self_exe)
+            .arg("listen")
+            .arg(&node_id)
+            .arg("--once")
+            .env("GHOSTLINK_DISCOVERY_LISTEN", &listen_addr)
+            .env("GHOSTLINK_DISCOVERY_TIMEOUT_MS", "2500")
+            .spawn()
+            .map_err(|err| {
+                anyhow::anyhow!(
+                    "failed to spawn listener {} at {}: {}",
+                    node_id,
+                    listen_addr,
+                    err
+                )
+            })?;
+        listeners.push((node_id, listen_addr, child));
+    }
+
+    std::thread::sleep(Duration::from_millis(300));
+
+    let controller = detect_runtime_profile("cluster-controller");
+    let join = DiscoveryFrame {
+        kind: FrameKind::Join,
+        node: controller.node_resources,
+    };
+
+    let mut total_replies = 0usize;
+    for (node_id, listen_addr, _child) in &listeners {
+        let target = listen_addr
+            .parse::<SocketAddr>()
+            .map_err(|err| anyhow::anyhow!("invalid listen addr {}: {}", listen_addr, err))?;
+
+        let cfg = UdpDiscoveryConfig {
+            bind_addr: SocketAddr::from(([127, 0, 0, 1], 0)),
+            broadcast_addr: target,
+            response_timeout: Duration::from_millis(800),
+            ..UdpDiscoveryConfig::default()
+        };
+
+        let replies = broadcast_and_collect(&join, &cfg)
+            .map_err(|err| anyhow::anyhow!("join probe failed for {}: {}", node_id, err))?;
+        println!(
+            "{} at {} replied {} time(s)",
+            node_id,
+            listen_addr,
+            replies.len()
+        );
+        total_replies += replies.len();
+    }
+
+    for (node_id, listen_addr, mut child) in listeners {
+        let status = child.wait().map_err(|err| {
+            anyhow::anyhow!(
+                "failed waiting for listener {} ({}) to exit: {}",
+                node_id,
+                listen_addr,
+                err
+            )
+        })?;
+        if !status.success() {
+            anyhow::bail!(
+                "listener {} ({}) exited with status {}",
+                node_id,
+                listen_addr,
+                status
+            );
+        }
+    }
+
+    if total_replies < node_count {
+        anyhow::bail!(
+            "cluster-start validation incomplete: expected at least {} replies, got {}",
+            node_count,
+            total_replies
+        );
+    }
+
+    println!(
+        "\nCluster-start validation passed: {} replies across {} local nodes",
+        total_replies, node_count
+    );
     Ok(())
 }
 
@@ -1468,6 +1607,13 @@ mod tests {
             CliCommand::GuiDiagnose { strict: true }
         );
         assert_eq!(
+            parse_cli(args(&["cluster-start", "4", "46010"])).unwrap(),
+            CliCommand::ClusterStart {
+                node_count: 4,
+                base_port: 46010,
+            }
+        );
+        assert_eq!(
             parse_cli(args(&["probe", "n1", "full"])).unwrap(),
             CliCommand::Probe {
                 node_id: "n1".to_string(),
@@ -1528,6 +1674,13 @@ mod tests {
             CliCommand::GuiDiagnose { strict: false }
         );
         assert_eq!(
+            parse_cli(args(&["cluster-start"])).unwrap(),
+            CliCommand::ClusterStart {
+                node_count: 3,
+                base_port: 46000,
+            }
+        );
+        assert_eq!(
             parse_cli(args(&["probe"])).unwrap(),
             CliCommand::Probe {
                 node_id: "local-node".to_string(),
@@ -1555,6 +1708,7 @@ mod tests {
         assert!(parse_cli(args(&["probe", "n1", "nonsense"])).is_err());
         assert!(parse_cli(args(&["flow", "a", "b", "32", "64", "bad"])).is_err());
         assert!(parse_cli(args(&["flow", "a", "b", "32", "64", "64", "2", "bad-mode"])).is_err());
+        assert!(parse_cli(args(&["cluster-start", "2", "not-a-port"])).is_err());
     }
 
     #[test]

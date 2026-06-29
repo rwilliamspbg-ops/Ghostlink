@@ -15,6 +15,13 @@
 
 Ghost-Link is an open-source LAN fabric for turning spare local GPUs and CPU hosts into a shared execution surface for large-model inference and training. The project focuses on low-overhead runtime primitives, binary discovery, host-aware autotuning, and runtime-selected execution backends rather than heavy orchestration.
 
+## Current Readiness Level
+
+- Current level: advanced prototype with strong local/dev validation gates.
+- Recommended use now: local multi-process runs, development validation, and non-critical cluster experiments.
+- Not yet fully qualified for broad production LAN deployment without additional multi-host soak and hardware matrix validation.
+- Security baseline includes auth tokens and CI security scans; optional mTLS and stronger discovery-frame authentication remain roadmap items.
+
 ## Features
 
 - Zero-copy SPSC ring buffers with backpressure handling
@@ -155,6 +162,9 @@ python3 scripts/summarize_criterion_report.py --criterion-root target/criterion 
 
 # Validate that GUI API calls in main_window are implemented by mock backend
 python3 scripts/validate_gui_api_contract.py
+
+# Start a local multi-node discovery validation cluster
+cargo run -p ghost-link -- cluster-start 3 46000
 
 # Run quick fault-injection style matrix against flow runtime
 python3 scripts/fault_injection_matrix.py --output-dir ./tmp/fault_matrix --strict
