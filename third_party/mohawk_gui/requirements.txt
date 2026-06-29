@@ -9,7 +9,7 @@
 PyQt6>=6.5.0
 
 # Cryptography for JWT and mTLS security
-cryptography>=41.0.0
+cryptography>=49.0.0
 
 # JWT token handling with RSA signatures
 PyJWT>=2.13.0
