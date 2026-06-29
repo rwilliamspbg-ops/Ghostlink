@@ -123,6 +123,15 @@ jobs:
           python3 -m http.server 18765 --bind 127.0.0.1 >/tmp/ghostlink_probe_server.log 2>&1 &
           SERVER_PID=$!
           trap 'kill ${SERVER_PID}' EXIT
+
+          for _ in $(seq 1 20); do
+            if python3 -c 'import socket; s=socket.socket(); s.settimeout(0.2); rc=s.connect_ex(("127.0.0.1", 18765)); s.close(); raise SystemExit(0 if rc == 0 else 1)'
+            then
+              break
+            fi
+            sleep 0.1
+          done
+
           python3 scripts/active_network_probe.py \
             --target 127.0.0.1:18765 \
             --timeout-ms 500 \
