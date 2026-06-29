@@ -42,9 +42,84 @@ cargo run -p ghost-link -- gui-check --strict
 cargo run -p ghost-link -- gui --host 0.0.0.0 --port 8003
 ```
 
+Emit a categorized diagnostics report (human-readable):
+
+```bash
+cargo run -p ghost-link -- gui-diagnose
+```
+
+Emit diagnostics JSON for CI artifacts:
+
+```bash
+GHOSTLINK_GUI_DIAG_JSON=./tmp/gui-diagnostics.json \
+cargo run -p ghost-link -- gui-diagnose --strict
+```
+
 ## Environment
 
 - `GHOSTLINK_PYTHON`: overrides the Python executable used by `ghost-link gui` (default: `python3`).
+- `GHOSTLINK_GUI_DIAG_JSON`: optional path to write GUI diagnostics JSON output.
+
+## Chat + MCP JSON Wiring
+
+The vendored Mohawk chat panel includes an MCP JSON input area in Chat Settings.
+
+- The field accepts a JSON object and validates syntax client-side.
+- On send, valid MCP JSON is attached to the chat payload as `mcp`.
+- Invalid JSON is rejected before request dispatch and shown in the chat/error panel.
+
+Expected backend contract for chat API:
+
+```json
+{
+	"message": "user message",
+	"temperature": 0.7,
+	"top_p": 0.9,
+	"max_tokens": 2048,
+	"system_prompt": "...",
+	"mcp": {
+		"tools": [{"name": "ghost-mcp", "enabled": true}]
+	}
+}
+```
+
+## Platform Notes
+
+- Linux desktop: install OpenGL/X11 dependencies (`libgl1`, `libxkbcommon0`, and on some hosts `libegl1`, `libxcb-cursor0`).
+- Linux headless CI/devcontainer: use `xvfb-run` and `QT_QPA_PLATFORM=offscreen` for smoke checks.
+- macOS/Windows: GUI should work with a native display session, but this repository currently lacks platform matrix GUI CI coverage.
+
+## Troubleshooting
+
+Common startup issues:
+
+- `libGL.so.1` missing: install `libgl1`.
+- `libxkbcommon.so.0` missing: install `libxkbcommon0`.
+- Qt xcb plugin errors in containers: install `libxcb-cursor0`; fallback to `QT_QPA_PLATFORM=offscreen` for non-interactive tests.
+- `PyQt6` or `pyqtgraph` import errors: reinstall requirements in the selected Python env.
+
+Validation commands:
+
+```bash
+# Strict preflight (fails when dependencies/display are missing)
+cargo run -p ghost-link -- gui-check --strict
+
+# Display-backed smoke test in headless environments
+QT_QPA_PLATFORM=offscreen xvfb-run -a python third_party/mohawk_gui/test_dashboard.py
+```
+
+## Packaging / Distribution Guidance
+
+Current state:
+
+- Rust binaries are distributed by standard Cargo workflows.
+- GUI is vendored Python source launched by CLI.
+
+Recommended next steps:
+
+- Add release bundles that pair Rust binaries with GUI assets.
+- Evaluate optional GUI packaging paths (for example, PyInstaller) for desktop distribution.
+- Keep GUI support optional in release notes and troubleshooting docs for minimal Rust-only installs.
 
 ## Notes
 

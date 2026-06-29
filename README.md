@@ -170,6 +170,8 @@ If the host does not provide tools such as `nvidia-smi` or `lspci`, full mode fa
 - [VERIFICATION.md](VERIFICATION.md): current verification scope and totals.
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): component-level architecture and responsibilities.
 - [docs/EXAMPLES.md](docs/EXAMPLES.md): runnable CLI and API usage examples.
+- [docs/MOHAWK_GUI.md](docs/MOHAWK_GUI.md): GUI setup, diagnostics, MCP JSON wiring, and troubleshooting.
+- [docs/SECURITY_MODEL.md](docs/SECURITY_MODEL.md): threat model and production hardening guidance.
 - [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md): operational troubleshooting and debugging tips.
 - [CONTRIBUTING.md](CONTRIBUTING.md): contributor setup and pre-PR checks.
 - [CHANGELOG.md](CHANGELOG.md): release-oriented change history.

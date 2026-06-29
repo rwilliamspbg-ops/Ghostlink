@@ -18,6 +18,7 @@ on:
       - 'docs/PERF_BASELINE_STRESS.json'
       - 'README.md'
       - 'TESTING.md'
+      - 'docs/SECURITY_MODEL.md'
       - '.github/workflows/ci.yml'
       - '.github/workflows/production-gate.yml'
   pull_request:
@@ -33,6 +34,7 @@ on:
       - 'docs/PERF_BASELINE_STRESS.json'
       - 'README.md'
       - 'TESTING.md'
+      - 'docs/SECURITY_MODEL.md'
       - '.github/workflows/ci.yml'
       - '.github/workflows/production-gate.yml'
 
