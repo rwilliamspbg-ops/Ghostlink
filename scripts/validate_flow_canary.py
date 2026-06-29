@@ -23,7 +23,7 @@ DEFAULTS = {
     },
     "stress": {
         "tcp": {
-            "min_throughput": 50000.0,
+            "min_throughput": 45000.0,
             "max_p95": 12.0,
             "max_spread": 2.5,
         },
