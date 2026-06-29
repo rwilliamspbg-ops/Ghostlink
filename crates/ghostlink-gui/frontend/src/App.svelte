@@ -15,6 +15,7 @@
   let command = '';
   let output = 'No command executed yet.';
   let summary = 'Collecting startup snapshot...';
+  let showOnboarding = false;
   let configPath = '';
   let configContent = '';
   let configLoaded = false;
@@ -32,7 +33,62 @@
   let chatHistory = [];
   let clusterNodes = [];
   let clusterSummary = 'No cluster preview loaded.';
+  let uiTheme = 'neon';
+  let fontScale = 1;
+  let reducedMotion = false;
+  let highContrast = false;
   let busy = false;
+
+  function applyVisualPreferences() {
+    document.body.dataset.theme = uiTheme;
+    document.body.style.setProperty('--studio-font-scale', String(fontScale));
+    document.body.classList.toggle('reduced-motion', reducedMotion);
+    document.body.classList.toggle('high-contrast', highContrast);
+  }
+
+  function persistPreferences() {
+    const prefs = {
+      uiTheme,
+      fontScale,
+      reducedMotion,
+      highContrast,
+      chatHistory,
+    };
+    localStorage.setItem('ghostlink-studio-prefs-v1', JSON.stringify(prefs));
+  }
+
+  function loadPreferences() {
+    const raw = localStorage.getItem('ghostlink-studio-prefs-v1');
+    if (!raw) {
+      showOnboarding = true;
+      return;
+    }
+
+    try {
+      const prefs = JSON.parse(raw);
+      uiTheme = prefs.uiTheme ?? 'neon';
+      fontScale = Number(prefs.fontScale ?? 1);
+      reducedMotion = Boolean(prefs.reducedMotion);
+      highContrast = Boolean(prefs.highContrast);
+      chatHistory = Array.isArray(prefs.chatHistory) ? prefs.chatHistory.slice(0, 12) : [];
+    } catch {
+      showOnboarding = true;
+    }
+  }
+
+  function closeOnboarding() {
+    showOnboarding = false;
+    persistPreferences();
+  }
+
+  function resetPreferences() {
+    uiTheme = 'neon';
+    fontScale = 1;
+    reducedMotion = false;
+    highContrast = false;
+    applyVisualPreferences();
+    persistPreferences();
+  }
 
   async function loadSnapshot() {
     const snapshot = await invoke('studio_snapshot');
@@ -190,6 +246,7 @@
         },
         ...chatHistory,
       ].slice(0, 12);
+      persistPreferences();
     } catch (err) {
       status = 'Chat generation failed';
       output = String(err);
@@ -199,6 +256,8 @@
   }
 
   onMount(async () => {
+    loadPreferences();
+    applyVisualPreferences();
     try {
       const studio = await invoke('studio_status');
       status = `${studio.app}: ${studio.status}`;
@@ -212,6 +271,9 @@
       output = String(err);
     }
   });
+
+  $: applyVisualPreferences();
+  $: persistPreferences();
 </script>
 
 <div class="studio-shell">
@@ -381,12 +443,27 @@
     {:else if activeTab === 'Settings'}
       <header class="hero">
         <h1>Settings</h1>
-        <p>Edit and save Ghostlink TOML configuration directly from Studio.</p>
+        <p>Edit runtime config and tune Studio accessibility preferences.</p>
         <div class="actions">
           <button class="primary" on:click={saveConfig} disabled={busy || !configLoaded}>Save Config</button>
           <button on:click={loadConfig} disabled={busy}>Reload</button>
+          <button on:click={resetPreferences} disabled={busy}>Reset UI Prefs</button>
         </div>
       </header>
+      <section class="ui-prefs">
+        <label>Theme
+          <select bind:value={uiTheme}>
+            <option value="neon">Neon Dusk</option>
+            <option value="slate">Slate Grid</option>
+          </select>
+        </label>
+        <label>Font Scale
+          <input type="range" min="0.9" max="1.2" step="0.05" bind:value={fontScale} />
+          <span>{fontScale.toFixed(2)}x</span>
+        </label>
+        <label class="checkbox"><input type="checkbox" bind:checked={reducedMotion} /> Reduced Motion</label>
+        <label class="checkbox"><input type="checkbox" bind:checked={highContrast} /> High Contrast</label>
+      </section>
       <section class="settings-editor">
         <p class="config-path">Target: {configPath || 'unresolved'}</p>
         <textarea bind:value={configContent} spellcheck="false" />
@@ -406,3 +483,21 @@
     <pre>{output}</pre>
   </aside>
 </div>
+
+{#if showOnboarding}
+  <div class="onboarding-backdrop">
+    <section class="onboarding-modal">
+      <h2>Welcome to Ghostlink Studio</h2>
+      <p>Quick start path:</p>
+      <ol>
+        <li>Use Cluster tab and run Refresh Cluster.</li>
+        <li>Use Models tab and verify a preset repo.</li>
+        <li>Use Chat tab and generate a preview response.</li>
+        <li>Use Doctor tab for preflight health checks.</li>
+      </ol>
+      <div class="actions">
+        <button class="primary" on:click={closeOnboarding}>Start Using Studio</button>
+      </div>
+    </section>
+  </div>
+{/if}

@@ -1,4 +1,5 @@
 :root {
+  --studio-font-scale: 1;
   --bg: #0a141d;
   --surface: #132330;
   --panel: #102737;
@@ -7,6 +8,23 @@
   --accent: #3fd19f;
   --accent-strong: #1db07e;
   --border: rgba(255, 255, 255, 0.08);
+}
+
+body[data-theme="slate"] {
+  --bg: #0f1318;
+  --surface: #1a222b;
+  --panel: #1d2a35;
+  --text: #ecf2f7;
+  --muted: #a8b7c3;
+  --accent: #58b6ff;
+  --accent-strong: #2a88d4;
+  --border: rgba(255, 255, 255, 0.1);
+}
+
+body.high-contrast {
+  --text: #ffffff;
+  --muted: #d3e0ea;
+  --border: rgba(255, 255, 255, 0.35);
 }
 
 * {
@@ -22,6 +40,14 @@ body {
     radial-gradient(circle at 90% 20%, rgba(67, 145, 255, 0.15), transparent 35%),
     linear-gradient(180deg, #09131d, #060b13);
   min-height: 100vh;
+  font-size: calc(16px * var(--studio-font-scale));
+}
+
+body.reduced-motion *,
+body.reduced-motion *::before,
+body.reduced-motion *::after {
+  animation: none !important;
+  transition: none !important;
 }
 
 .studio-shell {
@@ -301,6 +327,35 @@ button:disabled {
   gap: 0.55rem;
 }
 
+.ui-prefs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 0.8rem;
+}
+
+.ui-prefs label {
+  display: grid;
+  gap: 0.35rem;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.ui-prefs input,
+.ui-prefs select {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.2);
+  color: var(--text);
+  padding: 0.5rem 0.6rem;
+}
+
+.ui-prefs .checkbox {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
 .settings-editor .config-path {
   color: var(--muted);
   font-size: 0.84rem;
@@ -366,6 +421,32 @@ button:disabled {
   overflow: auto;
   white-space: pre-wrap;
   font-size: 0.78rem;
+}
+
+.onboarding-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(3, 9, 16, 0.72);
+  display: grid;
+  place-items: center;
+  z-index: 30;
+}
+
+.onboarding-modal {
+  width: min(700px, 92vw);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: linear-gradient(160deg, rgba(19, 35, 48, 0.97), rgba(13, 31, 44, 0.97));
+  padding: 1rem;
+}
+
+.onboarding-modal h2 {
+  margin: 0;
+}
+
+.onboarding-modal p,
+.onboarding-modal li {
+  color: var(--muted);
 }
 
 @media (max-width: 1100px) {

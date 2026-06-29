@@ -19,6 +19,8 @@ This directory contains the Ghostlink Studio desktop application scaffold.
 - Cluster tab now renders live node cards with health indicators from parsed `probe` output
 - Models tab includes preset catalog shortcuts for common smoke/target repos
 - Chat tab keeps a recent exchange history for iterative testing
+- First-launch onboarding modal guides users through Cluster/Models/Chat/Doctor flow
+- Settings tab now includes theme, font scaling, reduced-motion, and high-contrast preferences persisted locally
 
 ## Dev Notes
 
