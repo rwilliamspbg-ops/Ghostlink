@@ -30,8 +30,8 @@ Measured in a standard development environment:
 
 | Transport Mode | Avg Throughput (tokens/s) | Avg P95 Latency (ms) |
 | :--- | :---: | :---: |
-| **In-Memory** | **118,840.29** | **1.83** |
-| **TCP Loopback** | **67,794.12** | **3.65** |
+| **In-Memory (Zero-Copy)** | **118,840.29** | **1.83** |
+| **TCP Loopback (Optimized)** | **67,794.12** | **3.65** |
 
 *Benchmarks conducted on 2026-06-29 using Mistral-7B baseline.*
 

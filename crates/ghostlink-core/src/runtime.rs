@@ -172,6 +172,8 @@ pub struct TcpTransportConfig {
     pub reconnect_attempts: usize,
     pub reconnect_backoff_ms: u64,
     pub auth_token: Option<String>,
+    pub use_mtls: bool,
+    pub cert_chain_path: Option<String>,
 }
 
 impl Default for TcpTransportConfig {
@@ -181,6 +183,8 @@ impl Default for TcpTransportConfig {
             reconnect_attempts: 3,
             reconnect_backoff_ms: 25,
             auth_token: None,
+            use_mtls: false,
+            cert_chain_path: None,
         }
     }
 }
@@ -1176,6 +1180,7 @@ mod tests {
                 reconnect_attempts: 4,
                 reconnect_backoff_ms: 5,
                 auth_token: Some("test-token".to_string()),
+                ..Default::default()
             },
         );
 
