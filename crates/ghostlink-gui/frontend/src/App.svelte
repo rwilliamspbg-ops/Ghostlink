@@ -15,6 +15,10 @@
   let command = '';
   let output = 'No command executed yet.';
   let summary = 'Collecting startup snapshot...';
+  let configPath = '';
+  let configContent = '';
+  let configLoaded = false;
+  let doctorSummary = null;
   let busy = false;
 
   async function loadSnapshot() {
@@ -50,12 +54,62 @@
     }
   }
 
+  async function loadConfig() {
+    busy = true;
+    try {
+      const cfg = await invoke('load_ghostlink_config');
+      configPath = cfg.path;
+      configContent = cfg.content;
+      configLoaded = true;
+      status = cfg.exists ? 'Loaded local config' : 'Loaded example config (local missing)';
+    } catch (err) {
+      status = 'Config load failed';
+      output = String(err);
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function saveConfig() {
+    busy = true;
+    try {
+      const cfg = await invoke('save_ghostlink_config', { content: configContent });
+      configPath = cfg.path;
+      status = 'Config saved';
+      output = `Saved ${cfg.path}`;
+      await loadSnapshot();
+    } catch (err) {
+      status = 'Config save failed';
+      output = String(err);
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function runDoctorJson(strict) {
+    busy = true;
+    doctorSummary = null;
+    try {
+      const report = await invoke('run_doctor_with_json', { strict });
+      doctorSummary = report;
+      status = strict ? 'Doctor strict report generated' : 'Doctor report generated';
+      output = `Doctor JSON: ${report.path}`;
+      await loadSnapshot();
+    } catch (err) {
+      status = 'Doctor run failed';
+      output = String(err);
+    } finally {
+      busy = false;
+    }
+  }
+
   onMount(async () => {
     try {
       const studio = await invoke('studio_status');
       status = `${studio.app}: ${studio.status}`;
       output = `Repo root: ${studio.repo_root}`;
       await loadSnapshot();
+      await loadConfig();
     } catch (err) {
       status = 'Studio bridge unavailable';
       output = String(err);
@@ -107,10 +161,50 @@
         <h1>Diagnostics Center</h1>
         <p>Run preflight diagnostics and inspect remediation details.</p>
         <div class="actions">
-          <button class="primary" on:click={() => run('run_doctor', { strict: false })} disabled={busy}>Doctor (Standard)</button>
-          <button on:click={() => run('run_doctor', { strict: true })} disabled={busy}>Doctor (Strict)</button>
+          <button class="primary" on:click={() => runDoctorJson(false)} disabled={busy}>Doctor (Standard)</button>
+          <button on:click={() => runDoctorJson(true)} disabled={busy}>Doctor (Strict)</button>
         </div>
       </header>
+      {#if doctorSummary}
+        <section class="doctor-grid">
+          <article class="metric-card">
+            <span>Pass</span>
+            <strong>{doctorSummary.pass}</strong>
+          </article>
+          <article class="metric-card">
+            <span>Warn</span>
+            <strong>{doctorSummary.warn}</strong>
+          </article>
+          <article class="metric-card">
+            <span>Fail</span>
+            <strong>{doctorSummary.fail}</strong>
+          </article>
+        </section>
+        <section class="doctor-checks">
+          {#each doctorSummary.checks as check}
+            <article class="doctor-check">
+              <h3>[{check.status}] {check.area}/{check.name}</h3>
+              <p>{check.detail}</p>
+              {#if check.fix}
+                <p class="fix">FIX: {check.fix}</p>
+              {/if}
+            </article>
+          {/each}
+        </section>
+      {/if}
+    {:else if activeTab === 'Settings'}
+      <header class="hero">
+        <h1>Settings</h1>
+        <p>Edit and save Ghostlink TOML configuration directly from Studio.</p>
+        <div class="actions">
+          <button class="primary" on:click={saveConfig} disabled={busy || !configLoaded}>Save Config</button>
+          <button on:click={loadConfig} disabled={busy}>Reload</button>
+        </div>
+      </header>
+      <section class="settings-editor">
+        <p class="config-path">Target: {configPath || 'unresolved'}</p>
+        <textarea bind:value={configContent} spellcheck="false" />
+      </section>
     {:else}
       <header class="hero">
         <h1>{activeTab}</h1>

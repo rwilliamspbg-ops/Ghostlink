@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use serde::Serialize;
+use serde_json::Value;
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
@@ -28,7 +29,10 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             studio_status,
             studio_snapshot,
+            load_ghostlink_config,
+            save_ghostlink_config,
             run_doctor,
+            run_doctor_with_json,
             run_probe,
             run_flow_quick,
             run_cluster_start
@@ -139,12 +143,166 @@ struct CommandResult {
     stderr: String,
 }
 
+#[derive(Serialize)]
+struct ConfigFileState {
+    path: String,
+    exists: bool,
+    content: String,
+}
+
+#[derive(Serialize)]
+struct DoctorCheckSummary {
+    area: String,
+    name: String,
+    status: String,
+    detail: String,
+    fix: Option<String>,
+}
+
+#[derive(Serialize)]
+struct DoctorJsonSummary {
+    path: String,
+    pass: usize,
+    warn: usize,
+    fail: usize,
+    checks: Vec<DoctorCheckSummary>,
+}
+
+#[tauri::command]
+fn load_ghostlink_config() -> Result<ConfigFileState, String> {
+    let root = repo_root();
+    let local_path = root.join("ghostlink.toml");
+    let example_path = root.join("ghostlink.example.toml");
+
+    if local_path.exists() {
+        let content = fs::read_to_string(&local_path)
+            .map_err(|err| format!("failed to read {}: {}", local_path.display(), err))?;
+        return Ok(ConfigFileState {
+            path: local_path.display().to_string(),
+            exists: true,
+            content,
+        });
+    }
+
+    let content = fs::read_to_string(&example_path)
+        .map_err(|err| format!("failed to read {}: {}", example_path.display(), err))?;
+    Ok(ConfigFileState {
+        path: local_path.display().to_string(),
+        exists: false,
+        content,
+    })
+}
+
+#[tauri::command]
+fn save_ghostlink_config(content: String) -> Result<ConfigFileState, String> {
+    let root = repo_root();
+    let local_path = root.join("ghostlink.toml");
+    fs::write(&local_path, content.as_bytes())
+        .map_err(|err| format!("failed to write {}: {}", local_path.display(), err))?;
+
+    Ok(ConfigFileState {
+        path: local_path.display().to_string(),
+        exists: true,
+        content,
+    })
+}
+
 #[tauri::command]
 fn run_doctor(strict: bool) -> Result<CommandResult, String> {
     run_ghostlink_command(if strict {
         vec!["doctor", "--strict"]
     } else {
         vec!["doctor"]
+    })
+}
+
+#[tauri::command]
+fn run_doctor_with_json(strict: bool) -> Result<DoctorJsonSummary, String> {
+    let root = repo_root();
+    let output_path = root.join("tmp").join("studio-doctor-report.json");
+    if let Some(parent) = output_path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+
+    let mut args = vec!["doctor", "--json"];
+    let output_path_str = output_path.display().to_string();
+    args.push(output_path_str.as_str());
+    if strict {
+        args.push("--strict");
+    }
+
+    let command_result = run_ghostlink_command(args)?;
+    let raw = fs::read_to_string(&output_path)
+        .map_err(|err| format!("doctor report missing at {}: {}", output_path.display(), err))?;
+    let value: Value = serde_json::from_str(&raw)
+        .map_err(|err| format!("invalid doctor json {}: {}", output_path.display(), err))?;
+
+    let pass = value
+        .get("summary")
+        .and_then(|s| s.get("pass"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0) as usize;
+    let warn = value
+        .get("summary")
+        .and_then(|s| s.get("warn"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0) as usize;
+    let fail = value
+        .get("summary")
+        .and_then(|s| s.get("fail"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0) as usize;
+
+    let checks = value
+        .get("checks")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .take(16)
+                .map(|entry| DoctorCheckSummary {
+                    area: entry
+                        .get("area")
+                        .and_then(Value::as_str)
+                        .unwrap_or("unknown")
+                        .to_string(),
+                    name: entry
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .unwrap_or("unnamed")
+                        .to_string(),
+                    status: entry
+                        .get("status")
+                        .and_then(Value::as_str)
+                        .unwrap_or("UNKNOWN")
+                        .to_string(),
+                    detail: entry
+                        .get("detail")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_string(),
+                    fix: entry
+                        .get("fix")
+                        .and_then(Value::as_str)
+                        .map(ToString::to_string),
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    if !command_result.ok && strict {
+        return Err(format!(
+            "doctor strict failed (exit code {:?})",
+            command_result.exit_code
+        ));
+    }
+
+    Ok(DoctorJsonSummary {
+        path: output_path.display().to_string(),
+        pass,
+        warn,
+        fail,
+        checks,
     })
 }
 
