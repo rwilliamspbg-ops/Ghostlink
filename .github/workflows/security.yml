@@ -1,0 +1,60 @@
+name: Security
+
+on:
+  workflow_call:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - docs/runtime-probe-docs
+      - 'release/**'
+      - 'hotfix/**'
+    paths:
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'crates/**'
+      - 'scripts/**'
+      - '.github/workflows/security.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'crates/**'
+      - 'scripts/**'
+      - '.github/workflows/security.yml'
+
+jobs:
+  secret-scan:
+    name: Secret Scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  rust-advisory-audit:
+    name: Rust Advisory Audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+      - name: Run cargo audit
+        run: cargo audit
+
+  python-audit:
+    name: Python Dependency Audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install pip-audit
+        run: python -m pip install --upgrade pip pip-audit
+      - name: Audit Mohawk GUI dependencies
+        run: pip-audit -r third_party/mohawk_gui/requirements.txt

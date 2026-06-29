@@ -93,6 +93,24 @@ find crates -name '*.rs' -print0 | xargs -0 -n1 rustfmt --check --edition 2021
 # Validate GUI endpoint contract drift against mock backend
 python3 scripts/validate_gui_api_contract.py
 
+# Fault-injection style runtime matrix (CI-friendly)
+python3 scripts/fault_injection_matrix.py --output-dir ./tmp/fault_matrix --strict
+
+# Active TCP probe summary for node/network path health
+python3 scripts/active_network_probe.py --target 127.0.0.1:8003 --max-failure-ratio 0.0 --output ./tmp/active-probe.json
+
+# AF_XDP/eBPF preflight capability report
+python3 scripts/xdp_preflight_check.py --output ./tmp/xdp-preflight.json
+
+# Security checks (local equivalents of security workflow jobs)
+cargo install cargo-audit --locked
+cargo audit
+python3 -m pip install --upgrade pip-audit
+pip-audit -r third_party/mohawk_gui/requirements.txt
+
+# Build signed/checksummed release bundle
+bash scripts/release_bundle.sh ./artifacts/release
+
 # Verify Hugging Face model listing/download path
 python3 scripts/verify_hf_models.py
 
@@ -139,8 +157,8 @@ Current benchmark targets cover:
 
 ## Known Gaps
 
-- AF_XDP/eBPF is still validated through unit-level behavior only
+- AF_XDP/eBPF still requires real hardware matrix validation beyond preflight signal checks
 - Full hardware probing only exercises `nvidia-smi` and `lspci` when those tools exist on the host
 - Health monitoring uses collected cluster metrics and heartbeat state instead of direct ping-style network probes
-- Tensor migration and dynamic cluster rebalance remain incomplete
+- Tensor migration remains incomplete; dynamic rebalance heuristics are now improved but still early-stage
 - GUI function-matrix validation currently runs as a local/devcontainer procedure, not a dedicated CI workflow job

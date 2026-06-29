@@ -12,6 +12,7 @@ This index is the source of truth for active documentation in Ghost-Link.
 - [SECURITY_MODEL.md](SECURITY_MODEL.md): threat model and security posture guidance.
 - [TROUBLESHOOTING.md](TROUBLESHOOTING.md): common failures and operational fixes.
 - [PRODUCTION_READINESS.md](PRODUCTION_READINESS.md): production readiness checklist and status.
+- [PRODUCTION_REMEDIATION_PLAN.md](PRODUCTION_REMEDIATION_PLAN.md): phased closure plan for known production gaps.
 
 ## Baselines and Perf Policy
 

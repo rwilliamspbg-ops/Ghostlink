@@ -21,6 +21,8 @@ on:
       - 'docs/SECURITY_MODEL.md'
       - '.github/workflows/ci.yml'
       - '.github/workflows/production-gate.yml'
+      - '.github/workflows/security.yml'
+      - '.github/workflows/release-artifacts.yml'
   pull_request:
     branches:
       - main
@@ -37,6 +39,8 @@ on:
       - 'docs/SECURITY_MODEL.md'
       - '.github/workflows/ci.yml'
       - '.github/workflows/production-gate.yml'
+      - '.github/workflows/security.yml'
+      - '.github/workflows/release-artifacts.yml'
 
 env:
   CARGO_TERM_COLOR: always
@@ -87,6 +91,10 @@ jobs:
   production-gate:
     name: Production Gate
     uses: ./.github/workflows/production-gate.yml
+
+  security:
+    name: Security
+    uses: ./.github/workflows/security.yml
 
   coverage:
     name: Code Coverage

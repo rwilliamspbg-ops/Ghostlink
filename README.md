@@ -6,6 +6,7 @@
 [![Lint](https://github.com/rwilliamspbg-ops/Ghostlink/actions/workflows/lint.yml/badge.svg?branch=main)](https://github.com/rwilliamspbg-ops/Ghostlink/actions/workflows/lint.yml)
 [![Tests](https://github.com/rwilliamspbg-ops/Ghostlink/actions/workflows/tests.yml/badge.svg?branch=main)](https://github.com/rwilliamspbg-ops/Ghostlink/actions/workflows/tests.yml)
 [![Docs](https://github.com/rwilliamspbg-ops/Ghostlink/actions/workflows/docs.yml/badge.svg?branch=main)](https://github.com/rwilliamspbg-ops/Ghostlink/actions/workflows/docs.yml)
+[![Security](https://github.com/rwilliamspbg-ops/Ghostlink/actions/workflows/security.yml/badge.svg?branch=main)](https://github.com/rwilliamspbg-ops/Ghostlink/actions/workflows/security.yml)
 [![HF Model Verify](https://github.com/rwilliamspbg-ops/Ghostlink/actions/workflows/hf-model-verify.yml/badge.svg?branch=main)](https://github.com/rwilliamspbg-ops/Ghostlink/actions/workflows/hf-model-verify.yml)
 [![Benchmarks](https://github.com/rwilliamspbg-ops/Ghostlink/actions/workflows/benchmarks.yml/badge.svg?branch=main)](https://github.com/rwilliamspbg-ops/Ghostlink/actions/workflows/benchmarks.yml)
 [![codecov](https://codecov.io/gh/rwilliamspbg-ops/Ghostlink/branch/main/graph/badge.svg)](https://codecov.io/gh/rwilliamspbg-ops/Ghostlink)
@@ -154,6 +155,18 @@ python3 scripts/summarize_criterion_report.py --criterion-root target/criterion 
 
 # Validate that GUI API calls in main_window are implemented by mock backend
 python3 scripts/validate_gui_api_contract.py
+
+# Run quick fault-injection style matrix against flow runtime
+python3 scripts/fault_injection_matrix.py --output-dir ./tmp/fault_matrix --strict
+
+# Collect AF_XDP/eBPF preflight capability signals
+python3 scripts/xdp_preflight_check.py --output ./tmp/xdp-preflight.json
+
+# Run active TCP probes and emit JSON summary
+python3 scripts/active_network_probe.py --target 127.0.0.1:8003 --max-failure-ratio 0.0
+
+# Build release binary bundle + checksums (+ optional GPG signature)
+bash scripts/release_bundle.sh ./artifacts/release
 ```
 
 The Mohawk GUI sources are vendored under [third_party/mohawk_gui](third_party/mohawk_gui). Use the `ghost-link gui` command to launch it from this repository.
@@ -179,6 +192,7 @@ If the host does not provide tools such as `nvidia-smi` or `lspci`, full mode fa
 - [docs/SECURITY_MODEL.md](docs/SECURITY_MODEL.md): threat model and production hardening guidance.
 - [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md): operational troubleshooting and debugging tips.
 - [docs/PRODUCTION_READINESS.md](docs/PRODUCTION_READINESS.md): release and operations readiness review checklist.
+- [docs/PRODUCTION_REMEDIATION_PLAN.md](docs/PRODUCTION_REMEDIATION_PLAN.md): phased plan to close production gaps and track exit criteria.
 - [docs/archive/INDEX.md](docs/archive/INDEX.md): archived historical docs and migration notes.
 - [CONTRIBUTING.md](CONTRIBUTING.md): contributor setup and pre-PR checks.
 - [CHANGELOG.md](CHANGELOG.md): release-oriented change history.

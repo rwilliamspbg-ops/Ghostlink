@@ -1,0 +1,23 @@
+name: Release Artifacts
+
+'on':
+  workflow_dispatch:
+
+jobs:
+  build-release-artifacts:
+    name: Build Release Artifacts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build release bundle
+        run: bash scripts/release_bundle.sh ./artifacts/release
+
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ghost-link-release
+          path: artifacts/release/
+          retention-days: 30

@@ -68,6 +68,10 @@ jobs:
       - name: GUI API Contract Check
         run: python3 scripts/validate_gui_api_contract.py
 
+      - name: XDP/eBPF Preflight Signals
+        run: |
+          python3 scripts/xdp_preflight_check.py --output ./tmp/xdp-preflight.json
+
       - name: Create tmp directory
         run: mkdir -p ./tmp
 
@@ -103,11 +107,37 @@ jobs:
             --transport inmem \
             --profile production
 
+      - name: Fault Matrix (Quick)
+        env:
+          GHOSTLINK_TCP_AUTH_TOKEN: "ci-production-gate-token"
+        run: |
+          python3 scripts/fault_injection_matrix.py \
+            --output-dir ./tmp/fault_matrix_ci \
+            --exec-tokens 96 \
+            --micro-batch 4 \
+            --strict \
+            --max-p95-ms 40.0
+
+      - name: Active Network Probe (Loopback)
+        run: |
+          python3 -m http.server 18765 --bind 127.0.0.1 >/tmp/ghostlink_probe_server.log 2>&1 &
+          SERVER_PID=$!
+          trap 'kill ${SERVER_PID}' EXIT
+          python3 scripts/active_network_probe.py \
+            --target 127.0.0.1:18765 \
+            --timeout-ms 500 \
+            --max-failure-ratio 0.0 \
+            --output ./tmp/active-probe.json
+
       - name: Upload Runtime Metrics Artifacts
         uses: actions/upload-artifact@v4
         with:
           name: flow-runtime-metrics
-          path: ./tmp/flow-metrics-*.json
+          path: |
+            ./tmp/flow-metrics-*.json
+            ./tmp/fault_matrix_ci/
+            ./tmp/active-probe.json
+            ./tmp/xdp-preflight.json
           retention-days: 14
 
       - name: Perf Snapshot (Deterministic)

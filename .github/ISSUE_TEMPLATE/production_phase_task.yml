@@ -1,0 +1,60 @@
+name: Production Phase Task
+description: Track a remediation task from the production plan
+labels:
+  - enhancement
+  - risk:prod
+body:
+  - type: input
+    id: phase
+    attributes:
+      label: Phase
+      description: Which phase does this task belong to?
+      placeholder: "Phase 1: Security Hardening"
+    validations:
+      required: true
+
+  - type: input
+    id: owner
+    attributes:
+      label: Owner
+      description: Who is responsible for this task?
+      placeholder: "@maintainer"
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem statement
+      description: What production gap does this task close?
+    validations:
+      required: true
+
+  - type: textarea
+    id: scope
+    attributes:
+      label: Implementation scope
+      description: What code/docs/workflow changes are required?
+    validations:
+      required: true
+
+  - type: textarea
+    id: exit
+    attributes:
+      label: Exit criteria
+      description: What objective checks prove this is complete?
+      placeholder: |
+        - [ ] CI gate added and green
+        - [ ] Tests for success/failure paths
+        - [ ] Docs updated
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: risk
+    attributes:
+      label: Risk and rollout
+      options:
+        - label: Feature flag or rollback path defined
+        - label: Backward compatibility validated
+        - label: Security implications reviewed
