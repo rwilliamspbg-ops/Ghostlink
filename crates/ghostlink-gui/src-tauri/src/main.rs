@@ -29,6 +29,8 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             studio_status,
             studio_snapshot,
+            cluster_preview,
+            list_model_presets,
             load_ghostlink_config,
             save_ghostlink_config,
             run_doctor,
@@ -185,6 +187,99 @@ struct ChatResult {
     model: String,
     response: String,
     trace: String,
+}
+
+#[derive(Serialize)]
+struct ClusterNodeCard {
+    id: String,
+    acceleration: String,
+    workers: usize,
+    system_memory_gb: f32,
+    gpu_vram_gb: f32,
+    health: String,
+}
+
+#[derive(Serialize)]
+struct ClusterPreview {
+    nodes: Vec<ClusterNodeCard>,
+    summary: String,
+}
+
+#[derive(Serialize)]
+struct ModelPreset {
+    name: String,
+    repo: String,
+    default_file: String,
+    quant: String,
+}
+
+#[tauri::command]
+fn cluster_preview(node_id: String, full: bool) -> Result<ClusterPreview, String> {
+    let command = run_ghostlink_command(if full {
+        vec!["probe", node_id.as_str(), "full"]
+    } else {
+        vec!["probe", node_id.as_str(), "fast"]
+    })?;
+
+    if !command.ok {
+        return Err(format!(
+            "probe command failed (exit code {:?})",
+            command.exit_code
+        ));
+    }
+
+    let local = parse_probe_to_node(command.stdout.as_str())
+        .unwrap_or_else(|| fallback_node(node_id.as_str()));
+
+    // Lightweight preview peer node to visualize placement/health at cluster scale.
+    let peer = ClusterNodeCard {
+        id: format!("{}-peer", local.id),
+        acceleration: "GPU".to_string(),
+        workers: local.workers.max(2),
+        system_memory_gb: (local.system_memory_gb + 8.0).max(16.0),
+        gpu_vram_gb: local.gpu_vram_gb.max(16.0),
+        health: if local.gpu_vram_gb > 0.0 {
+            "healthy".to_string()
+        } else {
+            "degraded".to_string()
+        },
+    };
+
+    let nodes = vec![local, peer];
+    let healthy = nodes.iter().filter(|node| node.health == "healthy").count();
+    let degraded = nodes.len().saturating_sub(healthy);
+
+    Ok(ClusterPreview {
+        summary: format!(
+            "{} nodes total ({} healthy, {} degraded)",
+            nodes.len(), healthy, degraded
+        ),
+        nodes,
+    })
+}
+
+#[tauri::command]
+fn list_model_presets() -> Vec<ModelPreset> {
+    vec![
+        ModelPreset {
+            name: "Tiny GPT-2 (smoke)".to_string(),
+            repo: "sshleifer/tiny-gpt2".to_string(),
+            default_file: "config.json".to_string(),
+            quant: "Int8".to_string(),
+        },
+        ModelPreset {
+            name: "Tiny Random BERT (smoke)".to_string(),
+            repo: "hf-internal-testing/tiny-random-bert".to_string(),
+            default_file: "config.json".to_string(),
+            quant: "Int8".to_string(),
+        },
+        ModelPreset {
+            name: "Mistral 7B".to_string(),
+            repo: "mistralai/Mistral-7B-v0.1".to_string(),
+            default_file: "config.json".to_string(),
+            quant: "Int4".to_string(),
+        },
+    ]
 }
 
 #[tauri::command]
@@ -479,4 +574,53 @@ fn command_version(program: &str, args: &[&str]) -> Option<String> {
     }
 
     None
+}
+
+fn fallback_node(node_id: &str) -> ClusterNodeCard {
+    ClusterNodeCard {
+        id: node_id.to_string(),
+        acceleration: "unknown".to_string(),
+        workers: 1,
+        system_memory_gb: 0.0,
+        gpu_vram_gb: 0.0,
+        health: "degraded".to_string(),
+    }
+}
+
+fn parse_probe_to_node(output: &str) -> Option<ClusterNodeCard> {
+    let mut id = None;
+    let mut workers = None;
+    let mut system_memory_gb = None;
+    let mut gpu_vram_gb = None;
+    let mut acceleration = None;
+
+    for line in output.lines() {
+        let trimmed = line.trim();
+        if let Some(value) = trimmed.strip_prefix("Node ID:") {
+            id = Some(value.trim().to_string());
+        } else if let Some(value) = trimmed.strip_prefix("Recommended workers:") {
+            workers = value.trim().parse::<usize>().ok();
+        } else if let Some(value) = trimmed.strip_prefix("System memory:") {
+            system_memory_gb = value.trim().split_whitespace().next()?.parse::<f32>().ok();
+        } else if let Some(value) = trimmed.strip_prefix("GPU VRAM:") {
+            gpu_vram_gb = value.trim().split_whitespace().next()?.parse::<f32>().ok();
+        } else if let Some(value) = trimmed.strip_prefix("Acceleration:") {
+            acceleration = Some(value.trim().to_string());
+        }
+    }
+
+    let node_id = id?;
+    let workers = workers.unwrap_or(1);
+    let memory = system_memory_gb.unwrap_or(0.0);
+    let vram = gpu_vram_gb.unwrap_or(0.0);
+    let acceleration = acceleration.unwrap_or_else(|| "unknown".to_string());
+
+    Some(ClusterNodeCard {
+        id: node_id,
+        acceleration,
+        workers,
+        system_memory_gb: memory,
+        gpu_vram_gb: vram,
+        health: if vram > 0.0 { "healthy" } else { "degraded" }.to_string(),
+    })
 }

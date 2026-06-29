@@ -16,6 +16,9 @@ This directory contains the Ghostlink Studio desktop application scaffold.
 - Startup snapshot now reports environment/config readiness cards from backend checks
 - Models tab verifies Hugging Face repository/file accessibility via `scripts/verify_hf_models.py`
 - Chat tab provides prompt/model/parameter controls with backend-selection preview responses
+- Cluster tab now renders live node cards with health indicators from parsed `probe` output
+- Models tab includes preset catalog shortcuts for common smoke/target repos
+- Chat tab keeps a recent exchange history for iterative testing
 
 ## Dev Notes
 

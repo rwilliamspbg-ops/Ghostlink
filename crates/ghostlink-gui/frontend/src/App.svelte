@@ -21,6 +21,7 @@
   let doctorSummary = null;
   let modelRepo = 'sshleifer/tiny-gpt2';
   let modelFile = 'config.json';
+  let modelPresets = [];
   let modelCheck = null;
   let chatPrompt = '';
   let chatModel = 'ghostlink-preview-7b';
@@ -28,6 +29,9 @@
   let chatMaxTokens = 256;
   let chatDistributed = true;
   let chatResult = null;
+  let chatHistory = [];
+  let clusterNodes = [];
+  let clusterSummary = 'No cluster preview loaded.';
   let busy = false;
 
   async function loadSnapshot() {
@@ -131,6 +135,37 @@
     }
   }
 
+  async function loadModelPresets() {
+    const presets = await invoke('list_model_presets');
+    modelPresets = presets;
+  }
+
+  function applyPreset(indexValue) {
+    const index = Number(indexValue);
+    if (!Number.isInteger(index) || index < 0 || index >= modelPresets.length) {
+      return;
+    }
+
+    const preset = modelPresets[index];
+    modelRepo = preset.repo;
+    modelFile = preset.defaultFile;
+  }
+
+  async function refreshCluster(full = false) {
+    busy = true;
+    try {
+      const preview = await invoke('cluster_preview', { nodeId: 'studio-local', full });
+      clusterNodes = preview.nodes;
+      clusterSummary = preview.summary;
+      status = 'Cluster preview refreshed';
+    } catch (err) {
+      status = 'Cluster preview failed';
+      output = String(err);
+    } finally {
+      busy = false;
+    }
+  }
+
   async function runChat() {
     busy = true;
     chatResult = null;
@@ -146,6 +181,15 @@
       status = `Chat response generated via ${result.backend}`;
       command = 'chat_infer';
       output = result.trace;
+      chatHistory = [
+        {
+          prompt: chatPrompt,
+          response: result.response,
+          model: result.model,
+          backend: result.backend,
+        },
+        ...chatHistory,
+      ].slice(0, 12);
     } catch (err) {
       status = 'Chat generation failed';
       output = String(err);
@@ -161,6 +205,8 @@
       output = `Repo root: ${studio.repo_root}`;
       await loadSnapshot();
       await loadConfig();
+      await loadModelPresets();
+      await refreshCluster(false);
     } catch (err) {
       status = 'Studio bridge unavailable';
       output = String(err);
@@ -200,13 +246,26 @@
     {:else if activeTab === 'Cluster'}
       <header class="hero">
         <h1>Cluster Operations</h1>
-        <p>Launch local listeners, probe host state, and run a quick distributed flow.</p>
+        <p>{clusterSummary}</p>
         <div class="actions">
           <button class="primary" on:click={() => run('run_cluster_start', { nodeCount: 3, basePort: 46000 })} disabled={busy}>Start 3-Node Local Cluster</button>
           <button on:click={() => run('run_probe', { nodeId: 'studio-local', full: true })} disabled={busy}>Full Probe</button>
           <button on:click={() => run('run_flow_quick')} disabled={busy}>Run Quick Flow</button>
+          <button on:click={() => refreshCluster(false)} disabled={busy}>Refresh Cluster</button>
+          <button on:click={() => refreshCluster(true)} disabled={busy}>Deep Refresh</button>
         </div>
       </header>
+      <section class="cluster-grid">
+        {#each clusterNodes as node}
+          <article class="cluster-card" class:healthy={node.health === 'healthy'} class:degraded={node.health === 'degraded'}>
+            <h3>{node.id}</h3>
+            <p>{node.acceleration} · {node.health}</p>
+            <p>Workers: {node.workers}</p>
+            <p>System RAM: {node.systemMemoryGb.toFixed(1)} GB</p>
+            <p>GPU VRAM: {node.gpuVramGb.toFixed(1)} GB</p>
+          </article>
+        {/each}
+      </section>
     {:else if activeTab === 'Doctor'}
       <header class="hero">
         <h1>Diagnostics Center</h1>
@@ -248,6 +307,12 @@
         <h1>Model Management</h1>
         <p>Verify Hugging Face model accessibility and basic repository readiness.</p>
         <div class="actions">
+          <select on:change={(e) => applyPreset(e.currentTarget.value)}>
+            <option value="">Select preset</option>
+            {#each modelPresets as preset, index}
+              <option value={index}>{preset.name} ({preset.quant})</option>
+            {/each}
+          </select>
           <input bind:value={modelRepo} placeholder="repo id (owner/model)" />
           <input bind:value={modelFile} placeholder="file" />
           <button class="primary" on:click={verifyModel} disabled={busy}>Verify Model</button>
@@ -299,6 +364,18 @@
         <section class="chat-response">
           <h3>{chatResult.model} ({chatResult.backend})</h3>
           <p>{chatResult.response}</p>
+        </section>
+      {/if}
+      {#if chatHistory.length > 0}
+        <section class="chat-history">
+          <h3>Recent Exchanges</h3>
+          {#each chatHistory as entry}
+            <article class="chat-history-item">
+              <p class="prompt">Q: {entry.prompt}</p>
+              <p class="answer">A: {entry.response}</p>
+              <p class="meta">{entry.model} · {entry.backend}</p>
+            </article>
+          {/each}
         </section>
       {/if}
     {:else if activeTab === 'Settings'}

@@ -100,6 +100,15 @@ body {
   padding: 0.55rem 0.65rem;
 }
 
+.actions select {
+  min-width: 220px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.2);
+  color: var(--text);
+  padding: 0.55rem 0.65rem;
+}
+
 button {
   border: 1px solid var(--border);
   background: rgba(255, 255, 255, 0.03);
@@ -220,6 +229,71 @@ button:disabled {
 .chat-response p {
   margin: 0.55rem 0 0;
   color: #d8e7f5;
+}
+
+.chat-history {
+  display: grid;
+  gap: 0.6rem;
+}
+
+.chat-history h3 {
+  margin: 0;
+}
+
+.chat-history-item {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: rgba(16, 39, 55, 0.72);
+  padding: 0.7rem;
+}
+
+.chat-history-item p {
+  margin: 0.35rem 0 0;
+  font-size: 0.84rem;
+}
+
+.chat-history-item .prompt {
+  color: #cbe4f8;
+}
+
+.chat-history-item .answer {
+  color: #e5f8ee;
+}
+
+.chat-history-item .meta {
+  color: var(--muted);
+}
+
+.cluster-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(190px, 1fr));
+  gap: 0.75rem;
+}
+
+.cluster-card {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: rgba(16, 39, 55, 0.75);
+  padding: 0.8rem;
+}
+
+.cluster-card h3 {
+  margin: 0;
+  font-size: 0.95rem;
+}
+
+.cluster-card p {
+  margin: 0.35rem 0 0;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.cluster-card.healthy {
+  border-color: rgba(63, 209, 159, 0.5);
+}
+
+.cluster-card.degraded {
+  border-color: rgba(255, 190, 92, 0.5);
 }
 
 .settings-editor {
