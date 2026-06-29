@@ -97,7 +97,7 @@ jobs:
             --profile production
 
       - name: Upload Runtime Metrics Artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: flow-runtime-metrics
           path: ./tmp/flow-metrics-*.json
@@ -171,7 +171,7 @@ jobs:
             --profile stress
 
       - name: Upload Perf Snapshot Artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: flow-perf-snapshot
           path: |
