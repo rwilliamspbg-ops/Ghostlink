@@ -23,6 +23,7 @@ This directory contains the Ghostlink Studio desktop application scaffold.
 - Settings tab now includes theme, font scaling, reduced-motion, and high-contrast preferences persisted locally
 - Home tab now supports one-click `fast` and `full` validation tiers with structured step results
 - Settings now supports profile export/import bundles for portable Studio + config defaults
+- Home tab now tracks recent snapshot and validation run history trends
 
 ## Dev Notes
 

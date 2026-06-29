@@ -381,6 +381,73 @@ button:disabled {
   font-size: 0.76rem;
 }
 
+.history-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(220px, 1fr));
+  gap: 0.75rem;
+}
+
+.history-card {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: rgba(16, 39, 55, 0.72);
+  padding: 0.8rem;
+  display: grid;
+  gap: 0.5rem;
+}
+
+.history-card h3,
+.history-card p {
+  margin: 0;
+}
+
+.history-card p {
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.history-row,
+.validation-history-row {
+  display: grid;
+  grid-template-columns: 90px 1fr 80px;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.stamp,
+.metric {
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
+.bar-track {
+  width: 100%;
+  height: 10px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+}
+
+.bar-fill {
+  height: 100%;
+  background: linear-gradient(120deg, var(--accent), var(--accent-strong));
+}
+
+.validation-history-row .item-pass {
+  color: #b8f8de;
+  font-size: 0.82rem;
+}
+
+.validation-history-row .item-fail {
+  color: #ffd6d6;
+  font-size: 0.82rem;
+}
+
+.empty-note {
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
 .settings-editor {
   display: grid;
   gap: 0.55rem;
@@ -530,6 +597,10 @@ button:disabled {
 
 @media (max-width: 1100px) {
   .studio-shell {
+    grid-template-columns: 1fr;
+  }
+
+  .history-grid {
     grid-template-columns: 1fr;
   }
 

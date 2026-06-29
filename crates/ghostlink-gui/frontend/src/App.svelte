@@ -35,6 +35,8 @@
   let clusterSummary = 'No cluster preview loaded.';
   let validationTier = 'fast';
   let validationReport = null;
+  let snapshotHistory = [];
+  let validationHistory = [];
   let profileName = 'local-default';
   let profilePath = './tmp/studio-profiles/local-default.json';
   let uiTheme = 'neon';
@@ -151,6 +153,20 @@
     const snapshot = await invoke('studio_snapshot');
     cards = snapshot.metrics.map((metric) => ({ label: metric.label, value: metric.value }));
     summary = snapshot.summary;
+
+    const passed = Number(snapshot.checksPassed ?? snapshot.checks_passed ?? 0);
+    const warn = Number(snapshot.checksWarn ?? snapshot.checks_warn ?? 0);
+    const total = Math.max(1, passed + warn);
+    snapshotHistory = [
+      {
+        time: new Date().toLocaleTimeString(),
+        passed,
+        warn,
+        total,
+        passPct: Math.round((passed / total) * 100),
+      },
+      ...snapshotHistory,
+    ].slice(0, 10);
   }
 
   async function run(action, args = {}) {
@@ -320,6 +336,21 @@
       validationReport = report;
       status = report.ok ? 'Validation completed successfully' : 'Validation found failures';
       output = report.summary;
+
+      const steps = Array.isArray(report.steps) ? report.steps : [];
+      const durationMs = steps.reduce((sum, step) => {
+        const value = Number(step.durationMs ?? step.duration_ms ?? 0);
+        return sum + (Number.isFinite(value) ? value : 0);
+      }, 0);
+      validationHistory = [
+        {
+          time: new Date().toLocaleTimeString(),
+          tier: String(report.tier ?? validationTier).toUpperCase(),
+          ok: Boolean(report.ok),
+          durationMs,
+        },
+        ...validationHistory,
+      ].slice(0, 10);
     } catch (err) {
       status = 'Validation run failed';
       output = String(err);
@@ -398,6 +429,40 @@
               </article>
             {/each}
           </div>
+        </section>
+      {/if}
+
+      {#if snapshotHistory.length > 0 || validationHistory.length > 0}
+        <section class="history-grid">
+          <article class="history-card">
+            <h3>Snapshot Health Trend</h3>
+            <p>Recent startup checks with pass ratio and warning count.</p>
+            {#each snapshotHistory as item}
+              <div class="history-row">
+                <span class="stamp">{item.time}</span>
+                <div class="bar-track">
+                  <div class="bar-fill" style={`width: ${item.passPct}%`}></div>
+                </div>
+                <span class="metric">{item.passed}/{item.total}</span>
+              </div>
+            {/each}
+          </article>
+
+          <article class="history-card">
+            <h3>Validation Run Trend</h3>
+            <p>Recent validation outcomes and total runtime.</p>
+            {#if validationHistory.length === 0}
+              <p class="empty-note">No validation run history yet.</p>
+            {:else}
+              {#each validationHistory as item}
+                <div class="validation-history-row">
+                  <span class="stamp">{item.time}</span>
+                  <span class:item-pass={item.ok} class:item-fail={!item.ok}>{item.tier} · {item.ok ? 'PASS' : 'FAIL'}</span>
+                  <span class="metric">{item.durationMs} ms</span>
+                </div>
+              {/each}
+            {/if}
+          </article>
         </section>
       {/if}
     {:else if activeTab === 'Cluster'}
