@@ -65,6 +65,12 @@ cargo run -p ghost-link -- cluster-start 3 46000
 # Run one-shot doctor summary for troubleshooting and review areas
 cargo run -p ghost-link -- doctor --strict
 
+# Export doctor report JSON for CI or ticket attachments
+cargo run -p ghost-link -- doctor --strict --json ./tmp/doctor-report.json
+
+# Optional: check reachability to an endpoint
+cargo run -p ghost-link -- doctor --network-probe --network-target 127.0.0.1:8003
+
 # Run full local validation suite
 bash scripts/run_full_validation.sh
 

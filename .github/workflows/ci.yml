@@ -51,6 +51,27 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  doctor-preflight:
+    name: Doctor Preflight
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Run doctor strict with JSON report
+        run: |
+          mkdir -p ./tmp
+          cargo run -p ghost-link -- doctor --strict --json ./tmp/doctor-report.json
+
+      - name: Upload doctor report artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: doctor-report
+          path: ./tmp/doctor-report.json
+          retention-days: 14
+
   docs:
     name: Docs
     uses: ./.github/workflows/docs.yml

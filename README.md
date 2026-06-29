@@ -62,6 +62,18 @@ Run a single consolidated readiness report:
 cargo run -p ghost-link -- doctor
 ```
 
+Export a machine-readable doctor report:
+
+```bash
+cargo run -p ghost-link -- doctor --strict --json ./tmp/doctor-report.json
+```
+
+Optionally test connectivity to a target endpoint:
+
+```bash
+cargo run -p ghost-link -- doctor --network-probe --network-target 127.0.0.1:8003
+```
+
 ## Usage
 
 ```bash
@@ -76,6 +88,12 @@ cargo test -p ghostlink-core --test integration
 
 # Run unified troubleshooting report (env/readiness/accessibility/accuracy)
 cargo run -p ghost-link -- doctor --strict
+
+# Export doctor report JSON for CI/artifact consumers
+cargo run -p ghost-link -- doctor --strict --json ./tmp/doctor-report.json
+
+# Include optional lightweight connectivity probe
+cargo run -p ghost-link -- doctor --network-probe --network-target 127.0.0.1:8003
 
 # Generate a layer placement plan
 cargo run -p ghost-link -- plan

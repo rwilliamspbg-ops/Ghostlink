@@ -332,9 +332,7 @@ enum CliCommand {
     GuiDiagnose {
         strict: bool,
     },
-    Doctor {
-        strict: bool,
-    },
+    Doctor(DoctorOptions),
     Dashboard,
     ClusterStart {
         node_count: usize,
@@ -356,6 +354,14 @@ enum CliCommand {
     Help,
 }
 
+#[derive(Debug, PartialEq)]
+struct DoctorOptions {
+    strict: bool,
+    json_out: Option<PathBuf>,
+    network_probe: bool,
+    network_target: String,
+}
+
 fn execute_command(command: CliCommand) -> Result<()> {
     match command {
         CliCommand::Plan => print_plan()?,
@@ -364,7 +370,7 @@ fn execute_command(command: CliCommand) -> Result<()> {
         CliCommand::Gui { args } => launch_mohawk_gui(&args)?,
         CliCommand::GuiCheck { strict } => print_gui_readiness(strict)?,
         CliCommand::GuiDiagnose { strict } => print_gui_diagnostics(strict)?,
-        CliCommand::Doctor { strict } => print_doctor_report(strict)?,
+        CliCommand::Doctor(options) => print_doctor_report(&options)?,
         CliCommand::Dashboard => print_dashboard()?,
         CliCommand::ClusterStart {
             node_count,
@@ -427,10 +433,7 @@ where
             let strict = args.any(|arg| arg == "--strict");
             Ok(CliCommand::GuiDiagnose { strict })
         }
-        "doctor" => {
-            let strict = args.any(|arg| arg == "--strict");
-            Ok(CliCommand::Doctor { strict })
-        }
+        "doctor" => Ok(CliCommand::Doctor(parse_doctor_options(args)?)),
         "dashboard" => Ok(CliCommand::Dashboard),
         "cluster-start" => {
             let node_count = args
@@ -546,6 +549,64 @@ fn parse_u16_arg(value: &str) -> Result<u16> {
     value
         .parse::<u16>()
         .map_err(|_| anyhow::anyhow!("invalid port value: {value}"))
+}
+
+fn parse_doctor_options<I>(args: I) -> Result<DoctorOptions>
+where
+    I: Iterator<Item = String>,
+{
+    let mut strict = false;
+    let mut json_out = None;
+    let mut network_probe = false;
+    let mut network_target = "127.0.0.1:8003".to_string();
+
+    let mut iter = args.peekable();
+    while let Some(arg) = iter.next() {
+        match arg.as_str() {
+            "--strict" => strict = true,
+            "--network-probe" => network_probe = true,
+            "--json" => {
+                let Some(path) = iter.next() else {
+                    anyhow::bail!("--json requires a file path");
+                };
+                if path.trim().is_empty() {
+                    anyhow::bail!("--json requires a non-empty file path");
+                }
+                json_out = Some(PathBuf::from(path));
+            }
+            "--network-target" => {
+                let Some(target) = iter.next() else {
+                    anyhow::bail!("--network-target requires a host:port value");
+                };
+                if target.trim().is_empty() {
+                    anyhow::bail!("--network-target requires a non-empty host:port value");
+                }
+                network_target = target;
+            }
+            _ if arg.starts_with("--json=") => {
+                let value = arg.trim_start_matches("--json=");
+                if value.trim().is_empty() {
+                    anyhow::bail!("--json requires a non-empty file path");
+                }
+                json_out = Some(PathBuf::from(value));
+            }
+            _ if arg.starts_with("--network-target=") => {
+                let value = arg.trim_start_matches("--network-target=");
+                if value.trim().is_empty() {
+                    anyhow::bail!("--network-target requires a non-empty host:port value");
+                }
+                network_target = value.to_string();
+            }
+            _ => anyhow::bail!("unknown doctor option: {}", arg),
+        }
+    }
+
+    Ok(DoctorOptions {
+        strict,
+        json_out,
+        network_probe,
+        network_target,
+    })
 }
 
 fn maybe_write_flow_metrics_json(
@@ -831,7 +892,7 @@ fn print_usage() {
     eprintln!("  gui-check [--strict] - Validate GUI readiness and dependencies");
     eprintln!("  gui-diagnose [--strict] - Emit categorized GUI diagnostics report");
     eprintln!(
-        "  doctor [--strict] - Run unified environment/readiness/accessibility/accuracy checks"
+        "  doctor [--strict] [--json <path>] [--network-probe] [--network-target <host:port>] - Run unified troubleshooting checks"
     );
     eprintln!("  dashboard - Display ASCII cluster dashboard");
     eprintln!(
@@ -863,7 +924,7 @@ fn print_help() {
     println!("  gui-check [--strict] - Validate GUI readiness and dependencies");
     println!("  gui-diagnose [--strict] - Emit categorized GUI diagnostics report");
     println!(
-        "  doctor [--strict] - Run unified environment/readiness/accessibility/accuracy checks"
+        "  doctor [--strict] [--json <path>] [--network-probe] [--network-target <host:port>] - Run unified troubleshooting checks"
     );
     println!("  dashboard - Display ASCII cluster dashboard");
     println!(
@@ -889,6 +950,8 @@ fn print_help() {
     println!("  $ ghost-link gui-check --strict");
     println!("  $ ghost-link gui-diagnose --strict");
     println!("  $ ghost-link doctor --strict");
+    println!("  $ ghost-link doctor --strict --json ./tmp/doctor-report.json");
+    println!("  $ ghost-link doctor --network-probe --network-target 127.0.0.1:8003");
     println!("  $ ghost-link dashboard");
     println!("  $ ghost-link cluster-start 3 46000");
     println!("  $ ghost-link --config ./ghostlink.toml flow");
@@ -1577,7 +1640,111 @@ fn run_planner_accuracy_check() -> Result<String> {
     ))
 }
 
-fn print_doctor_report(strict: bool) -> Result<()> {
+fn json_escape(value: &str) -> String {
+    value
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', "\\n")
+        .replace('\r', "\\r")
+}
+
+fn write_doctor_report_json(
+    path: &Path,
+    checks: &[DoctorCheck],
+    pass_count: usize,
+    warn_count: usize,
+    fail_count: usize,
+) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent).map_err(|err| {
+                anyhow::anyhow!(
+                    "failed to create doctor report directory {}: {}",
+                    parent.display(),
+                    err
+                )
+            })?;
+        }
+    }
+
+    let checks_json = checks
+        .iter()
+        .map(|check| {
+            let fix_json = check
+                .fix
+                .as_ref()
+                .map(|value| format!("\"{}\"", json_escape(value)))
+                .unwrap_or_else(|| "null".to_string());
+            format!(
+                "{{\"area\":\"{}\",\"name\":\"{}\",\"status\":\"{}\",\"detail\":\"{}\",\"fix\":{}}}",
+                json_escape(check.area),
+                json_escape(check.name),
+                check.status.as_str(),
+                json_escape(&check.detail),
+                fix_json
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+
+    let payload = format!(
+        "{{\n  \"summary\": {{\"pass\": {}, \"warn\": {}, \"fail\": {}}},\n  \"checks\": [{}]\n}}\n",
+        pass_count, warn_count, fail_count, checks_json
+    );
+
+    fs::write(path, payload).map_err(|err| {
+        anyhow::anyhow!(
+            "failed to write doctor report JSON {}: {}",
+            path.display(),
+            err
+        )
+    })
+}
+
+fn run_optional_network_probe(target: &str, checks: &mut Vec<DoctorCheck>) {
+    if target.parse::<SocketAddr>().is_err() {
+        push_doctor_check(
+            checks,
+            "accessibility",
+            "network-probe",
+            DoctorStatus::Warn,
+            format!("invalid network target '{}', expected host:port", target),
+            Some("Use --network-target <host:port> with a valid socket address".to_string()),
+        );
+        return;
+    }
+
+    match run_command_capture(
+        "python3",
+        &[
+            "-c",
+            "import socket,sys;host,port=sys.argv[1].rsplit(':',1);s=socket.socket();s.settimeout(0.35);rc=s.connect_ex((host,int(port)));s.close();print('reachable' if rc==0 else f'unreachable({rc})');sys.exit(0 if rc==0 else 1)",
+            target,
+        ],
+    ) {
+        Ok(output) => push_doctor_check(
+            checks,
+            "accessibility",
+            "network-probe",
+            DoctorStatus::Pass,
+            format!("{} target {}", output, target),
+            None,
+        ),
+        Err(err) => push_doctor_check(
+            checks,
+            "accessibility",
+            "network-probe",
+            DoctorStatus::Warn,
+            format!("target {} not reachable ({})", target, err),
+            Some(
+                "Start a listener on the target and retry with --network-probe --network-target <host:port>"
+                    .to_string(),
+            ),
+        ),
+    }
+}
+
+fn print_doctor_report(options: &DoctorOptions) -> Result<()> {
     let mut checks: Vec<DoctorCheck> = Vec::new();
     let crate_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let repo_root = crate_root.join("..").join("..");
@@ -1807,6 +1974,10 @@ fn print_doctor_report(strict: bool) -> Result<()> {
         );
     }
 
+    if options.network_probe {
+        run_optional_network_probe(&options.network_target, &mut checks);
+    }
+
     match run_planner_accuracy_check() {
         Ok(summary) => push_doctor_check(
             &mut checks,
@@ -1923,6 +2094,11 @@ fn print_doctor_report(strict: bool) -> Result<()> {
         pass_count, warn_count, fail_count
     );
 
+    if let Some(path) = options.json_out.as_deref() {
+        write_doctor_report_json(path, &checks, pass_count, warn_count, fail_count)?;
+        println!("Doctor report JSON written to: {}", path.display());
+    }
+
     println!("\nReview areas for multi-device accessibility:");
     println!("- GUI path: desktop display or headless xvfb-run fallback");
     println!("- Deployment path: Docker local demo, systemd service template, staged LAN guide");
@@ -1933,7 +2109,7 @@ fn print_doctor_report(strict: bool) -> Result<()> {
     println!("- GUI API contract parity checks");
     println!("- Runtime SLO/canary/perf-drift validators and baseline presence");
 
-    if strict && fail_count > 0 {
+    if options.strict && fail_count > 0 {
         anyhow::bail!(
             "doctor strict mode failed with {} failing checks",
             fail_count
@@ -2385,7 +2561,30 @@ mod tests {
         );
         assert_eq!(
             parse_cli(args(&["doctor", "--strict"])).unwrap(),
-            CliCommand::Doctor { strict: true }
+            CliCommand::Doctor(DoctorOptions {
+                strict: true,
+                json_out: None,
+                network_probe: false,
+                network_target: "127.0.0.1:8003".to_string(),
+            })
+        );
+        assert_eq!(
+            parse_cli(args(&[
+                "doctor",
+                "--strict",
+                "--network-probe",
+                "--network-target",
+                "127.0.0.1:18765",
+                "--json",
+                "./tmp/doctor.json",
+            ]))
+            .unwrap(),
+            CliCommand::Doctor(DoctorOptions {
+                strict: true,
+                json_out: Some(PathBuf::from("./tmp/doctor.json")),
+                network_probe: true,
+                network_target: "127.0.0.1:18765".to_string(),
+            })
         );
         assert_eq!(
             parse_cli(args(&["cluster-start", "4", "46010"])).unwrap(),
@@ -2456,7 +2655,12 @@ mod tests {
         );
         assert_eq!(
             parse_cli(args(&["doctor"])).unwrap(),
-            CliCommand::Doctor { strict: false }
+            CliCommand::Doctor(DoctorOptions {
+                strict: false,
+                json_out: None,
+                network_probe: false,
+                network_target: "127.0.0.1:8003".to_string(),
+            })
         );
         assert_eq!(
             parse_cli(args(&["cluster-start"])).unwrap(),
@@ -2494,6 +2698,9 @@ mod tests {
         assert!(parse_cli(args(&["flow", "a", "b", "32", "64", "bad"])).is_err());
         assert!(parse_cli(args(&["flow", "a", "b", "32", "64", "64", "2", "bad-mode"])).is_err());
         assert!(parse_cli(args(&["cluster-start", "2", "not-a-port"])).is_err());
+        assert!(parse_cli(args(&["doctor", "--json"])).is_err());
+        assert!(parse_cli(args(&["doctor", "--network-target"])).is_err());
+        assert!(parse_cli(args(&["doctor", "--nope"])).is_err());
     }
 
     #[test]
