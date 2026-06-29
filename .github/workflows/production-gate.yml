@@ -61,6 +61,9 @@ jobs:
       - name: Tests
         run: cargo test --workspace --verbose
 
+      - name: Create tmp directory
+        run: mkdir -p ./tmp
+
       - name: Runtime Smoke (TCP)
         env:
           GHOSTLINK_TCP_MAX_INFLIGHT: "32"

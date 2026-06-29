@@ -1,0 +1,22 @@
+{
+  "tcp": {
+    "runs": 5,
+    "throughput_avg": 71863.0,
+    "throughput_min": 67784.046875,
+    "throughput_max": 78039.265625,
+    "p95_avg": 3.49622,
+    "p95_min": 3.2026,
+    "p95_max": 3.7042,
+    "wall_avg": 3.57088
+  },
+  "inmem": {
+    "runs": 5,
+    "throughput_avg": 390715.221875,
+    "throughput_min": 250538.296875,
+    "throughput_max": 501665.6875,
+    "p95_avg": 0.61472,
+    "p95_min": 0.4126,
+    "p95_max": 0.9115,
+    "wall_avg": 0.7026
+  }
+}
