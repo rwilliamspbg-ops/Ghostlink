@@ -380,7 +380,9 @@ pub fn execute_pipeline(
         let tokens_in_batch = (token_count - batch_start_token).min(micro_batch);
         let payload_len = (tokens_in_batch.max(1) * 16).max(32);
 
-        let mut payload = recycler_ring.pop().unwrap_or_else(|| Vec::with_capacity(payload_len));
+        let mut payload = recycler_ring
+            .pop()
+            .unwrap_or_else(|| Vec::with_capacity(payload_len));
         payload.resize(payload_len, 0.0);
         for (idx, val) in payload.iter_mut().enumerate() {
             *val = (batch_idx as f32 * 0.01) + (idx as f32 * 0.0001);
@@ -704,7 +706,12 @@ fn spawn_tcp_loopback_bridge(
 
         loop {
             let read_start = Instant::now();
-            match read_transport_batch(&mut reader, source_stage, reader_auth_token.as_deref(), &mut payload_buf) {
+            match read_transport_batch(
+                &mut reader,
+                source_stage,
+                reader_auth_token.as_deref(),
+                &mut payload_buf,
+            ) {
                 Ok(Some(batch)) => {
                     total_read_ms += read_start.elapsed().as_secs_f32() * 1000.0;
                     if output_tx.send(batch).is_err() {
@@ -1188,7 +1195,8 @@ mod tests {
         };
         let mut encoded = Vec::new();
         let mut frame_buf = Vec::new();
-        write_transport_batch(&mut encoded, &batch, 0, Some("token-a"), &mut frame_buf).expect("encode frame");
+        write_transport_batch(&mut encoded, &batch, 0, Some("token-a"), &mut frame_buf)
+            .expect("encode frame");
 
         let mut cursor = Cursor::new(encoded);
         let mut payload_buf = Vec::new();
@@ -1206,7 +1214,8 @@ mod tests {
         };
         let mut encoded = Vec::new();
         let mut frame_buf = Vec::new();
-        write_transport_batch(&mut encoded, &batch, 1, Some("token"), &mut frame_buf).expect("encode frame");
+        write_transport_batch(&mut encoded, &batch, 1, Some("token"), &mut frame_buf)
+            .expect("encode frame");
 
         let mut cursor = Cursor::new(encoded);
         let mut payload_buf = Vec::new();
