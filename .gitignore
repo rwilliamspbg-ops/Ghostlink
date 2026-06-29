@@ -11,3 +11,6 @@ third_party/mohawk_gui/certs/
 
 # Local runtime output and diagnostics artifacts
 tmp/
+
+# Local quickstart config bootstrap artifact
+ghostlink.toml

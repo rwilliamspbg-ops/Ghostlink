@@ -47,6 +47,15 @@ cd Ghostlink
 cargo build --workspace
 ```
 
+## Start Here (Fastest Path)
+
+```bash
+bash scripts/quickstart.sh
+```
+
+This command checks prerequisites, bootstraps `ghostlink.toml`, runs a local smoke flow, and prints the next commands to continue.
+For copy/paste onboarding and common first-run fixes, see [docs/QUICKSTART.md](docs/QUICKSTART.md).
+
 ## Usage
 
 ```bash
