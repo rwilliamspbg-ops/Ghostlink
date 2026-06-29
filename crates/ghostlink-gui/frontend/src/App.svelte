@@ -33,6 +33,8 @@
   let chatHistory = [];
   let clusterNodes = [];
   let clusterSummary = 'No cluster preview loaded.';
+  let validationTier = 'fast';
+  let validationReport = null;
   let uiTheme = 'neon';
   let fontScale = 1;
   let reducedMotion = false;
@@ -255,6 +257,22 @@
     }
   }
 
+  async function runValidation() {
+    busy = true;
+    validationReport = null;
+    try {
+      const report = await invoke('run_validation_tier', { tier: validationTier });
+      validationReport = report;
+      status = report.ok ? 'Validation completed successfully' : 'Validation found failures';
+      output = report.summary;
+    } catch (err) {
+      status = 'Validation run failed';
+      output = String(err);
+    } finally {
+      busy = false;
+    }
+  }
+
   onMount(async () => {
     loadPreferences();
     applyVisualPreferences();
@@ -293,6 +311,11 @@
           <button class="primary" on:click={() => run('run_cluster_start', { nodeCount: 2, basePort: 46000 })} disabled={busy}>Start Cluster</button>
           <button on:click={() => run('run_flow_quick')} disabled={busy}>Run Flow</button>
           <button on:click={() => run('run_probe', { nodeId: 'studio-local', full: false })} disabled={busy}>Probe Host</button>
+          <select bind:value={validationTier}>
+            <option value="fast">Validation: Fast</option>
+            <option value="full">Validation: Full</option>
+          </select>
+          <button on:click={runValidation} disabled={busy}>Run Validation</button>
           <button on:click={loadSnapshot} disabled={busy}>Refresh Snapshot</button>
         </div>
       </header>
@@ -305,6 +328,23 @@
           </article>
         {/each}
       </section>
+      {#if validationReport}
+        <section class="validation-report">
+          <h3>{validationReport.tier.toUpperCase()} Validation</h3>
+          <p>{validationReport.summary}</p>
+          <div class="validation-steps">
+            {#each validationReport.steps as step}
+              <article class="validation-step" class:ok={step.ok} class:fail={!step.ok}>
+                <h4>{step.name}</h4>
+                <p>{step.ok ? 'PASS' : 'FAIL'} · {step.durationMs} ms</p>
+                {#if !step.ok && step.stderr}
+                  <pre>{step.stderr}</pre>
+                {/if}
+              </article>
+            {/each}
+          </div>
+        </section>
+      {/if}
     {:else if activeTab === 'Cluster'}
       <header class="hero">
         <h1>Cluster Operations</h1>

@@ -322,6 +322,65 @@ button:disabled {
   border-color: rgba(255, 190, 92, 0.5);
 }
 
+.validation-report {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: rgba(16, 39, 55, 0.72);
+  padding: 0.8rem;
+  display: grid;
+  gap: 0.65rem;
+}
+
+.validation-report h3 {
+  margin: 0;
+}
+
+.validation-report p {
+  margin: 0;
+  color: var(--muted);
+}
+
+.validation-steps {
+  display: grid;
+  gap: 0.55rem;
+}
+
+.validation-step {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 0.65rem;
+  background: rgba(0, 0, 0, 0.18);
+}
+
+.validation-step.ok {
+  border-color: rgba(63, 209, 159, 0.45);
+}
+
+.validation-step.fail {
+  border-color: rgba(255, 140, 140, 0.45);
+}
+
+.validation-step h4 {
+  margin: 0;
+}
+
+.validation-step p {
+  margin: 0.35rem 0 0;
+  font-size: 0.83rem;
+}
+
+.validation-step pre {
+  margin: 0.5rem 0 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.3);
+  padding: 0.55rem;
+  white-space: pre-wrap;
+  max-height: 180px;
+  overflow: auto;
+  font-size: 0.76rem;
+}
+
 .settings-editor {
   display: grid;
   gap: 0.55rem;

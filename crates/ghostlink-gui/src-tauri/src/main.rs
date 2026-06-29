@@ -5,6 +5,7 @@ use serde_json::Value;
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
+use std::time::Instant;
 
 #[derive(Serialize)]
 struct StudioStatus {
@@ -31,6 +32,7 @@ fn main() {
             studio_snapshot,
             cluster_preview,
             list_model_presets,
+            run_validation_tier,
             load_ghostlink_config,
             save_ghostlink_config,
             run_doctor,
@@ -190,6 +192,24 @@ struct ChatResult {
 }
 
 #[derive(Serialize)]
+struct ValidationStep {
+    name: String,
+    ok: bool,
+    exit_code: Option<i32>,
+    duration_ms: u128,
+    stdout: String,
+    stderr: String,
+}
+
+#[derive(Serialize)]
+struct ValidationReport {
+    tier: String,
+    ok: bool,
+    summary: String,
+    steps: Vec<ValidationStep>,
+}
+
+#[derive(Serialize)]
 struct ClusterNodeCard {
     id: String,
     acceleration: String,
@@ -280,6 +300,66 @@ fn list_model_presets() -> Vec<ModelPreset> {
             quant: "Int4".to_string(),
         },
     ]
+}
+
+#[tauri::command]
+fn run_validation_tier(tier: String) -> Result<ValidationReport, String> {
+    let root = repo_root();
+    let tier_norm = tier.trim().to_ascii_lowercase();
+    let mut steps = Vec::new();
+
+    match tier_norm.as_str() {
+        "fast" => {
+            steps.push(run_command_step(
+                "cargo-test-ghost-link",
+                "cargo",
+                &["test", "-p", "ghost-link"],
+                &root,
+            )?);
+            steps.push(run_command_step(
+                "doctor-json",
+                "cargo",
+                &[
+                    "run",
+                    "-p",
+                    "ghost-link",
+                    "--",
+                    "doctor",
+                    "--json",
+                    "./tmp/studio-validation-doctor.json",
+                ],
+                &root,
+            )?);
+        }
+        "full" => {
+            steps.push(run_command_step(
+                "full-validation-script",
+                "bash",
+                &["scripts/run_full_validation.sh"],
+                &root,
+            )?);
+        }
+        other => {
+            return Err(format!(
+                "unknown validation tier '{}'; expected 'fast' or 'full'",
+                other
+            ));
+        }
+    }
+
+    let ok = steps.iter().all(|step| step.ok);
+    let passed = steps.iter().filter(|step| step.ok).count();
+    let failed = steps.len().saturating_sub(passed);
+
+    Ok(ValidationReport {
+        tier: tier_norm,
+        ok,
+        summary: format!(
+            "{} step(s) passed, {} step(s) failed",
+            passed, failed
+        ),
+        steps,
+    })
 }
 
 #[tauri::command]
@@ -543,6 +623,29 @@ fn run_ghostlink_command(args: Vec<&str>) -> Result<CommandResult, String> {
         command: rendered,
         ok: output.status.success(),
         exit_code: output.status.code(),
+        stdout: String::from_utf8_lossy(&output.stdout).to_string(),
+        stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+    })
+}
+
+fn run_command_step(
+    name: &str,
+    program: &str,
+    args: &[&str],
+    root: &PathBuf,
+) -> Result<ValidationStep, String> {
+    let start = Instant::now();
+    let output = Command::new(program)
+        .args(args)
+        .current_dir(root)
+        .output()
+        .map_err(|err| format!("failed to execute {}: {}", name, err))?;
+
+    Ok(ValidationStep {
+        name: name.to_string(),
+        ok: output.status.success(),
+        exit_code: output.status.code(),
+        duration_ms: start.elapsed().as_millis(),
         stdout: String::from_utf8_lossy(&output.stdout).to_string(),
         stderr: String::from_utf8_lossy(&output.stderr).to_string(),
     })

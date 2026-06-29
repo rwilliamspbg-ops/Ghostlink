@@ -21,6 +21,7 @@ This directory contains the Ghostlink Studio desktop application scaffold.
 - Chat tab keeps a recent exchange history for iterative testing
 - First-launch onboarding modal guides users through Cluster/Models/Chat/Doctor flow
 - Settings tab now includes theme, font scaling, reduced-motion, and high-contrast preferences persisted locally
+- Home tab now supports one-click `fast` and `full` validation tiers with structured step results
 
 ## Dev Notes
 
