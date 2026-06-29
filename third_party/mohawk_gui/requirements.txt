@@ -42,7 +42,7 @@ netifaces>=0.11.0
 # FastAPI for backend services
 fastapi>=0.138.1
 uvicorn>=0.24.0
-requests>=2.31.0
+requests>=2.34.2
 
 # WebSockets for metrics streaming
 websockets>=11.0
