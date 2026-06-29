@@ -14,6 +14,8 @@ This directory contains the Ghostlink Studio desktop application scaffold.
 - Frontend quick actions invoke real backend commands and render output in details panel
 - Home/Cluster/Doctor tabs are interactive and backed by runtime command calls
 - Startup snapshot now reports environment/config readiness cards from backend checks
+- Models tab verifies Hugging Face repository/file accessibility via `scripts/verify_hf_models.py`
+- Chat tab provides prompt/model/parameter controls with backend-selection preview responses
 
 ## Dev Notes
 

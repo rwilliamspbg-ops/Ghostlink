@@ -91,6 +91,15 @@ body {
   flex-wrap: wrap;
 }
 
+.actions input {
+  min-width: 220px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.2);
+  color: var(--text);
+  padding: 0.55rem 0.65rem;
+}
+
 button {
   border: 1px solid var(--border);
   background: rgba(255, 255, 255, 0.03);
@@ -149,6 +158,68 @@ button:disabled {
 
 .doctor-check .fix {
   color: #b8f8de;
+}
+
+.model-check {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(140px, 1fr));
+  gap: 0.75rem;
+}
+
+.chat-panel {
+  display: grid;
+  gap: 0.8rem;
+}
+
+.chat-panel label {
+  display: grid;
+  gap: 0.35rem;
+  color: var(--muted);
+  font-size: 0.86rem;
+}
+
+.chat-panel input,
+.chat-panel textarea {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.2);
+  color: var(--text);
+  padding: 0.55rem 0.65rem;
+}
+
+.chat-panel textarea {
+  min-height: 130px;
+  resize: vertical;
+}
+
+.chat-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 0.8rem;
+}
+
+.chat-controls .checkbox {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.chat-response {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: rgba(16, 39, 55, 0.72);
+  padding: 0.8rem;
+}
+
+.chat-response h3 {
+  margin: 0;
+  font-size: 0.95rem;
+}
+
+.chat-response p {
+  margin: 0.55rem 0 0;
+  color: #d8e7f5;
 }
 
 .settings-editor {

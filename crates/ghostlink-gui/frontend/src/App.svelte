@@ -19,6 +19,15 @@
   let configContent = '';
   let configLoaded = false;
   let doctorSummary = null;
+  let modelRepo = 'sshleifer/tiny-gpt2';
+  let modelFile = 'config.json';
+  let modelCheck = null;
+  let chatPrompt = '';
+  let chatModel = 'ghostlink-preview-7b';
+  let chatTemperature = 0.7;
+  let chatMaxTokens = 256;
+  let chatDistributed = true;
+  let chatResult = null;
   let busy = false;
 
   async function loadSnapshot() {
@@ -97,6 +106,48 @@
       await loadSnapshot();
     } catch (err) {
       status = 'Doctor run failed';
+      output = String(err);
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function verifyModel() {
+    busy = true;
+    modelCheck = null;
+    try {
+      const result = await invoke('verify_hf_repo', {
+        repo: modelRepo,
+        file: modelFile,
+      });
+      modelCheck = result;
+      status = result.ok ? 'Model verification passed' : 'Model verification failed';
+      output = [result.stdout?.trim(), result.stderr?.trim()].filter(Boolean).join('\n\n');
+    } catch (err) {
+      status = 'Model verification failed';
+      output = String(err);
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function runChat() {
+    busy = true;
+    chatResult = null;
+    try {
+      const result = await invoke('chat_infer', {
+        prompt: chatPrompt,
+        model: chatModel,
+        temperature: Number(chatTemperature),
+        maxTokens: Number(chatMaxTokens),
+        distributed: chatDistributed,
+      });
+      chatResult = result;
+      status = `Chat response generated via ${result.backend}`;
+      command = 'chat_infer';
+      output = result.trace;
+    } catch (err) {
+      status = 'Chat generation failed';
       output = String(err);
     } finally {
       busy = false;
@@ -190,6 +241,64 @@
               {/if}
             </article>
           {/each}
+        </section>
+      {/if}
+    {:else if activeTab === 'Models'}
+      <header class="hero">
+        <h1>Model Management</h1>
+        <p>Verify Hugging Face model accessibility and basic repository readiness.</p>
+        <div class="actions">
+          <input bind:value={modelRepo} placeholder="repo id (owner/model)" />
+          <input bind:value={modelFile} placeholder="file" />
+          <button class="primary" on:click={verifyModel} disabled={busy}>Verify Model</button>
+        </div>
+      </header>
+      {#if modelCheck}
+        <section class="model-check">
+          <article class="metric-card">
+            <span>Repository</span>
+            <strong>{modelCheck.repo}</strong>
+          </article>
+          <article class="metric-card">
+            <span>File</span>
+            <strong>{modelCheck.file}</strong>
+          </article>
+          <article class="metric-card">
+            <span>Status</span>
+            <strong>{modelCheck.ok ? 'PASS' : 'FAIL'}</strong>
+          </article>
+        </section>
+      {/if}
+    {:else if activeTab === 'Chat'}
+      <header class="hero">
+        <h1>Chat / Inference</h1>
+        <p>Preview response behavior while backend streaming integration is in progress.</p>
+      </header>
+      <section class="chat-panel">
+        <label>Model
+          <input bind:value={chatModel} placeholder="model name" />
+        </label>
+        <label>Prompt
+          <textarea bind:value={chatPrompt} placeholder="Ask something..." spellcheck="false" />
+        </label>
+        <div class="chat-controls">
+          <label>Temperature
+            <input type="range" min="0" max="1" step="0.1" bind:value={chatTemperature} />
+            <span>{chatTemperature}</span>
+          </label>
+          <label>Max Tokens
+            <input type="number" min="32" max="2048" step="32" bind:value={chatMaxTokens} />
+          </label>
+          <label class="checkbox">
+            <input type="checkbox" bind:checked={chatDistributed} /> Distributed backend
+          </label>
+          <button class="primary" on:click={runChat} disabled={busy}>Generate</button>
+        </div>
+      </section>
+      {#if chatResult}
+        <section class="chat-response">
+          <h3>{chatResult.model} ({chatResult.backend})</h3>
+          <p>{chatResult.response}</p>
         </section>
       {/if}
     {:else if activeTab === 'Settings'}

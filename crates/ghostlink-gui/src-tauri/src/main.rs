@@ -35,7 +35,9 @@ fn main() {
             run_doctor_with_json,
             run_probe,
             run_flow_quick,
-            run_cluster_start
+            run_cluster_start,
+            verify_hf_repo,
+            chat_infer
         ])
         .run(tauri::generate_context!())
         .expect("error while running Ghostlink Studio");
@@ -166,6 +168,23 @@ struct DoctorJsonSummary {
     warn: usize,
     fail: usize,
     checks: Vec<DoctorCheckSummary>,
+}
+
+#[derive(Serialize)]
+struct ModelVerifyResult {
+    repo: String,
+    file: String,
+    ok: bool,
+    stdout: String,
+    stderr: String,
+}
+
+#[derive(Serialize)]
+struct ChatResult {
+    backend: String,
+    model: String,
+    response: String,
+    trace: String,
 }
 
 #[tauri::command]
@@ -329,6 +348,82 @@ fn run_cluster_start(node_count: usize, base_port: u16) -> Result<CommandResult,
     ])
 }
 
+#[tauri::command]
+fn verify_hf_repo(repo: String, file: String) -> Result<ModelVerifyResult, String> {
+    let root = repo_root();
+    let python = preferred_python();
+    let output = Command::new(&python)
+        .arg("scripts/verify_hf_models.py")
+        .arg("--repo")
+        .arg(repo.as_str())
+        .arg("--file")
+        .arg(file.as_str())
+        .current_dir(&root)
+        .output()
+        .map_err(|err| format!("failed to execute verify_hf_models.py: {}", err))?;
+
+    Ok(ModelVerifyResult {
+        repo,
+        file,
+        ok: output.status.success(),
+        stdout: String::from_utf8_lossy(&output.stdout).to_string(),
+        stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+    })
+}
+
+#[tauri::command]
+fn chat_infer(
+    prompt: String,
+    model: String,
+    temperature: f32,
+    max_tokens: u32,
+    distributed: bool,
+) -> Result<ChatResult, String> {
+    let backend = if distributed {
+        "distributed-flow"
+    } else {
+        "single-node"
+    };
+
+    let concise_prompt = prompt.trim();
+    if concise_prompt.is_empty() {
+        return Err("prompt cannot be empty".to_string());
+    }
+
+    let style_hint = if temperature >= 0.9 {
+        "creative"
+    } else if temperature >= 0.6 {
+        "balanced"
+    } else {
+        "deterministic"
+    };
+
+    let response = format!(
+        "Model {} ({}) suggests: '{}' -> plan a {} response under {} tokens. This Studio preview uses Ghost-Link orchestration signals and will be replaced with live streaming generation in the next integration slice.",
+        model,
+        backend,
+        concise_prompt,
+        style_hint,
+        max_tokens
+    );
+
+    let trace = format!(
+        "backend={} temperature={:.2} max_tokens={} distributed={} prompt_len={}",
+        backend,
+        temperature,
+        max_tokens,
+        distributed,
+        concise_prompt.len()
+    );
+
+    Ok(ChatResult {
+        backend: backend.to_string(),
+        model,
+        response,
+        trace,
+    })
+}
+
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("..")
@@ -356,6 +451,15 @@ fn run_ghostlink_command(args: Vec<&str>) -> Result<CommandResult, String> {
         stdout: String::from_utf8_lossy(&output.stdout).to_string(),
         stderr: String::from_utf8_lossy(&output.stderr).to_string(),
     })
+}
+
+fn preferred_python() -> String {
+    if command_version("python3", &["--version"]).is_some() {
+        "python3".to_string()
+    } else {
+        "python".to_string()
+    }
+}
 
 
 fn command_version(program: &str, args: &[&str]) -> Option<String> {
