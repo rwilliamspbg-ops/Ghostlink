@@ -124,7 +124,7 @@ class MohawkGUI(QMainWindow):
         self.tabs.addTab(self.chat_widget, "Chat Interface")
         self.tabs.addTab(self.metrics_widget, "Performance Metrics")
         self.tabs.addTab(self.sessions_widget, "Session Manager")
-        self.tabs.addTab(self.workers_widget, "Worker Config")
+        self.tabs.addTab(self.workers_widget, "Workers")
         self.tabs.addTab(self.security_widget, "Security Center")
         self.tabs.addTab(self.history_widget, "History")
 
@@ -167,12 +167,12 @@ class MohawkGUI(QMainWindow):
             elif method == "PUT":
                 response = requests.put(url, json=data, timeout=5)
             else:
-                return None
+                return {"error": f"Unsupported HTTP method: {method}"}
             
             if response.status_code in [200, 201]:
                 try:
                     return response.json()
-                except:
+                except ValueError:
                     return {"status": "ok", "code": response.status_code}
             else:
                 detail = None

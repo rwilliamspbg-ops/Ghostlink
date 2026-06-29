@@ -61,15 +61,15 @@ python3 scripts/check_perf_drift.py --baseline ./docs/PERF_BASELINE.json --curre
 
 # Optional TCP inflight autotuning sweep for the current host profile
 GHOSTLINK_TCP_AUTOTUNE=1 GHOSTLINK_TCP_AUTOTUNE_RUNS=3 GHOSTLINK_TCP_AUTOTUNE_CANDIDATES=32,64,128,256 \
-	cargo run -p ghost-link -- flow iprada-16gb zenbook-32gb 32 32 128 4 tcp
+  cargo run -p ghost-link -- flow iprada-16gb zenbook-32gb 32 32 128 4 tcp
 
 # Optional persistent autotune cache for repeated runs on same plan/profile
 GHOSTLINK_TCP_AUTOTUNE=1 GHOSTLINK_TCP_AUTOTUNE_CACHE=./tmp/tcp_autotune_cache.tsv \
-	cargo run -p ghost-link -- flow iprada-16gb zenbook-32gb 32 32 128 4 tcp
+  cargo run -p ghost-link -- flow iprada-16gb zenbook-32gb 32 32 128 4 tcp
 
 # Refresh cached autotune selection when retuning after environment changes
 GHOSTLINK_TCP_AUTOTUNE=1 GHOSTLINK_TCP_AUTOTUNE_REFRESH=1 \
-	cargo run -p ghost-link -- flow iprada-16gb zenbook-32gb 32 32 128 4 tcp
+  cargo run -p ghost-link -- flow iprada-16gb zenbook-32gb 32 32 128 4 tcp
 
 # Enforce stage-tail SLOs across snapshot files
 python3 scripts/validate_stage_tail_metrics.py --glob './tmp/perf_snapshot/tcp-*.json'
@@ -87,6 +87,12 @@ cargo test -p ghostlink-core --test integration
 # Lint all targets, including benches
 cargo clippy --workspace --all-targets -- -D warnings
 
+# Parse-check all Rust source files (including non-exported modules)
+find crates -name '*.rs' -print0 | xargs -0 -n1 rustfmt --check --edition 2021
+
+# Validate GUI endpoint contract drift against mock backend
+python3 scripts/validate_gui_api_contract.py
+
 # Verify Hugging Face model listing/download path
 python3 scripts/verify_hf_models.py
 
@@ -99,12 +105,13 @@ python3 scripts/summarize_criterion_report.py --criterion-root target/criterion 
 
 ## Current Counts
 
-The current validated workspace contains 112 passing tests:
+Test totals can change as modules evolve. For current totals in your environment, run:
 
-- 3 CLI tests in `crates/ghost-link/src/main.rs`
-- 75 library tests in `ghostlink-core`
-- 7 tests in `crates/ghostlink-core/tests/common.rs`
-- 27 integration tests in `crates/ghostlink-core/tests/integration.rs`
+```bash
+cargo test --workspace -- --list | wc -l
+```
+
+Use CI workflow summaries as the source of truth for branch-level totals.
 
 ## Coverage Status
 
@@ -136,3 +143,4 @@ Current benchmark targets cover:
 - Full hardware probing only exercises `nvidia-smi` and `lspci` when those tools exist on the host
 - Health monitoring uses collected cluster metrics and heartbeat state instead of direct ping-style network probes
 - Tensor migration and dynamic cluster rebalance remain incomplete
+- GUI function-matrix validation currently runs as a local/devcontainer procedure, not a dedicated CI workflow job

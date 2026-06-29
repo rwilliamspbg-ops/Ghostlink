@@ -99,6 +99,41 @@ async def connect_workers() -> dict:
     return {"status": "ok", "connected": 2}
 
 
+@app.post("/api/workers/add")
+async def add_worker(payload: dict[str, Any]) -> dict:
+    host = str(payload.get("host", "")).strip()
+    port = int(payload.get("port", 0))
+    if not host or port <= 0:
+        return {"status": "error", "error": "host and valid port are required"}
+    return {
+        "status": "ok",
+        "worker": {
+            "id": "worker_new",
+            "host": host,
+            "port": port,
+            "status": "Connected",
+        },
+    }
+
+
+@app.post("/api/queue")
+async def enqueue_job(payload: dict[str, Any]) -> dict:
+    priority = str(payload.get("priority", "normal")).strip().lower()
+    if priority not in {"high", "normal"}:
+        return {"status": "error", "error": f"unsupported priority: {priority}"}
+    return {"status": "ok", "priority": priority, "queued": True}
+
+
+@app.post("/api/security/jwt/refresh")
+async def refresh_jwt() -> dict:
+    return {"status": "ok", "refreshed": True}
+
+
+@app.post("/api/security/pqc/enable")
+async def enable_pqc() -> dict:
+    return {"status": "ok", "pqc_enabled": True}
+
+
 @app.get("/api/metrics")
 async def metrics() -> dict:
     # Keep values in GUI progress bar ranges.

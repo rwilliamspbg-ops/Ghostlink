@@ -20,6 +20,7 @@ cargo build --workspace
 cargo fmt
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
+python3 scripts/validate_gui_api_contract.py
 ```
 
 If you touch integration behavior, also run:
@@ -43,9 +44,13 @@ Package-owned integration tests live in `crates/ghostlink-core/tests/`.
 If behavior changes, update the relevant docs in:
 
 - `README.md`
+- `docs/INDEX.md`
 - `TESTING.md`
 - `docs/ARCHITECTURE.md`
 - `docs/EXAMPLES.md`
+
+If a status document is no longer current, move it to `docs/archive/` and update
+`docs/archive/INDEX.md`.
 
 ## PR Expectations
 

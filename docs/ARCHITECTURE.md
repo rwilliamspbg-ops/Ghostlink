@@ -14,12 +14,14 @@ Ghostlink/
 │   │   │   ├── accelerator.rs
 │   │   │   ├── cluster.rs
 │   │   │   ├── dashboard.rs
+│   │   │   ├── discovery.rs
 │   │   │   ├── health.rs
 │   │   │   ├── host.rs
 │   │   │   ├── load_balance.rs
 │   │   │   ├── planning.rs
 │   │   │   ├── protocol.rs
 │   │   │   ├── ring.rs
+│   │   │   ├── runtime.rs
 │   │   │   └── xdp.rs
 │   │   └── tests/
 │   │       ├── common.rs

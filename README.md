@@ -2,13 +2,15 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![CI](https://github.com/rwilliamspbg-ops/Ghostlink/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/rwilliamspbg-ops/Ghostlink/actions/workflows/ci.yml)
-[![Docs](https://img.shields.io/github/last-commit/rwilliamspbg-ops/Ghostlink/docs/runtime-probe-docs/.github/workflows/docs.yml?label=Docs%20workflow)](https://github.com/rwilliamspbg-ops/Ghostlink/actions/workflows/docs.yml)
-[![Lint](https://img.shields.io/github/last-commit/rwilliamspbg-ops/Ghostlink/docs/runtime-probe-docs/.github/workflows/lint.yml?label=Lint%20workflow)](https://github.com/rwilliamspbg-ops/Ghostlink/actions/workflows/lint.yml)
-[![Tests](https://img.shields.io/github/last-commit/rwilliamspbg-ops/Ghostlink/docs/runtime-probe-docs/.github/workflows/tests.yml?label=Tests%20workflow)](https://github.com/rwilliamspbg-ops/Ghostlink/actions/workflows/tests.yml)
-[![HF Model Verify](https://img.shields.io/github/last-commit/rwilliamspbg-ops/Ghostlink/docs/runtime-probe-docs/.github/workflows/hf-model-verify.yml?label=HF%20Model%20Verify%20workflow)](https://github.com/rwilliamspbg-ops/Ghostlink/actions/workflows/hf-model-verify.yml)
+[![Production Gate](https://github.com/rwilliamspbg-ops/Ghostlink/actions/workflows/production-gate.yml/badge.svg?branch=main)](https://github.com/rwilliamspbg-ops/Ghostlink/actions/workflows/production-gate.yml)
+[![Lint](https://github.com/rwilliamspbg-ops/Ghostlink/actions/workflows/lint.yml/badge.svg?branch=main)](https://github.com/rwilliamspbg-ops/Ghostlink/actions/workflows/lint.yml)
+[![Tests](https://github.com/rwilliamspbg-ops/Ghostlink/actions/workflows/tests.yml/badge.svg?branch=main)](https://github.com/rwilliamspbg-ops/Ghostlink/actions/workflows/tests.yml)
+[![Docs](https://github.com/rwilliamspbg-ops/Ghostlink/actions/workflows/docs.yml/badge.svg?branch=main)](https://github.com/rwilliamspbg-ops/Ghostlink/actions/workflows/docs.yml)
+[![HF Model Verify](https://github.com/rwilliamspbg-ops/Ghostlink/actions/workflows/hf-model-verify.yml/badge.svg?branch=main)](https://github.com/rwilliamspbg-ops/Ghostlink/actions/workflows/hf-model-verify.yml)
 [![Benchmarks](https://github.com/rwilliamspbg-ops/Ghostlink/actions/workflows/benchmarks.yml/badge.svg?branch=main)](https://github.com/rwilliamspbg-ops/Ghostlink/actions/workflows/benchmarks.yml)
+[![codecov](https://codecov.io/gh/rwilliamspbg-ops/Ghostlink/branch/main/graph/badge.svg)](https://codecov.io/gh/rwilliamspbg-ops/Ghostlink)
 [![Rust](https://img.shields.io/badge/Rust-stable-orange.svg)](https://www.rust-lang.org)
-[![Coverage](https://img.shields.io/badge/Coverage-not%20measured-lightgrey)](TESTING.md)
+[![Python](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org)
 
 Ghost-Link is an open-source LAN fabric for turning spare local GPUs and CPU hosts into a shared execution surface for large-model inference and training. The project focuses on low-overhead runtime primitives, binary discovery, host-aware autotuning, and runtime-selected execution backends rather than heavy orchestration.
 
@@ -106,9 +108,9 @@ cargo run -p ghost-link -- flow iprada-16gb zenbook-32gb 32 32 128 4 tcp
 
 # Validate runtime metrics against SLO thresholds
 python3 scripts/validate_flow_metrics.py \
-	--file ./tmp/flow-metrics.json \
-	--transport tcp \
-	--profile production
+  --file ./tmp/flow-metrics.json \
+  --transport tcp \
+  --profile production
 
 # Generate repeatable perf snapshots for tcp/inmem and export summary JSON
 # Warmup runs reduce cold-start noise and are excluded from summary statistics.
@@ -116,13 +118,13 @@ python3 scripts/flow_perf_snapshot.py --runs 5 --warmup-runs 1 --output-dir ./tm
 
 # Compare snapshot against committed baseline and fail on relative regressions
 python3 scripts/check_perf_drift.py \
-	--baseline ./docs/PERF_BASELINE.json \
-	--current ./tmp/perf_snapshot/summary.json
+  --baseline ./docs/PERF_BASELINE.json \
+  --current ./tmp/perf_snapshot/summary.json
 
 # Stress profile baseline (512 tokens, micro-batch 8)
 python3 scripts/check_perf_drift.py \
-	--baseline ./docs/PERF_BASELINE_STRESS.json \
-	--current ./tmp/perf_snapshot_stress/summary.json
+  --baseline ./docs/PERF_BASELINE_STRESS.json \
+  --current ./tmp/perf_snapshot_stress/summary.json
 
 # Analyze per-stage bridge timing distributions across runs
 python3 scripts/analyze_flow_stage_metrics.py --glob './tmp/perf_snapshot_stress/tcp-*.json'
@@ -135,10 +137,10 @@ python3 scripts/validate_flow_canary.py --summary ./tmp/perf_snapshot_stress/sum
 
 # Optional: temporarily override thresholds instead of baseline policy defaults
 python3 scripts/check_perf_drift.py \
-	--baseline ./docs/PERF_BASELINE.json \
-	--current ./tmp/perf_snapshot/summary.json \
-	--max-throughput-drop-ratio 0.30 \
-	--max-p95-rise-ratio 0.60
+  --baseline ./docs/PERF_BASELINE.json \
+  --current ./tmp/perf_snapshot/summary.json \
+  --max-throughput-drop-ratio 0.30 \
+  --max-p95-rise-ratio 0.60
 
 # Verify Hugging Face model availability and download access
 python3 -m pip install huggingface_hub
@@ -149,6 +151,9 @@ python3 scripts/verify_hf_models.py --repo mistralai/Mistral-7B-v0.1 --file conf
 
 # Export Criterion means for trend dashboards/artifacts
 python3 scripts/summarize_criterion_report.py --criterion-root target/criterion --output artifacts/criterion-summary.json
+
+# Validate that GUI API calls in main_window are implemented by mock backend
+python3 scripts/validate_gui_api_contract.py
 ```
 
 The Mohawk GUI sources are vendored under [third_party/mohawk_gui](third_party/mohawk_gui). Use the `ghost-link gui` command to launch it from this repository.
@@ -166,13 +171,15 @@ If the host does not provide tools such as `nvidia-smi` or `lspci`, full mode fa
 ## Docs Index
 
 - [README.md](README.md): quick start, commands, and project status.
-- [TESTING.md](TESTING.md): test structure, validated commands, and known gaps.
-- [VERIFICATION.md](VERIFICATION.md): current verification scope and totals.
+- [docs/INDEX.md](docs/INDEX.md): canonical documentation index and ownership.
+- [TESTING.md](TESTING.md): validated commands, CI gates, and known gaps.
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): component-level architecture and responsibilities.
 - [docs/EXAMPLES.md](docs/EXAMPLES.md): runnable CLI and API usage examples.
 - [docs/MOHAWK_GUI.md](docs/MOHAWK_GUI.md): GUI setup, diagnostics, MCP JSON wiring, and troubleshooting.
 - [docs/SECURITY_MODEL.md](docs/SECURITY_MODEL.md): threat model and production hardening guidance.
 - [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md): operational troubleshooting and debugging tips.
+- [docs/PRODUCTION_READINESS.md](docs/PRODUCTION_READINESS.md): release and operations readiness review checklist.
+- [docs/archive/INDEX.md](docs/archive/INDEX.md): archived historical docs and migration notes.
 - [CONTRIBUTING.md](CONTRIBUTING.md): contributor setup and pre-PR checks.
 - [CHANGELOG.md](CHANGELOG.md): release-oriented change history.
 
@@ -186,6 +193,7 @@ Ghostlink/
 │   │   │   ├── accelerator.rs
 │   │   │   ├── cluster.rs
 │   │   │   ├── dashboard.rs
+│   │   │   ├── discovery.rs
 │   │   │   ├── health.rs
 │   │   │   ├── host.rs
 │   │   │   ├── lib.rs
@@ -193,6 +201,7 @@ Ghostlink/
 │   │   │   ├── planning.rs
 │   │   │   ├── protocol.rs
 │   │   │   ├── ring.rs
+│   │   │   ├── runtime.rs
 │   │   │   └── xdp.rs
 │   │   └── tests/
 │   │       ├── common.rs
@@ -211,9 +220,8 @@ The current workspace validation passes:
 
 - `cargo test --workspace`
 - `cargo clippy --workspace --all-targets -- -D warnings`
+- `python3 scripts/validate_gui_api_contract.py`
 - `python3 scripts/verify_hf_models.py`
-
-That currently covers 112 passing tests across CLI, library, and package-owned integration targets.
 
 ## Benchmark Notes
 
@@ -233,8 +241,8 @@ Measured on 2026-06-27 in this development container (5 runs per mode, `exec_tok
 ```bash
 for mode in tcp inmem; do
   for i in 1 2 3 4 5; do
-		GHOSTLINK_FLOW_METRICS_JSON=./tmp/flow-${mode}-${i}.json \
-			cargo run -p ghost-link -- flow iprada-16gb zenbook-32gb 32 32 256 4 $mode
+    GHOSTLINK_FLOW_METRICS_JSON=./tmp/flow-${mode}-${i}.json \
+      cargo run -p ghost-link -- flow iprada-16gb zenbook-32gb 32 32 256 4 $mode
   done
 done
 
@@ -266,13 +274,13 @@ python3 scripts/flow_perf_snapshot.py --runs 5 --warmup-runs 1 --output-dir ./tm
 ### Improvement Priorities
 
 1. Recover in-memory regression while keeping TCP gains.
-	The transport optimization significantly improved TCP mode but inmem dropped. Isolate shared serialization/path overhead and keep transport-specific logic out of inmem execution.
+  The transport optimization significantly improved TCP mode but inmem dropped. Isolate shared serialization/path overhead and keep transport-specific logic out of inmem execution.
 2. Narrow remaining TCP gap to inmem.
-	TCP is now much closer but still lower throughput and higher p95. Next targets: frame reuse with pooled buffers, larger batch payloads, and reducing per-batch allocation churn.
+  TCP is now much closer but still lower throughput and higher p95. Next targets: frame reuse with pooled buffers, larger batch payloads, and reducing per-batch allocation churn.
 3. Improve benchmark determinism before setting tighter SLOs.
-	Placement and host-profile variability can skew mode comparisons. Pin a deterministic benchmark profile and fixed assignment layout for apples-to-apples trend tracking.
+  Placement and host-profile variability can skew mode comparisons. Pin a deterministic benchmark profile and fixed assignment layout for apples-to-apples trend tracking.
 4. Tighten CI regression gates with rolling baselines.
-	Keep absolute floors and maintain mode-specific relative drift policies in docs/PERF_BASELINE.json.
+  Keep absolute floors and maintain mode-specific relative drift policies in docs/PERF_BASELINE.json.
 
 ## Limitations
 

@@ -1,137 +1,164 @@
-//! Key/Value Cache Module - Production Implementation with Zero-Copy Ring Buffers and RoPE
+//! KV cache primitives used by staged execution experiments.
+//!
+//! This module intentionally stays self-contained so it can evolve without
+//! affecting the stable public API exported from `lib.rs`.
 
 use std::sync::{Arc, Mutex};
 
-/// Ring buffer configuration for KV cache entries  
+pub const DEFAULT_MAX_TOKENS_PER_SEQ: usize = 8192;
+pub const DEFAULT_NUM_HEADS: usize = 4;
+pub const DEFAULT_HIDDEN_DIM_PER_HEAD: usize = 64;
+
 #[derive(Clone, Copy, Debug)]
 pub struct KVCacheConfig {
-    /// Maximum number of tokens per sequence in cache (default: 8192)
-    pub max_tokens_per_seq: usize = 8192,\n        
-    /// Number of attention heads per layer 
-       pub num_heads: usize = 4, 
-    
-    /// Dimension size per head  
-       pub hidden_dim_per_head: u32 = 64,\n      
+    pub max_tokens_per_seq: usize,
+    pub num_heads: usize,
+    pub hidden_dim_per_head: usize,
 }
 
-/// KV Cache entry storing key/value projections after attention computation\n        
-#[derive(Clone)]
-pub struct KVCacheEntry {
-    /// Key projection matrix output (keys)  
-   pub keys: Vec<f32>, 
-    
-    /// Value projection matrix output (values)\n         
-        pub values: Vec<f32>, 
-    
-    
-    /// Attention mask for this layer (optional, e.g., sliding window attention) \n        
-    pub attn_mask: Option<Vec<u8>>,
-    
-    /// Positional embeddings for rotary position encoding (RoPE)\n       
-       pub rope_cos_sin_cache: Option<(Vec<f64>, Vec<f64>)>, 
-    
-    /// Sequence length currently stored in this entry 
-        pub current_len: usize,\n        
-}
-
-impl Default for KVCacheEntry {\n    
-    fn default() -> Self { 
-        
-        let dim_per_head = 256; // Typical hidden dimension per head\n        
-        Self {\n            
-            keys: vec![0.0f32; dim_per_head],\n              
-            values: vec![0.0f32; dim_per_head],\n               
-            attn_mask: None,\n                   
-            rope_cos_sin_cache: Some((vec![0.0f64; 1024], vec![0.0f64; 1024])), // RoPE cache pre-allocated\n                    
-            current_len: 0, \n       
+impl Default for KVCacheConfig {
+    fn default() -> Self {
+        Self {
+            max_tokens_per_seq: DEFAULT_MAX_TOKENS_PER_SEQ,
+            num_heads: DEFAULT_NUM_HEADS,
+            hidden_dim_per_head: DEFAULT_HIDDEN_DIM_PER_HEAD,
         }
-    }\n    
-}\n        
-
-/// Layer KV cache manager for a single attention layer with zero-copy ring buffer pattern\n        
-pub struct LayerKvCache {\n    
-    /// Configuration for cache size and dimensions 
-       pub config: KVCacheConfig,\n         
-  
-    /// Per-token key/value cache state (ring buffer)  \n        
-   entries: Arc<Mutex<Vec<KVCacheEntry>>>,\n      
+    }
 }
 
-impl Default for LayerKvCache {\n\n    
-    fn default() -> Self { 
-        
-        let num_heads = std::env::var("GHOSTLINK_KV_CACHE_NUM_HEADS")
-            .ok().and_then(|s| s.parse::<usize>().ok()).unwrap_or(4);\n         
-            
-        LayerKvCache { 
-            config: KVCacheConfig { num_heads, ..Default::default() },\n        
-   entries: Arc::new(Mutex::new(Vec::with_capacity(8192))), \n      
-}  
-}\n        
+#[derive(Clone, Debug)]
+pub struct KVCacheEntry {
+    pub keys: Vec<f32>,
+    pub values: Vec<f32>,
+    pub current_len: usize,
+}
 
-impl LayerKvCache {\n    
-    /// Initialize KV cache for a given sequence length with zero-copy ring buffer pre-allocation\n       
-    pub fn initialize(&mut self, seq_len: usize) -> Result<(), String> { 
-        
-        let capacity = std::cmp::min(seq_len as u32, 8192u32);\n            
-        
-        if !self.entries.lock().unwrap().is_empty() && seq_len > 0 {\n             
-            // Retain existing entries up to new length\n                 
-                for i in (seq_len.min(self.entries.lock().unwrap().len())..self.entries.lock().unwrap().len()).rev() { 
-                    let mut entry = self.entries.lock().unwrap();\n                    
-                        if !entry.is_empty() && i < entry.len() {\n                            
-                            let idx = *i;\n                            
-                            if idx != 0 && idx + 1 < entry.len() { \n                                
-                                let prev_idx = (idx - 1).max(0);\n                                                        
-                                        let prev_entry = &mut self.entries.lock().unwrap()[prev_idx];\n                                        
-                                            if !prev_entry.keys.is_empty() {\n                            
-                            // Update current_len for all entries\n                              
-                        prev_entry.current_len = std::cmp::min(seq_len, capacity as usize); \n                       
-                }\n                    
-}  
-            } 
-        
-        } 
-        
-        let current_entries = self.entries.lock().unwrap().capacity();\n        
-        if seq_len > 0 && current_entries < (capacity as usize) {\n             
-            // Reserve space for new entries with zero-copy ring buffer pattern\n                 
-                    unsafe { \n                        
-                self.entries
-                    .lock()
-                    .unwrap()
-                    .reserve((std::cmp::max(capacity - current_entries, 1))); 
-                                    
-}  
-                
+impl KVCacheEntry {
+    fn with_shape(config: KVCacheConfig, seq_len: usize) -> Self {
+        let shape = config.num_heads * config.hidden_dim_per_head;
+        Self {
+            keys: vec![0.0; shape],
+            values: vec![0.0; shape],
+            current_len: seq_len,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct LayerKvCache {
+    pub config: KVCacheConfig,
+    entries: Arc<Mutex<Vec<KVCacheEntry>>>,
+}
+
+impl Default for LayerKvCache {
+    fn default() -> Self {
+        Self {
+            config: KVCacheConfig::default(),
+            entries: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+}
+
+impl LayerKvCache {
+    pub fn initialize(&mut self, seq_len: usize) -> Result<(), String> {
+        if seq_len == 0 {
+            return Err("sequence length must be greater than zero".to_string());
+        }
+
+        let bounded_len = seq_len.min(self.config.max_tokens_per_seq);
+        let mut entries = self
+            .entries
+            .lock()
+            .map_err(|_| "kv cache mutex poisoned".to_string())?;
+
+        if entries.len() < bounded_len {
+            entries.resize_with(bounded_len, || {
+                KVCacheEntry::with_shape(self.config, bounded_len)
+            });
+        }
+
+        for entry in entries.iter_mut().take(bounded_len) {
+            entry.current_len = bounded_len;
+        }
+
+        entries.truncate(bounded_len);
         Ok(())
     }
 
-/// Write keys/values from attention computation result to cache with zero-copy pattern\n        
-pub fn write_kv(\n    
-    _cache: &mut LayerKvCache,\n         
-    token_idx: usize, \n      
-) -> Result<(), String> { 
-        
-    // Production implementation would use shared memory/zero-copy here instead of Vec<f32>\n           
-        if let Some(_entry) = self.entries.lock().unwrap().get_mut(token_idx).map(|e| {\n                
-            e.current_len > 0 || \n                 
-} else { 
-            
-                return Err(format!(
-                    "KV cache index {} has no initialized entries", 
-                    token_idx\n                  
-));  
-}\n    
-        
-    Ok(())
+    pub fn write_kv(
+        &mut self,
+        token_idx: usize,
+        keys: &[f32],
+        values: &[f32],
+    ) -> Result<(), String> {
+        if keys.len() != values.len() {
+            return Err("keys/values length mismatch".to_string());
+        }
+
+        let mut entries = self
+            .entries
+            .lock()
+            .map_err(|_| "kv cache mutex poisoned".to_string())?;
+
+        let entry = entries
+            .get_mut(token_idx)
+            .ok_or_else(|| format!("token index {} out of bounds", token_idx))?;
+
+        if entry.keys.len() != keys.len() {
+            return Err("incoming KV shape does not match cache entry shape".to_string());
+        }
+
+        entry.keys.copy_from_slice(keys);
+        entry.values.copy_from_slice(values);
+        Ok(())
+    }
+
+    pub fn read_kv(&self, token_idx: usize) -> Result<KVCacheEntry, String> {
+        let entries = self
+            .entries
+            .lock()
+            .map_err(|_| "kv cache mutex poisoned".to_string())?;
+
+        entries
+            .get(token_idx)
+            .cloned()
+            .ok_or_else(|| format!("token index {} out of bounds", token_idx))
+    }
+
+    pub fn len(&self) -> usize {
+        self.entries.lock().map(|v| v.len()).unwrap_or(0)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
 }
 
-/// Read KV cache for attention computation (returns flattened keys/values)\n       
-pub fn read_kv(_cache: &LayerKvCache, _token_idx: usize) -> Option<&KVCacheEntry> { 
-    
-    // Placeholder - full implementation requires proper ring buffer access pattern  
-    None 
-}\n
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-// Module-level constants  \npub const DEFAULT_MAX_TOKENS_PER_SEQ: usize = 8192;\npub const DEFAULT_NUM_HEADS: usize = 4;\n        pub const DEFAULT_HIDDEN_DIM_PER_HEAD: u32 = 64;\n        
+    #[test]
+    fn initialize_rejects_zero_len() {
+        let mut cache = LayerKvCache::default();
+        assert!(cache.initialize(0).is_err());
+    }
+
+    #[test]
+    fn initialize_and_round_trip() {
+        let mut cache = LayerKvCache::default();
+        cache.initialize(8).expect("cache should initialize");
+
+        let width = cache.config.num_heads * cache.config.hidden_dim_per_head;
+        let keys = vec![1.0_f32; width];
+        let values = vec![2.0_f32; width];
+        cache
+            .write_kv(2, &keys, &values)
+            .expect("write should succeed");
+
+        let entry = cache.read_kv(2).expect("entry should exist");
+        assert_eq!(entry.current_len, 8);
+        assert_eq!(entry.keys[0], 1.0);
+        assert_eq!(entry.values[0], 2.0);
+    }
+}
