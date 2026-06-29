@@ -56,6 +56,12 @@ bash scripts/quickstart.sh
 This command checks prerequisites, bootstraps `ghostlink.toml`, runs a local smoke flow, and prints the next commands to continue.
 For copy/paste onboarding and common first-run fixes, see [docs/QUICKSTART.md](docs/QUICKSTART.md).
 
+Run a single consolidated readiness report:
+
+```bash
+cargo run -p ghost-link -- doctor
+```
+
 ## Usage
 
 ```bash
@@ -67,6 +73,9 @@ cargo run -p ghost-link -- --config ./ghostlink.example.toml flow
 
 # Run the package-owned integration suite
 cargo test -p ghostlink-core --test integration
+
+# Run unified troubleshooting report (env/readiness/accessibility/accuracy)
+cargo run -p ghost-link -- doctor --strict
 
 # Generate a layer placement plan
 cargo run -p ghost-link -- plan

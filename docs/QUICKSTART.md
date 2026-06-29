@@ -62,6 +62,9 @@ See `docs/TROUBLESHOOTING.md` for additional fix paths.
 # Start a local 3-node discovery validation cluster
 cargo run -p ghost-link -- cluster-start 3 46000
 
+# Run one-shot doctor summary for troubleshooting and review areas
+cargo run -p ghost-link -- doctor --strict
+
 # Run full local validation suite
 bash scripts/run_full_validation.sh
 

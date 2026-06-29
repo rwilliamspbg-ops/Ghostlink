@@ -4,7 +4,7 @@ This index is the source of truth for active documentation in Ghost-Link.
 
 ## Active Docs
 
-- [../README.md](../README.md): project overview, quick start, and primary command reference.
+- [../README.md](../README.md): project overview, quick start, primary command reference, and doctor command.
 - [QUICKSTART.md](QUICKSTART.md): copy/paste first-run path and common setup fixes.
 - [../TESTING.md](../TESTING.md): validated commands, CI gate checks, and known gaps.
 - [ARCHITECTURE.md](ARCHITECTURE.md): architecture and module responsibilities.

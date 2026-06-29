@@ -332,6 +332,9 @@ enum CliCommand {
     GuiDiagnose {
         strict: bool,
     },
+    Doctor {
+        strict: bool,
+    },
     Dashboard,
     ClusterStart {
         node_count: usize,
@@ -361,6 +364,7 @@ fn execute_command(command: CliCommand) -> Result<()> {
         CliCommand::Gui { args } => launch_mohawk_gui(&args)?,
         CliCommand::GuiCheck { strict } => print_gui_readiness(strict)?,
         CliCommand::GuiDiagnose { strict } => print_gui_diagnostics(strict)?,
+        CliCommand::Doctor { strict } => print_doctor_report(strict)?,
         CliCommand::Dashboard => print_dashboard()?,
         CliCommand::ClusterStart {
             node_count,
@@ -422,6 +426,10 @@ where
         "gui-diagnose" => {
             let strict = args.any(|arg| arg == "--strict");
             Ok(CliCommand::GuiDiagnose { strict })
+        }
+        "doctor" => {
+            let strict = args.any(|arg| arg == "--strict");
+            Ok(CliCommand::Doctor { strict })
         }
         "dashboard" => Ok(CliCommand::Dashboard),
         "cluster-start" => {
@@ -812,7 +820,7 @@ fn autotune_tcp_transport_config(
 
 fn print_usage() {
     eprintln!(
-        "Usage: ghost-link [--config <path>] <plan|join|listen|gui|gui-check|gui-diagnose|dashboard|cluster-start|probe|flow|help>"
+        "Usage: ghost-link [--config <path>] <plan|join|listen|gui|gui-check|gui-diagnose|doctor|dashboard|cluster-start|probe|flow|help>"
     );
     eprintln!();
     eprintln!("Commands:");
@@ -822,6 +830,9 @@ fn print_usage() {
     eprintln!("  gui [args...] - Launch vendored Mohawk GUI (Python/PyQt6)");
     eprintln!("  gui-check [--strict] - Validate GUI readiness and dependencies");
     eprintln!("  gui-diagnose [--strict] - Emit categorized GUI diagnostics report");
+    eprintln!(
+        "  doctor [--strict] - Run unified environment/readiness/accessibility/accuracy checks"
+    );
     eprintln!("  dashboard - Display ASCII cluster dashboard");
     eprintln!(
         "  cluster-start [node_count] [base_port] - Start local discovery listeners and run a quick join/reply validation"
@@ -851,6 +862,9 @@ fn print_help() {
     println!("  gui [args...] - Launch vendored Mohawk GUI (Python/PyQt6)");
     println!("  gui-check [--strict] - Validate GUI readiness and dependencies");
     println!("  gui-diagnose [--strict] - Emit categorized GUI diagnostics report");
+    println!(
+        "  doctor [--strict] - Run unified environment/readiness/accessibility/accuracy checks"
+    );
     println!("  dashboard - Display ASCII cluster dashboard");
     println!(
         "  cluster-start [node_count] [base_port] - Start local discovery listeners and run a quick join/reply validation"
@@ -874,6 +888,7 @@ fn print_help() {
     println!("  $ ghost-link gui --host 0.0.0.0 --port 8003");
     println!("  $ ghost-link gui-check --strict");
     println!("  $ ghost-link gui-diagnose --strict");
+    println!("  $ ghost-link doctor --strict");
     println!("  $ ghost-link dashboard");
     println!("  $ ghost-link cluster-start 3 46000");
     println!("  $ ghost-link --config ./ghostlink.toml flow");
@@ -1435,6 +1450,499 @@ fn print_probe(node_id: &str, probe_mode: ProbeMode) -> Result<()> {
     Ok(())
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DoctorStatus {
+    Pass,
+    Warn,
+    Fail,
+}
+
+impl DoctorStatus {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Pass => "PASS",
+            Self::Warn => "WARN",
+            Self::Fail => "FAIL",
+        }
+    }
+}
+
+#[derive(Debug)]
+struct DoctorCheck {
+    area: &'static str,
+    name: &'static str,
+    status: DoctorStatus,
+    detail: String,
+    fix: Option<String>,
+}
+
+fn push_doctor_check(
+    checks: &mut Vec<DoctorCheck>,
+    area: &'static str,
+    name: &'static str,
+    status: DoctorStatus,
+    detail: impl Into<String>,
+    fix: Option<String>,
+) {
+    checks.push(DoctorCheck {
+        area,
+        name,
+        status,
+        detail: detail.into(),
+        fix,
+    });
+}
+
+fn run_command_capture(program: &str, args: &[&str]) -> Result<String> {
+    let output = Command::new(program)
+        .args(args)
+        .output()
+        .map_err(|err| anyhow::anyhow!("failed to execute {}: {}", program, err))?;
+
+    if !output.status.success() {
+        anyhow::bail!(
+            "{} exited with status {}",
+            program,
+            output
+                .status
+                .code()
+                .map(|code| code.to_string())
+                .unwrap_or_else(|| "terminated by signal".to_string())
+        );
+    }
+
+    let text = if output.stdout.is_empty() {
+        String::from_utf8_lossy(&output.stderr).to_string()
+    } else {
+        String::from_utf8_lossy(&output.stdout).to_string()
+    };
+    Ok(text.trim().to_string())
+}
+
+fn run_planner_accuracy_check() -> Result<String> {
+    let profile = detect_runtime_profile("doctor-local");
+    let local_id = "doctor-local";
+    let remote_id = "doctor-remote";
+    let nodes = vec![
+        NodeResources::new(
+            local_id,
+            profile.node_resources.vram_gb.max(16.0),
+            profile.node_resources.system_memory_gb.max(16.0),
+            profile.node_resources.compute_capability.clone(),
+            profile.node_resources.gpu_name.clone(),
+        ),
+        NodeResources::new(
+            remote_id,
+            32.0,
+            32.0,
+            "auto",
+            Some("remote-host".to_string()),
+        ),
+    ];
+    let layers: Vec<LayerSpec> = (0..60)
+        .map(|index| LayerSpec {
+            index,
+            vram_gb: 0.5,
+            num_weights: 500_000_000 / 60,
+        })
+        .collect();
+    let assignments = assign_layers_with_runtime_profile(&nodes, &layers, &profile)
+        .map_err(|err| anyhow::anyhow!(err))?;
+
+    let mut coverage = vec![0usize; layers.len()];
+    for assignment in &assignments {
+        for layer in assignment.start_layer..assignment.end_layer {
+            if let Some(entry) = coverage.get_mut(layer) {
+                *entry += 1;
+            } else {
+                anyhow::bail!("assignment references out-of-range layer index {}", layer);
+            }
+        }
+    }
+
+    let missing = coverage.iter().filter(|count| **count == 0).count();
+    let overlaps = coverage.iter().filter(|count| **count > 1).count();
+    if missing > 0 || overlaps > 0 {
+        anyhow::bail!(
+            "planner coverage mismatch (missing_layers={}, overlapped_layers={})",
+            missing,
+            overlaps
+        );
+    }
+
+    Ok(format!(
+        "{} assignments cover {} layers with no gaps/overlap",
+        assignments.len(),
+        layers.len()
+    ))
+}
+
+fn print_doctor_report(strict: bool) -> Result<()> {
+    let mut checks: Vec<DoctorCheck> = Vec::new();
+    let crate_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let repo_root = crate_root.join("..").join("..");
+
+    let python = std::env::var("GHOSTLINK_PYTHON").unwrap_or_else(|_| "python3".to_string());
+
+    match run_command_capture("cargo", &["--version"]) {
+        Ok(version) => push_doctor_check(
+            &mut checks,
+            "environment",
+            "cargo",
+            DoctorStatus::Pass,
+            version,
+            None,
+        ),
+        Err(err) => push_doctor_check(
+            &mut checks,
+            "environment",
+            "cargo",
+            DoctorStatus::Warn,
+            err.to_string(),
+            Some("Install Rust: curl https://sh.rustup.rs -sSf | sh -s -- -y".to_string()),
+        ),
+    }
+
+    let python_ok = match run_command_capture(&python, &["--version"]) {
+        Ok(version) => {
+            push_doctor_check(
+                &mut checks,
+                "environment",
+                "python-runtime",
+                DoctorStatus::Pass,
+                version,
+                None,
+            );
+            true
+        }
+        Err(err) => {
+            push_doctor_check(
+                &mut checks,
+                "environment",
+                "python-runtime",
+                DoctorStatus::Warn,
+                err.to_string(),
+                Some("Install Python 3.10+ and set GHOSTLINK_PYTHON if needed".to_string()),
+            );
+            false
+        }
+    };
+
+    let example_config = repo_root.join("ghostlink.example.toml");
+    if example_config.exists() {
+        push_doctor_check(
+            &mut checks,
+            "readiness",
+            "config-template",
+            DoctorStatus::Pass,
+            format!("found {}", example_config.display()),
+            None,
+        );
+    } else {
+        push_doctor_check(
+            &mut checks,
+            "readiness",
+            "config-template",
+            DoctorStatus::Fail,
+            format!("missing {}", example_config.display()),
+            Some("Restore ghostlink.example.toml from repository".to_string()),
+        );
+    }
+
+    let local_config = repo_root.join("ghostlink.toml");
+    push_doctor_check(
+        &mut checks,
+        "readiness",
+        "local-config",
+        if local_config.exists() {
+            DoctorStatus::Pass
+        } else {
+            DoctorStatus::Warn
+        },
+        if local_config.exists() {
+            format!("using {}", local_config.display())
+        } else {
+            "not found (quickstart will auto-create it)".to_string()
+        },
+        if local_config.exists() {
+            None
+        } else {
+            Some("Run: bash scripts/quickstart.sh".to_string())
+        },
+    );
+
+    let gui_entry = repo_root
+        .join("third_party")
+        .join("mohawk_gui")
+        .join("main.py");
+    let gui_requirements = repo_root
+        .join("third_party")
+        .join("mohawk_gui")
+        .join("requirements.txt");
+    if gui_entry.exists() && gui_requirements.exists() {
+        push_doctor_check(
+            &mut checks,
+            "readiness",
+            "gui-assets",
+            DoctorStatus::Pass,
+            "GUI entrypoint and requirements present".to_string(),
+            None,
+        );
+    } else {
+        push_doctor_check(
+            &mut checks,
+            "readiness",
+            "gui-assets",
+            DoctorStatus::Fail,
+            "missing vendored GUI files".to_string(),
+            Some("Ensure third_party/mohawk_gui is checked out".to_string()),
+        );
+    }
+
+    if python_ok {
+        match detect_missing_gui_python_modules(&python) {
+            Ok(missing) if missing.is_empty() => push_doctor_check(
+                &mut checks,
+                "readiness",
+                "gui-python-modules",
+                DoctorStatus::Pass,
+                "PyQt6, requests, pyqtgraph available".to_string(),
+                None,
+            ),
+            Ok(missing) => push_doctor_check(
+                &mut checks,
+                "readiness",
+                "gui-python-modules",
+                DoctorStatus::Warn,
+                format!("missing: {}", missing.join(", ")),
+                Some(format!(
+                    "Install with: {} -m pip install -r third_party/mohawk_gui/requirements.txt",
+                    python
+                )),
+            ),
+            Err(err) => push_doctor_check(
+                &mut checks,
+                "readiness",
+                "gui-python-modules",
+                DoctorStatus::Warn,
+                err.to_string(),
+                Some("Verify Python environment and package installation".to_string()),
+            ),
+        }
+    }
+
+    let has_display = std::env::var("DISPLAY")
+        .ok()
+        .filter(|v| !v.is_empty())
+        .is_some()
+        || std::env::var("WAYLAND_DISPLAY")
+            .ok()
+            .filter(|v| !v.is_empty())
+            .is_some();
+
+    if has_display {
+        push_doctor_check(
+            &mut checks,
+            "accessibility",
+            "display-session",
+            DoctorStatus::Pass,
+            "DISPLAY/WAYLAND session detected".to_string(),
+            None,
+        );
+    } else {
+        let xvfb_ok = run_command_capture("xvfb-run", &["--help"]).is_ok();
+        push_doctor_check(
+            &mut checks,
+            "accessibility",
+            "display-session",
+            if xvfb_ok {
+                DoctorStatus::Warn
+            } else {
+                DoctorStatus::Fail
+            },
+            if xvfb_ok {
+                "headless session; xvfb-run available for GUI diagnostics".to_string()
+            } else {
+                "headless session and xvfb-run unavailable".to_string()
+            },
+            if xvfb_ok {
+                Some("Run GUI checks with: xvfb-run -a cargo run -p ghost-link -- gui-diagnose --strict".to_string())
+            } else {
+                Some("Install xvfb and rerun GUI diagnostics for headless hosts".to_string())
+            },
+        );
+    }
+
+    for (name, rel_path) in [
+        ("deployment-guide", "docs/DEPLOYMENT.md"),
+        (
+            "systemd-template",
+            "deploy/systemd/ghost-link-listener@.service",
+        ),
+        (
+            "docker-local-demo",
+            "deploy/docker/docker-compose.local.yml",
+        ),
+    ] {
+        let path = repo_root.join(rel_path);
+        push_doctor_check(
+            &mut checks,
+            "accessibility",
+            name,
+            if path.exists() {
+                DoctorStatus::Pass
+            } else {
+                DoctorStatus::Warn
+            },
+            if path.exists() {
+                format!("found {}", path.display())
+            } else {
+                format!("missing {}", path.display())
+            },
+            if path.exists() {
+                None
+            } else {
+                Some("Restore deployment assets for multi-device onboarding".to_string())
+            },
+        );
+    }
+
+    match run_planner_accuracy_check() {
+        Ok(summary) => push_doctor_check(
+            &mut checks,
+            "accuracy",
+            "planner-layer-coverage",
+            DoctorStatus::Pass,
+            summary,
+            None,
+        ),
+        Err(err) => push_doctor_check(
+            &mut checks,
+            "accuracy",
+            "planner-layer-coverage",
+            DoctorStatus::Fail,
+            err.to_string(),
+            Some("Inspect assign_layers_with_runtime_profile behavior".to_string()),
+        ),
+    }
+
+    for rel_path in [
+        "scripts/validate_flow_metrics.py",
+        "scripts/validate_stage_tail_metrics.py",
+        "scripts/validate_flow_canary.py",
+        "docs/PERF_BASELINE.json",
+    ] {
+        let path = repo_root.join(rel_path);
+        push_doctor_check(
+            &mut checks,
+            "accuracy",
+            "validation-artifacts",
+            if path.exists() {
+                DoctorStatus::Pass
+            } else {
+                DoctorStatus::Warn
+            },
+            if path.exists() {
+                format!("found {}", path.display())
+            } else {
+                format!("missing {}", path.display())
+            },
+            None,
+        );
+    }
+
+    if python_ok {
+        let api_contract_script = repo_root
+            .join("scripts")
+            .join("validate_gui_api_contract.py");
+        match Command::new(&python).arg(&api_contract_script).status() {
+            Ok(status) if status.success() => push_doctor_check(
+                &mut checks,
+                "accuracy",
+                "gui-api-contract",
+                DoctorStatus::Pass,
+                "validate_gui_api_contract.py passed".to_string(),
+                None,
+            ),
+            Ok(status) => push_doctor_check(
+                &mut checks,
+                "accuracy",
+                "gui-api-contract",
+                DoctorStatus::Fail,
+                format!("script exited with status {}", status),
+                Some(
+                    "Run python3 scripts/validate_gui_api_contract.py and review missing APIs"
+                        .to_string(),
+                ),
+            ),
+            Err(err) => push_doctor_check(
+                &mut checks,
+                "accuracy",
+                "gui-api-contract",
+                DoctorStatus::Warn,
+                format!("failed to execute: {}", err),
+                Some("Verify Python executable and script path".to_string()),
+            ),
+        }
+    }
+
+    println!("Ghost-Link Doctor Report\n");
+    println!("========================\n");
+
+    for area in ["environment", "readiness", "accessibility", "accuracy"] {
+        println!("{}:", area);
+        for check in checks.iter().filter(|check| check.area == area) {
+            println!(
+                "- [{}] {}: {}",
+                check.status.as_str(),
+                check.name,
+                check.detail
+            );
+            if let Some(fix) = &check.fix {
+                println!("  FIX: {}", fix);
+            }
+        }
+        println!();
+    }
+
+    let pass_count = checks
+        .iter()
+        .filter(|check| check.status == DoctorStatus::Pass)
+        .count();
+    let warn_count = checks
+        .iter()
+        .filter(|check| check.status == DoctorStatus::Warn)
+        .count();
+    let fail_count = checks
+        .iter()
+        .filter(|check| check.status == DoctorStatus::Fail)
+        .count();
+
+    println!(
+        "Summary: {} pass, {} warn, {} fail",
+        pass_count, warn_count, fail_count
+    );
+
+    println!("\nReview areas for multi-device accessibility:");
+    println!("- GUI path: desktop display or headless xvfb-run fallback");
+    println!("- Deployment path: Docker local demo, systemd service template, staged LAN guide");
+    println!("- Discovery path: cluster-start for local multi-node behavior");
+
+    println!("\nReview areas for accuracy:");
+    println!("- Planner layer coverage integrity (no gaps/overlap)");
+    println!("- GUI API contract parity checks");
+    println!("- Runtime SLO/canary/perf-drift validators and baseline presence");
+
+    if strict && fail_count > 0 {
+        anyhow::bail!(
+            "doctor strict mode failed with {} failing checks",
+            fail_count
+        );
+    }
+
+    Ok(())
+}
+
 fn launch_mohawk_gui(args: &[String]) -> Result<()> {
     let skip_preflight = args.iter().any(|arg| arg == "--help" || arg == "-h");
 
@@ -1876,6 +2384,10 @@ mod tests {
             CliCommand::GuiDiagnose { strict: true }
         );
         assert_eq!(
+            parse_cli(args(&["doctor", "--strict"])).unwrap(),
+            CliCommand::Doctor { strict: true }
+        );
+        assert_eq!(
             parse_cli(args(&["cluster-start", "4", "46010"])).unwrap(),
             CliCommand::ClusterStart {
                 node_count: 4,
@@ -1941,6 +2453,10 @@ mod tests {
         assert_eq!(
             parse_cli(args(&["gui-diagnose"])).unwrap(),
             CliCommand::GuiDiagnose { strict: false }
+        );
+        assert_eq!(
+            parse_cli(args(&["doctor"])).unwrap(),
+            CliCommand::Doctor { strict: false }
         );
         assert_eq!(
             parse_cli(args(&["cluster-start"])).unwrap(),
