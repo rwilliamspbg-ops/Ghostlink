@@ -35,7 +35,10 @@ jobs:
           set -euo pipefail
           test -f README.md
           test -f TESTING.md
-          test -f VERIFICATION.md
+          test -f docs/INDEX.md
+          test -f docs/PRODUCTION_READINESS.md
+          test -f docs/archive/INDEX.md
+          test -f docs/archive/VERIFICATION.md
           test -f docs/ARCHITECTURE.md
           test -f docs/EXAMPLES.md
           test -f docs/TROUBLESHOOTING.md

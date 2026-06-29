@@ -15,6 +15,10 @@ cargo run -p ghost-link -- join node-01
 # Show the sample dashboard
 cargo run -p ghost-link -- dashboard
 
+# Validate GUI readiness and emit categorized diagnostics
+cargo run -p ghost-link -- gui-check --strict
+GHOSTLINK_GUI_DIAG_JSON=./tmp/gui-diag.json cargo run -p ghost-link -- gui-diagnose --strict
+
 # Fast cached probe mode
 cargo run -p ghost-link -- probe workstation-a fast
 
@@ -33,6 +37,9 @@ cargo test -p ghostlink-core --test integration
 
 # Criterion benchmarks
 cargo bench -p ghostlink-core --bench criterion
+
+# Validate GUI endpoint contract drift against mock backend
+python3 scripts/validate_gui_api_contract.py
 ```
 
 ## Model Download Verification

@@ -36,7 +36,13 @@ class AuthManager:
         if secret_key_path:
             self.secret_key_path = secret_key_path
         else:
-            default_dir = os.path.join(os.path.dirname(__file__), "certs")
+            state_root = os.environ.get("XDG_STATE_HOME")
+            if state_root:
+                default_dir = os.path.join(state_root, "ghostlink", "mohawk_gui")
+            else:
+                default_dir = os.path.join(
+                    os.path.expanduser("~"), ".local", "state", "ghostlink", "mohawk_gui"
+                )
             self.secret_key_path = os.path.join(default_dir, "jwt_private.pem")
         self.key_size = key_size
         self._generate_key_if_needed()
@@ -71,6 +77,7 @@ class AuthManager:
                         encryption_algorithm=serialization.NoEncryption()
                     )
                 )
+            os.chmod(self.secret_key_path, 0o600)
             
             # Generate public key for verification
             public_key = private_key.public_key()

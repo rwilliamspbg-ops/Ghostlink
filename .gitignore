@@ -1,2 +1,13 @@
 /target
-Cargo.lock
+
+# Python local environment artifacts
+.venv/
+__pycache__/
+*.pyc
+
+# Vendored GUI local runtime artifacts
+third_party/mohawk_gui/__pycache__/
+third_party/mohawk_gui/certs/
+
+# Local runtime output and diagnostics artifacts
+tmp/
