@@ -24,6 +24,12 @@ cargo run -p ghost-link -- probe workstation-a fast
 
 # Full probe mode
 cargo run -p ghost-link -- probe workstation-a full
+
+# Use TOML config defaults for flow
+cargo run -p ghost-link -- --config ./ghostlink.example.toml flow
+
+# Use env-based config file fallback
+GHOSTLINK_CONFIG=./ghostlink.example.toml cargo run -p ghost-link -- cluster-start
 ```
 
 ## Testing

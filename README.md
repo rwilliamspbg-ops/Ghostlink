@@ -53,6 +53,9 @@ cargo build --workspace
 # Run the full workspace test suite
 cargo test --workspace
 
+# Use TOML config defaults (CLI args and env vars still override)
+cargo run -p ghost-link -- --config ./ghostlink.example.toml flow
+
 # Run the package-owned integration suite
 cargo test -p ghostlink-core --test integration
 
@@ -178,6 +181,12 @@ python3 scripts/active_network_probe.py --target 127.0.0.1:8003 --max-failure-ra
 # Build release binary bundle + checksums (+ optional GPG signature)
 bash scripts/release_bundle.sh ./artifacts/release
 ```
+
+Configuration files:
+
+- `--config <path>` loads command defaults from TOML.
+- `GHOSTLINK_CONFIG=<path>` provides an environment-based fallback.
+- See `ghostlink.example.toml` for a complete sample.
 
 The Mohawk GUI sources are vendored under [third_party/mohawk_gui](third_party/mohawk_gui). Use the `ghost-link gui` command to launch it from this repository.
 Use `ghost-link gui-check` for readiness checks and `ghost-link gui-diagnose --strict` for categorized failure diagnostics suitable for CI artifacts.

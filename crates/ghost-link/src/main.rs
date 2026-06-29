@@ -24,6 +24,7 @@ use ghostlink_core::runtime::{
     build_token_schedule, execute_pipeline, execute_pipeline_tcp_loopback_with_config, DeviceKind,
     PipelinePlan, TcpTransportConfig,
 };
+use serde::Deserialize;
 use std::collections::HashMap;
 use std::fs;
 use std::hash::{Hash, Hasher};
@@ -33,6 +34,60 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Arc;
 use std::time::Duration;
+
+#[derive(Debug, Default, Deserialize)]
+struct FileConfig {
+    flow: Option<FlowDefaults>,
+    cluster_start: Option<ClusterStartDefaults>,
+    discovery: Option<DiscoveryDefaults>,
+    tcp: Option<TcpDefaults>,
+    gui: Option<GuiDefaults>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct FlowDefaults {
+    local_id: Option<String>,
+    remote_id: Option<String>,
+    remote_vram_gb: Option<f32>,
+    remote_system_memory_gb: Option<f32>,
+    execution_tokens: Option<usize>,
+    micro_batch: Option<usize>,
+    transport: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct ClusterStartDefaults {
+    node_count: Option<usize>,
+    base_port: Option<u16>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct DiscoveryDefaults {
+    listen: Option<String>,
+    broadcast: Option<String>,
+    timeout_ms: Option<u64>,
+    auth_token: Option<String>,
+    max_replies: Option<usize>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct TcpDefaults {
+    max_inflight: Option<usize>,
+    reconnect_attempts: Option<usize>,
+    reconnect_backoff_ms: Option<u64>,
+    auth_token: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct GuiDefaults {
+    python: Option<String>,
+}
+
+#[derive(Debug)]
+struct BootstrapArgs {
+    command_args: Vec<String>,
+    config_path: Option<PathBuf>,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FlowTransportMode {
@@ -53,7 +108,16 @@ fn main() -> Result<()> {
     // Initialize logging
     tracing_subscriber::fmt().init();
 
-    let command = match parse_cli(std::env::args().skip(1)) {
+    let raw_args = std::env::args().skip(1).collect::<Vec<_>>();
+    let bootstrap = extract_bootstrap_args(raw_args)?;
+
+    if let Some(config_path) = resolve_config_path(bootstrap.config_path.as_deref()) {
+        let config = load_file_config(&config_path)?;
+        apply_file_config_to_env(&config);
+        println!("Loaded config defaults from {}", config_path.display());
+    }
+
+    let command = match parse_cli(bootstrap.command_args.into_iter()) {
         Ok(command) => command,
         Err(err) => {
             eprintln!("Error: {err}");
@@ -68,6 +132,185 @@ fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+fn extract_bootstrap_args(args: Vec<String>) -> Result<BootstrapArgs> {
+    let mut command_args = Vec::new();
+    let mut config_path = None;
+    let mut i = 0usize;
+
+    while i < args.len() {
+        let arg = &args[i];
+        if arg == "--config" {
+            let Some(value) = args.get(i + 1) else {
+                anyhow::bail!("--config requires a path value");
+            };
+            config_path = Some(PathBuf::from(value));
+            i += 2;
+            continue;
+        }
+        if let Some(value) = arg.strip_prefix("--config=") {
+            if value.is_empty() {
+                anyhow::bail!("--config requires a non-empty path value");
+            }
+            config_path = Some(PathBuf::from(value));
+            i += 1;
+            continue;
+        }
+
+        command_args.push(arg.clone());
+        i += 1;
+    }
+
+    Ok(BootstrapArgs {
+        command_args,
+        config_path,
+    })
+}
+
+fn resolve_config_path(cli_path: Option<&Path>) -> Option<PathBuf> {
+    if let Some(path) = cli_path {
+        return Some(path.to_path_buf());
+    }
+
+    if let Some(path) = std::env::var("GHOSTLINK_CONFIG")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+    {
+        return Some(PathBuf::from(path));
+    }
+
+    let default_path = PathBuf::from("./ghostlink.toml");
+    if default_path.exists() {
+        return Some(default_path);
+    }
+
+    None
+}
+
+fn load_file_config(path: &Path) -> Result<FileConfig> {
+    let raw = fs::read_to_string(path)
+        .map_err(|err| anyhow::anyhow!("failed to read config {}: {}", path.display(), err))?;
+    toml::from_str::<FileConfig>(&raw)
+        .map_err(|err| anyhow::anyhow!("failed to parse config {}: {}", path.display(), err))
+}
+
+fn set_env_if_absent(key: &str, value: String) {
+    if std::env::var(key)
+        .ok()
+        .filter(|existing| !existing.trim().is_empty())
+        .is_none()
+    {
+        std::env::set_var(key, value);
+    }
+}
+
+fn apply_file_config_to_env(config: &FileConfig) {
+    if let Some(flow) = &config.flow {
+        if let Some(value) = &flow.local_id {
+            set_env_if_absent("GHOSTLINK_FLOW_DEFAULT_LOCAL_ID", value.clone());
+        }
+        if let Some(value) = &flow.remote_id {
+            set_env_if_absent("GHOSTLINK_FLOW_DEFAULT_REMOTE_ID", value.clone());
+        }
+        if let Some(value) = flow.remote_vram_gb {
+            set_env_if_absent("GHOSTLINK_FLOW_DEFAULT_REMOTE_VRAM_GB", value.to_string());
+        }
+        if let Some(value) = flow.remote_system_memory_gb {
+            set_env_if_absent("GHOSTLINK_FLOW_DEFAULT_REMOTE_MEM_GB", value.to_string());
+        }
+        if let Some(value) = flow.execution_tokens {
+            set_env_if_absent("GHOSTLINK_FLOW_DEFAULT_EXEC_TOKENS", value.to_string());
+        }
+        if let Some(value) = flow.micro_batch {
+            set_env_if_absent("GHOSTLINK_FLOW_DEFAULT_MICRO_BATCH", value.to_string());
+        }
+        if let Some(value) = &flow.transport {
+            set_env_if_absent("GHOSTLINK_FLOW_DEFAULT_TRANSPORT", value.clone());
+        }
+    }
+
+    if let Some(cluster_start) = &config.cluster_start {
+        if let Some(value) = cluster_start.node_count {
+            set_env_if_absent(
+                "GHOSTLINK_CLUSTER_START_DEFAULT_NODE_COUNT",
+                value.to_string(),
+            );
+        }
+        if let Some(value) = cluster_start.base_port {
+            set_env_if_absent(
+                "GHOSTLINK_CLUSTER_START_DEFAULT_BASE_PORT",
+                value.to_string(),
+            );
+        }
+    }
+
+    if let Some(discovery) = &config.discovery {
+        if let Some(value) = &discovery.listen {
+            set_env_if_absent("GHOSTLINK_DISCOVERY_LISTEN", value.clone());
+        }
+        if let Some(value) = &discovery.broadcast {
+            set_env_if_absent("GHOSTLINK_DISCOVERY_BROADCAST", value.clone());
+        }
+        if let Some(value) = discovery.timeout_ms {
+            set_env_if_absent("GHOSTLINK_DISCOVERY_TIMEOUT_MS", value.to_string());
+        }
+        if let Some(value) = &discovery.auth_token {
+            set_env_if_absent("GHOSTLINK_DISCOVERY_AUTH_TOKEN", value.clone());
+        }
+        if let Some(value) = discovery.max_replies {
+            set_env_if_absent("GHOSTLINK_DISCOVERY_MAX_REPLIES", value.to_string());
+        }
+    }
+
+    if let Some(tcp) = &config.tcp {
+        if let Some(value) = tcp.max_inflight {
+            set_env_if_absent("GHOSTLINK_TCP_MAX_INFLIGHT", value.to_string());
+        }
+        if let Some(value) = tcp.reconnect_attempts {
+            set_env_if_absent("GHOSTLINK_TCP_RECONNECT_ATTEMPTS", value.to_string());
+        }
+        if let Some(value) = tcp.reconnect_backoff_ms {
+            set_env_if_absent("GHOSTLINK_TCP_RECONNECT_BACKOFF_MS", value.to_string());
+        }
+        if let Some(value) = &tcp.auth_token {
+            set_env_if_absent("GHOSTLINK_TCP_AUTH_TOKEN", value.clone());
+        }
+    }
+
+    if let Some(gui) = &config.gui {
+        if let Some(value) = &gui.python {
+            set_env_if_absent("GHOSTLINK_PYTHON", value.clone());
+        }
+    }
+}
+
+fn env_default_string(key: &str, fallback: &str) -> String {
+    std::env::var(key)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| fallback.to_string())
+}
+
+fn env_default_f32(key: &str, fallback: f32) -> f32 {
+    std::env::var(key)
+        .ok()
+        .and_then(|value| value.parse::<f32>().ok())
+        .unwrap_or(fallback)
+}
+
+fn env_default_usize(key: &str, fallback: usize) -> usize {
+    std::env::var(key)
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(fallback)
+}
+
+fn env_default_u16(key: &str, fallback: u16) -> u16 {
+    std::env::var(key)
+        .ok()
+        .and_then(|value| value.parse::<u16>().ok())
+        .unwrap_or(fallback)
 }
 
 #[derive(Debug, PartialEq)]
@@ -158,10 +401,14 @@ where
     match command.as_str() {
         "plan" => Ok(CliCommand::Plan),
         "join" => Ok(CliCommand::Join {
-            node_id: args.next().unwrap_or_else(|| "node-01".to_string()),
+            node_id: args
+                .next()
+                .unwrap_or_else(|| env_default_string("GHOSTLINK_JOIN_DEFAULT_NODE_ID", "node-01")),
         }),
         "listen" => {
-            let node_id = args.next().unwrap_or_else(|| "local-node".to_string());
+            let node_id = args.next().unwrap_or_else(|| {
+                env_default_string("GHOSTLINK_LISTEN_DEFAULT_NODE_ID", "local-node")
+            });
             let once = args.any(|arg| arg == "--once");
             Ok(CliCommand::Listen { node_id, once })
         }
@@ -183,53 +430,66 @@ where
                 .as_deref()
                 .map(parse_usize_arg)
                 .transpose()?
-                .unwrap_or(3)
+                .unwrap_or_else(|| {
+                    env_default_usize("GHOSTLINK_CLUSTER_START_DEFAULT_NODE_COUNT", 3)
+                })
                 .max(1);
             let base_port = args
                 .next()
                 .as_deref()
                 .map(parse_u16_arg)
                 .transpose()?
-                .unwrap_or(46000);
+                .unwrap_or_else(|| {
+                    env_default_u16("GHOSTLINK_CLUSTER_START_DEFAULT_BASE_PORT", 46000)
+                });
             Ok(CliCommand::ClusterStart {
                 node_count,
                 base_port,
             })
         }
         "probe" => {
-            let node_id = args.next().unwrap_or_else(|| "local-node".to_string());
+            let node_id = args.next().unwrap_or_else(|| {
+                env_default_string("GHOSTLINK_PROBE_DEFAULT_NODE_ID", "local-node")
+            });
             let mode = parse_probe_mode(args.next().as_deref())?;
             Ok(CliCommand::Probe { node_id, mode })
         }
         "flow" => {
-            let local_id = args.next().unwrap_or_else(|| "iprada-16gb".to_string());
-            let remote_id = args.next().unwrap_or_else(|| "zenbook-32gb".to_string());
+            let local_id = args.next().unwrap_or_else(|| {
+                env_default_string("GHOSTLINK_FLOW_DEFAULT_LOCAL_ID", "iprada-16gb")
+            });
+            let remote_id = args.next().unwrap_or_else(|| {
+                env_default_string("GHOSTLINK_FLOW_DEFAULT_REMOTE_ID", "zenbook-32gb")
+            });
             let remote_vram_gb = args
                 .next()
                 .as_deref()
                 .map(parse_f32_arg)
                 .transpose()?
-                .unwrap_or(32.0);
+                .unwrap_or_else(|| env_default_f32("GHOSTLINK_FLOW_DEFAULT_REMOTE_VRAM_GB", 32.0));
             let remote_system_memory_gb = args
                 .next()
                 .as_deref()
                 .map(parse_f32_arg)
                 .transpose()?
-                .unwrap_or(32.0);
+                .unwrap_or_else(|| env_default_f32("GHOSTLINK_FLOW_DEFAULT_REMOTE_MEM_GB", 32.0));
             let execution_tokens = args
                 .next()
                 .as_deref()
                 .map(parse_usize_arg)
                 .transpose()?
-                .unwrap_or(32);
+                .unwrap_or_else(|| env_default_usize("GHOSTLINK_FLOW_DEFAULT_EXEC_TOKENS", 32));
             let micro_batch = args
                 .next()
                 .as_deref()
                 .map(parse_usize_arg)
                 .transpose()?
-                .unwrap_or(1)
+                .unwrap_or_else(|| env_default_usize("GHOSTLINK_FLOW_DEFAULT_MICRO_BATCH", 1))
                 .max(1);
-            let transport_mode = parse_flow_transport_mode(args.next().as_deref())?;
+            let env_transport = std::env::var("GHOSTLINK_FLOW_DEFAULT_TRANSPORT").ok();
+            let cli_transport = args.next();
+            let transport_mode =
+                parse_flow_transport_mode(cli_transport.as_deref().or(env_transport.as_deref()))?;
 
             Ok(CliCommand::Flow {
                 local_id,
@@ -552,7 +812,7 @@ fn autotune_tcp_transport_config(
 
 fn print_usage() {
     eprintln!(
-        "Usage: ghost-link <plan|join|listen|gui|gui-check|gui-diagnose|dashboard|cluster-start|probe|flow|help>"
+        "Usage: ghost-link [--config <path>] <plan|join|listen|gui|gui-check|gui-diagnose|dashboard|cluster-start|probe|flow|help>"
     );
     eprintln!();
     eprintln!("Commands:");
@@ -573,6 +833,10 @@ fn print_usage() {
         "  flow [local_id] [remote_id] [remote_vram_gb] [remote_mem_gb] [exec_tokens] [micro_batch] [transport=tcp|inmem] - Run full 30B planning flow"
     );
     eprintln!("  help      - Show this help message");
+    eprintln!();
+    eprintln!("Config:");
+    eprintln!("  --config <path> - Load default values from a TOML config file");
+    eprintln!("  Env fallback     - Set GHOSTLINK_CONFIG to a config file path");
 }
 
 fn print_help() {
@@ -599,6 +863,10 @@ fn print_help() {
     );
     println!("  help      - Show this help message");
     println!();
+    println!("Config:");
+    println!("  --config <path> - Load default values from a TOML config file");
+    println!("  Env fallback     - Set GHOSTLINK_CONFIG to a config file path");
+    println!();
     println!("Examples:");
     println!("  $ ghost-link plan");
     println!("  $ ghost-link join node-02");
@@ -608,6 +876,7 @@ fn print_help() {
     println!("  $ ghost-link gui-diagnose --strict");
     println!("  $ ghost-link dashboard");
     println!("  $ ghost-link cluster-start 3 46000");
+    println!("  $ ghost-link --config ./ghostlink.toml flow");
     println!("  $ ghost-link probe workstation-a fast");
     println!("  $ ghost-link probe workstation-a --full");
     println!("  $ ghost-link flow iprada-16gb zenbook-32gb 32 32 64 4 tcp");
@@ -1726,5 +1995,28 @@ mod tests {
         let map = build_device_map(&profile, "local", "remote");
         assert_eq!(map.get("local"), Some(&DeviceKind::Npu));
         assert_eq!(map.get("remote"), Some(&DeviceKind::Gpu));
+    }
+
+    #[test]
+    fn bootstrap_extracts_config_argument() {
+        let bootstrap = extract_bootstrap_args(vec![
+            "--config".to_string(),
+            "./ghostlink.toml".to_string(),
+            "flow".to_string(),
+            "node-a".to_string(),
+        ])
+        .unwrap();
+
+        assert_eq!(
+            bootstrap.config_path,
+            Some(PathBuf::from("./ghostlink.toml"))
+        );
+        assert_eq!(bootstrap.command_args, vec!["flow", "node-a"]);
+    }
+
+    #[test]
+    fn bootstrap_rejects_missing_config_value() {
+        let result = extract_bootstrap_args(vec!["--config".to_string()]);
+        assert!(result.is_err());
     }
 }
