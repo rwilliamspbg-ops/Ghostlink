@@ -300,7 +300,7 @@ fn tcp_transport_config_from_env() -> TcpTransportConfig {
     let max_inflight_batches = std::env::var("GHOSTLINK_TCP_MAX_INFLIGHT")
         .ok()
         .and_then(|v| v.parse::<usize>().ok())
-        .unwrap_or(256)
+        .unwrap_or(512)
         .max(1);
 
     let reconnect_attempts = std::env::var("GHOSTLINK_TCP_RECONNECT_ATTEMPTS")

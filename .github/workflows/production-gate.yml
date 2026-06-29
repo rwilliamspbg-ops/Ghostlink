@@ -106,6 +106,7 @@ jobs:
       - name: Perf Snapshot (Deterministic)
         env:
           GHOSTLINK_TCP_AUTH_TOKEN: "ci-production-gate-token"
+          GHOSTLINK_TCP_MAX_INFLIGHT: "512"
         run: |
           python3 scripts/flow_perf_snapshot.py \
             --warmup-runs 1 \
@@ -137,7 +138,7 @@ jobs:
       - name: Perf Snapshot (Stress)
         env:
           GHOSTLINK_TCP_AUTH_TOKEN: "ci-production-gate-token"
-          GHOSTLINK_TCP_MAX_INFLIGHT: "256"
+          GHOSTLINK_TCP_MAX_INFLIGHT: "512"
         run: |
           python3 scripts/flow_perf_snapshot.py \
             --warmup-runs 1 \

@@ -8,6 +8,7 @@ use crc32fast::Hasher;
 use std::io::{self, Read, Write};
 use std::io::{BufReader, BufWriter};
 use std::net::{Shutdown, TcpListener, TcpStream};
+use std::slice;
 use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
@@ -155,7 +156,7 @@ pub struct TcpTransportConfig {
 impl Default for TcpTransportConfig {
     fn default() -> Self {
         Self {
-            max_inflight_batches: 256,
+            max_inflight_batches: 512,
             reconnect_attempts: 3,
             reconnect_backoff_ms: 25,
             auth_token: None,
@@ -441,13 +442,31 @@ fn auth_tag(batch: &TransportBatch, source_stage: usize, token: Option<&str>) ->
     hasher.update(&(batch.batch_id as u64).to_le_bytes());
     hasher.update(&(batch.tokens_in_batch as u32).to_le_bytes());
     hasher.update(&(batch.payload.len() as u32).to_le_bytes());
-    for value in &batch.payload {
-        hasher.update(&value.to_le_bytes());
-    }
+    let payload_bytes = payload_as_le_bytes(&batch.payload);
+    hasher.update(payload_bytes.as_ref());
     if let Some(token) = token {
         hasher.update(token.as_bytes());
     }
     hasher.finalize()
+}
+
+fn payload_as_le_bytes(payload: &[f32]) -> std::borrow::Cow<'_, [u8]> {
+    if cfg!(target_endian = "little") {
+        // SAFETY: f32 is POD; casting [f32] to its contiguous byte representation is valid.
+        let bytes = unsafe {
+            slice::from_raw_parts(
+                payload.as_ptr() as *const u8,
+                std::mem::size_of_val(payload),
+            )
+        };
+        std::borrow::Cow::Borrowed(bytes)
+    } else {
+        let mut bytes = Vec::with_capacity(payload.len() * 4);
+        for value in payload {
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
+        std::borrow::Cow::Owned(bytes)
+    }
 }
 
 fn write_transport_batch(
@@ -469,9 +488,8 @@ fn write_transport_batch(
     frame.extend_from_slice(&tokens.to_le_bytes());
     frame.extend_from_slice(&payload_len.to_le_bytes());
     frame.extend_from_slice(&tag.to_le_bytes());
-    for value in &batch.payload {
-        frame.extend_from_slice(&value.to_le_bytes());
-    }
+    let payload_bytes = payload_as_le_bytes(&batch.payload);
+    frame.extend_from_slice(payload_bytes.as_ref());
     writer.write_all(&frame)?;
 
     Ok(())
@@ -509,12 +527,26 @@ fn read_transport_batch(
     reader.read_exact(&mut tag_bytes)?;
 
     let payload_len = u32::from_le_bytes(payload_len_bytes) as usize;
-    let mut payload = Vec::with_capacity(payload_len);
-    let mut payload_bytes = vec![0u8; payload_len * 4];
-    reader.read_exact(&mut payload_bytes)?;
-    for chunk in payload_bytes.chunks_exact(4) {
-        payload.push(f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
-    }
+    let payload = if cfg!(target_endian = "little") {
+        let mut payload = vec![0f32; payload_len];
+        // SAFETY: payload points to initialized contiguous f32 memory; we reinterpret as bytes for I/O.
+        let payload_bytes = unsafe {
+            slice::from_raw_parts_mut(
+                payload.as_mut_ptr() as *mut u8,
+                payload_len * std::mem::size_of::<f32>(),
+            )
+        };
+        reader.read_exact(payload_bytes)?;
+        payload
+    } else {
+        let mut payload = Vec::with_capacity(payload_len);
+        let mut payload_bytes = vec![0u8; payload_len * 4];
+        reader.read_exact(&mut payload_bytes)?;
+        for chunk in payload_bytes.chunks_exact(4) {
+            payload.push(f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
+        }
+        payload
+    };
 
     let batch = TransportBatch {
         batch_id: u64::from_le_bytes(batch_id_bytes) as usize,
