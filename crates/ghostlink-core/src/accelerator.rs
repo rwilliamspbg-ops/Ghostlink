@@ -70,7 +70,16 @@ fn scale_scalar(input: &[f32], output: &mut [f32], scale: f32) {
 }
 
 fn parallel_scale_scalar(input: &[f32], output: &mut [f32], scale: f32, worker_count: usize) {
-    let chunk_size = input.len().div_ceil(worker_count.max(1)).max(1);
+    let worker_count = worker_count.max(1);
+    // Thread fan-out can dominate runtime for moderate tensor sizes.
+    // Keep GPU fallback scalar in-process unless there is enough work.
+    const MIN_PARALLEL_LEN: usize = 65_536;
+    if worker_count <= 1 || input.len() < MIN_PARALLEL_LEN {
+        scale_scalar(input, output, scale);
+        return;
+    }
+
+    let chunk_size = input.len().div_ceil(worker_count).max(1);
     std::thread::scope(|scope| {
         for (in_chunk, out_chunk) in input.chunks(chunk_size).zip(output.chunks_mut(chunk_size)) {
             scope.spawn(move || scale_scalar(in_chunk, out_chunk, scale));

@@ -30,6 +30,7 @@
 pub mod accelerator;
 pub mod cluster;
 pub mod dashboard;
+pub mod discovery;
 pub mod health;
 pub mod host;
 pub mod load_balance;
@@ -42,6 +43,7 @@ pub mod xdp;
 // Re-export common types for convenience
 pub use accelerator::ExecutionBackend;
 pub use cluster::{ClusterState, NodeMetrics, NodeStatus};
+pub use discovery::{broadcast_and_collect, UdpDiscoveryConfig, DEFAULT_DISCOVERY_PORT};
 pub use host::{
     detect_local_node_resources, detect_runtime_profile, detect_runtime_profile_full,
     detect_runtime_profile_with_mode, AccelerationMode, ProbeMode, RuntimeProfile,

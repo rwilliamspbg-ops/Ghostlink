@@ -1,0 +1,19 @@
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    labels:
+      - dependencies
+      - ci
+
+  - package-ecosystem: pip
+    directory: /third_party/mohawk_gui
+    schedule:
+      interval: weekly
+    labels:
+      - dependencies
+      - python
+    allow:
+      - dependency-type: direct

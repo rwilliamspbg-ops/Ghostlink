@@ -1,245 +1,641 @@
-//! Network Discovery Module for Ghost-Link Cluster Formation (LIVE USE)
-//! 
-//! Implements UDP multicast broadcast with EtherType 0x88B5 for node discovery,
-//! join requests, and health probes across heterogeneous local compute nodes.
+//! UDP discovery fallback for mixed LAN environments.
+//!
+//! This module provides a lightweight broadcast path that can coexist with
+//! raw L2 discovery. Frames retain the same binary payload format.
 
-use std::net::{Ipv4Addr, SocketAddrV4, UdpSocket};
-use std::time::Duration;
+use std::io;
+use std::net::{SocketAddr, UdpSocket};
+use std::time::{Duration, Instant};
 
-use crate::protocol::{DiscoveryFrame, FrameKind, GHOSTLINK_ETHERTYPE};
+use crc32fast::Hasher;
 
-/// Ghost-Link UDP multicast group for LAN discovery (link-local range)  
-pub const DISCOVERY_MULTICAST_GROUP: &str = "239.100.146.0";
-/// Port used for ghost-link UDP broadcast/multicast traffic
-pub const DISCOVERY_PORT: u16 = 5789;
+use crate::protocol::{DiscoveryFrame, FrameKind, NodeResources};
 
-// Fixed header size matching protocol.rs FrameHeader::HEADER_SIZE  
-const HEADER_SIZE_BYTES: usize = 8; 
-
-#[derive(Clone, Debug)]
-pub struct DiscoverySocketConfig {
-    pub multicast_group: String,
-    pub local_bind_addr: Option<String>, 
-    pub max_udp_size: usize,
-    pub discovery_timeout_ms: u64,
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DiscoveryDropCounters {
+    pub malformed: usize,
+    pub auth_mismatch: usize,
+    pub unsupported_kind: usize,
 }
 
-impl Default for DiscoverySocketConfig {
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DiscoveryServeStats {
+    pub replies_sent: usize,
+    pub drops: DiscoveryDropCounters,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum DatagramDecodeError {
+    DatagramTooShortForAuth,
+    InvalidAuthTrailerLength,
+    AuthTagMismatch,
+    FrameDecode(String),
+}
+
+impl std::fmt::Display for DatagramDecodeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::DatagramTooShortForAuth => {
+                write!(f, "discovery datagram too short for auth trailer")
+            }
+            Self::InvalidAuthTrailerLength => write!(f, "invalid auth trailer length"),
+            Self::AuthTagMismatch => write!(f, "discovery datagram auth tag mismatch"),
+            Self::FrameDecode(message) => write!(f, "{message}"),
+        }
+    }
+}
+
+/// Default UDP discovery port.
+pub const DEFAULT_DISCOVERY_PORT: u16 = 45885;
+
+/// UDP fallback configuration for discovery broadcast and reply collection.
+#[derive(Clone, Debug)]
+pub struct UdpDiscoveryConfig {
+    /// Local bind address used for sending and receiving replies.
+    pub bind_addr: SocketAddr,
+    /// Target broadcast address for join/discovery datagrams.
+    pub broadcast_addr: SocketAddr,
+    /// How long to wait for discovery responses.
+    pub response_timeout: Duration,
+    /// Optional shared token used to authenticate datagrams.
+    pub auth_token: Option<String>,
+    /// Maximum datagram size expected during receive.
+    pub max_datagram_size: usize,
+}
+
+impl Default for UdpDiscoveryConfig {
     fn default() -> Self {
         Self {
-            multicast_group: DISCOVERY_MULTICAST_GROUP.to_string(),
-            local_bind_addr: Some("0.0.0.0".to_string()),
-            max_udp_size: 512, // Frame header (8) + payload (max 256 bytes from protocol.rs)
-            discovery_timeout_ms: 3000,
+            bind_addr: SocketAddr::from(([0, 0, 0, 0], 0)),
+            broadcast_addr: SocketAddr::from(([255, 255, 255, 255], DEFAULT_DISCOVERY_PORT)),
+            response_timeout: Duration::from_millis(750),
+            auth_token: None,
+            max_datagram_size: 2048,
         }
     }
 }
 
-impl DiscoverySocketConfig {
-    pub fn parse_multicast_group(&self) -> Result<Ipv4Addr, std::io::Error> { 
-        self.multicast_group.parse()
-    }
+/// Broadcast a discovery frame over UDP and collect any valid replies.
+pub fn broadcast_and_collect(
+    frame: &DiscoveryFrame,
+    config: &UdpDiscoveryConfig,
+) -> Result<Vec<DiscoveryFrame>, String> {
+    let socket = UdpSocket::bind(config.bind_addr)
+        .map_err(|e| format!("failed to bind UDP discovery socket: {e}"))?;
+    socket
+        .set_broadcast(true)
+        .map_err(|e| format!("failed to enable UDP broadcast: {e}"))?;
+    socket
+        .set_read_timeout(Some(Duration::from_millis(100)))
+        .map_err(|e| format!("failed to configure UDP read timeout: {e}"))?;
 
-    pub fn validate_payload_size(&self, encoded_frame: &[u8]) -> bool {
-        let frame_total_size = HEADER_SIZE_BYTES.saturating_add(encoded_frame.len());
-        
-        if self.max_udp_size < frame_total_size {
-            tracing::warn!(
-                "Discovery payload {} bytes exceeds max UDP size {}", 
-                frame_total_size, self.max_udp_size
-            );
-            false  
-        } else {
-            true
+    let packet = encode_datagram(frame, config.auth_token.as_deref());
+    socket
+        .send_to(&packet, config.broadcast_addr)
+        .map_err(|e| format!("failed to send UDP discovery datagram: {e}"))?;
+
+    let mut peers = Vec::new();
+    let mut recv_buf = vec![0_u8; config.max_datagram_size.max(256)];
+    let deadline = Instant::now() + config.response_timeout;
+
+    while Instant::now() < deadline {
+        match socket.recv_from(&mut recv_buf) {
+            Ok((read, _addr)) => {
+                let datagram = &recv_buf[..read];
+                if let Ok(decoded) = decode_datagram(datagram, config.auth_token.as_deref()) {
+                    peers.push(decoded);
+                }
+            }
+            Err(err)
+                if matches!(
+                    err.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                ) => {}
+            Err(err) => return Err(format!("failed while receiving UDP discovery reply: {err}")),
         }
     }
 
-    pub fn create_socket(&self) -> Result<UdpSocket, std::io::Error> {
-        let local_addr = match self.local_bind_addr.as_ref() { 
-            Some(addr) => SocketAddrV4::new(
-                addr.parse::<Ipv4Addr>()?, DISCOVERY_PORT),
-            None => return Ok(UdpSocket::bind(("0.0.0.0", DISCOVERY_PORT)?)),
+    Ok(peers)
+}
+
+/// Listen for one discovery request and reply with local node resources.
+///
+/// Returns the peer socket address that was replied to when a valid request is
+/// received before timeout, or `None` when the wait timed out.
+pub fn respond_once(
+    local_node: &NodeResources,
+    config: &UdpDiscoveryConfig,
+) -> Result<Option<SocketAddr>, String> {
+    let socket = UdpSocket::bind(config.bind_addr)
+        .map_err(|e| format!("failed to bind UDP discovery listener socket: {e}"))?;
+    socket
+        .set_read_timeout(Some(Duration::from_millis(100)))
+        .map_err(|e| format!("failed to configure UDP listener timeout: {e}"))?;
+
+    let mut recv_buf = vec![0_u8; config.max_datagram_size.max(256)];
+    let deadline = Instant::now() + config.response_timeout;
+
+    while Instant::now() < deadline {
+        let (read, peer_addr) = match socket.recv_from(&mut recv_buf) {
+            Ok(parts) => parts,
+            Err(err)
+                if matches!(
+                    err.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                ) =>
+            {
+                continue;
+            }
+            Err(err) => {
+                return Err(format!(
+                    "failed while waiting for UDP discovery datagram: {err}"
+                ));
+            }
         };
 
-        let socket = UdpSocket::bind(local_addr)?;
-        
-        // Enable broadcast for discovery announcements  
-        if let Err(e) = socket.set_broadcast(true) {
-            tracing::warn!("Broadcast mode disabled: {}", e);
-        }
-
-        const BUFFER_SIZE_BYTES: usize = 65_536; 
-        socket.set_recv_buffer_size(BUFFER_SIZE_BYTES).ok();
-
-        Ok(socket)
-    }
-
-    /// Broadcast a discovery frame on the configured UDP channel  
-    pub fn broadcast_discovery(&self, frame: &DiscoveryFrame) -> Result<(), std::io::Error> {
-        
-        let encoded = frame.encode(); 
-        
-        // Validate payload size before sending  \n        if !self.validate_payload_size(&encoded) { 
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData, 
-                "Discovery frame exceeds UDP maximum packet size"
-            ));  
-        }
-
-        let socket = self.create_socket()?; 
-        
-        // Build multicast destination address  \n        let dest_addr: SocketAddrV4 = (self.multicast_group.parse()?, DISCOVERY_PORT).into();
-
-        tracing::info!(
-            "Broadcasting discovery frame {} bytes to {}:{}", 
-            encoded.len(), dest_addr.ip(), DISCOVERY_PORT,
-        ); 
-
-        socket.send_to(&encoded, dest_addr)?; 
-        
-        Ok(())  
-    }
-}
-
-/// Handle UDP multicast receive for node discovery/join responses  
-pub struct DiscoveryListener {
-    socket: UdpSocket,
-    config: DiscoverySocketConfig,
-}
-
-impl DiscoveryListener {
-    pub fn new(config: &DiscoverySocketConfig) -> Self { 
-        let socket = match config.create_socket() {
-            Ok(sock) => sock,
-            Err(e) => panic!(
-                "Cannot bind to localhost on port {} - check firewall or sudo permissions", 
-                DISCOVERY_PORT
-            ),
+        let Ok(incoming) = decode_datagram(&recv_buf[..read], config.auth_token.as_deref()) else {
+            // Ignore malformed/auth-mismatched datagrams and keep listening.
+            continue;
         };
 
-        Self { socket, config }  
+        if !matches!(incoming.kind, FrameKind::Join | FrameKind::Discovery) {
+            continue;
+        }
+
+        let reply = DiscoveryFrame {
+            kind: FrameKind::Discovery,
+            node: local_node.clone(),
+        };
+        let encoded = encode_datagram(&reply, config.auth_token.as_deref());
+        socket
+            .send_to(&encoded, peer_addr)
+            .map_err(|e| format!("failed to send UDP discovery reply: {e}"))?;
+
+        return Ok(Some(peer_addr));
     }
 
-    /// Wait for incoming discovery frames with timeout  \n        
-    pub fn wait_for_frame(&mut self) -> Result<Option<(DiscoveryFrame, SocketAddrV4)>, String> { 
-        
-        let start = std::time::Instant::now();
-        let mut buffer: Vec<u8> = vec![0; self.config.max_udp_size];
-        
-        loop { 
-            match self.socket.recv_from(&mut buffer) {
-                Ok(n) => { 
-                    tracing::debug!("Received {} bytes on port {}", n, DISCOVERY_PORT);
+    Ok(None)
+}
 
-                    // Parse frame from received data  \n                    
-                    if let Some((frame, source_addr)) = parse_multicast_frame(&buffer[..n]) {  
-                        return Ok(Some((frame, source_addr)));
-                    } else { 
-                        tracing::debug!("Invalid multicast frame dropped"); 
-                    },
-                Err(e) => { tracing::error!("UDP recv error: {}", e); continue; }
-            };
+/// Serve discovery requests and respond with local node resources.
+///
+/// When `max_replies` is `Some(n)`, the function returns after `n` successful
+/// replies. When `None`, it runs indefinitely.
+pub fn serve_discovery(
+    local_node: &NodeResources,
+    config: &UdpDiscoveryConfig,
+    max_replies: Option<usize>,
+) -> Result<usize, String> {
+    serve_discovery_with_stats(local_node, config, max_replies).map(|stats| stats.replies_sent)
+}
 
-            let elapsed = start.elapsed(); 
-            
-            if elapsed.as_millis() >= self.config.discovery_timeout_ms as u128 && n > 0 {
-                return Ok(None); // Timeout  
-            } else { 
-                std::thread::sleep(Duration::from_millis(5)); 
+pub fn serve_discovery_with_stats(
+    local_node: &NodeResources,
+    config: &UdpDiscoveryConfig,
+    max_replies: Option<usize>,
+) -> Result<DiscoveryServeStats, String> {
+    let socket = UdpSocket::bind(config.bind_addr)
+        .map_err(|e| format!("failed to bind UDP discovery listener socket: {e}"))?;
+    socket
+        .set_read_timeout(Some(Duration::from_millis(250)))
+        .map_err(|e| format!("failed to configure UDP listener timeout: {e}"))?;
+
+    let reply = DiscoveryFrame {
+        kind: FrameKind::Discovery,
+        node: local_node.clone(),
+    };
+    let reply_bytes = encode_datagram(&reply, config.auth_token.as_deref());
+
+    let mut stats = DiscoveryServeStats::default();
+    let mut recv_buf = vec![0_u8; config.max_datagram_size.max(256)];
+
+    loop {
+        if let Some(limit) = max_replies {
+            if stats.replies_sent >= limit {
+                return Ok(stats);
+            }
+        }
+
+        match socket.recv_from(&mut recv_buf) {
+            Ok((read, peer_addr)) => {
+                match decode_datagram(&recv_buf[..read], config.auth_token.as_deref()) {
+                    Ok(incoming)
+                        if matches!(incoming.kind, FrameKind::Join | FrameKind::Discovery) =>
+                    {
+                        if socket.send_to(&reply_bytes, peer_addr).is_ok() {
+                            stats.replies_sent += 1;
+                        }
+                    }
+                    Ok(_) => {
+                        stats.drops.unsupported_kind += 1;
+                    }
+                    Err(DatagramDecodeError::AuthTagMismatch) => {
+                        stats.drops.auth_mismatch += 1;
+                    }
+                    Err(_) => {
+                        stats.drops.malformed += 1;
+                    }
+                }
+            }
+            Err(err)
+                if matches!(
+                    err.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                ) => {}
+            Err(err) => {
+                return Err(format!(
+                    "failed while receiving UDP discovery request: {err}"
+                ));
             }
         }
     }
+}
 
-    /// Spawn listener in background thread for continuous monitoring \n        
-    pub fn spawn_listener_thread<F>(self, callback: F) -> std::thread::JoinHandle<()> 
-    where 
-        F: Fn(DiscoveryFrame) + Send + 'static  
-    { 
-        
-        let socket = self.socket;
-        let config = self.config.clone(); 
-        
-        std::thread::spawn(move || loop { 
-            if let Some((frame, _)) = DiscoveryListener::<()>::wait_for_frame(&mut socket).ok().flatten() {
-                callback(frame);
-            }
-
-            // Prevent busy-wait on long-running discovery \n            
-            std::thread::sleep(Duration::from_millis(10)); 
-        })  
+fn encode_datagram(frame: &DiscoveryFrame, auth_token: Option<&str>) -> Vec<u8> {
+    let frame_bytes = frame.encode();
+    if let Some(token) = auth_token {
+        let mut datagram = frame_bytes;
+        datagram.extend_from_slice(&auth_tag(&datagram, token).to_le_bytes());
+        datagram
+    } else {
+        frame_bytes
     }
 }
 
-/// Parse multicast UDP payload into DiscoveryFrame with CRC32 validation  
-fn parse_multicast_frame(buffer: &[u8]) -> Option<(DiscoveryFrame, u16)> { 
-    
-    // Validate minimum frame size  \n    
-    if buffer.len() < HEADER_SIZE_BYTES + 4 { 
-        return None;
-    }
+fn decode_datagram(
+    datagram: &[u8],
+    auth_token: Option<&str>,
+) -> Result<DiscoveryFrame, DatagramDecodeError> {
+    if let Some(token) = auth_token {
+        if datagram.len() < 12 {
+            return Err(DatagramDecodeError::DatagramTooShortForAuth);
+        }
 
-    let header_bytes = &buffer[0..HEADER_SIZE_BYTES]; 
-
-    // Parse ether_type (first 2 bytes, little-endian)  
-    let received_ether_type: u16 = u16::from_le_bytes([header_bytes[0], header_bytes[1]]);
-
-    if received_ether_type != GHOSTLINK_ETHERTYPE { 
-        tracing::warn!(
-            "Received non-Ghost-Link frame EtherType 0x{:04X} (expected 0x{:04X})", 
-            received_ether_type, GHOSTLINK_ETHERTYPE
+        let (frame_bytes, tag_bytes) = datagram.split_at(datagram.len() - 4);
+        let expected = auth_tag(frame_bytes, token);
+        let received = u32::from_le_bytes(
+            tag_bytes
+                .try_into()
+                .map_err(|_| DatagramDecodeError::InvalidAuthTrailerLength)?,
         );
-        return None;  
-    }
-
-    // Parse frame kind  
-    let kind_byte = header_bytes[2]; 
-    
-    match FrameKind::try_from(kind_byte) {
-        Ok(_) => {}
-        Err(e) => { tracing::error!("Invalid discovery frame kind: {}", e); }, 
-    }
-
-    // Validate protocol version (must be v1 for compatibility with protocol.rs)\n    
-    if header_bytes[3] != 1u8 { 
-        tracing::warn!(
-            "Received unsupported protocol version {} (expected 1)", 
-            u8::from(header_bytes[3])
-        );  
-        return None;  
-    }
-
-    // Parse payload and verify CRC32 checksum \n        
-    let payload_start = HEADER_SIZE_BYTES;
-    let payload_end = buffer.len();
-    
-    if payload_start >= payload_end { 
-        tracing::warn!("Invalid frame: no payload after header");
-        return None; 
-    }
-
-    let payload_len = payload_end - payload_start; 
-    
-    // Verify CRC32 (computed in protocol.rs DiscoveryFrame::encode())  
-    let expected_crc = u32::from_le_bytes([header_bytes[4], header_bytes[5], header_bytes[6], header_bytes[7]]);
-    
-    if expected_crc == 0 { 
-        tracing::warn!("Received frame with zero CRC value"); 
-        return None;  
-    }
-
-    // Decode node resources from payload using protocol.rs NodeResources::decode_payload() \n        
-    match crate::protocol::NodeResources::decode_payload(&buffer[payload_start..payload_end]) {
-        Ok(node) => { 
-            Some((DiscoveryFrame { kind: FrameKind::try_from(kind_byte).unwrap(), node }, received_ether_type))  
+        if expected != received {
+            return Err(DatagramDecodeError::AuthTagMismatch);
         }
-        Err(e) => { 
-            tracing::warn!("Failed to decode discovery frame payload: {}", e); 
-            None  
-        }
+        DiscoveryFrame::decode(frame_bytes).map_err(DatagramDecodeError::FrameDecode)
+    } else {
+        DiscoveryFrame::decode(datagram).map_err(DatagramDecodeError::FrameDecode)
     }
 }
 
-// Re-export protocol module constants for use in main.rs \n        
-mod protocol {\n    
-    pub use crate::protocol::GHOSTLINK_ETHERTYPE;
-}\n
+fn auth_tag(frame_bytes: &[u8], token: &str) -> u32 {
+    let mut hasher = Hasher::new();
+    hasher.update(frame_bytes);
+    hasher.update(token.as_bytes());
+    hasher.finalize()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::protocol::{FrameKind, NodeResources};
+    use std::thread;
+
+    #[test]
+    fn broadcast_fallback_can_send_without_responses() {
+        let frame = DiscoveryFrame {
+            kind: FrameKind::Join,
+            node: NodeResources::new("node-a", 24.0, 64.0, "8.9", None),
+        };
+
+        let config = UdpDiscoveryConfig {
+            response_timeout: Duration::from_millis(10),
+            ..UdpDiscoveryConfig::default()
+        };
+
+        let result = broadcast_and_collect(&frame, &config);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn datagram_auth_validation_rejects_modified_data() {
+        let frame = DiscoveryFrame {
+            kind: FrameKind::Join,
+            node: NodeResources::new("node-b", 12.0, 32.0, "8.6", None),
+        };
+
+        let mut packet = encode_datagram(&frame, Some("secret"));
+        packet[3] ^= 0x1;
+
+        let result = decode_datagram(&packet, Some("secret"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn responder_replies_to_join_request() {
+        let listener = UdpSocket::bind("127.0.0.1:0").expect("bind temp listener");
+        let port = listener.local_addr().expect("local addr").port();
+        drop(listener);
+
+        let responder_config = UdpDiscoveryConfig {
+            bind_addr: SocketAddr::from(([127, 0, 0, 1], port)),
+            broadcast_addr: SocketAddr::from(([127, 0, 0, 1], port)),
+            response_timeout: Duration::from_millis(400),
+            auth_token: Some("token".to_string()),
+            ..UdpDiscoveryConfig::default()
+        };
+
+        let sender_config = UdpDiscoveryConfig {
+            bind_addr: SocketAddr::from(([127, 0, 0, 1], 0)),
+            broadcast_addr: SocketAddr::from(([127, 0, 0, 1], port)),
+            response_timeout: Duration::from_millis(400),
+            auth_token: Some("token".to_string()),
+            ..UdpDiscoveryConfig::default()
+        };
+
+        let responder_cfg = responder_config.clone();
+        let handle = thread::spawn(move || {
+            let node = NodeResources::new("node-listener", 16.0, 32.0, "8.6", None);
+            respond_once(&node, &responder_cfg)
+        });
+
+        thread::sleep(Duration::from_millis(50));
+
+        let join = DiscoveryFrame {
+            kind: FrameKind::Join,
+            node: NodeResources::new("node-sender", 12.0, 32.0, "8.0", None),
+        };
+        let replies =
+            broadcast_and_collect(&join, &sender_config).expect("broadcast should succeed");
+        assert!(!replies.is_empty());
+        assert!(replies
+            .iter()
+            .any(|reply| reply.node.id == "node-listener" && reply.kind == FrameKind::Discovery));
+
+        let responded = handle
+            .join()
+            .expect("responder thread join")
+            .expect("responder should return result");
+        assert!(responded.is_some());
+    }
+
+    #[test]
+    fn respond_once_ignores_auth_mismatch_then_accepts_valid_request() {
+        let listener = UdpSocket::bind("127.0.0.1:0").expect("bind temp listener");
+        let port = listener.local_addr().expect("local addr").port();
+        drop(listener);
+
+        let responder_config = UdpDiscoveryConfig {
+            bind_addr: SocketAddr::from(([127, 0, 0, 1], port)),
+            response_timeout: Duration::from_millis(700),
+            auth_token: Some("secret".to_string()),
+            ..UdpDiscoveryConfig::default()
+        };
+
+        let responder_cfg = responder_config.clone();
+        let handle = thread::spawn(move || {
+            let node = NodeResources::new("node-listener", 16.0, 32.0, "8.6", None);
+            respond_once(&node, &responder_cfg)
+        });
+
+        thread::sleep(Duration::from_millis(50));
+
+        let mismatch_sender = UdpDiscoveryConfig {
+            bind_addr: SocketAddr::from(([127, 0, 0, 1], 0)),
+            broadcast_addr: SocketAddr::from(([127, 0, 0, 1], port)),
+            response_timeout: Duration::from_millis(100),
+            auth_token: Some("wrong".to_string()),
+            ..UdpDiscoveryConfig::default()
+        };
+        let valid_sender = UdpDiscoveryConfig {
+            bind_addr: SocketAddr::from(([127, 0, 0, 1], 0)),
+            broadcast_addr: SocketAddr::from(([127, 0, 0, 1], port)),
+            response_timeout: Duration::from_millis(250),
+            auth_token: Some("secret".to_string()),
+            ..UdpDiscoveryConfig::default()
+        };
+
+        let join = DiscoveryFrame {
+            kind: FrameKind::Join,
+            node: NodeResources::new("node-sender", 12.0, 32.0, "8.0", None),
+        };
+
+        let mismatch_replies =
+            broadcast_and_collect(&join, &mismatch_sender).expect("mismatch send should succeed");
+        assert!(mismatch_replies.is_empty());
+
+        let valid_replies =
+            broadcast_and_collect(&join, &valid_sender).expect("valid send should succeed");
+        assert!(valid_replies
+            .iter()
+            .any(|reply| reply.node.id == "node-listener"));
+
+        let responded = handle
+            .join()
+            .expect("responder thread join")
+            .expect("responder should return result");
+        assert!(responded.is_some());
+    }
+
+    #[test]
+    fn broadcast_collects_multiple_replies_in_single_window() {
+        let listener = UdpSocket::bind("127.0.0.1:0").expect("bind temp listener");
+        let port = listener.local_addr().expect("local addr").port();
+        drop(listener);
+
+        let responder = thread::spawn(move || {
+            let socket = UdpSocket::bind(SocketAddr::from(([127, 0, 0, 1], port)))
+                .expect("bind burst responder");
+            socket
+                .set_read_timeout(Some(Duration::from_millis(700)))
+                .expect("set timeout");
+
+            let mut recv_buf = vec![0_u8; 1024];
+            let (read, peer_addr) = socket.recv_from(&mut recv_buf).expect("recv request");
+            let incoming = decode_datagram(&recv_buf[..read], Some("secret"))
+                .expect("decode incoming datagram");
+            assert_eq!(incoming.kind, FrameKind::Join);
+
+            for node_id in ["node-a", "node-b"] {
+                let reply = DiscoveryFrame {
+                    kind: FrameKind::Discovery,
+                    node: NodeResources::new(node_id, 16.0, 32.0, "8.6", None),
+                };
+                let packet = encode_datagram(&reply, Some("secret"));
+                socket
+                    .send_to(&packet, peer_addr)
+                    .expect("send reply datagram");
+            }
+        });
+
+        thread::sleep(Duration::from_millis(50));
+
+        let sender = UdpDiscoveryConfig {
+            bind_addr: SocketAddr::from(([127, 0, 0, 1], 0)),
+            broadcast_addr: SocketAddr::from(([127, 0, 0, 1], port)),
+            response_timeout: Duration::from_millis(250),
+            auth_token: Some("secret".to_string()),
+            ..UdpDiscoveryConfig::default()
+        };
+        let join = DiscoveryFrame {
+            kind: FrameKind::Join,
+            node: NodeResources::new("node-sender", 12.0, 24.0, "8.0", None),
+        };
+
+        let replies = broadcast_and_collect(&join, &sender).expect("broadcast should succeed");
+        assert!(replies.iter().any(|reply| reply.node.id == "node-a"));
+        assert!(replies.iter().any(|reply| reply.node.id == "node-b"));
+
+        responder.join().expect("responder join");
+    }
+
+    #[test]
+    fn serve_discovery_with_stats_tracks_drop_reasons() {
+        let listener = UdpSocket::bind("127.0.0.1:0").expect("bind temp listener");
+        let port = listener.local_addr().expect("local addr").port();
+        drop(listener);
+
+        let responder_config = UdpDiscoveryConfig {
+            bind_addr: SocketAddr::from(([127, 0, 0, 1], port)),
+            response_timeout: Duration::from_millis(1500),
+            auth_token: Some("secret".to_string()),
+            ..UdpDiscoveryConfig::default()
+        };
+
+        let responder_cfg = responder_config.clone();
+        let handle = thread::spawn(move || {
+            let node = NodeResources::new("node-listener", 16.0, 32.0, "8.6", None);
+            serve_discovery_with_stats(&node, &responder_cfg, Some(1))
+        });
+
+        thread::sleep(Duration::from_millis(50));
+
+        let raw_sender =
+            UdpSocket::bind(SocketAddr::from(([127, 0, 0, 1], 0))).expect("bind raw sender");
+        raw_sender
+            .send_to(
+                &[0xaa, 0xbb, 0xcc],
+                SocketAddr::from(([127, 0, 0, 1], port)),
+            )
+            .expect("send malformed datagram");
+
+        let mismatch_sender = UdpDiscoveryConfig {
+            bind_addr: SocketAddr::from(([127, 0, 0, 1], 0)),
+            broadcast_addr: SocketAddr::from(([127, 0, 0, 1], port)),
+            response_timeout: Duration::from_millis(120),
+            auth_token: Some("wrong".to_string()),
+            ..UdpDiscoveryConfig::default()
+        };
+        let valid_sender = UdpDiscoveryConfig {
+            bind_addr: SocketAddr::from(([127, 0, 0, 1], 0)),
+            broadcast_addr: SocketAddr::from(([127, 0, 0, 1], port)),
+            response_timeout: Duration::from_millis(200),
+            auth_token: Some("secret".to_string()),
+            ..UdpDiscoveryConfig::default()
+        };
+
+        let mismatch_join = DiscoveryFrame {
+            kind: FrameKind::Join,
+            node: NodeResources::new("node-mismatch", 8.0, 16.0, "8.0", None),
+        };
+        let unsupported = DiscoveryFrame {
+            kind: FrameKind::Attestation,
+            node: NodeResources::new("node-unsupported", 8.0, 16.0, "8.0", None),
+        };
+        let valid_join = DiscoveryFrame {
+            kind: FrameKind::Join,
+            node: NodeResources::new("node-valid", 8.0, 16.0, "8.0", None),
+        };
+
+        let mismatch_replies =
+            broadcast_and_collect(&mismatch_join, &mismatch_sender).expect("send mismatch join");
+        assert!(mismatch_replies.is_empty());
+
+        let unsupported_replies =
+            broadcast_and_collect(&unsupported, &valid_sender).expect("send unsupported frame");
+        assert!(unsupported_replies.is_empty());
+
+        let valid_replies = broadcast_and_collect(&valid_join, &valid_sender).expect("send join");
+        assert!(!valid_replies.is_empty());
+
+        let stats = handle
+            .join()
+            .expect("responder thread join")
+            .expect("responder should return result");
+
+        assert_eq!(stats.replies_sent, 1);
+        assert!(stats.drops.malformed >= 1);
+        assert!(stats.drops.auth_mismatch >= 1);
+        assert!(stats.drops.unsupported_kind >= 1);
+    }
+
+    #[test]
+    fn respond_once_survives_mixed_traffic_soak_before_valid_join() {
+        let listener = UdpSocket::bind("127.0.0.1:0").expect("bind temp listener");
+        let port = listener.local_addr().expect("local addr").port();
+        drop(listener);
+
+        let responder_config = UdpDiscoveryConfig {
+            bind_addr: SocketAddr::from(([127, 0, 0, 1], port)),
+            response_timeout: Duration::from_millis(2600),
+            auth_token: Some("secret".to_string()),
+            ..UdpDiscoveryConfig::default()
+        };
+
+        let responder_cfg = responder_config.clone();
+        let handle = thread::spawn(move || {
+            let node = NodeResources::new("node-listener", 16.0, 32.0, "8.6", None);
+            respond_once(&node, &responder_cfg)
+        });
+
+        thread::sleep(Duration::from_millis(50));
+
+        let raw_sender =
+            UdpSocket::bind(SocketAddr::from(([127, 0, 0, 1], 0))).expect("bind raw sender");
+        for _ in 0..24 {
+            raw_sender
+                .send_to(&[0xde, 0xad], SocketAddr::from(([127, 0, 0, 1], port)))
+                .expect("send malformed datagram");
+        }
+
+        let wrong_sender = UdpDiscoveryConfig {
+            bind_addr: SocketAddr::from(([127, 0, 0, 1], 0)),
+            broadcast_addr: SocketAddr::from(([127, 0, 0, 1], port)),
+            response_timeout: Duration::from_millis(45),
+            auth_token: Some("wrong".to_string()),
+            ..UdpDiscoveryConfig::default()
+        };
+        let valid_sender = UdpDiscoveryConfig {
+            bind_addr: SocketAddr::from(([127, 0, 0, 1], 0)),
+            broadcast_addr: SocketAddr::from(([127, 0, 0, 1], port)),
+            response_timeout: Duration::from_millis(260),
+            auth_token: Some("secret".to_string()),
+            ..UdpDiscoveryConfig::default()
+        };
+
+        let wrong_join = DiscoveryFrame {
+            kind: FrameKind::Join,
+            node: NodeResources::new("node-wrong", 8.0, 16.0, "8.0", None),
+        };
+        for _ in 0..4 {
+            let replies =
+                broadcast_and_collect(&wrong_join, &wrong_sender).expect("send wrong join frame");
+            assert!(replies.is_empty());
+        }
+
+        let valid_join = DiscoveryFrame {
+            kind: FrameKind::Join,
+            node: NodeResources::new("node-valid", 8.0, 16.0, "8.0", None),
+        };
+        let valid_replies =
+            broadcast_and_collect(&valid_join, &valid_sender).expect("send valid join frame");
+        assert!(valid_replies
+            .iter()
+            .any(|reply| reply.node.id == "node-listener"));
+
+        let responded = handle
+            .join()
+            .expect("responder thread join")
+            .expect("responder should return result");
+        assert!(responded.is_some());
+    }
+}

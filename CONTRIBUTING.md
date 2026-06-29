@@ -52,3 +52,24 @@ If behavior changes, update the relevant docs in:
 - keep changes focused
 - include validation commands in the PR body
 - call out host-specific caveats if runtime detection or probe behavior changes
+
+## Scope Guidance
+
+- Prefer atomic PRs that target one theme (runtime, GUI, perf governance, or CI plumbing).
+- If cross-cutting changes are unavoidable, include a short risk section and rollback strategy in the PR body.
+- For large feature deliveries, consider a sequence of smaller stacked PRs.
+
+## Release Rubric
+
+For release-oriented PRs, include a checklist based on:
+
+- required CI gates (production gate, tests, lint)
+- runtime/perf checks (baseline drift, stage-tail/canary where applicable)
+- GUI readiness checks (if GUI code changed)
+- documentation completeness and operational caveats
+
+Recommended rubric reporting format:
+
+1. Hard gates (must pass)
+2. Weighted score (for readiness trend tracking)
+3. Final recommendation (GO / Conditional GO / NO-GO)

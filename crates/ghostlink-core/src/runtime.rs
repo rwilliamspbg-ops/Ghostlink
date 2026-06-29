@@ -8,6 +8,7 @@ use crc32fast::Hasher;
 use std::io::{self, Read, Write};
 use std::io::{BufReader, BufWriter};
 use std::net::{Shutdown, TcpListener, TcpStream};
+use std::slice;
 use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
@@ -125,6 +126,8 @@ pub struct StageExecutionStats {
     pub avg_compute_ms: f32,
     pub avg_recv_wait_ms: f32,
     pub avg_send_wait_ms: f32,
+    pub avg_bridge_write_ms: f32,
+    pub avg_bridge_read_ms: f32,
 }
 
 /// Aggregate runtime execution output.
@@ -153,7 +156,7 @@ pub struct TcpTransportConfig {
 impl Default for TcpTransportConfig {
     fn default() -> Self {
         Self {
-            max_inflight_batches: 64,
+            max_inflight_batches: 512,
             reconnect_attempts: 3,
             reconnect_backoff_ms: 25,
             auth_token: None,
@@ -184,12 +187,14 @@ impl ExecutionResult {
 
         for stage in &self.stage_stats {
             out.push_str(&format!(
-                "Stage {} batches={} compute={:.2} ms recv-wait={:.2} ms send-wait={:.2} ms\n",
+                "Stage {} batches={} compute={:.2} ms recv-wait={:.2} ms send-wait={:.2} ms bridge-write={:.2} ms bridge-read={:.2} ms\n",
                 stage.stage_idx,
                 stage.processed_batches,
                 stage.avg_compute_ms,
                 stage.avg_recv_wait_ms,
-                stage.avg_send_wait_ms
+                stage.avg_send_wait_ms,
+                stage.avg_bridge_write_ms,
+                stage.avg_bridge_read_ms
             ));
         }
 
@@ -387,6 +392,8 @@ pub fn execute_pipeline(
                 avg_compute_ms: stats.total_compute_ms / divisor,
                 avg_recv_wait_ms: stats.total_recv_wait_ms / divisor,
                 avg_send_wait_ms: stats.total_send_wait_ms / divisor,
+                avg_bridge_write_ms: 0.0,
+                avg_bridge_read_ms: 0.0,
             });
         }
     }
@@ -435,13 +442,31 @@ fn auth_tag(batch: &TransportBatch, source_stage: usize, token: Option<&str>) ->
     hasher.update(&(batch.batch_id as u64).to_le_bytes());
     hasher.update(&(batch.tokens_in_batch as u32).to_le_bytes());
     hasher.update(&(batch.payload.len() as u32).to_le_bytes());
-    for value in &batch.payload {
-        hasher.update(&value.to_le_bytes());
-    }
+    let payload_bytes = payload_as_le_bytes(&batch.payload);
+    hasher.update(payload_bytes.as_ref());
     if let Some(token) = token {
         hasher.update(token.as_bytes());
     }
     hasher.finalize()
+}
+
+fn payload_as_le_bytes(payload: &[f32]) -> std::borrow::Cow<'_, [u8]> {
+    if cfg!(target_endian = "little") {
+        // SAFETY: f32 is POD; casting [f32] to its contiguous byte representation is valid.
+        let bytes = unsafe {
+            slice::from_raw_parts(
+                payload.as_ptr() as *const u8,
+                std::mem::size_of_val(payload),
+            )
+        };
+        std::borrow::Cow::Borrowed(bytes)
+    } else {
+        let mut bytes = Vec::with_capacity(payload.len() * 4);
+        for value in payload {
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
+        std::borrow::Cow::Owned(bytes)
+    }
 }
 
 fn write_transport_batch(
@@ -463,9 +488,8 @@ fn write_transport_batch(
     frame.extend_from_slice(&tokens.to_le_bytes());
     frame.extend_from_slice(&payload_len.to_le_bytes());
     frame.extend_from_slice(&tag.to_le_bytes());
-    for value in &batch.payload {
-        frame.extend_from_slice(&value.to_le_bytes());
-    }
+    let payload_bytes = payload_as_le_bytes(&batch.payload);
+    frame.extend_from_slice(payload_bytes.as_ref());
     writer.write_all(&frame)?;
 
     Ok(())
@@ -503,12 +527,26 @@ fn read_transport_batch(
     reader.read_exact(&mut tag_bytes)?;
 
     let payload_len = u32::from_le_bytes(payload_len_bytes) as usize;
-    let mut payload = Vec::with_capacity(payload_len);
-    let mut payload_bytes = vec![0u8; payload_len * 4];
-    reader.read_exact(&mut payload_bytes)?;
-    for chunk in payload_bytes.chunks_exact(4) {
-        payload.push(f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
-    }
+    let payload = if cfg!(target_endian = "little") {
+        let mut payload = vec![0f32; payload_len];
+        // SAFETY: payload points to initialized contiguous f32 memory; we reinterpret as bytes for I/O.
+        let payload_bytes = unsafe {
+            slice::from_raw_parts_mut(
+                payload.as_mut_ptr() as *mut u8,
+                payload_len * std::mem::size_of::<f32>(),
+            )
+        };
+        reader.read_exact(payload_bytes)?;
+        payload
+    } else {
+        let mut payload = Vec::with_capacity(payload_len);
+        let mut payload_bytes = vec![0u8; payload_len * 4];
+        reader.read_exact(&mut payload_bytes)?;
+        for chunk in payload_bytes.chunks_exact(4) {
+            payload.push(f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
+        }
+        payload
+    };
 
     let batch = TransportBatch {
         batch_id: u64::from_le_bytes(batch_id_bytes) as usize,
@@ -533,7 +571,7 @@ fn spawn_tcp_loopback_bridge(
     input_rx: mpsc::Receiver<TransportBatch>,
     output_tx: mpsc::SyncSender<TransportBatch>,
     config: TcpTransportConfig,
-) -> thread::JoinHandle<()> {
+) -> thread::JoinHandle<BridgeAccumulator> {
     thread::spawn(move || {
         let listener = match TcpListener::bind("127.0.0.1:0") {
             Ok(listener) => listener,
@@ -543,7 +581,7 @@ fn spawn_tcp_loopback_bridge(
                         break;
                     }
                 }
-                return;
+                return BridgeAccumulator::default_with_stage(source_stage);
             }
         };
 
@@ -555,7 +593,7 @@ fn spawn_tcp_loopback_bridge(
                         break;
                     }
                 }
-                return;
+                return BridgeAccumulator::default_with_stage(source_stage);
             }
         };
 
@@ -582,7 +620,7 @@ fn spawn_tcp_loopback_bridge(
                             break;
                         }
                     }
-                    return;
+                    return BridgeAccumulator::default_with_stage(source_stage);
                 }
             }
         };
@@ -595,7 +633,7 @@ fn spawn_tcp_loopback_bridge(
                         break;
                     }
                 }
-                return;
+                return BridgeAccumulator::default_with_stage(source_stage);
             }
         };
 
@@ -604,7 +642,10 @@ fn spawn_tcp_loopback_bridge(
 
         let writer = thread::spawn(move || {
             let mut writer = BufWriter::with_capacity(64 * 1024, client_stream);
+            let mut processed_batches = 0usize;
+            let mut total_write_ms = 0.0_f32;
             for batch in input_rx {
+                let write_start = Instant::now();
                 if write_transport_batch(
                     &mut writer,
                     &batch,
@@ -615,27 +656,60 @@ fn spawn_tcp_loopback_bridge(
                 {
                     break;
                 }
+                total_write_ms += write_start.elapsed().as_secs_f32() * 1000.0;
+                processed_batches += 1;
             }
             let _ = writer.flush();
             let _ = writer.get_ref().shutdown(Shutdown::Write);
+            (processed_batches, total_write_ms)
         });
 
         let mut reader = BufReader::with_capacity(64 * 1024, server_stream);
+        let mut read_batches = 0usize;
+        let mut total_read_ms = 0.0_f32;
 
         loop {
+            let read_start = Instant::now();
             match read_transport_batch(&mut reader, source_stage, reader_auth_token.as_deref()) {
                 Ok(Some(batch)) => {
+                    total_read_ms += read_start.elapsed().as_secs_f32() * 1000.0;
                     if output_tx.send(batch).is_err() {
                         break;
                     }
+                    read_batches += 1;
                 }
                 Ok(None) => break,
                 Err(_) => break,
             }
         }
 
-        let _ = writer.join();
+        let (write_batches, total_write_ms) = writer.join().unwrap_or((0, 0.0));
+        BridgeAccumulator {
+            source_stage,
+            processed_batches: read_batches.max(write_batches),
+            total_write_ms,
+            total_read_ms,
+        }
     })
+}
+
+#[derive(Debug)]
+struct BridgeAccumulator {
+    source_stage: usize,
+    processed_batches: usize,
+    total_write_ms: f32,
+    total_read_ms: f32,
+}
+
+impl BridgeAccumulator {
+    fn default_with_stage(source_stage: usize) -> Self {
+        Self {
+            source_stage,
+            processed_batches: 0,
+            total_write_ms: 0.0,
+            total_read_ms: 0.0,
+        }
+    }
 }
 
 /// Execute pipeline stages with real TCP loopback transport bridges between stages.
@@ -830,12 +904,28 @@ pub fn execute_pipeline_tcp_loopback_with_config(
                 avg_compute_ms: stats.total_compute_ms / divisor,
                 avg_recv_wait_ms: stats.total_recv_wait_ms / divisor,
                 avg_send_wait_ms: stats.total_send_wait_ms / divisor,
+                avg_bridge_write_ms: 0.0,
+                avg_bridge_read_ms: 0.0,
             });
         }
     }
 
+    let mut bridge_stats = Vec::with_capacity(bridge_handles.len());
     for handle in bridge_handles {
-        let _ = handle.join();
+        if let Ok(stats) = handle.join() {
+            bridge_stats.push(stats);
+        }
+    }
+
+    for bridge in bridge_stats {
+        if let Some(stage) = stage_stats
+            .iter_mut()
+            .find(|s| s.stage_idx == bridge.source_stage)
+        {
+            let divisor = bridge.processed_batches.max(1) as f32;
+            stage.avg_bridge_write_ms = bridge.total_write_ms / divisor;
+            stage.avg_bridge_read_ms = bridge.total_read_ms / divisor;
+        }
     }
 
     stage_stats.sort_by_key(|s| s.stage_idx);
@@ -875,6 +965,7 @@ mod tests {
     use super::*;
     use crate::planning::LayerAssignment;
     use std::collections::HashMap;
+    use std::io::Cursor;
 
     #[test]
     fn pipeline_plan_uses_node_device_mapping() {
@@ -977,6 +1068,36 @@ mod tests {
     }
 
     #[test]
+    fn execution_supports_npu_stage_metrics() {
+        let plan = PipelinePlan {
+            stages: vec![
+                StagePlacement {
+                    node_id: "node-npu".to_string(),
+                    start_layer: 0,
+                    end_layer: 8,
+                    device: DeviceKind::Npu,
+                    est_latency_ms: 0.9,
+                },
+                StagePlacement {
+                    node_id: "node-gpu".to_string(),
+                    start_layer: 8,
+                    end_layer: 16,
+                    device: DeviceKind::Gpu,
+                    est_latency_ms: 1.1,
+                },
+            ],
+        };
+
+        let result = execute_pipeline(&plan, 12, 3);
+        assert_eq!(result.stage_count, 2);
+        assert_eq!(result.batch_count, 4);
+        assert_eq!(result.stage_stats.len(), 2);
+        assert!(result.stage_stats.iter().any(|s| s.stage_idx == 0));
+        assert!(result.total_time_ms > 0.0);
+        assert!(result.throughput_tokens_per_sec > 0.0);
+    }
+
+    #[test]
     fn tcp_loopback_execution_reports_metrics() {
         let plan = PipelinePlan {
             stages: vec![
@@ -1043,5 +1164,37 @@ mod tests {
         assert_eq!(result.stage_stats.len(), 2);
         assert!(result.total_time_ms > 0.0);
         assert!(result.throughput_tokens_per_sec > 0.0);
+    }
+
+    #[test]
+    fn transport_rejects_auth_mismatch_frames() {
+        let batch = TransportBatch {
+            batch_id: 7,
+            tokens_in_batch: 4,
+            payload: vec![0.1, 0.2, 0.3, 0.4],
+        };
+        let mut encoded = Vec::new();
+        write_transport_batch(&mut encoded, &batch, 0, Some("token-a")).expect("encode frame");
+
+        let mut cursor = Cursor::new(encoded);
+        let err = read_transport_batch(&mut cursor, 0, Some("token-b"))
+            .expect_err("mismatched token should fail");
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn transport_rejects_unexpected_source_stage() {
+        let batch = TransportBatch {
+            batch_id: 2,
+            tokens_in_batch: 2,
+            payload: vec![1.0, 2.0],
+        };
+        let mut encoded = Vec::new();
+        write_transport_batch(&mut encoded, &batch, 1, Some("token")).expect("encode frame");
+
+        let mut cursor = Cursor::new(encoded);
+        let err = read_transport_batch(&mut cursor, 0, Some("token"))
+            .expect_err("source-stage mismatch should fail");
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
     }
 }

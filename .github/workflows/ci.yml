@@ -15,8 +15,10 @@ on:
       - 'benches/**'
       - 'scripts/**'
       - 'docs/PERF_BASELINE.json'
+      - 'docs/PERF_BASELINE_STRESS.json'
       - 'README.md'
       - 'TESTING.md'
+      - 'docs/SECURITY_MODEL.md'
       - '.github/workflows/ci.yml'
       - '.github/workflows/production-gate.yml'
   pull_request:
@@ -29,8 +31,10 @@ on:
       - 'benches/**'
       - 'scripts/**'
       - 'docs/PERF_BASELINE.json'
+      - 'docs/PERF_BASELINE_STRESS.json'
       - 'README.md'
       - 'TESTING.md'
+      - 'docs/SECURITY_MODEL.md'
       - '.github/workflows/ci.yml'
       - '.github/workflows/production-gate.yml'
 
@@ -87,6 +91,9 @@ jobs:
   coverage:
     name: Code Coverage
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -105,10 +112,13 @@ jobs:
           test -s ./coverage/lcov.info
 
       - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v4
+        uses: codecov/codecov-action@v5
         with:
           files: ./coverage/lcov.info
+          token: ${{ secrets.CODECOV_TOKEN }}
+          use_oidc: true
           fail_ci_if_error: false
+          verbose: true
 
       - name: Upload coverage artifacts
         if: always()
