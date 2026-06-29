@@ -46,7 +46,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
@@ -139,7 +139,7 @@ jobs:
             --output ./tmp/active-probe.json
 
       - name: Upload Runtime Metrics Artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: flow-runtime-metrics
           path: |
@@ -217,7 +217,7 @@ jobs:
             --profile stress
 
       - name: Upload Perf Snapshot Artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: flow-perf-snapshot
           path: |
