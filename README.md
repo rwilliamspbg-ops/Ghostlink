@@ -60,3 +60,11 @@ cargo run -p ghost-link -- gui
 ## ⚖️ License
 
 Ghost-Link is released under the MIT License.
+
+## 🧪 Development & Validation
+
+Ghostlink maintains high quality through automated testing and validation gates:
+
+- **Workspace Tests**: `cargo test --workspace`
+- **Linting**: `cargo clippy --workspace --all-targets -- -D warnings`
+- **Model Verification**: `python3 scripts/verify_hf_models.py`

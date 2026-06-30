@@ -105,6 +105,18 @@ impl FlowTransportMode {
     }
 }
 
+struct FlowOptions<'a> {
+    local_id: &'a str,
+    remote_id: &'a str,
+    remote_vram_gb: f32,
+    remote_system_memory_gb: f32,
+    execution_tokens: usize,
+    micro_batch: usize,
+    transport_mode: FlowTransportMode,
+    top_k: usize,
+    penalty: f32,
+}
+
 fn main() -> Result<()> {
     // Initialize logging
     tracing_subscriber::fmt().init();
@@ -409,9 +421,9 @@ fn execute_command(command: CliCommand) -> Result<()> {
             transport_mode,
             top_k,
             penalty,
-        } => print_flow(
-            &local_id,
-            &remote_id,
+        } => print_flow(FlowOptions {
+            local_id: &local_id,
+            remote_id: &remote_id,
             remote_vram_gb,
             remote_system_memory_gb,
             execution_tokens,
@@ -419,7 +431,7 @@ fn execute_command(command: CliCommand) -> Result<()> {
             transport_mode,
             top_k,
             penalty,
-        )?,
+        })?,
         CliCommand::Serve { port, host } => start_openai_api_server(port, &host)?,
         CliCommand::Help => print_help(),
     }
@@ -997,18 +1009,8 @@ fn print_help() {
     println!("  $ ghost-link flow iprada-16gb zenbook-32gb 32 32 64 4 inmem");
 }
 
-fn print_flow(
-    local_id: &str,
-    remote_id: &str,
-    remote_vram_gb: f32,
-    remote_system_memory_gb: f32,
-    execution_tokens: usize,
-    micro_batch: usize,
-    transport_mode: FlowTransportMode,
-    top_k: usize,
-    penalty: f32,
-) -> Result<()> {
-    let local_profile = detect_runtime_profile(local_id);
+fn print_flow(opts: FlowOptions) -> Result<()> {
+    let local_profile = detect_runtime_profile(opts.local_id);
     let local_node = NodeResources::new(
         local_profile.node_resources.id.clone(),
         local_profile.node_resources.vram_gb.max(16.0),
@@ -1020,20 +1022,20 @@ fn print_flow(
     let cluster = ClusterState::new();
     cluster.register(local_node);
     cluster.register(NodeResources::new(
-        remote_id,
-        remote_vram_gb,
-        remote_system_memory_gb,
+        opts.remote_id,
+        opts.remote_vram_gb,
+        opts.remote_system_memory_gb,
         "auto".to_string(),
         Some("remote-host".to_string()),
     ));
 
     // Seed baseline metrics so health monitor can classify status immediately.
-    cluster.get_metrics_mut(local_id, |metrics| {
+    cluster.get_metrics_mut(opts.local_id, |metrics| {
         metrics.record_latency(2.5);
         metrics.record_delivery_ratio(0.97);
         metrics.record_throughput(8.0);
     });
-    cluster.get_metrics_mut(remote_id, |metrics| {
+    cluster.get_metrics_mut(opts.remote_id, |metrics| {
         metrics.record_latency(3.2);
         metrics.record_delivery_ratio(0.95);
         metrics.record_throughput(7.4);
@@ -1056,18 +1058,18 @@ fn print_flow(
     let assignments = assign_layers_with_runtime_profile(&nodes, &layers, &local_profile)
         .map_err(|e| anyhow::anyhow!(e))?;
 
-    let device_map = build_device_map(&local_profile, local_id, remote_id);
+    let device_map = build_device_map(&local_profile, opts.local_id, opts.remote_id);
     let pipeline_plan = PipelinePlan::from_assignments(&assignments, &device_map);
-    let schedule_preview_tokens = execution_tokens.min(8);
+    let schedule_preview_tokens = opts.execution_tokens.min(8);
     let token_schedule = build_token_schedule(pipeline_plan.stages.len(), schedule_preview_tokens);
-    let execution = match transport_mode {
+    let execution = match opts.transport_mode {
         FlowTransportMode::TcpLoopback => {
             let base_tcp_cfg = tcp_transport_config_from_env();
             let tcp_cfg = if is_env_truthy("GHOSTLINK_TCP_AUTOTUNE") {
                 autotune_tcp_transport_config(
                     &pipeline_plan,
-                    execution_tokens,
-                    micro_batch,
+                    opts.execution_tokens,
+                    opts.micro_batch,
                     base_tcp_cfg,
                 )
             } else {
@@ -1075,13 +1077,13 @@ fn print_flow(
             };
             execute_pipeline_tcp_loopback_with_config(
                 &pipeline_plan,
-                execution_tokens,
-                micro_batch,
+                opts.execution_tokens,
+                opts.micro_batch,
                 tcp_cfg,
             )
         }
         FlowTransportMode::InMemory => {
-            execute_pipeline(&pipeline_plan, execution_tokens, micro_batch)
+            execute_pipeline(&pipeline_plan, opts.execution_tokens, opts.micro_batch)
         }
     };
 
@@ -1094,7 +1096,7 @@ fn print_flow(
     println!("Ghost-Link 30B Multi-Host Runtime Flow\n");
     println!("====================================\n");
     println!("Local node: {}", local_profile.node_resources.id);
-    println!("Remote node: {}", remote_id);
+    println!("Remote node: {}", opts.remote_id);
     println!(
         "Local acceleration: {}",
         local_profile.acceleration_mode.as_str()
@@ -1125,26 +1127,55 @@ fn print_flow(
         schedule_preview_tokens,
         pipeline_plan.stages.len()
     );
-    println!("Inference Parameters: top_k={} penalty={:.1}", top_k, penalty);
+    println!(
+        "Inference Parameters: top_k={} penalty={:.1}",
+        opts.top_k, opts.penalty
+    );
     println!("{}", execution.summary());
-    maybe_write_flow_metrics_json(&execution, transport_mode)?;
+    maybe_write_flow_metrics_json(&execution, opts.transport_mode)?;
 
     println!("Execution Modes:");
     println!("- NPU/GPU/CPU backend selection is runtime-profile driven");
     println!("- Flow currently provides transparent planning and health-driven orchestration");
     println!(
         "- Inter-stage transport mode: {} (real runtime wiring)",
-        transport_mode.as_str()
+        opts.transport_mode.as_str()
     );
     println!("- Use tcp for socket-backed transport or inmem for channel-backed baseline\n");
 
-    if matches!(transport_mode, FlowTransportMode::TcpLoopback) {
+    if matches!(opts.transport_mode, FlowTransportMode::TcpLoopback) {
         println!(
             "TCP transport controls: GHOSTLINK_TCP_MAX_INFLIGHT, GHOSTLINK_TCP_RECONNECT_ATTEMPTS, GHOSTLINK_TCP_RECONNECT_BACKOFF_MS, GHOSTLINK_TCP_AUTH_TOKEN, GHOSTLINK_TCP_AUTOTUNE\n"
         );
     }
 
     Ok(())
+}
+
+fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
+    println!("Ghostlink Studio API - Starting OpenAI-compatible server...");
+    println!("Listening on http://{}:{}", host, port);
+    println!("Ready for Chat Completions at /v1/chat/completions");
+
+    // In a real implementation, this would spin up a tokio-based axum/warp server.
+    // For this prototype, we simulate a long-running process that would bridge to
+    // the ghostlink-core execution runtime.
+
+    let profile = detect_runtime_profile("studio-api");
+    println!(
+        "API Runtime Profile: {} workers, {} acceleration",
+        profile.recommended_workers,
+        profile.acceleration_mode.as_str()
+    );
+
+    // Keep process alive to simulate server
+    if std::env::var("GHOSTLINK_CI_RUN").is_ok() {
+        return Ok(());
+    }
+
+    loop {
+        std::thread::sleep(Duration::from_secs(3600));
+    }
 }
 
 fn build_device_map(
@@ -2789,29 +2820,5 @@ mod tests {
     fn bootstrap_rejects_missing_config_value() {
         let result = extract_bootstrap_args(vec!["--config".to_string()]);
         assert!(result.is_err());
-    }
-}
-
-fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
-    println!("Ghostlink Studio API - Starting OpenAI-compatible server...");
-    println!("Listening on http://{}:{}", host, port);
-    println!("Ready for Chat Completions at /v1/chat/completions");
-
-    // In a real implementation, this would spin up a tokio-based axum/warp server.
-    // For this prototype, we simulate a long-running process that would bridge to
-    // the ghostlink-core execution runtime.
-
-    let profile = detect_runtime_profile("studio-api");
-    println!("API Runtime Profile: {} workers, {} acceleration",
-             profile.recommended_workers,
-             profile.acceleration_mode.as_str());
-
-    // Keep process alive to simulate server
-    if std::env::var("GHOSTLINK_CI_RUN").is_ok() {
-        return Ok(());
-    }
-
-    loop {
-        std::thread::sleep(Duration::from_secs(3600));
     }
 }
