@@ -158,7 +158,7 @@ fn run_stage_compute(payload: &mut [f32], stage: &StagePlacement) {
 
     for _ in 0..rounds {
         for value in payload.iter_mut() {
-            *value = *value * alpha + 0.125;
+            *value = ((*value * alpha) + 0.125).sin();
         }
     }
 }
