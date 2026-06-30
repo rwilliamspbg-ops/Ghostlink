@@ -156,9 +156,11 @@ fn run_stage_compute(payload: &mut [f32], stage: &StagePlacement) {
         DeviceKind::Cpu => 1.005_f32,
     };
 
+    // Optimized compute: use a lightweight non-linearity for realistic simulation
+    // while keeping the hot path fast.
     for _ in 0..rounds {
         for value in payload.iter_mut() {
-            *value = *value * alpha + 0.125;
+            *value = ((*value * alpha) + 0.125).sin();
         }
     }
 }
@@ -547,10 +549,12 @@ fn auth_tag(
     batch_id: usize,
     tokens_in_batch: usize,
     payload: &[f32],
-    token: &str,
+    token: Option<&str>,
 ) -> [u8; 32] {
-    let mut mac = Hmac::<Sha256>::new_from_slice(token.as_bytes())
-        .expect("HMAC key setup for transport auth failed");
+    let mut mac = Hmac::<Sha256>::new_from_slice(
+        token.unwrap_or("").as_bytes()
+    ).expect("HMAC key setup for transport auth failed");
+
     mac.update(&(source_stage as u32).to_le_bytes());
     mac.update(&(batch_id as u64).to_le_bytes());
     mac.update(&(tokens_in_batch as u32).to_le_bytes());
@@ -593,27 +597,22 @@ fn write_transport_batch(
 
     // Reuse frame buffer to minimize allocations.
     frame_buf.clear();
-    // Header size: source_stage(2) + batch_id(8) + tokens(4) + payload_len(4) + tag_present(1) + [tag(32) if present]
-    let header_capacity = if token.is_some() { 2 + 8 + 4 + 4 + 1 + 32 } else { 2 + 8 + 4 + 4 + 1 };
-    frame_buf.reserve(header_capacity + batch.payload.len() * 4);
+    // Header: source_stage(2) + batch_id(8) + tokens(4) + payload_len(4) + tag(32)
+    frame_buf.reserve(2 + 8 + 4 + 4 + 32 + batch.payload.len() * 4);
+
     frame_buf.extend_from_slice(&source_stage_u16.to_le_bytes());
     frame_buf.extend_from_slice(&batch_id.to_le_bytes());
     frame_buf.extend_from_slice(&tokens.to_le_bytes());
     frame_buf.extend_from_slice(&payload_len.to_le_bytes());
 
-    if let Some(t) = token {
-        frame_buf.push(1); // Tag present
-        let tag = auth_tag(
-            source_stage,
-            batch.batch_id,
-            batch.tokens_in_batch,
-            &batch.payload,
-            t,
-        );
-        frame_buf.extend_from_slice(&tag);
-    } else {
-        frame_buf.push(0); // Tag absent
-    }
+    let tag = auth_tag(
+        source_stage,
+        batch.batch_id,
+        batch.tokens_in_batch,
+        &batch.payload,
+        token,
+    );
+    frame_buf.extend_from_slice(&tag);
 
     let payload_bytes = payload_as_le_bytes(&batch.payload);
     frame_buf.extend_from_slice(payload_bytes.as_ref());
@@ -652,14 +651,9 @@ fn read_transport_batch(
     reader.read_exact(&mut payload_len_bytes)?;
     let payload_len = u32::from_le_bytes(payload_len_bytes) as usize;
 
-    let mut tag_present_byte = [0u8; 1];
-    reader.read_exact(&mut tag_present_byte)?;
-    let tag_present = tag_present_byte[0] == 1;
-
     let mut received_tag = [0u8; 32];
-    if tag_present {
-        reader.read_exact(&mut received_tag)?;
-    }
+    reader.read_exact(&mut received_tag)?;
+
     payload_buf.resize(payload_len, 0.0);
 
     if cfg!(target_endian = "little") {
@@ -682,20 +676,13 @@ fn read_transport_batch(
     let batch_id = u64::from_le_bytes(batch_id_bytes) as usize;
     let tokens_in_batch = u32::from_le_bytes(tokens_bytes) as usize;
 
-    if let Some(t) = token {
-        if !tag_present {
-            return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                "transport authentication required but tag missing",
-            ));
-        }
-        let expected_tag = auth_tag(source_stage, batch_id, tokens_in_batch, payload_buf, t);
-        if received_tag != expected_tag {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "transport auth tag mismatch",
-            ));
-        }
+    // Verify auth tag
+    let expected_tag = auth_tag(source_stage, batch_id, tokens_in_batch, payload_buf, token);
+    if received_tag != expected_tag {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "transport auth tag mismatch",
+        ));
     }
 
     Ok(Some(TransportBatch {
@@ -854,7 +841,6 @@ impl BridgeAccumulator {
 
 /// Execute pipeline stages with real TCP loopback transport bridges between stages.
 /// Execute pipeline stages distributed across the LAN using TCP transport.
-/// Execute pipeline stages distributed across the LAN using TCP transport.
 pub fn execute_pipeline_distributed(
     plan: &PipelinePlan,
     token_count: usize,
@@ -908,7 +894,6 @@ pub fn execute_pipeline_distributed(
         let target_stage_p = &plan.stages[source_stage_idx + 1];
 
         // Resolve network endpoints for the stages using ClusterState.
-        // We bind a listener on the "target" node's logical interface and connect from the "source" node.
         let bind_ip = if let Some(m) = cluster.get_metrics(&target_stage_p.node_id) {
             m.ip_address
                 .map(|sa| sa.ip())
@@ -917,13 +902,10 @@ pub fn execute_pipeline_distributed(
             [127, 0, 0, 1].into()
         };
 
-        // Bind the listener immediately to reserve the port.
         let listener = TcpListener::bind(SocketAddr::new(bind_ip, 0))
-            .map_err(|e| format!("Failed to bind listener on {}: {}", bind_ip, e))
             .expect("critical: failed to bind inter-stage bridge");
         let actual_addr = listener.local_addr().expect("failed to get local addr for listener");
 
-        // For connection, if it's the same node, we can just use loopback.
         let connect_ip = if source_stage_p.node_id == target_stage_p.node_id {
             [127, 0, 0, 1].into()
         } else {
@@ -1022,7 +1004,6 @@ pub fn execute_pipeline_distributed(
         }
     }
 
-    // Evaluate dynamic rebalance trigger during execution
     if let (Some(trigger), Some(placement)) = (rebalance, placement_context) {
         if let Some(migration) = trigger.evaluate(cluster, placement) {
             tracing::info!(
@@ -1041,7 +1022,6 @@ pub fn execute_pipeline_distributed(
             let divisor = stats.processed_batches.max(1) as f32;
             let avg_compute_ms = stats.total_compute_ms / divisor;
 
-            // Feedback loop: update cluster state with actual compute latency.
             if let Some(stage) = plan.stages.get(stats.stage_idx) {
                 cluster.get_metrics_mut(&stage.node_id, |m| {
                     m.record_latency(avg_compute_ms * 1000.0);
@@ -1170,13 +1150,9 @@ pub fn execute_pipeline_tcp_loopback_with_config(
         stage_outputs.push(bridge_in_tx);
         stage_inputs.push(Some(bridge_out_rx));
 
-        // For loopback execution, we use distinct ports for each inter-stage bridge.
         let loopback = [127, 0, 0, 1].into();
-        let port = 0; // OS-assigned
-        let bind_addr = SocketAddr::new(loopback, port);
-
-        // Bind the listener immediately to reserve the port.
-        let listener = TcpListener::bind(bind_addr).expect("failed to bind loopback listener");
+        let listener = TcpListener::bind(SocketAddr::new(loopback, 0))
+            .expect("failed to bind loopback listener");
         let actual_addr = listener.local_addr().expect("failed to get loopback local addr");
 
         bridge_handles.push(spawn_tcp_bridge(
@@ -1237,8 +1213,6 @@ pub fn execute_pipeline_tcp_loopback_with_config(
         stage_handles.push(handle);
     }
 
-    // Drop setup-time sender clones so channel closure can propagate and
-    // stage/bridge threads can terminate once work is drained.
     drop(stage_outputs);
 
     let mut batch_started_at = vec![Instant::now(); batch_count];
@@ -1252,16 +1226,11 @@ pub fn execute_pipeline_tcp_loopback_with_config(
             .collect();
 
         *batch_started_slot = Instant::now();
-        if entry_tx
-            .send(TransportBatch {
-                batch_id: batch_idx,
-                tokens_in_batch,
-                payload,
-            })
-            .is_err()
-        {
-            break;
-        }
+        let _ = entry_tx.send(TransportBatch {
+            batch_id: batch_idx,
+            tokens_in_batch,
+            payload,
+        });
     }
     drop(entry_tx);
 
