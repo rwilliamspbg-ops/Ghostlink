@@ -328,9 +328,11 @@ impl ClusterState {
         if self.nodes_snapshot_dirty.load(Ordering::Acquire)
             && self.nodes_snapshot_dirty.swap(false, Ordering::AcqRel)
         {
-            let nodes = self.nodes.lock().unwrap();
-            self.nodes_snapshot
-                .store(Arc::new(nodes.values().cloned().collect::<Vec<_>>()));
+            let nodes_map = self.nodes.lock().unwrap();
+            let mut nodes: Vec<_> = nodes_map.values().cloned().collect();
+            // Sort by ID to ensure deterministic layer assignment across runs
+            nodes.sort_by(|a, b| a.id.cmp(&b.id));
+            self.nodes_snapshot.store(Arc::new(nodes));
         }
 
         self.nodes_snapshot.load_full()
