@@ -456,11 +456,20 @@ impl MigrationPlanner {
     /// Generate a safe handoff sequence for a migration.
     pub fn generate_handoff_plan(&self) -> Vec<String> {
         let mut steps = Vec::new();
-        steps.push(format!("PREPARE: Target node {} allocating VRAM", self.target_node));
-        steps.push(format!("STREAM: Moving layers {:?} to {}", self.layers, self.target_node));
+        steps.push(format!(
+            "PREPARE: Target node {} allocating VRAM",
+            self.target_node
+        ));
+        steps.push(format!(
+            "STREAM: Moving layers {:?} to {}",
+            self.layers, self.target_node
+        ));
         steps.push(format!("VERIFY: Integrity check on {}", self.target_node));
         steps.push(format!("COMMIT: Switch routing to {}", self.target_node));
-        steps.push(format!("CLEANUP: Free VRAM on source node {}", self.source_node));
+        steps.push(format!(
+            "CLEANUP: Free VRAM on source node {}",
+            self.source_node
+        ));
         steps
     }
 }
@@ -481,7 +490,11 @@ impl Default for RebalanceTrigger {
 }
 
 impl RebalanceTrigger {
-    pub fn evaluate(&self, cluster: &ClusterState, current_plan: &PlacementPlan) -> Option<MigrationPlanner> {
+    pub fn evaluate(
+        &self,
+        cluster: &ClusterState,
+        current_plan: &PlacementPlan,
+    ) -> Option<MigrationPlanner> {
         let active_nodes = cluster.active_nodes();
         if active_nodes.len() < 2 {
             return None;
@@ -500,10 +513,14 @@ impl RebalanceTrigger {
         }
 
         if let (Some(source), Some(target)) = (overtaxed, available) {
-            if source == target { return None; }
+            if source == target {
+                return None;
+            }
 
             // Find layers to move from overtaxed node
-            let layers_to_move = current_plan.assignments.iter()
+            let layers_to_move = current_plan
+                .assignments
+                .iter()
                 .find(|a| a.node_id == source)
                 .map(|a| (a.start_layer..a.end_layer).take(2).collect::<Vec<_>>())
                 .unwrap_or_default();

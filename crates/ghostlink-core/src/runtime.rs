@@ -260,6 +260,15 @@ pub fn execute_pipeline(
     token_count: usize,
     micro_batch: usize,
 ) -> ExecutionResult {
+    execute_pipeline_with_rebalance(plan, token_count, micro_batch, None)
+}
+
+pub fn execute_pipeline_with_rebalance(
+    plan: &PipelinePlan,
+    token_count: usize,
+    micro_batch: usize,
+    rebalance: Option<&crate::planning::RebalanceTrigger>,
+) -> ExecutionResult {
     let stage_count = plan.stages.len();
     let micro_batch = micro_batch.max(1);
     let batch_count = token_count.div_ceil(micro_batch);
@@ -390,6 +399,19 @@ pub fn execute_pipeline(
         payload.resize(payload_len, 0.0);
         for (idx, val) in payload.iter_mut().enumerate() {
             *val = (batch_idx as f32 * 0.01) + (idx as f32 * 0.0001);
+        }
+
+        // Simulation of dynamic rebalance trigger during execution
+        if let Some(_trigger) = rebalance {
+            // Check for rebalance every 10th batch
+            if batch_idx % 10 == 0 && batch_idx > 0 {
+                // In a production system, we would evaluate cluster health here
+                // For this simulation, we log that a rebalance check occurred
+                tracing::debug!(
+                    "Dynamic Runtime: Evaluating rebalance trigger at batch {}",
+                    batch_idx
+                );
+            }
         }
 
         entry_ring.wait_for_space();

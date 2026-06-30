@@ -178,7 +178,11 @@ pub fn broadcast_and_collect(
                     Ok(decoded) => peers.push(decoded),
                     Err(err) => {
                         if config.enforce_auth {
-                            tracing::warn!("Secure Discovery: Rejecting unauthenticated frame from {}: {}", addr, err);
+                            tracing::warn!(
+                                "Secure Discovery: Rejecting unauthenticated frame from {}: {}",
+                                addr,
+                                err
+                            );
                         }
                     }
                 }
@@ -242,7 +246,11 @@ pub fn respond_once(
             Ok(frame) => frame,
             Err(err) => {
                 if config.enforce_auth {
-                    tracing::warn!("Secure Responder: Dropping invalid frame from {}: {}", peer_addr, err);
+                    tracing::warn!(
+                        "Secure Responder: Dropping invalid frame from {}: {}",
+                        peer_addr,
+                        err
+                    );
                 }
                 continue;
             }
