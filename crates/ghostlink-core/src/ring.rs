@@ -39,10 +39,19 @@ const RING_CAPACITY: usize = 1024;
 pub struct SpscRingBuffer<T> {
     /// Buffer of uninitialized elements
     buffer: UnsafeCell<[MaybeUninit<T>; RING_CAPACITY]>,
+
+    /// Padding to prevent false sharing between buffer and head
+    _pad1: [u8; 64],
     /// Current head position (consumer reads here)
     head: AtomicUsize,
+
+    /// Padding to prevent false sharing between head and tail
+    _pad2: [u8; 64],
     /// Current tail position (producer writes here)
     tail: AtomicUsize,
+
+    /// Padding to prevent false sharing between tail and other counters
+    _pad3: [u8; 64],
     /// Overflow counter for backpressure monitoring
     overflow_count: AtomicUsize,
     /// Empty count for backpressure monitoring
@@ -68,8 +77,11 @@ impl<T> SpscRingBuffer<T> {
 
         Self {
             buffer,
+            _pad1: [0; 64],
             head: AtomicUsize::new(0),
+            _pad2: [0; 64],
             tail: AtomicUsize::new(0),
+            _pad3: [0; 64],
             overflow_count: AtomicUsize::new(0),
             empty_count: AtomicUsize::new(Self::CAPACITY - config.capacity),
             config,
@@ -81,7 +93,9 @@ impl<T> SpscRingBuffer<T> {
     /// Returns `Ok(())` on success, or `Err(value)` if the ring is full.
     /// When full, the producer should wait/backpressure until space is available.
     pub fn push(&self, value: T) -> Result<(), T> {
-        let tail = self.tail.load(Ordering::Acquire);
+        // Producer loads its own tail with Relaxed, but must load head with Acquire
+        // to see the consumer's updates that free up space.
+        let tail = self.tail.load(Ordering::Relaxed);
         let head = self.head.load(Ordering::Acquire);
 
         // Check if ring is full using count (respects config.capacity)
@@ -114,7 +128,9 @@ impl<T> SpscRingBuffer<T> {
     ///
     /// Returns `Some(value)` on success, or `None` if the ring is empty.
     pub fn pop(&self) -> Option<T> {
-        let head = self.head.load(Ordering::Acquire);
+        // Consumer loads its own head with Relaxed, but must load tail with Acquire
+        // to see the producer's updates that add new data.
+        let head = self.head.load(Ordering::Relaxed);
         let tail = self.tail.load(Ordering::Acquire);
 
         // Check if ring is empty (with wrap-around handling)
@@ -176,9 +192,15 @@ impl<T> SpscRingBuffer<T> {
     ///
     /// Spins until there's room in the ring buffer.
     pub fn wait_for_space(&self) {
+        let mut spins = 0;
         while self.should_backpressure() {
-            // Yield to allow consumer to make progress
-            std::thread::yield_now();
+            if spins < 100 {
+                core::hint::spin_loop();
+                spins += 1;
+            } else {
+                // Yield to allow consumer to make progress
+                std::thread::yield_now();
+            }
         }
     }
 
@@ -186,9 +208,15 @@ impl<T> SpscRingBuffer<T> {
     ///
     /// Spins until there's data in the ring buffer.
     pub fn wait_for_data(&self) {
+        let mut spins = 0;
         while self.is_empty() {
-            // Yield to allow producer to make progress
-            std::thread::yield_now();
+            if spins < 100 {
+                core::hint::spin_loop();
+                spins += 1;
+            } else {
+                // Yield to allow producer to make progress
+                std::thread::yield_now();
+            }
         }
     }
 
