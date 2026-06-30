@@ -1514,7 +1514,7 @@ mod tests {
             ],
         };
 
-        let result = execute_pipeline_tcp_loopback(&plan, 16, 2);
+        let result = execute_pipeline_tcp_loopback(&plan, 16, 2).expect("loopback failed");
         assert_eq!(result.token_count, 16);
         assert_eq!(result.batch_count, 8);
         assert_eq!(result.stage_stats.len(), 2);
@@ -1554,7 +1554,8 @@ mod tests {
                 auth_token: Some("test-token".to_string()),
                 ..Default::default()
             },
-        );
+        )
+        .expect("hardened loopback failed");
 
         assert_eq!(result.token_count, 24);
         assert_eq!(result.batch_count, 8);

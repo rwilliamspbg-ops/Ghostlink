@@ -1081,7 +1081,7 @@ fn print_flow(opts: FlowOptions) -> Result<()> {
                     opts.execution_tokens,
                     opts.micro_batch,
                     base_tcp_cfg,
-        )?
+                )?
             } else {
                 base_tcp_cfg
             };
