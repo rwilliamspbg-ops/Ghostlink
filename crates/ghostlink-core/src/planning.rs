@@ -74,9 +74,10 @@ impl LayerAssignment {
 }
 
 /// Quantization mode enumeration
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum QuantizationMode {
     /// No quantization (full precision)
+    #[default]
     None,
     /// 8-bit quantization
     Int8,
@@ -85,7 +86,7 @@ pub enum QuantizationMode {
 }
 
 /// Layer placement plan across nodes
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct PlacementPlan {
     /// Assignments per node
     pub assignments: Vec<LayerAssignment>,

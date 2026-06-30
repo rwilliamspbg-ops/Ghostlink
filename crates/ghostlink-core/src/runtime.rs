@@ -7,7 +7,7 @@ use crate::planning::LayerAssignment;
 use crc32fast::Hasher;
 use std::io::{self, Read, Write};
 use std::io::{BufReader, BufWriter};
-use std::net::{Shutdown, TcpListener, TcpStream};
+use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::slice;
 use std::sync::mpsc;
 use std::thread;
@@ -62,6 +62,15 @@ impl PipelinePlan {
         assignments: &[LayerAssignment],
         device_by_node: &std::collections::HashMap<String, DeviceKind>,
     ) -> Self {
+        Self::from_assignments_with_measured(assignments, device_by_node, &Default::default())
+    }
+
+    /// Build a pipeline plan using measured latencies from cluster metrics if available.
+    pub fn from_assignments_with_measured(
+        assignments: &[LayerAssignment],
+        device_by_node: &std::collections::HashMap<String, DeviceKind>,
+        cluster: &crate::cluster::ClusterState,
+    ) -> Self {
         let stages = assignments
             .iter()
             .map(|assignment| {
@@ -70,11 +79,17 @@ impl PipelinePlan {
                     .copied()
                     .unwrap_or(DeviceKind::Cpu);
 
-                let per_layer_cost_ms = match device {
-                    DeviceKind::Npu => 0.42,
-                    DeviceKind::Gpu => 0.55,
-                    DeviceKind::Cpu => 1.25,
-                };
+                // Use measured latency if available (converted from us to ms per layer)
+                let per_layer_cost_ms =
+                    if let Some(metrics) = cluster.get_metrics(&assignment.node_id) {
+                        if metrics.latency_samples > 0 && assignment.num_layers > 0 {
+                            (metrics.avg_latency_us / 1000.0) / assignment.num_layers as f32
+                        } else {
+                            Self::default_cost_for_device(device)
+                        }
+                    } else {
+                        Self::default_cost_for_device(device)
+                    };
 
                 StagePlacement {
                     node_id: assignment.node_id.clone(),
@@ -87,6 +102,14 @@ impl PipelinePlan {
             .collect();
 
         Self { stages }
+    }
+
+    fn default_cost_for_device(device: DeviceKind) -> f32 {
+        match device {
+            DeviceKind::Npu => 0.42,
+            DeviceKind::Gpu => 0.55,
+            DeviceKind::Cpu => 1.25,
+        }
     }
 
     /// Return aggregate token-step latency estimate for one micro-batch.
@@ -269,6 +292,16 @@ pub fn execute_pipeline_with_rebalance(
     micro_batch: usize,
     rebalance: Option<&crate::planning::RebalanceTrigger>,
 ) -> ExecutionResult {
+    execute_pipeline_with_rebalance_and_measured(plan, token_count, micro_batch, rebalance, None)
+}
+
+pub fn execute_pipeline_with_rebalance_and_measured(
+    plan: &PipelinePlan,
+    token_count: usize,
+    micro_batch: usize,
+    rebalance: Option<&crate::planning::RebalanceTrigger>,
+    cluster: Option<&crate::cluster::ClusterState>,
+) -> ExecutionResult {
     let stage_count = plan.stages.len();
     let micro_batch = micro_batch.max(1);
     let batch_count = token_count.div_ceil(micro_batch);
@@ -401,16 +434,21 @@ pub fn execute_pipeline_with_rebalance(
             *val = (batch_idx as f32 * 0.01) + (idx as f32 * 0.0001);
         }
 
-        // Simulation of dynamic rebalance trigger during execution
-        if let Some(_trigger) = rebalance {
-            // Check for rebalance every 10th batch
-            if batch_idx % 10 == 0 && batch_idx > 0 {
-                // In a production system, we would evaluate cluster health here
-                // For this simulation, we log that a rebalance check occurred
-                tracing::debug!(
-                    "Dynamic Runtime: Evaluating rebalance trigger at batch {}",
-                    batch_idx
-                );
+        // Evaluate dynamic rebalance trigger during execution
+        if let (Some(trigger), Some(cluster_state)) = (rebalance, cluster) {
+            // Check for rebalance every 25th batch to allow stability between checks
+            if batch_idx % 25 == 0 && batch_idx > 0 {
+                if let Some(migration) = trigger.evaluate(cluster_state, &Default::default()) {
+                    tracing::info!(
+                        "Dynamic Runtime: Rebalance Triggered! Moving layers {:?} from {} to {}",
+                        migration.layers,
+                        migration.source_node,
+                        migration.target_node
+                    );
+                    for step in migration.generate_handoff_plan() {
+                        tracing::info!("  -> {}", step);
+                    }
+                }
             }
         }
 
@@ -431,10 +469,22 @@ pub fn execute_pipeline_with_rebalance(
     for handle in stage_handles {
         if let Ok(stats) = handle.join() {
             let divisor = stats.processed_batches.max(1) as f32;
+            let avg_compute_ms = stats.total_compute_ms / divisor;
+
+            // Feedback loop: update cluster state with actual compute latency
+            if let Some(cluster_state) = cluster {
+                if let Some(stage) = plan.stages.get(stats.stage_idx) {
+                    cluster_state.get_metrics_mut(&stage.node_id, |m| {
+                        // Convert ms back to us for ClusterState (avg_latency_us)
+                        m.record_latency(avg_compute_ms * 1000.0);
+                    });
+                }
+            }
+
             stage_stats.push(StageExecutionStats {
                 stage_idx: stats.stage_idx,
                 processed_batches: stats.processed_batches,
-                avg_compute_ms: stats.total_compute_ms / divisor,
+                avg_compute_ms,
                 avg_recv_wait_ms: stats.total_recv_wait_ms / divisor,
                 avg_send_wait_ms: stats.total_send_wait_ms / divisor,
                 avg_bridge_write_ms: 0.0,
@@ -475,10 +525,10 @@ pub fn execute_pipeline_with_rebalance(
 }
 
 #[derive(Debug, Clone)]
-struct TransportBatch {
-    batch_id: usize,
-    tokens_in_batch: usize,
-    payload: Vec<f32>,
+pub struct TransportBatch {
+    pub batch_id: usize,
+    pub tokens_in_batch: usize,
+    pub payload: Vec<f32>,
 }
 
 fn auth_tag(
@@ -625,27 +675,21 @@ fn read_transport_batch(
     }))
 }
 
-fn spawn_tcp_loopback_bridge(
+/// Spawn a TCP transport bridge between pipeline stages.
+///
+/// In a multi-node deployment, the `bind_addr` and `connect_addr` can point to
+/// different physical interfaces or remote hosts.
+pub fn spawn_tcp_bridge(
     source_stage: usize,
     input_rx: mpsc::Receiver<TransportBatch>,
     output_tx: mpsc::SyncSender<TransportBatch>,
     config: TcpTransportConfig,
+    bind_addr: SocketAddr,
+    connect_addr: SocketAddr,
 ) -> thread::JoinHandle<BridgeAccumulator> {
     thread::spawn(move || {
-        let listener = match TcpListener::bind("127.0.0.1:0") {
+        let listener = match TcpListener::bind(bind_addr) {
             Ok(listener) => listener,
-            Err(_) => {
-                for batch in input_rx {
-                    if output_tx.send(batch).is_err() {
-                        break;
-                    }
-                }
-                return BridgeAccumulator::default_with_stage(source_stage);
-            }
-        };
-
-        let addr = match listener.local_addr() {
-            Ok(addr) => addr,
             Err(_) => {
                 for batch in input_rx {
                     if output_tx.send(batch).is_err() {
@@ -660,7 +704,7 @@ fn spawn_tcp_loopback_bridge(
             let mut connected = None;
             let attempts = config.reconnect_attempts.max(1);
             for _ in 0..attempts {
-                match TcpStream::connect(addr) {
+                match TcpStream::connect(connect_addr) {
                     Ok(stream) => {
                         connected = Some(stream);
                         break;
@@ -761,11 +805,11 @@ fn spawn_tcp_loopback_bridge(
 }
 
 #[derive(Debug)]
-struct BridgeAccumulator {
-    source_stage: usize,
-    processed_batches: usize,
-    total_write_ms: f32,
-    total_read_ms: f32,
+pub struct BridgeAccumulator {
+    pub source_stage: usize,
+    pub processed_batches: usize,
+    pub total_write_ms: f32,
+    pub total_read_ms: f32,
 }
 
 impl BridgeAccumulator {
@@ -839,11 +883,25 @@ pub fn execute_pipeline_tcp_loopback_with_config(
         let (bridge_out_tx, bridge_out_rx) = mpsc::sync_channel::<TransportBatch>(bridge_capacity);
         stage_outputs.push(bridge_in_tx);
         stage_inputs.push(Some(bridge_out_rx));
-        bridge_handles.push(spawn_tcp_loopback_bridge(
+
+        // For loopback execution, we use distinct ports for each inter-stage bridge.
+        let loopback = "127.0.0.1".parse().unwrap();
+        let port = 0; // OS-assigned
+        let bind_addr = SocketAddr::new(loopback, port);
+
+        // In the loopback path, we need to find the listener's address to connect.
+        // We'll use a temporary listener to find a free port, then spawn the bridge.
+        let temp_listener = TcpListener::bind(bind_addr).unwrap();
+        let actual_addr = temp_listener.local_addr().unwrap();
+        drop(temp_listener);
+
+        bridge_handles.push(spawn_tcp_bridge(
             source_stage,
             bridge_in_rx,
             bridge_out_tx,
             config.clone(),
+            actual_addr,
+            actual_addr,
         ));
     }
 
