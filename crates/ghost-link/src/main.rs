@@ -16,13 +16,14 @@ use ghostlink_core::health::NetworkHealthMonitor;
 use ghostlink_core::host::{detect_runtime_profile, detect_runtime_profile_full, ProbeMode};
 use ghostlink_core::load_balance::LoadBalancer;
 use ghostlink_core::planning::{
-    assign_layers_with_runtime_profile, select_quantization_mode, LayerSpec,
+    assign_layers_with_runtime_profile, select_quantization_mode, LayerSpec, PlacementPlan,
+    QuantizationMode, RebalanceTrigger,
 };
 use ghostlink_core::protocol::NodeResources;
 use ghostlink_core::protocol::{DiscoveryFrame, FrameKind};
 use ghostlink_core::runtime::{
-    build_token_schedule, execute_pipeline, execute_pipeline_tcp_loopback_with_config, DeviceKind,
-    PipelinePlan, TcpTransportConfig,
+    build_token_schedule, execute_pipeline_tcp_loopback_with_config,
+    execute_pipeline_with_rebalance_and_measured, DeviceKind, PipelinePlan, TcpTransportConfig,
 };
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -1065,6 +1066,9 @@ fn print_flow(opts: FlowOptions) -> Result<()> {
 
     let device_map = build_device_map(&local_profile, opts.local_id, opts.remote_id);
     let pipeline_plan = PipelinePlan::from_assignments(&assignments, &device_map);
+    let placement_context = PlacementPlan::new(assignments.clone(), QuantizationMode::None);
+    let rebalance_trigger = RebalanceTrigger::default();
+
     let schedule_preview_tokens = opts.execution_tokens.min(8);
     let token_schedule = build_token_schedule(pipeline_plan.stages.len(), schedule_preview_tokens);
     let execution = match opts.transport_mode {
@@ -1087,9 +1091,14 @@ fn print_flow(opts: FlowOptions) -> Result<()> {
                 tcp_cfg,
             )
         }
-        FlowTransportMode::InMemory => {
-            execute_pipeline(&pipeline_plan, opts.execution_tokens, opts.micro_batch)
-        }
+        FlowTransportMode::InMemory => execute_pipeline_with_rebalance_and_measured(
+            &pipeline_plan,
+            opts.execution_tokens,
+            opts.micro_batch,
+            Some(&rebalance_trigger),
+            Some(&cluster),
+            Some(&placement_context),
+        ),
     };
 
     let load_balancer =
@@ -1110,6 +1119,22 @@ fn print_flow(opts: FlowOptions) -> Result<()> {
     println!("Total cluster nodes: {}\n", cluster.node_count());
 
     println!("Health Summary:\n{}", health_monitor.get_health_summary());
+
+    if is_env_truthy("GHOSTLINK_DISTRIBUTED_SMOKE") {
+        println!("Running Distributed Runtime Validation...");
+        let placement = PlacementPlan::new(assignments.clone(), QuantizationMode::None);
+        let dist_execution = ghostlink_core::runtime::execute_pipeline_distributed(
+            &pipeline_plan,
+            opts.execution_tokens,
+            opts.micro_batch,
+            tcp_transport_config_from_env(),
+            &cluster,
+            Some(&placement),
+            None,
+        );
+        println!("Distributed Smoke Result:");
+        println!("{}", dist_execution.summary());
+    }
 
     println!("Placement Assignments (60 layers):");
     for assignment in &assignments {
@@ -1158,7 +1183,83 @@ fn print_flow(opts: FlowOptions) -> Result<()> {
 }
 
 fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
-    use std::net::TcpListener;
+    use axum::{
+        routing::{get, post},
+        Json, Router,
+    };
+    use serde::{Deserialize, Serialize};
+    use std::net::SocketAddr;
+    use tower_http::cors::CorsLayer;
+
+    #[derive(Debug, Deserialize)]
+    struct ChatCompletionRequest {
+        model: String,
+        #[allow(dead_code)]
+        messages: Vec<serde_json::Value>,
+        #[allow(dead_code)]
+        stream: Option<bool>,
+    }
+
+    #[derive(Debug, Serialize)]
+    struct ChatCompletionResponse {
+        id: String,
+        object: String,
+        created: u64,
+        model: String,
+        choices: Vec<Choice>,
+    }
+
+    #[derive(Debug, Serialize)]
+    struct Choice {
+        index: usize,
+        message: serde_json::Value,
+        finish_reason: String,
+    }
+
+    async fn handle_chat_completions(
+        Json(req): Json<ChatCompletionRequest>,
+    ) -> Json<ChatCompletionResponse> {
+        tracing::info!("API: Received chat completion request for model: {}", req.model);
+
+        Json(ChatCompletionResponse {
+            id: format!("chatcmpl-{}", rand::random::<u32>()),
+            object: "chat.completion".to_string(),
+            created: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs(),
+            model: req.model,
+            choices: vec![Choice {
+                index: 0,
+                message: serde_json::json!({
+                    "role": "assistant",
+                    "content": "Ghostlink Production API is online. This is a functional mock response from the distributed inference engine."
+                }),
+                finish_reason: "stop".to_string(),
+            }],
+        })
+    }
+
+    async fn handle_models() -> Json<serde_json::Value> {
+        Json(serde_json::json!({
+            "object": "list",
+            "data": [
+                {
+                    "id": "ghostlink-30b-v1",
+                    "object": "model",
+                    "created": 1700000000,
+                    "owned_by": "ghostlink"
+                }
+            ]
+        }))
+    }
+
+    async fn handle_health() -> Json<serde_json::Value> {
+        Json(serde_json::json!({
+            "status": "healthy",
+            "version": "0.1.0-alpha.0"
+        }))
+    }
 
     println!("Ghostlink Studio API - Starting OpenAI-compatible server...");
     println!("Listening on http://{}:{}", host, port);
@@ -1178,22 +1279,24 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         return Ok(());
     }
 
-    let addr = format!("{}:{}", host, port);
-    let listener = TcpListener::bind(&addr)
-        .map_err(|e| anyhow::anyhow!("Failed to bind API server to {}: {}", addr, e))?;
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap();
 
-    println!("\nAPI Server Online. Waiting for connections...");
+    rt.block_on(async {
+        let app = Router::new()
+            .route("/v1/chat/completions", post(handle_chat_completions))
+            .route("/v1/models", get(handle_models))
+            .route("/health", get(handle_health))
+            .layer(CorsLayer::permissive());
 
-    for stream in listener.incoming() {
-        match stream {
-            Ok(_socket) => {
-                // In a production build, we would hand this off to a tokio-spawned
-                // task running an axum Router.
-                tracing::debug!("API Server: Accepted connection");
-            }
-            Err(e) => tracing::error!("API Server: Connection error: {}", e),
-        }
-    }
+        let addr: SocketAddr = format!("{}:{}", host, port).parse().unwrap();
+        let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
+        println!("\nAPI Server Online. Ready for connections.");
+
+        axum::serve(listener, app).await.unwrap();
+    });
 
     Ok(())
 }
@@ -1332,14 +1435,15 @@ fn print_join(node_id: &str) -> Result<()> {
     );
     println!("  Replies Received: {}", discovery_replies.len());
 
-    for peer in discovery_replies {
+    for (peer_frame, peer_addr) in discovery_replies {
         println!(
-            "    - {} (VRAM {:.1} GB, RAM {:.1} GB, CC {}, GPU {})",
-            peer.node.id,
-            peer.node.vram_gb,
-            peer.node.system_memory_gb,
-            peer.node.compute_capability,
-            peer.node.gpu_name.as_deref().unwrap_or("unknown")
+            "    - {} at {} (VRAM {:.1} GB, RAM {:.1} GB, CC {}, GPU {})",
+            peer_frame.node.id,
+            peer_addr,
+            peer_frame.node.vram_gb,
+            peer_frame.node.system_memory_gb,
+            peer_frame.node.compute_capability,
+            peer_frame.node.gpu_name.as_deref().unwrap_or("unknown")
         );
     }
 

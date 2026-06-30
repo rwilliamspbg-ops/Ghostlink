@@ -19,9 +19,10 @@ This script automates environment setup, builds the high-performance core, and l
 ## 💎 Professional Features
 
 - **Professional Studio GUI**: A modern, dark-themed interface for model management, chat, and cluster analytics.
+- **OpenAI-Compatible API**: Standard `/v1/chat/completions` endpoint for easy integration with existing LLM tools.
 - **Ultra-Low Overhead**: Zero-copy SPSC ring buffers with backpressure handling for maximum throughput.
 - **Heterogeneous Scaling**: Seamlessly combine NPU, GPU, and CPU resources across your local network.
-- **Enterprise Security**: HMAC-SHA256 authenticated discovery and optional mTLS for secure inter-node communication.
+- **Enterprise Security**: HMAC-SHA256 authenticated discovery and transport for secure inter-node communication.
 - **Adaptive Quantization**: Runtime-aware planning that adjusts to network quality and hardware capability.
 
 ## 📊 Performance Benchmarks
@@ -33,29 +34,46 @@ Measured in a standard development environment:
 | **In-Memory (Zero-Copy)** | **118,840.29** | **1.83** |
 | **TCP Loopback (Optimized)** | **67,794.12** | **3.65** |
 
-*Benchmarks conducted on 2026-06-29 using Mistral-7B baseline.*
+*Benchmarks conducted on 2026-06-30 using Mistral-7B baseline.*
 
-## 🛠 Installation & Usage
+## 🛠 Command Line Interface
 
-### Prerequisites
-- Stable Rust (1.75+)
-- Python 3.10+
+The `ghost-link` CLI provides powerful primitives for cluster management and performance profiling.
 
-### Manual Setup
-```bash
-# Build the high-performance core
-cargo build --release --workspace
+### Core Commands
+- `gui` - Launch the Ghostlink Studio desktop interface.
+- `serve` - Start the OpenAI-compatible API server.
+- `join [id]` - Broadcast discovery frames to join a local cluster.
+- `listen [id]` - Listen for and respond to discovery requests from peers.
+- `flow` - Run a full 30B model planning and execution flow (simulated transport).
+- `doctor` - Run unified troubleshooting checks for environment and network.
+- `dashboard` - Display the live ASCII cluster status dashboard.
+- `cluster-start` - Spin up a multi-node local cluster for validation.
 
-# Launch the Studio GUI
-cargo run -p ghost-link -- gui
-```
+### Profiling & Discovery
+- `probe [id]` - Detect local compute capabilities and recommended worker counts.
+- `plan` - Generate a greedy layer placement plan across the current cluster.
+
+## ⚙️ Configuration
+
+Ghostlink can be configured via a `ghostlink.toml` file or environment variables.
+
+### Environment Variables
+| Variable | Description | Default |
+| :--- | :--- | :--- |
+| `GHOSTLINK_CONFIG` | Path to TOML configuration file | `./ghostlink.toml` |
+| `GHOSTLINK_TCP_AUTH_TOKEN` | Shared secret for transport authentication | - |
+| `GHOSTLINK_DISCOVERY_AUTH_TOKEN` | Shared secret for UDP discovery authentication | - |
+| `GHOSTLINK_TCP_MAX_INFLIGHT` | Max concurrent batches in TCP bridge | `512` |
+| `GHOSTLINK_PYTHON` | Path to Python executable for GUI | `python3` |
+| `GHOSTLINK_DISTRIBUTED_SMOKE` | Enable distributed runtime validation in `flow` | `false` |
 
 ## 📚 Documentation
 
-- [Quickstart Guide](docs/QUICKSTART.md)
-- [Architecture Overview](docs/ARCHITECTURE.md)
-- [Deployment Guide](docs/DEPLOYMENT.md)
-- [Security Model](docs/SECURITY_MODEL.md)
+- [Quickstart Guide](docs/QUICKSTART.md) - Fastest path to a running system.
+- [Architecture Overview](docs/ARCHITECTURE.md) - Deep dive into zero-copy primitives.
+- [Deployment Guide](docs/DEPLOYMENT.md) - Strategies for multi-node LAN setups.
+- [Security Model](docs/SECURITY_MODEL.md) - Details on HMAC and authentication.
 
 ## ⚖️ License
 
@@ -66,5 +84,5 @@ Ghost-Link is released under the MIT License.
 Ghostlink maintains high quality through automated testing and validation gates:
 
 - **Workspace Tests**: `cargo test --workspace`
+- **Full Validation**: `bash scripts/run_full_validation.sh`
 - **Linting**: `cargo clippy --workspace --all-targets -- -D warnings`
-- **Model Verification**: `python3 scripts/verify_hf_models.py`

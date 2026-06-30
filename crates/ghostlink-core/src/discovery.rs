@@ -136,11 +136,11 @@ impl Default for UdpDiscoveryConfig {
     }
 }
 
-/// Broadcast a discovery frame over UDP and collect any valid replies.
+/// Broadcast a discovery frame over UDP and collect any valid replies with their source addresses.
 pub fn broadcast_and_collect(
     frame: &DiscoveryFrame,
     config: &UdpDiscoveryConfig,
-) -> Result<Vec<DiscoveryFrame>, String> {
+) -> Result<Vec<(DiscoveryFrame, SocketAddr)>, String> {
     let socket = UdpSocket::bind(config.bind_addr)
         .map_err(|e| format!("failed to bind UDP discovery socket: {e}"))?;
     socket
@@ -175,7 +175,7 @@ pub fn broadcast_and_collect(
                 );
 
                 match decode_result {
-                    Ok(decoded) => peers.push(decoded),
+                    Ok(decoded) => peers.push((decoded, addr)),
                     Err(err) => {
                         if config.enforce_auth {
                             tracing::warn!(
@@ -597,7 +597,7 @@ mod tests {
         assert!(!replies.is_empty());
         assert!(replies
             .iter()
-            .any(|reply| reply.node.id == "node-listener" && reply.kind == FrameKind::Discovery));
+            .any(|(reply, _)| reply.node.id == "node-listener" && reply.kind == FrameKind::Discovery));
 
         let responded = handle
             .join()
@@ -655,7 +655,7 @@ mod tests {
             broadcast_and_collect(&join, &valid_sender).expect("valid send should succeed");
         assert!(valid_replies
             .iter()
-            .any(|reply| reply.node.id == "node-listener"));
+            .any(|(reply, _)| reply.node.id == "node-listener"));
 
         let responded = handle
             .join()
@@ -710,8 +710,8 @@ mod tests {
         };
 
         let replies = broadcast_and_collect(&join, &sender).expect("broadcast should succeed");
-        assert!(replies.iter().any(|reply| reply.node.id == "node-a"));
-        assert!(replies.iter().any(|reply| reply.node.id == "node-b"));
+        assert!(replies.iter().any(|(reply, _)| reply.node.id == "node-a"));
+        assert!(replies.iter().any(|(reply, _)| reply.node.id == "node-b"));
 
         responder.join().expect("responder join");
     }
@@ -858,7 +858,7 @@ mod tests {
             broadcast_and_collect(&valid_join, &valid_sender).expect("send valid join frame");
         assert!(valid_replies
             .iter()
-            .any(|reply| reply.node.id == "node-listener"));
+            .any(|(reply, _)| reply.node.id == "node-listener"));
 
         let responded = handle
             .join()

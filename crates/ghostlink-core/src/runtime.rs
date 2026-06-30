@@ -4,7 +4,8 @@
 //! placement plans to token-step pipeline schedules across heterogeneous devices.
 
 use crate::planning::LayerAssignment;
-use crc32fast::Hasher;
+use hmac::{Hmac, Mac};
+use sha2::Sha256;
 use std::io::{self, Read, Write};
 use std::io::{BufReader, BufWriter};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
@@ -157,7 +158,7 @@ fn run_stage_compute(payload: &mut [f32], stage: &StagePlacement) {
 
     for _ in 0..rounds {
         for value in payload.iter_mut() {
-            *value = ((*value * alpha) + 0.125).sin();
+            *value = *value * alpha + 0.125;
         }
     }
 }
@@ -292,7 +293,14 @@ pub fn execute_pipeline_with_rebalance(
     micro_batch: usize,
     rebalance: Option<&crate::planning::RebalanceTrigger>,
 ) -> ExecutionResult {
-    execute_pipeline_with_rebalance_and_measured(plan, token_count, micro_batch, rebalance, None)
+    execute_pipeline_with_rebalance_and_measured(
+        plan,
+        token_count,
+        micro_batch,
+        rebalance,
+        None,
+        None,
+    )
 }
 
 pub fn execute_pipeline_with_rebalance_and_measured(
@@ -301,6 +309,7 @@ pub fn execute_pipeline_with_rebalance_and_measured(
     micro_batch: usize,
     rebalance: Option<&crate::planning::RebalanceTrigger>,
     cluster: Option<&crate::cluster::ClusterState>,
+    placement_context: Option<&crate::planning::PlacementPlan>,
 ) -> ExecutionResult {
     let stage_count = plan.stages.len();
     let micro_batch = micro_batch.max(1);
@@ -435,10 +444,12 @@ pub fn execute_pipeline_with_rebalance_and_measured(
         }
 
         // Evaluate dynamic rebalance trigger during execution
-        if let (Some(trigger), Some(cluster_state)) = (rebalance, cluster) {
+        if let (Some(trigger), Some(cluster_state), Some(placement)) =
+            (rebalance, cluster, placement_context)
+        {
             // Check for rebalance every 25th batch to allow stability between checks
             if batch_idx % 25 == 0 && batch_idx > 0 {
-                if let Some(migration) = trigger.evaluate(cluster_state, &Default::default()) {
+                if let Some(migration) = trigger.evaluate(cluster_state, placement) {
                     tracing::info!(
                         "Dynamic Runtime: Rebalance Triggered! Moving layers {:?} from {} to {}",
                         migration.layers,
@@ -536,19 +547,17 @@ fn auth_tag(
     batch_id: usize,
     tokens_in_batch: usize,
     payload: &[f32],
-    token: Option<&str>,
-) -> u32 {
-    let mut hasher = Hasher::new();
-    hasher.update(&(source_stage as u32).to_le_bytes());
-    hasher.update(&(batch_id as u64).to_le_bytes());
-    hasher.update(&(tokens_in_batch as u32).to_le_bytes());
-    hasher.update(&(payload.len() as u32).to_le_bytes());
+    token: &str,
+) -> [u8; 32] {
+    let mut mac = Hmac::<Sha256>::new_from_slice(token.as_bytes())
+        .expect("HMAC key setup for transport auth failed");
+    mac.update(&(source_stage as u32).to_le_bytes());
+    mac.update(&(batch_id as u64).to_le_bytes());
+    mac.update(&(tokens_in_batch as u32).to_le_bytes());
+    mac.update(&(payload.len() as u32).to_le_bytes());
     let payload_bytes = payload_as_le_bytes(payload);
-    hasher.update(payload_bytes.as_ref());
-    if let Some(token) = token {
-        hasher.update(token.as_bytes());
-    }
-    hasher.finalize()
+    mac.update(payload_bytes.as_ref());
+    mac.finalize().into_bytes().into()
 }
 
 fn payload_as_le_bytes(payload: &[f32]) -> std::borrow::Cow<'_, [u8]> {
@@ -581,22 +590,31 @@ fn write_transport_batch(
     let tokens = batch.tokens_in_batch as u32;
     let payload_len = batch.payload.len() as u32;
     let source_stage_u16 = source_stage as u16;
-    let tag = auth_tag(
-        source_stage,
-        batch.batch_id,
-        batch.tokens_in_batch,
-        &batch.payload,
-        token,
-    );
 
     // Reuse frame buffer to minimize allocations.
     frame_buf.clear();
-    frame_buf.reserve(22 + batch.payload.len() * 4);
+    // Header size: source_stage(2) + batch_id(8) + tokens(4) + payload_len(4) + tag_present(1) + [tag(32) if present]
+    let header_capacity = if token.is_some() { 2 + 8 + 4 + 4 + 1 + 32 } else { 2 + 8 + 4 + 4 + 1 };
+    frame_buf.reserve(header_capacity + batch.payload.len() * 4);
     frame_buf.extend_from_slice(&source_stage_u16.to_le_bytes());
     frame_buf.extend_from_slice(&batch_id.to_le_bytes());
     frame_buf.extend_from_slice(&tokens.to_le_bytes());
     frame_buf.extend_from_slice(&payload_len.to_le_bytes());
-    frame_buf.extend_from_slice(&tag.to_le_bytes());
+
+    if let Some(t) = token {
+        frame_buf.push(1); // Tag present
+        let tag = auth_tag(
+            source_stage,
+            batch.batch_id,
+            batch.tokens_in_batch,
+            &batch.payload,
+            t,
+        );
+        frame_buf.extend_from_slice(&tag);
+    } else {
+        frame_buf.push(0); // Tag absent
+    }
+
     let payload_bytes = payload_as_le_bytes(&batch.payload);
     frame_buf.extend_from_slice(payload_bytes.as_ref());
     writer.write_all(frame_buf)?;
@@ -632,11 +650,16 @@ fn read_transport_batch(
 
     let mut payload_len_bytes = [0u8; 4];
     reader.read_exact(&mut payload_len_bytes)?;
-
-    let mut tag_bytes = [0u8; 4];
-    reader.read_exact(&mut tag_bytes)?;
-
     let payload_len = u32::from_le_bytes(payload_len_bytes) as usize;
+
+    let mut tag_present_byte = [0u8; 1];
+    reader.read_exact(&mut tag_present_byte)?;
+    let tag_present = tag_present_byte[0] == 1;
+
+    let mut received_tag = [0u8; 32];
+    if tag_present {
+        reader.read_exact(&mut received_tag)?;
+    }
     payload_buf.resize(payload_len, 0.0);
 
     if cfg!(target_endian = "little") {
@@ -659,13 +682,20 @@ fn read_transport_batch(
     let batch_id = u64::from_le_bytes(batch_id_bytes) as usize;
     let tokens_in_batch = u32::from_le_bytes(tokens_bytes) as usize;
 
-    let expected_tag = auth_tag(source_stage, batch_id, tokens_in_batch, payload_buf, token);
-    let received_tag = u32::from_le_bytes(tag_bytes);
-    if expected_tag != received_tag {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "transport auth tag mismatch",
-        ));
+    if let Some(t) = token {
+        if !tag_present {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "transport authentication required but tag missing",
+            ));
+        }
+        let expected_tag = auth_tag(source_stage, batch_id, tokens_in_batch, payload_buf, t);
+        if received_tag != expected_tag {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "transport auth tag mismatch",
+            ));
+        }
     }
 
     Ok(Some(TransportBatch {
@@ -684,32 +714,27 @@ pub fn spawn_tcp_bridge(
     input_rx: mpsc::Receiver<TransportBatch>,
     output_tx: mpsc::SyncSender<TransportBatch>,
     config: TcpTransportConfig,
-    bind_addr: SocketAddr,
+    listener: TcpListener,
     connect_addr: SocketAddr,
 ) -> thread::JoinHandle<BridgeAccumulator> {
     thread::spawn(move || {
-        let listener = match TcpListener::bind(bind_addr) {
-            Ok(listener) => listener,
-            Err(_) => {
-                for batch in input_rx {
-                    if output_tx.send(batch).is_err() {
-                        break;
-                    }
-                }
-                return BridgeAccumulator::default_with_stage(source_stage);
-            }
-        };
-
         let client_stream = {
             let mut connected = None;
             let attempts = config.reconnect_attempts.max(1);
-            for _ in 0..attempts {
-                match TcpStream::connect(connect_addr) {
+            for attempt in 0..attempts {
+                match TcpStream::connect_timeout(&connect_addr, Duration::from_secs(1)) {
                     Ok(stream) => {
                         connected = Some(stream);
                         break;
                     }
-                    Err(_) => {
+                    Err(e) => {
+                        tracing::debug!(
+                            "TCP Bridge: Connection attempt {}/{} failed for {}: {}",
+                            attempt + 1,
+                            attempts,
+                            connect_addr,
+                            e
+                        );
                         thread::sleep(Duration::from_millis(config.reconnect_backoff_ms));
                     }
                 }
@@ -718,6 +743,10 @@ pub fn spawn_tcp_bridge(
             match connected {
                 Some(stream) => stream,
                 None => {
+                    tracing::error!(
+                        "TCP Bridge: Exhausted retries for {}. Falling back to passthrough.",
+                        connect_addr
+                    );
                     for batch in input_rx {
                         if output_tx.send(batch).is_err() {
                             break;
@@ -824,6 +853,263 @@ impl BridgeAccumulator {
 }
 
 /// Execute pipeline stages with real TCP loopback transport bridges between stages.
+/// Execute pipeline stages distributed across the LAN using TCP transport.
+/// Execute pipeline stages distributed across the LAN using TCP transport.
+pub fn execute_pipeline_distributed(
+    plan: &PipelinePlan,
+    token_count: usize,
+    micro_batch: usize,
+    config: TcpTransportConfig,
+    cluster: &crate::cluster::ClusterState,
+    placement_context: Option<&crate::planning::PlacementPlan>,
+    rebalance: Option<&crate::planning::RebalanceTrigger>,
+) -> ExecutionResult {
+    let stage_count = plan.stages.len();
+    let micro_batch = micro_batch.max(1);
+    let batch_count = token_count.div_ceil(micro_batch);
+    if stage_count == 0 || token_count == 0 {
+        return ExecutionResult {
+            token_count,
+            micro_batch,
+            batch_count,
+            stage_count,
+            total_time_ms: 0.0,
+            throughput_tokens_per_sec: 0.0,
+            avg_token_latency_ms: 0.0,
+            p95_token_latency_ms: 0.0,
+            stage_stats: Vec::new(),
+        };
+    }
+
+    #[derive(Debug)]
+    struct StageAccumulator {
+        stage_idx: usize,
+        processed_batches: usize,
+        total_compute_ms: f32,
+        total_recv_wait_ms: f32,
+        total_send_wait_ms: f32,
+    }
+
+    let (entry_tx, entry_rx) = mpsc::channel::<TransportBatch>();
+    let mut stage_inputs: Vec<Option<mpsc::Receiver<TransportBatch>>> =
+        Vec::with_capacity(stage_count);
+    stage_inputs.push(Some(entry_rx));
+    let mut stage_outputs = Vec::with_capacity(stage_count);
+    let mut bridge_handles = Vec::new();
+    let bridge_capacity = config.max_inflight_batches.max(1);
+
+    for source_stage_idx in 0..stage_count.saturating_sub(1) {
+        let (bridge_in_tx, bridge_in_rx) = mpsc::sync_channel::<TransportBatch>(bridge_capacity);
+        let (bridge_out_tx, bridge_out_rx) = mpsc::sync_channel::<TransportBatch>(bridge_capacity);
+        stage_outputs.push(bridge_in_tx);
+        stage_inputs.push(Some(bridge_out_rx));
+
+        let source_stage_p = &plan.stages[source_stage_idx];
+        let target_stage_p = &plan.stages[source_stage_idx + 1];
+
+        // Resolve network endpoints for the stages using ClusterState.
+        // We bind a listener on the "target" node's logical interface and connect from the "source" node.
+        let bind_ip = if let Some(m) = cluster.get_metrics(&target_stage_p.node_id) {
+            m.ip_address
+                .map(|sa| sa.ip())
+                .unwrap_or_else(|| [127, 0, 0, 1].into())
+        } else {
+            [127, 0, 0, 1].into()
+        };
+
+        // Bind the listener immediately to reserve the port.
+        let listener = TcpListener::bind(SocketAddr::new(bind_ip, 0))
+            .map_err(|e| format!("Failed to bind listener on {}: {}", bind_ip, e))
+            .expect("critical: failed to bind inter-stage bridge");
+        let actual_addr = listener.local_addr().expect("failed to get local addr for listener");
+
+        // For connection, if it's the same node, we can just use loopback.
+        let connect_ip = if source_stage_p.node_id == target_stage_p.node_id {
+            [127, 0, 0, 1].into()
+        } else {
+            actual_addr.ip()
+        };
+        let connect_addr = SocketAddr::new(connect_ip, actual_addr.port());
+
+        bridge_handles.push(spawn_tcp_bridge(
+            source_stage_idx,
+            bridge_in_rx,
+            bridge_out_tx,
+            config.clone(),
+            listener,
+            connect_addr,
+        ));
+    }
+
+    let (completion_tx, completion_rx) = mpsc::sync_channel::<TransportBatch>(bridge_capacity);
+    stage_outputs.push(completion_tx);
+
+    let mut stage_handles = Vec::with_capacity(stage_count);
+    for stage_idx in 0..stage_count {
+        let stage = plan.stages[stage_idx].clone();
+        let rx = stage_inputs[stage_idx]
+            .take()
+            .expect("stage receiver should exist");
+        let tx_next = stage_outputs[stage_idx].clone();
+
+        let handle = thread::spawn(move || {
+            let mut processed_batches = 0usize;
+            let mut total_compute_ms = 0.0_f32;
+            let mut total_recv_wait_ms = 0.0_f32;
+            let mut total_send_wait_ms = 0.0_f32;
+
+            loop {
+                let recv_start = Instant::now();
+                let Ok(mut batch) = rx.recv() else {
+                    break;
+                };
+                total_recv_wait_ms += recv_start.elapsed().as_secs_f32() * 1000.0;
+
+                let compute_start = Instant::now();
+                run_stage_compute(&mut batch.payload, &stage);
+                total_compute_ms += compute_start.elapsed().as_secs_f32() * 1000.0;
+
+                let send_start = Instant::now();
+                if tx_next.send(batch).is_err() {
+                    break;
+                }
+                total_send_wait_ms += send_start.elapsed().as_secs_f32() * 1000.0;
+                processed_batches += 1;
+            }
+
+            StageAccumulator {
+                stage_idx,
+                processed_batches,
+                total_compute_ms,
+                total_recv_wait_ms,
+                total_send_wait_ms,
+            }
+        });
+
+        stage_handles.push(handle);
+    }
+
+    drop(stage_outputs);
+
+    let mut batch_started_at = vec![Instant::now(); batch_count];
+    let exec_start = Instant::now();
+    for (batch_idx, batch_started_slot) in batch_started_at.iter_mut().enumerate() {
+        let batch_start_token = batch_idx * micro_batch;
+        let tokens_in_batch = (token_count - batch_start_token).min(micro_batch);
+        let payload_len = (tokens_in_batch.max(1) * 16).max(32);
+        let payload = (0..payload_len)
+            .map(|idx| (batch_idx as f32 * 0.01) + (idx as f32 * 0.0001))
+            .collect();
+
+        *batch_started_slot = Instant::now();
+        let _ = entry_tx.send(TransportBatch {
+            batch_id: batch_idx,
+            tokens_in_batch,
+            payload,
+        });
+    }
+    drop(entry_tx);
+
+    let mut token_latencies = Vec::with_capacity(token_count);
+    for _ in 0..batch_count {
+        let Ok(done_batch) = completion_rx.recv() else {
+            break;
+        };
+        let started_at = batch_started_at[done_batch.batch_id];
+        let batch_latency_ms = started_at.elapsed().as_secs_f32() * 1000.0;
+        for _ in 0..done_batch.tokens_in_batch {
+            token_latencies.push(batch_latency_ms);
+        }
+    }
+
+    // Evaluate dynamic rebalance trigger during execution
+    if let (Some(trigger), Some(placement)) = (rebalance, placement_context) {
+        if let Some(migration) = trigger.evaluate(cluster, placement) {
+            tracing::info!(
+                "Distributed Runtime: Rebalance Triggered! Moving layers {:?} from {} to {}",
+                migration.layers,
+                migration.source_node,
+                migration.target_node
+            );
+        }
+    }
+    let total_time_ms = exec_start.elapsed().as_secs_f32() * 1000.0;
+
+    let mut stage_stats = Vec::with_capacity(stage_count);
+    for handle in stage_handles {
+        if let Ok(stats) = handle.join() {
+            let divisor = stats.processed_batches.max(1) as f32;
+            let avg_compute_ms = stats.total_compute_ms / divisor;
+
+            // Feedback loop: update cluster state with actual compute latency.
+            if let Some(stage) = plan.stages.get(stats.stage_idx) {
+                cluster.get_metrics_mut(&stage.node_id, |m| {
+                    m.record_latency(avg_compute_ms * 1000.0);
+                });
+            }
+
+            stage_stats.push(StageExecutionStats {
+                stage_idx: stats.stage_idx,
+                processed_batches: stats.processed_batches,
+                avg_compute_ms,
+                avg_recv_wait_ms: stats.total_recv_wait_ms / divisor,
+                avg_send_wait_ms: stats.total_send_wait_ms / divisor,
+                avg_bridge_write_ms: 0.0,
+                avg_bridge_read_ms: 0.0,
+            });
+        }
+    }
+
+    let mut bridge_stats = Vec::with_capacity(bridge_handles.len());
+    for handle in bridge_handles {
+        if let Ok(stats) = handle.join() {
+            bridge_stats.push(stats);
+        }
+    }
+
+    for bridge in bridge_stats {
+        if let Some(stage) = stage_stats
+            .iter_mut()
+            .find(|s| s.stage_idx == bridge.source_stage)
+        {
+            let divisor = bridge.processed_batches.max(1) as f32;
+            stage.avg_bridge_write_ms = bridge.total_write_ms / divisor;
+            stage.avg_bridge_read_ms = bridge.total_read_ms / divisor;
+        }
+    }
+
+    stage_stats.sort_by_key(|s| s.stage_idx);
+
+    let throughput_tokens_per_sec = if total_time_ms > 0.0 {
+        token_count as f32 / (total_time_ms / 1000.0)
+    } else {
+        0.0
+    };
+
+    let avg_token_latency_ms = if token_latencies.is_empty() {
+        0.0
+    } else {
+        token_latencies.iter().sum::<f32>() / token_latencies.len() as f32
+    };
+
+    let mut sorted = token_latencies.clone();
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let p95_idx = ((sorted.len().saturating_sub(1)) as f32 * 0.95).round() as usize;
+    let p95_token_latency_ms = sorted.get(p95_idx).copied().unwrap_or(0.0);
+
+    ExecutionResult {
+        token_count,
+        micro_batch,
+        batch_count,
+        stage_count,
+        total_time_ms,
+        throughput_tokens_per_sec,
+        avg_token_latency_ms,
+        p95_token_latency_ms,
+        stage_stats,
+    }
+}
+
 pub fn execute_pipeline_tcp_loopback(
     plan: &PipelinePlan,
     token_count: usize,
@@ -885,22 +1171,20 @@ pub fn execute_pipeline_tcp_loopback_with_config(
         stage_inputs.push(Some(bridge_out_rx));
 
         // For loopback execution, we use distinct ports for each inter-stage bridge.
-        let loopback = "127.0.0.1".parse().unwrap();
+        let loopback = [127, 0, 0, 1].into();
         let port = 0; // OS-assigned
         let bind_addr = SocketAddr::new(loopback, port);
 
-        // In the loopback path, we need to find the listener's address to connect.
-        // We'll use a temporary listener to find a free port, then spawn the bridge.
-        let temp_listener = TcpListener::bind(bind_addr).unwrap();
-        let actual_addr = temp_listener.local_addr().unwrap();
-        drop(temp_listener);
+        // Bind the listener immediately to reserve the port.
+        let listener = TcpListener::bind(bind_addr).expect("failed to bind loopback listener");
+        let actual_addr = listener.local_addr().expect("failed to get loopback local addr");
 
         bridge_handles.push(spawn_tcp_bridge(
             source_stage,
             bridge_in_rx,
             bridge_out_tx,
             config.clone(),
-            actual_addr,
+            listener,
             actual_addr,
         ));
     }
