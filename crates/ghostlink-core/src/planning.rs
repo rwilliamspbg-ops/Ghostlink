@@ -74,9 +74,10 @@ impl LayerAssignment {
 }
 
 /// Quantization mode enumeration
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum QuantizationMode {
     /// No quantization (full precision)
+    #[default]
     None,
     /// 8-bit quantization
     Int8,
@@ -85,7 +86,7 @@ pub enum QuantizationMode {
 }
 
 /// Layer placement plan across nodes
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct PlacementPlan {
     /// Assignments per node
     pub assignments: Vec<LayerAssignment>,
@@ -431,6 +432,107 @@ pub fn calculate_cluster_health(cluster: &ClusterState) -> (f32, usize, Vec<Stri
         .collect();
 
     (avg_delivery_ratio, failed_count, failed_nodes)
+}
+
+/// Dynamic migration planner for moving layers between nodes under load.
+#[derive(Debug, Clone)]
+pub struct MigrationPlanner {
+    pub source_node: String,
+    pub target_node: String,
+    pub layers: Vec<usize>,
+    pub est_migration_time_ms: f32,
+}
+
+impl MigrationPlanner {
+    pub fn new(source: String, target: String, layers: Vec<usize>) -> Self {
+        let est_time = layers.len() as f32 * 45.0; // Baseline 45ms per layer migration
+        Self {
+            source_node: source,
+            target_node: target,
+            layers,
+            est_migration_time_ms: est_time,
+        }
+    }
+
+    /// Generate a safe handoff sequence for a migration.
+    pub fn generate_handoff_plan(&self) -> Vec<String> {
+        let mut steps = Vec::new();
+        steps.push(format!(
+            "PREPARE: Target node {} allocating VRAM",
+            self.target_node
+        ));
+        steps.push(format!(
+            "STREAM: Moving layers {:?} to {}",
+            self.layers, self.target_node
+        ));
+        steps.push(format!("VERIFY: Integrity check on {}", self.target_node));
+        steps.push(format!("COMMIT: Switch routing to {}", self.target_node));
+        steps.push(format!(
+            "CLEANUP: Free VRAM on source node {}",
+            self.source_node
+        ));
+        steps
+    }
+}
+
+/// Trigger mechanism for dynamic rebalancing based on load/health.
+pub struct RebalanceTrigger {
+    pub min_imbalance_ratio: f32,
+    pub max_p95_latency_ms: f32,
+}
+
+impl Default for RebalanceTrigger {
+    fn default() -> Self {
+        Self {
+            min_imbalance_ratio: 0.25, // 25% drift
+            max_p95_latency_ms: 25.0,
+        }
+    }
+}
+
+impl RebalanceTrigger {
+    pub fn evaluate(
+        &self,
+        cluster: &ClusterState,
+        current_plan: &PlacementPlan,
+    ) -> Option<MigrationPlanner> {
+        let active_nodes = cluster.active_nodes();
+        if active_nodes.len() < 2 {
+            return None;
+        }
+
+        // Detect high-load nodes and high-headroom nodes
+        let mut overtaxed = None;
+        let mut available = None;
+
+        for metrics in active_nodes {
+            if metrics.delivery_ratio < 0.90 || metrics.avg_latency_us > 15.0 {
+                overtaxed = Some(metrics.name.clone());
+            } else if metrics.available_vram_gb > 8.0 {
+                available = Some(metrics.name.clone());
+            }
+        }
+
+        if let (Some(source), Some(target)) = (overtaxed, available) {
+            if source == target {
+                return None;
+            }
+
+            // Find layers to move from overtaxed node
+            let layers_to_move = current_plan
+                .assignments
+                .iter()
+                .find(|a| a.node_id == source)
+                .map(|a| (a.start_layer..a.end_layer).take(2).collect::<Vec<_>>())
+                .unwrap_or_default();
+
+            if !layers_to_move.is_empty() {
+                return Some(MigrationPlanner::new(source, target, layers_to_move));
+            }
+        }
+
+        None
+    }
 }
 
 #[cfg(test)]

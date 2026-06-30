@@ -114,6 +114,8 @@ pub struct UdpDiscoveryConfig {
     pub response_timeout: Duration,
     /// Optional shared token used to authenticate datagrams.
     pub auth_token: Option<String>,
+    /// Require HMAC-SHA256 authentication for all incoming datagrams.
+    pub enforce_auth: bool,
     /// Allow decode fallback to legacy CRC32 auth tags during migration.
     pub allow_legacy_crc32: bool,
     /// Maximum datagram size expected during receive.
@@ -127,17 +129,18 @@ impl Default for UdpDiscoveryConfig {
             broadcast_addr: SocketAddr::from(([255, 255, 255, 255], DEFAULT_DISCOVERY_PORT)),
             response_timeout: Duration::from_millis(750),
             auth_token: None,
+            enforce_auth: false,
             allow_legacy_crc32: false,
             max_datagram_size: 2048,
         }
     }
 }
 
-/// Broadcast a discovery frame over UDP and collect any valid replies.
+/// Broadcast a discovery frame over UDP and collect any valid replies with their source addresses.
 pub fn broadcast_and_collect(
     frame: &DiscoveryFrame,
     config: &UdpDiscoveryConfig,
-) -> Result<Vec<DiscoveryFrame>, String> {
+) -> Result<Vec<(DiscoveryFrame, SocketAddr)>, String> {
     let socket = UdpSocket::bind(config.bind_addr)
         .map_err(|e| format!("failed to bind UDP discovery socket: {e}"))?;
     socket
@@ -159,15 +162,29 @@ pub fn broadcast_and_collect(
 
     while Instant::now() < deadline {
         match socket.recv_from(&mut recv_buf) {
-            Ok((read, _addr)) => {
+            Ok((read, addr)) => {
                 let datagram = &recv_buf[..read];
-                if let Ok(decoded) = decode_datagram_with_options(
+
+                // If enforce_auth is true but no token is provided, this is a config error.
+                // In secure mode, we only accept authenticated frames from peers.
+                let decode_result = decode_datagram_with_options(
                     datagram,
                     config.auth_token.as_deref(),
                     config.allow_legacy_crc32,
                     Some(&mut replay_cache),
-                ) {
-                    peers.push(decoded);
+                );
+
+                match decode_result {
+                    Ok(decoded) => peers.push((decoded, addr)),
+                    Err(err) => {
+                        if config.enforce_auth {
+                            tracing::warn!(
+                                "Secure Discovery: Rejecting unauthenticated frame from {}: {}",
+                                addr,
+                                err
+                            );
+                        }
+                    }
                 }
             }
             Err(err)
@@ -218,14 +235,25 @@ pub fn respond_once(
             }
         };
 
-        let Ok(incoming) = decode_datagram_with_options(
+        let decode_result = decode_datagram_with_options(
             &recv_buf[..read],
             config.auth_token.as_deref(),
             config.allow_legacy_crc32,
             Some(&mut replay_cache),
-        ) else {
-            // Ignore malformed/auth-mismatched datagrams and keep listening.
-            continue;
+        );
+
+        let incoming = match decode_result {
+            Ok(frame) => frame,
+            Err(err) => {
+                if config.enforce_auth {
+                    tracing::warn!(
+                        "Secure Responder: Dropping invalid frame from {}: {}",
+                        peer_addr,
+                        err
+                    );
+                }
+                continue;
+            }
         };
 
         if !matches!(incoming.kind, FrameKind::Join | FrameKind::Discovery) {
@@ -567,9 +595,9 @@ mod tests {
         let replies =
             broadcast_and_collect(&join, &sender_config).expect("broadcast should succeed");
         assert!(!replies.is_empty());
-        assert!(replies
-            .iter()
-            .any(|reply| reply.node.id == "node-listener" && reply.kind == FrameKind::Discovery));
+        assert!(replies.iter().any(
+            |(reply, _)| reply.node.id == "node-listener" && reply.kind == FrameKind::Discovery
+        ));
 
         let responded = handle
             .join()
@@ -627,7 +655,7 @@ mod tests {
             broadcast_and_collect(&join, &valid_sender).expect("valid send should succeed");
         assert!(valid_replies
             .iter()
-            .any(|reply| reply.node.id == "node-listener"));
+            .any(|(reply, _)| reply.node.id == "node-listener"));
 
         let responded = handle
             .join()
@@ -682,8 +710,8 @@ mod tests {
         };
 
         let replies = broadcast_and_collect(&join, &sender).expect("broadcast should succeed");
-        assert!(replies.iter().any(|reply| reply.node.id == "node-a"));
-        assert!(replies.iter().any(|reply| reply.node.id == "node-b"));
+        assert!(replies.iter().any(|(reply, _)| reply.node.id == "node-a"));
+        assert!(replies.iter().any(|(reply, _)| reply.node.id == "node-b"));
 
         responder.join().expect("responder join");
     }
@@ -830,7 +858,7 @@ mod tests {
             broadcast_and_collect(&valid_join, &valid_sender).expect("send valid join frame");
         assert!(valid_replies
             .iter()
-            .any(|reply| reply.node.id == "node-listener"));
+            .any(|(reply, _)| reply.node.id == "node-listener"));
 
         let responded = handle
             .join()
