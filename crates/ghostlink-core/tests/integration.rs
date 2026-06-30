@@ -517,9 +517,11 @@ fn cluster_scales_to_multiple_nodes() {
 
 #[test]
 fn test_distributed_execution_stress() {
-    use ghostlink_core::runtime::{execute_pipeline_distributed, PipelinePlan, StagePlacement, DeviceKind, TcpTransportConfig};
     use ghostlink_core::cluster::ClusterState;
     use ghostlink_core::protocol::NodeResources;
+    use ghostlink_core::runtime::{
+        execute_pipeline_distributed, DeviceKind, PipelinePlan, StagePlacement, TcpTransportConfig,
+    };
 
     let cluster = ClusterState::new();
     let node_a_id = "node-a";
@@ -561,14 +563,11 @@ fn test_distributed_execution_stress() {
     };
 
     let result = execute_pipeline_distributed(
-        &plan,
-        128, // tokens
+        &plan, 128, // tokens
         8,   // micro_batch
-        config,
-        &cluster,
-        None,
-        None
-    ).expect("distributed execution failed");
+        config, &cluster, None, None,
+    )
+    .expect("distributed execution failed");
 
     assert_eq!(result.token_count, 128);
     assert_eq!(result.batch_count, 16);
