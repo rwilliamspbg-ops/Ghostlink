@@ -859,7 +859,7 @@ fn autotune_tcp_transport_config(
     execution_tokens: usize,
     micro_batch: usize,
     base: TcpTransportConfig,
-) -> TcpTransportConfig {
+) -> Result<TcpTransportConfig> {
     let tune_tokens = std::env::var("GHOSTLINK_TCP_AUTOTUNE_TOKENS")
         .ok()
         .and_then(|v| v.parse::<usize>().ok())
@@ -888,7 +888,7 @@ fn autotune_tcp_transport_config(
                 "TCP autotune reused cached max_inflight={} (key={})",
                 cached_inflight, cache_key
             );
-            return cached_cfg;
+            return Ok(cached_cfg);
         }
     }
 
@@ -906,7 +906,8 @@ fn autotune_tcp_transport_config(
                 tune_tokens,
                 tune_micro_batch,
                 candidate_cfg.clone(),
-            );
+            )
+            .map_err(|e| anyhow::anyhow!(e))?;
             throughput_sum += sample.throughput_tokens_per_sec;
             p95_sum += sample.p95_token_latency_ms;
         }
@@ -929,7 +930,7 @@ fn autotune_tcp_transport_config(
 
     let _ = store_cached_autotune_inflight(&cache_key, best_cfg.max_inflight_batches);
 
-    best_cfg
+    Ok(best_cfg)
 }
 
 fn print_usage() {
@@ -1080,7 +1081,7 @@ fn print_flow(opts: FlowOptions) -> Result<()> {
                     opts.execution_tokens,
                     opts.micro_batch,
                     base_tcp_cfg,
-                )
+        )?
             } else {
                 base_tcp_cfg
             };
@@ -1091,14 +1092,14 @@ fn print_flow(opts: FlowOptions) -> Result<()> {
                 tcp_cfg,
             )
         }
-        FlowTransportMode::InMemory => execute_pipeline_with_rebalance_and_measured(
+        FlowTransportMode::InMemory => Ok(execute_pipeline_with_rebalance_and_measured(
             &pipeline_plan,
             opts.execution_tokens,
             opts.micro_batch,
             Some(&rebalance_trigger),
             Some(&cluster),
             Some(&placement_context),
-        ),
+        )),
     };
 
     let load_balancer =
@@ -1131,7 +1132,8 @@ fn print_flow(opts: FlowOptions) -> Result<()> {
             &cluster,
             Some(&placement),
             None,
-        );
+        )
+        .map_err(|e| anyhow::anyhow!(e))?;
         println!("Distributed Smoke Result:");
         println!("{}", dist_execution.summary());
     }
@@ -1161,6 +1163,7 @@ fn print_flow(opts: FlowOptions) -> Result<()> {
         "Inference Parameters: top_k={} penalty={:.1}",
         opts.top_k, opts.penalty
     );
+    let execution = execution.map_err(|e| anyhow::anyhow!(e))?;
     println!("{}", execution.summary());
     maybe_write_flow_metrics_json(&execution, opts.transport_mode)?;
 
@@ -1219,7 +1222,10 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
     async fn handle_chat_completions(
         Json(req): Json<ChatCompletionRequest>,
     ) -> Json<ChatCompletionResponse> {
-        tracing::info!("API: Received chat completion request for model: {}", req.model);
+        tracing::info!(
+            "API: Received chat completion request for model: {}",
+            req.model
+        );
 
         Json(ChatCompletionResponse {
             id: format!("chatcmpl-{}", rand::random::<u32>()),

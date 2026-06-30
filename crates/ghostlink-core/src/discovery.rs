@@ -595,9 +595,9 @@ mod tests {
         let replies =
             broadcast_and_collect(&join, &sender_config).expect("broadcast should succeed");
         assert!(!replies.is_empty());
-        assert!(replies
-            .iter()
-            .any(|(reply, _)| reply.node.id == "node-listener" && reply.kind == FrameKind::Discovery));
+        assert!(replies.iter().any(
+            |(reply, _)| reply.node.id == "node-listener" && reply.kind == FrameKind::Discovery
+        ));
 
         let responded = handle
             .join()

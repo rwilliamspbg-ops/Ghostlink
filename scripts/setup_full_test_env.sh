@@ -56,7 +56,7 @@ fi
 
 log "Environment readiness check"
 cd "$ROOT_DIR"
-if ! GHOSTLINK_PYTHON="$VENV_PYTHON" cargo run -p ghost-link -- gui-check --strict; then
+if ! GHOSTLINK_PYTHON="$VENV_PYTHON" cargo run --release -p ghost-link -- gui-check --strict; then
   warn "GUI readiness check failed"
   if [[ "${GHOSTLINK_SETUP_ALLOW_DEGRADED:-0}" == "1" ]]; then
     warn "Continuing in degraded mode because GHOSTLINK_SETUP_ALLOW_DEGRADED=1"

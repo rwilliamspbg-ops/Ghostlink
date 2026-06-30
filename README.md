@@ -34,7 +34,7 @@ Measured in a standard development environment:
 | **In-Memory (Zero-Copy)** | **118,840.29** | **1.83** |
 | **TCP Loopback (Optimized)** | **67,794.12** | **3.65** |
 
-*Benchmarks conducted on 2026-06-30 using Mistral-7B baseline.*
+*Benchmarks conducted on 2024-11-20 using Mistral-7B baseline.*
 
 ## 🛠 Command Line Interface
 
@@ -58,7 +58,10 @@ The `ghost-link` CLI provides powerful primitives for cluster management and per
 
 Ghostlink can be configured via a `ghostlink.toml` file or environment variables.
 
+
+
 ### Environment Variables
+
 | Variable | Description | Default |
 | :--- | :--- | :--- |
 | `GHOSTLINK_CONFIG` | Path to TOML configuration file | `./ghostlink.toml` |
@@ -86,3 +89,4 @@ Ghostlink maintains high quality through automated testing and validation gates:
 - **Workspace Tests**: `cargo test --workspace`
 - **Full Validation**: `bash scripts/run_full_validation.sh`
 - **Linting**: `cargo clippy --workspace --all-targets -- -D warnings`
+- **Model Verification**: `python3 scripts/verify_hf_models.py`
