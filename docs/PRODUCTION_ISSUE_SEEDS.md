@@ -222,10 +222,11 @@ Risk and rollout:
 - Owner: @unassigned
 
 Problem statement:
-GUI validation is still partly manual or devcontainer-based, which leaves packaging and release confidence lower than the runtime path. The production plan requires an automated headless GUI function-matrix lane before release candidates.
+Headless GUI validation is now active in `production-gate.yml`, but coverage remains narrow to the current CI/runtime profile. Packaging and release confidence still benefit from broader platform automation and clearer release-candidate expectations.
 
 Implementation scope:
-- Add a CI or nightly workflow that runs the GUI function matrix in headless mode.
+- Keep the existing headless GUI CI lane green and stable.
+- Add an additional GUI lane (nightly or release-adjacent) targeting expanded platform/runtime coverage.
 - Ensure required Python and display dependencies are provisioned deterministically.
 - Upload GUI validation artifacts for triage.
 - Document when GUI changes must satisfy this lane.
@@ -236,8 +237,8 @@ Dependencies / prerequisites:
 - External blockers: runner image/package availability.
 
 Exit criteria:
-- [ ] Headless GUI function-matrix workflow exists.
-- [ ] Workflow is green on supported targets.
+- [ ] Existing headless GUI workflow remains green on supported targets.
+- [ ] Expanded GUI automation lane is green on the additional target profile.
 - [ ] GUI artifacts are uploaded for failures.
 - [ ] Release guidance references the lane as a required check.
 
@@ -247,7 +248,8 @@ Validation and artifacts:
   - `cargo run -p ghost-link -- gui-diagnose --strict`
   - `third_party/mohawk_gui/test_dashboard.py`
 - CI workflows:
-  - GUI nightly or release-adjacent lane
+  - `production-gate.yml` (existing)
+  - GUI nightly or release-adjacent expansion lane
 - Artifact/report links:
   - GUI matrix output
   - diagnostics artifacts

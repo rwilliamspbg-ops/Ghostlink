@@ -14,7 +14,7 @@ It is aligned to the current readiness checklist in `PRODUCTION_READINESS.md` an
 
 - Core CI and production gate are already active.
 - Runtime smoke, SLO checks, perf drift, and stage-tail/canary guardrails are active.
-- GUI launch and diagnostics checks are active, but GUI packaging is optional.
+- GUI launch/readiness/diagnostics and headless dashboard smoke are active in production gate CI, but GUI packaging is optional.
 
 ## Gap-to-Plan Coverage
 
@@ -31,7 +31,7 @@ This matrix maps the current documented issues to the phases below so every know
 | Full hardware probing depends on `nvidia-smi` / `lspci` | Phase 4 | Tool-independent probe fallback and degraded-mode reporting | Probe output is useful and deterministic with or without host tools |
 | Trusted-LAN security posture is insufficient for zero-trust use | Phase 1 | Optional mTLS and stricter authenticated discovery | Secure mode integration suite passes |
 | GUI still depends on Python/PyQt runtime packaging | Phase 6 | Produce reproducible standalone GUI bundle and install path | GUI bundle is published for release candidates |
-| GUI validation is partly manual/devcontainer-only | Phase 6 | Add headless GUI function-matrix lane to CI/nightly | GUI automation is green in CI or nightly lane |
+| GUI validation automation is active in production gate CI; platform breadth remains limited | Phase 6 | Expand GUI automation to additional platform lanes and release targets | GUI automation is green across supported platform lanes |
 | Hardware diversity testing is narrow | Phase 2 + 4 | Add heterogeneous host matrix across CPU/GPU/NIC classes | Coverage report includes supported host classes |
 
 ## Phase 0: Gap Triage and Tracking (Week 1)
@@ -154,14 +154,15 @@ This matrix maps the current documented issues to the phases below so every know
 3. Release checklist:
    - Tie `PRODUCTION_READINESS.md` gates to release tag process.
 4. GUI packaging and automation:
-   - Add a headless GUI function-matrix lane to CI or nightly runners.
+   - Keep the existing headless GUI function-matrix CI lane green and stable.
+   - Expand automated GUI validation to additional platform lanes where supported.
    - Publish a reproducible standalone GUI bundle for supported platforms.
 
 ### Phase 6 Exit Criteria
 
 - Signed artifacts and checksums are published for each release candidate.
 - Release process is documented and repeatable by a second maintainer.
-- GUI bundle and GUI automation lane are green for supported release targets.
+- GUI bundle and GUI automation lanes are green for supported release targets.
 
 ## Metrics and Governance
 

@@ -142,7 +142,7 @@ jobs:
           GHOSTLINK_FLOW_METRICS_JSON: ./tmp/flow-metrics-tcp.json
         run: |
           mkdir -p ./tmp
-          cargo run -p ghost-link -- flow iprada-16gb zenbook-32gb 32 32 128 4 tcp
+          cargo run --release -p ghost-link -- flow iprada-16gb zenbook-32gb 32 32 128 4 tcp
 
       - name: Validate Runtime SLO (TCP)
         run: |
@@ -156,7 +156,7 @@ jobs:
           GHOSTLINK_FLOW_METRICS_JSON: ./tmp/flow-metrics-inmem.json
         run: |
           mkdir -p ./tmp
-          cargo run -p ghost-link -- flow iprada-16gb zenbook-32gb 32 32 128 4 inmem
+          cargo run --release -p ghost-link -- flow iprada-16gb zenbook-32gb 32 32 128 4 inmem
 
       - name: Validate Runtime SLO (In-Memory)
         run: |

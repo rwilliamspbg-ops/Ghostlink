@@ -45,7 +45,7 @@ python3 -m pip install --upgrade pip-audit
 pip-audit -r third_party/mohawk_gui/requirements-runtime.txt
 
 # 4) Workflow consistency sanity checks
-python3 scripts/check_license_consistency.sh
+bash scripts/check_license_consistency.sh
 ```
 
 When perf/runtime code changes, also run gate-like performance checks and include the artifact paths and canary results in the PR body:
@@ -53,9 +53,13 @@ When perf/runtime code changes, also run gate-like performance checks and includ
 ```bash
 python3 scripts/flow_perf_snapshot.py --release --runs 3 --warmup-runs 1 --modes tcp inmem --output-dir ./tmp/perf_snapshot_gate
 python3 scripts/flow_perf_snapshot.py --release --runs 4 --warmup-runs 1 --modes tcp inmem --exec-tokens 512 --micro-batch 8 --output-dir ./tmp/perf_snapshot_stress_gate
+python3 scripts/perf_maturity_profile.py --summary ./tmp/perf_snapshot_gate/summary.json --baseline ./docs/PERF_BASELINE.json --stage-glob-template './tmp/perf_snapshot_gate/{mode}-*.json' --output-json ./tmp/perf_snapshot_gate/maturity_scorecard.json
+python3 scripts/perf_maturity_profile.py --summary ./tmp/perf_snapshot_stress_gate/summary.json --baseline ./docs/PERF_BASELINE_STRESS.json --stage-glob-template './tmp/perf_snapshot_stress_gate/{mode}-*.json' --output-json ./tmp/perf_snapshot_stress_gate/maturity_scorecard.json
 python3 scripts/validate_flow_canary.py --summary ./tmp/perf_snapshot_gate/summary.json --profile production
 python3 scripts/validate_flow_canary.py --summary ./tmp/perf_snapshot_stress_gate/summary.json --profile stress
 ```
+
+Include both `maturity_scorecard.json` artifact paths in the PR body when perf/runtime behavior changes.
 
 If you touch integration behavior, also run:
 

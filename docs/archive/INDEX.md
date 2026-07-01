@@ -2,6 +2,7 @@
 
 These documents are preserved for historical context and implementation traceability.
 They should not be used as the primary operational source of truth.
+Some archived files intentionally contain superseded status statements and should be interpreted as point-in-time snapshots only.
 
 ## Archived Files
 
