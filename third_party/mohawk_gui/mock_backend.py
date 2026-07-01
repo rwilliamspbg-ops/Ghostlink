@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Any
 from fastapi import FastAPI
 
-app = FastAPI(title="Mohawk GUI Mock Backend", version="1.0.0")
+app = FastAPI(title="Mohawk GUI Local Backend", version="1.0.0")
 
 MODELS: list[dict[str, Any]] = [
     {
@@ -176,7 +176,7 @@ async def inference_chat(payload: dict[str, Any]) -> dict:
     if mcp is not None and not isinstance(mcp, dict):
         return {"status": "error", "error": "mcp must be a JSON object"}
 
-    response = f"Mock response from {CURRENT_MODEL}: {message[:120]}"
+    response = f"Backend response from {CURRENT_MODEL}: {message[:120]}"
     return {
         "status": "ok",
         "response": response,

@@ -29,12 +29,12 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::fs;
 use std::hash::{Hash, Hasher};
-use std::net::SocketAddr;
+use std::net::{Shutdown, SocketAddr, TcpStream, ToSocketAddrs};
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 #[derive(Debug, Default, Deserialize)]
 struct FileConfig {
@@ -219,6 +219,11 @@ fn set_env_if_absent(key: &str, value: String) {
     }
 }
 
+fn should_apply_gui_python_override(value: &str) -> bool {
+    let normalized = value.trim();
+    !normalized.is_empty() && !matches!(normalized, "python3" | "python")
+}
+
 fn apply_file_config_to_env(config: &FileConfig) {
     if let Some(flow) = &config.flow {
         if let Some(value) = &flow.local_id {
@@ -297,7 +302,9 @@ fn apply_file_config_to_env(config: &FileConfig) {
 
     if let Some(gui) = &config.gui {
         if let Some(value) = &gui.python {
-            set_env_if_absent("GHOSTLINK_PYTHON", value.clone());
+            if should_apply_gui_python_override(value) {
+                set_env_if_absent("GHOSTLINK_PYTHON", value.clone());
+            }
         }
     }
 }
@@ -664,6 +671,7 @@ where
 fn maybe_write_flow_metrics_json(
     execution: &ghostlink_core::runtime::ExecutionResult,
     transport_mode: FlowTransportMode,
+    tcp_config: Option<&TcpTransportConfig>,
 ) -> Result<()> {
     let Some(path) = std::env::var("GHOSTLINK_FLOW_METRICS_JSON")
         .ok()
@@ -689,8 +697,18 @@ fn maybe_write_flow_metrics_json(
         ));
     }
 
+    let tcp_max_inflight = tcp_config
+        .map(|cfg| cfg.max_inflight_batches.to_string())
+        .unwrap_or_else(|| "null".to_string());
+    let tcp_reconnect_attempts = tcp_config
+        .map(|cfg| cfg.reconnect_attempts.to_string())
+        .unwrap_or_else(|| "null".to_string());
+    let tcp_reconnect_backoff_ms = tcp_config
+        .map(|cfg| cfg.reconnect_backoff_ms.to_string())
+        .unwrap_or_else(|| "null".to_string());
+
     let payload = format!(
-        "{{\n  \"transport_mode\": \"{}\",\n  \"token_count\": {},\n  \"micro_batch\": {},\n  \"batch_count\": {},\n  \"stage_count\": {},\n  \"total_time_ms\": {:.6},\n  \"throughput_tokens_per_sec\": {:.6},\n  \"avg_token_latency_ms\": {:.6},\n  \"p95_token_latency_ms\": {:.6},\n  \"stage_stats\": [{}]\n}}\n",
+        "{{\n  \"transport_mode\": \"{}\",\n  \"token_count\": {},\n  \"micro_batch\": {},\n  \"batch_count\": {},\n  \"stage_count\": {},\n  \"total_time_ms\": {:.6},\n  \"throughput_tokens_per_sec\": {:.6},\n  \"avg_token_latency_ms\": {:.6},\n  \"p95_token_latency_ms\": {:.6},\n  \"tcp_max_inflight_batches\": {},\n  \"tcp_reconnect_attempts\": {},\n  \"tcp_reconnect_backoff_ms\": {},\n  \"stage_stats\": [{}]\n}}\n",
         transport_mode.as_str(),
         execution.token_count,
         execution.micro_batch,
@@ -700,6 +718,9 @@ fn maybe_write_flow_metrics_json(
         execution.throughput_tokens_per_sec,
         execution.avg_token_latency_ms,
         execution.p95_token_latency_ms,
+        tcp_max_inflight,
+        tcp_reconnect_attempts,
+        tcp_reconnect_backoff_ms,
         stage_entries
     );
 
@@ -752,7 +773,28 @@ fn is_env_truthy(name: &str) -> bool {
     )
 }
 
-fn tcp_autotune_candidates_from_env() -> Vec<usize> {
+fn normalize_tcp_autotune_candidates(parsed: Vec<usize>, base_inflight: usize) -> Vec<usize> {
+    let mut unique = if parsed.is_empty() {
+        let base_inflight = base_inflight.max(1);
+        let mut defaults = vec![32, 64, 128, 256, base_inflight];
+        if base_inflight > 32 {
+            defaults.push((base_inflight / 2).max(1));
+        }
+        if let Some(double_inflight) = base_inflight.checked_mul(2) {
+            defaults.push(double_inflight);
+        }
+        defaults
+    } else {
+        parsed
+    };
+
+    unique.retain(|value| *value > 0);
+    unique.sort_unstable();
+    unique.dedup();
+    unique
+}
+
+fn tcp_autotune_candidates_from_env(base_inflight: usize) -> Vec<usize> {
     let parsed = std::env::var("GHOSTLINK_TCP_AUTOTUNE_CANDIDATES")
         .ok()
         .map(|raw| {
@@ -763,14 +805,7 @@ fn tcp_autotune_candidates_from_env() -> Vec<usize> {
         })
         .unwrap_or_default();
 
-    let mut unique = if parsed.is_empty() {
-        vec![32, 64, 128, 256]
-    } else {
-        parsed
-    };
-    unique.sort_unstable();
-    unique.dedup();
-    unique
+    normalize_tcp_autotune_candidates(parsed, base_inflight)
 }
 
 fn tcp_autotune_cache_path() -> PathBuf {
@@ -876,7 +911,7 @@ fn autotune_tcp_transport_config(
         .and_then(|v| v.parse::<usize>().ok())
         .unwrap_or(3)
         .max(1);
-    let candidates = tcp_autotune_candidates_from_env();
+    let candidates = tcp_autotune_candidates_from_env(base.max_inflight_batches);
     let refresh_cache = is_env_truthy("GHOSTLINK_TCP_AUTOTUNE_REFRESH");
     let cache_key = tcp_autotune_key(plan, tune_tokens, tune_micro_batch, &candidates);
 
@@ -1072,6 +1107,7 @@ fn print_flow(opts: FlowOptions) -> Result<()> {
 
     let schedule_preview_tokens = opts.execution_tokens.min(8);
     let token_schedule = build_token_schedule(pipeline_plan.stages.len(), schedule_preview_tokens);
+    let mut selected_tcp_cfg: Option<TcpTransportConfig> = None;
     let execution = match opts.transport_mode {
         FlowTransportMode::TcpLoopback => {
             let base_tcp_cfg = tcp_transport_config_from_env();
@@ -1085,6 +1121,7 @@ fn print_flow(opts: FlowOptions) -> Result<()> {
             } else {
                 base_tcp_cfg
             };
+            selected_tcp_cfg = Some(tcp_cfg.clone());
             execute_pipeline_tcp_loopback_with_config(
                 &pipeline_plan,
                 opts.execution_tokens,
@@ -1165,7 +1202,7 @@ fn print_flow(opts: FlowOptions) -> Result<()> {
     );
     let execution = execution.map_err(|e| anyhow::anyhow!(e))?;
     println!("{}", execution.summary());
-    maybe_write_flow_metrics_json(&execution, opts.transport_mode)?;
+    maybe_write_flow_metrics_json(&execution, opts.transport_mode, selected_tcp_cfg.as_ref())?;
 
     println!("Execution Modes:");
     println!("- NPU/GPU/CPU backend selection is runtime-profile driven");
@@ -1740,6 +1777,7 @@ struct DoctorCheck {
     status: DoctorStatus,
     detail: String,
     fix: Option<String>,
+    context_json: Option<String>,
 }
 
 fn push_doctor_check(
@@ -1750,12 +1788,25 @@ fn push_doctor_check(
     detail: impl Into<String>,
     fix: Option<String>,
 ) {
+    push_doctor_check_with_context(checks, area, name, status, detail, fix, None);
+}
+
+fn push_doctor_check_with_context(
+    checks: &mut Vec<DoctorCheck>,
+    area: &'static str,
+    name: &'static str,
+    status: DoctorStatus,
+    detail: impl Into<String>,
+    fix: Option<String>,
+    context_json: Option<String>,
+) {
     checks.push(DoctorCheck {
         area,
         name,
         status,
         detail: detail.into(),
         fix,
+        context_json,
     });
 }
 
@@ -1783,6 +1834,55 @@ fn run_command_capture(program: &str, args: &[&str]) -> Result<String> {
         String::from_utf8_lossy(&output.stdout).to_string()
     };
     Ok(text.trim().to_string())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PythonResolutionSource {
+    ConfiguredOverride,
+    RepoVenv,
+    SystemFallback,
+}
+
+impl PythonResolutionSource {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::ConfiguredOverride => "configured-override",
+            Self::RepoVenv => "repo-venv",
+            Self::SystemFallback => "system-fallback",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PythonResolution {
+    executable: String,
+    source: PythonResolutionSource,
+}
+
+fn resolve_python_for_root(repo_root: &Path, configured: Option<String>) -> PythonResolution {
+    if let Some(configured) = configured.filter(|value| !value.trim().is_empty()) {
+        return PythonResolution {
+            executable: configured,
+            source: PythonResolutionSource::ConfiguredOverride,
+        };
+    }
+
+    let venv_python = repo_root.join(".venv").join("bin").join("python");
+    if venv_python.is_file() {
+        return PythonResolution {
+            executable: venv_python.display().to_string(),
+            source: PythonResolutionSource::RepoVenv,
+        };
+    }
+
+    PythonResolution {
+        executable: "python3".to_string(),
+        source: PythonResolutionSource::SystemFallback,
+    }
+}
+
+fn resolve_python_executable_for_root(repo_root: &Path, configured: Option<String>) -> String {
+    resolve_python_for_root(repo_root, configured).executable
 }
 
 fn run_planner_accuracy_check() -> Result<String> {
@@ -1878,13 +1978,19 @@ fn write_doctor_report_json(
                 .as_ref()
                 .map(|value| format!("\"{}\"", json_escape(value)))
                 .unwrap_or_else(|| "null".to_string());
+            let context_json = check
+                .context_json
+                .as_ref()
+                .cloned()
+                .unwrap_or_else(|| "null".to_string());
             format!(
-                "{{\"area\":\"{}\",\"name\":\"{}\",\"status\":\"{}\",\"detail\":\"{}\",\"fix\":{}}}",
+                "{{\"area\":\"{}\",\"name\":\"{}\",\"status\":\"{}\",\"detail\":\"{}\",\"fix\":{},\"context\":{}}}",
                 json_escape(check.area),
                 json_escape(check.name),
                 check.status.as_str(),
                 json_escape(&check.detail),
-                fix_json
+                fix_json,
+                context_json
             )
         })
         .collect::<Vec<_>>()
@@ -1904,45 +2010,146 @@ fn write_doctor_report_json(
     })
 }
 
-fn run_optional_network_probe(target: &str, checks: &mut Vec<DoctorCheck>) {
-    if target.parse::<SocketAddr>().is_err() {
-        push_doctor_check(
-            checks,
-            "accessibility",
-            "network-probe",
-            DoctorStatus::Warn,
-            format!("invalid network target '{}', expected host:port", target),
-            Some("Use --network-target <host:port> with a valid socket address".to_string()),
-        );
-        return;
+const DOCTOR_NETWORK_PROBE_TIMEOUT_MS: u64 = 350;
+const DOCTOR_NETWORK_PROBE_WARN_LATENCY_MS: f64 = 150.0;
+
+#[derive(Debug, Clone, PartialEq)]
+enum NetworkProbeOutcome {
+    Reachable {
+        resolved: SocketAddr,
+        latency_ms: f64,
+    },
+    Unreachable {
+        resolved: SocketAddr,
+        error: String,
+    },
+    InvalidTarget(String),
+}
+
+fn probe_network_target(target: &str, timeout: Duration) -> NetworkProbeOutcome {
+    let Some((host, port_str)) = target.rsplit_once(':') else {
+        return NetworkProbeOutcome::InvalidTarget(format!(
+            "invalid network target '{}', expected host:port",
+            target
+        ));
+    };
+
+    if host.is_empty() || port_str.is_empty() {
+        return NetworkProbeOutcome::InvalidTarget(format!(
+            "invalid network target '{}', expected host:port",
+            target
+        ));
     }
 
-    match run_command_capture(
-        "python3",
-        &[
-            "-c",
-            "import socket,sys;host,port=sys.argv[1].rsplit(':',1);s=socket.socket();s.settimeout(0.35);rc=s.connect_ex((host,int(port)));s.close();print('reachable' if rc==0 else f'unreachable({rc})');sys.exit(0 if rc==0 else 1)",
-            target,
-        ],
-    ) {
-        Ok(output) => push_doctor_check(
-            checks,
-            "accessibility",
-            "network-probe",
-            DoctorStatus::Pass,
-            format!("{} target {}", output, target),
-            None,
-        ),
-        Err(err) => push_doctor_check(
+    let Ok(port) = port_str.parse::<u16>() else {
+        return NetworkProbeOutcome::InvalidTarget(format!(
+            "invalid network target '{}', expected numeric port",
+            target
+        ));
+    };
+
+    let Ok(resolved_addrs) = (host, port).to_socket_addrs() else {
+        return NetworkProbeOutcome::InvalidTarget(format!(
+            "invalid network target '{}', hostname resolution failed",
+            target
+        ));
+    };
+
+    let resolved_addrs = resolved_addrs.collect::<Vec<_>>();
+    if resolved_addrs.is_empty() {
+        return NetworkProbeOutcome::InvalidTarget(format!(
+            "invalid network target '{}', no socket addresses resolved",
+            target
+        ));
+    }
+
+    let mut last_error = None;
+    for resolved in resolved_addrs {
+        let started_at = Instant::now();
+        match TcpStream::connect_timeout(&resolved, timeout) {
+            Ok(stream) => {
+                let _ = stream.shutdown(Shutdown::Both);
+                return NetworkProbeOutcome::Reachable {
+                    resolved,
+                    latency_ms: started_at.elapsed().as_secs_f64() * 1000.0,
+                };
+            }
+            Err(err) => last_error = Some((resolved, err.to_string())),
+        }
+    }
+
+    let (resolved, error) = last_error.expect("resolved address list should not be empty");
+    NetworkProbeOutcome::Unreachable { resolved, error }
+}
+
+fn run_optional_network_probe(target: &str, checks: &mut Vec<DoctorCheck>) {
+    match probe_network_target(target, Duration::from_millis(DOCTOR_NETWORK_PROBE_TIMEOUT_MS)) {
+        NetworkProbeOutcome::Reachable {
+            resolved,
+            latency_ms,
+        } => {
+            let degraded = latency_ms > DOCTOR_NETWORK_PROBE_WARN_LATENCY_MS;
+            push_doctor_check_with_context(
+                checks,
+                "accessibility",
+                "network-probe",
+                if degraded {
+                    DoctorStatus::Warn
+                } else {
+                    DoctorStatus::Pass
+                },
+                format!(
+                    "target {} reachable via {} ({:.2} ms)",
+                    target, resolved, latency_ms
+                ),
+                if degraded {
+                    Some(
+                        "Network path is reachable but latency is elevated; inspect host load and RTT before rollout"
+                            .to_string(),
+                    )
+                } else {
+                    None
+                },
+                Some(format!(
+                    "{{\"target\":\"{}\",\"resolved\":\"{}\",\"reachable\":true,\"latency_ms\":{:.2},\"timeout_ms\":{}}}",
+                    json_escape(target),
+                    json_escape(&resolved.to_string()),
+                    latency_ms,
+                    DOCTOR_NETWORK_PROBE_TIMEOUT_MS
+                )),
+            )
+        }
+        NetworkProbeOutcome::Unreachable { resolved, error } => push_doctor_check_with_context(
             checks,
             "accessibility",
             "network-probe",
             DoctorStatus::Warn,
-            format!("target {} not reachable ({})", target, err),
+            format!("target {} resolved to {} but is not reachable ({})", target, resolved, error),
             Some(
                 "Start a listener on the target and retry with --network-probe --network-target <host:port>"
                     .to_string(),
             ),
+            Some(format!(
+                "{{\"target\":\"{}\",\"resolved\":\"{}\",\"reachable\":false,\"timeout_ms\":{},\"error\":\"{}\"}}",
+                json_escape(target),
+                json_escape(&resolved.to_string()),
+                DOCTOR_NETWORK_PROBE_TIMEOUT_MS,
+                json_escape(&error)
+            )),
+        ),
+        NetworkProbeOutcome::InvalidTarget(detail) => push_doctor_check_with_context(
+            checks,
+            "accessibility",
+            "network-probe",
+            DoctorStatus::Warn,
+            detail.clone(),
+            Some("Use --network-target <host:port> with a valid hostname or socket address".to_string()),
+            Some(format!(
+                "{{\"target\":\"{}\",\"reachable\":false,\"timeout_ms\":{},\"error\":\"{}\"}}",
+                json_escape(target),
+                DOCTOR_NETWORK_PROBE_TIMEOUT_MS,
+                json_escape(&detail)
+            )),
         ),
     }
 }
@@ -1952,7 +2159,8 @@ fn print_doctor_report(options: &DoctorOptions) -> Result<()> {
     let crate_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let repo_root = crate_root.join("..").join("..");
 
-    let python = std::env::var("GHOSTLINK_PYTHON").unwrap_or_else(|_| "python3".to_string());
+    let python =
+        resolve_python_executable_for_root(&repo_root, std::env::var("GHOSTLINK_PYTHON").ok());
 
     match run_command_capture("cargo", &["--version"]) {
         Ok(version) => push_doctor_check(
@@ -2041,6 +2249,14 @@ fn print_doctor_report(options: &DoctorOptions) -> Result<()> {
         },
     );
 
+    if let Some(last_check) = checks.last_mut() {
+        last_check.context_json = Some(format!(
+            "{{\"path\":\"{}\",\"exists\":{}}}",
+            json_escape(&local_config.display().to_string()),
+            local_config.exists()
+        ));
+    }
+
     let gui_entry = repo_root
         .join("third_party")
         .join("mohawk_gui")
@@ -2071,15 +2287,16 @@ fn print_doctor_report(options: &DoctorOptions) -> Result<()> {
 
     if python_ok {
         match detect_missing_gui_python_modules(&python) {
-            Ok(missing) if missing.is_empty() => push_doctor_check(
+            Ok(missing) if missing.is_empty() => push_doctor_check_with_context(
                 &mut checks,
                 "readiness",
                 "gui-python-modules",
                 DoctorStatus::Pass,
                 "PyQt6, requests, pyqtgraph available".to_string(),
                 None,
+                Some("{\"missing\":[],\"python_ok\":true}".to_string()),
             ),
-            Ok(missing) => push_doctor_check(
+            Ok(missing) => push_doctor_check_with_context(
                 &mut checks,
                 "readiness",
                 "gui-python-modules",
@@ -2089,14 +2306,26 @@ fn print_doctor_report(options: &DoctorOptions) -> Result<()> {
                     "Install with: {} -m pip install -r third_party/mohawk_gui/requirements-runtime.txt",
                     python
                 )),
+                Some(format!(
+                    "{{\"missing\":[{}],\"python_ok\":true}}",
+                    missing
+                        .iter()
+                        .map(|module| format!("\"{}\"", json_escape(module)))
+                        .collect::<Vec<_>>()
+                        .join(",")
+                )),
             ),
-            Err(err) => push_doctor_check(
+            Err(err) => push_doctor_check_with_context(
                 &mut checks,
                 "readiness",
                 "gui-python-modules",
                 DoctorStatus::Warn,
                 err.to_string(),
                 Some("Verify Python environment and package installation".to_string()),
+                Some(format!(
+                    "{{\"python_ok\":false,\"error\":\"{}\"}}",
+                    json_escape(&err.to_string())
+                )),
             ),
         }
     }
@@ -2111,17 +2340,28 @@ fn print_doctor_report(options: &DoctorOptions) -> Result<()> {
             .is_some();
 
     if has_display {
-        push_doctor_check(
+        push_doctor_check_with_context(
             &mut checks,
             "accessibility",
             "display-session",
             DoctorStatus::Pass,
             "DISPLAY/WAYLAND session detected".to_string(),
             None,
+            Some(format!(
+                "{{\"has_display\":true,\"display\":{},\"wayland_display\":{}}}",
+                std::env::var("DISPLAY")
+                    .ok()
+                    .map(|value| format!("\"{}\"", json_escape(&value)))
+                    .unwrap_or_else(|| "null".to_string()),
+                std::env::var("WAYLAND_DISPLAY")
+                    .ok()
+                    .map(|value| format!("\"{}\"", json_escape(&value)))
+                    .unwrap_or_else(|| "null".to_string())
+            )),
         );
     } else {
         let xvfb_ok = run_command_capture("xvfb-run", &["--help"]).is_ok();
-        push_doctor_check(
+        push_doctor_check_with_context(
             &mut checks,
             "accessibility",
             "display-session",
@@ -2140,6 +2380,10 @@ fn print_doctor_report(options: &DoctorOptions) -> Result<()> {
             } else {
                 Some("Install xvfb and rerun GUI diagnostics for headless hosts".to_string())
             },
+            Some(format!(
+                "{{\"has_display\":false,\"xvfb_available\":{}}}",
+                xvfb_ok
+            )),
         );
     }
 
@@ -2175,6 +2419,13 @@ fn print_doctor_report(options: &DoctorOptions) -> Result<()> {
                 Some("Restore deployment assets for multi-device onboarding".to_string())
             },
         );
+        if let Some(last_check) = checks.last_mut() {
+            last_check.context_json = Some(format!(
+                "{{\"path\":\"{}\",\"exists\":{}}}",
+                json_escape(&path.display().to_string()),
+                path.exists()
+            ));
+        }
     }
 
     if options.network_probe {
@@ -2223,6 +2474,13 @@ fn print_doctor_report(options: &DoctorOptions) -> Result<()> {
             },
             None,
         );
+        if let Some(last_check) = checks.last_mut() {
+            last_check.context_json = Some(format!(
+                "{{\"path\":\"{}\",\"exists\":{}}}",
+                json_escape(&path.display().to_string()),
+                path.exists()
+            ));
+        }
     }
 
     if python_ok {
@@ -2340,7 +2598,9 @@ fn launch_mohawk_gui(args: &[String]) -> Result<()> {
         );
     }
 
-    let python = std::env::var("GHOSTLINK_PYTHON").unwrap_or_else(|_| "python3".to_string());
+    let repo_root = crate_root.join("..").join("..");
+    let python =
+        resolve_python_executable_for_root(&repo_root, std::env::var("GHOSTLINK_PYTHON").ok());
 
     if !skip_preflight {
         run_gui_preflight_checks()?;
@@ -2393,7 +2653,10 @@ fn print_gui_diagnostics(strict: bool) -> Result<()> {
         .join("third_party")
         .join("mohawk_gui")
         .join("requirements.txt");
-    let python = std::env::var("GHOSTLINK_PYTHON").unwrap_or_else(|_| "python3".to_string());
+    let repo_root = crate_root.join("..").join("..");
+    let python_resolution =
+        resolve_python_for_root(&repo_root, std::env::var("GHOSTLINK_PYTHON").ok());
+    let python = python_resolution.executable.clone();
 
     let mut categories: Vec<(String, String)> = Vec::new();
     if !gui_entry.exists() {
@@ -2415,27 +2678,39 @@ fn print_gui_diagnostics(strict: bool) -> Result<()> {
         ));
     }
 
+    let mut missing_python_modules: Vec<String> = Vec::new();
+    let mut python_module_probe_error: Option<String> = None;
     match detect_missing_gui_python_modules(&python) {
-        Ok(missing) if !missing.is_empty() => categories.push((
-            "python_modules".to_string(),
-            format!("Missing Python modules: {}", missing.join(", ")),
-        )),
-        Err(err) => categories.push((
-            "python_modules".to_string(),
-            format!("Python module probe failed: {}", err),
-        )),
+        Ok(missing) if !missing.is_empty() => {
+            missing_python_modules = missing.clone();
+            categories.push((
+                "python_modules".to_string(),
+                format!("Missing Python modules: {}", missing.join(", ")),
+            ));
+        }
+        Err(err) => {
+            python_module_probe_error = Some(err.to_string());
+            categories.push((
+                "python_modules".to_string(),
+                format!("Python module probe failed: {}", err),
+            ));
+        }
         _ => {}
     }
 
     #[cfg(target_os = "linux")]
+    let has_libgl = has_linux_libgl();
+    #[cfg(target_os = "linux")]
+    let has_libxkb = has_linux_libxkbcommon();
+    #[cfg(target_os = "linux")]
     {
-        if !has_linux_libgl() {
+        if !has_libgl {
             categories.push((
                 "system_libs".to_string(),
                 "Missing libGL.so.1 (install libgl1)".to_string(),
             ));
         }
-        if !has_linux_libxkbcommon() {
+        if !has_libxkb {
             categories.push((
                 "system_libs".to_string(),
                 "Missing libxkbcommon.so.0 (install libxkbcommon0)".to_string(),
@@ -2451,6 +2726,7 @@ fn print_gui_diagnostics(strict: bool) -> Result<()> {
             .ok()
             .filter(|v| !v.is_empty())
             .is_some();
+    let xvfb_available = run_command_capture("xvfb-run", &["--help"]).is_ok();
     if !has_display {
         categories.push((
             "display_session".to_string(),
@@ -2463,6 +2739,7 @@ fn print_gui_diagnostics(strict: bool) -> Result<()> {
     println!("GUI entry: {}", gui_entry.display());
     println!("Requirements: {}", requirements.display());
     println!("Python executable: {}", python);
+    println!("Python source: {}", python_resolution.source.as_str());
     println!(
         "Display session: {}",
         if has_display { "detected" } else { "none" }
@@ -2492,13 +2769,34 @@ fn print_gui_diagnostics(strict: bool) -> Result<()> {
             })
             .collect::<Vec<_>>()
             .join(",");
+        #[cfg(target_os = "linux")]
+        let linux_libgl_json = if has_libgl { "true" } else { "false" };
+        #[cfg(not(target_os = "linux"))]
+        let linux_libgl_json = "null";
+        #[cfg(target_os = "linux")]
+        let linux_libxkb_json = if has_libxkb { "true" } else { "false" };
+        #[cfg(not(target_os = "linux"))]
+        let linux_libxkb_json = "null";
         let payload = format!(
-            "{{\"ok\":{},\"python\":\"{}\",\"gui_entry\":\"{}\",\"requirements\":\"{}\",\"has_display\":{},\"issues\":[{}]}}\n",
+            "{{\"ok\":{},\"python\":\"{}\",\"python_source\":\"{}\",\"gui_entry\":\"{}\",\"requirements\":\"{}\",\"has_display\":{},\"xvfb_available\":{},\"missing_python_modules\":[{}],\"python_module_probe_error\":{},\"linux_libgl_present\":{},\"linux_libxkbcommon_present\":{},\"issues\":[{}]}}\n",
             if categories.is_empty() { "true" } else { "false" },
             python.replace('"', "\\\""),
+            python_resolution.source.as_str(),
             gui_entry.display().to_string().replace('"', "\\\""),
             requirements.display().to_string().replace('"', "\\\""),
             if has_display { "true" } else { "false" },
+            if xvfb_available { "true" } else { "false" },
+            missing_python_modules
+                .iter()
+                .map(|module| format!("\"{}\"", module.replace('"', "\\\"")))
+                .collect::<Vec<_>>()
+                .join(","),
+            python_module_probe_error
+                .as_ref()
+                .map(|value| format!("\"{}\"", value.replace('"', "\\\"")))
+                .unwrap_or_else(|| "null".to_string()),
+            linux_libgl_json,
+            linux_libxkb_json,
             escaped
         );
         fs::write(&path, payload).map_err(|err| {
@@ -2528,7 +2826,9 @@ fn print_gui_readiness(strict: bool) -> Result<()> {
         .join("third_party")
         .join("mohawk_gui")
         .join("requirements.txt");
-    let python = std::env::var("GHOSTLINK_PYTHON").unwrap_or_else(|_| "python3".to_string());
+    let repo_root = crate_root.join("..").join("..");
+    let python =
+        resolve_python_executable_for_root(&repo_root, std::env::var("GHOSTLINK_PYTHON").ok());
 
     let mut issues: Vec<String> = Vec::new();
 
@@ -2723,6 +3023,9 @@ mod tests {
     use ghostlink_core::host::AccelerationMode;
     use ghostlink_core::host::RuntimeProfile;
     use ghostlink_core::protocol::NodeResources;
+    use std::io::Read;
+    use std::net::TcpListener;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     fn args(values: &[&str]) -> std::vec::IntoIter<String> {
         values
@@ -2897,6 +3200,151 @@ mod tests {
                 penalty: 1.1,
             }
         );
+    }
+
+    #[test]
+    fn tcp_autotune_default_candidates_include_base_and_neighbors() {
+        assert_eq!(
+            normalize_tcp_autotune_candidates(Vec::new(), 512),
+            vec![32, 64, 128, 256, 512, 1024]
+        );
+        assert_eq!(
+            normalize_tcp_autotune_candidates(Vec::new(), 96),
+            vec![32, 48, 64, 96, 128, 192, 256]
+        );
+    }
+
+    #[test]
+    fn tcp_autotune_explicit_candidates_stay_authoritative() {
+        assert_eq!(
+            normalize_tcp_autotune_candidates(vec![256, 64, 256, 0, 32], 512),
+            vec![32, 64, 256]
+        );
+    }
+
+    #[test]
+    fn python_resolution_prefers_repo_venv_then_falls_back() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("ghostlink-python-root-{unique}"));
+        let venv_bin = root.join(".venv").join("bin");
+        std::fs::create_dir_all(&venv_bin).unwrap();
+        let venv_python = venv_bin.join("python");
+        std::fs::write(&venv_python, "#!/bin/sh\n").unwrap();
+
+        let venv_resolved = resolve_python_for_root(&root, None);
+        assert_eq!(venv_resolved.executable, venv_python.display().to_string());
+        assert_eq!(venv_resolved.source, PythonResolutionSource::RepoVenv);
+        let configured = resolve_python_for_root(&root, Some("custom-python".to_string()));
+        assert_eq!(configured.executable, "custom-python");
+        assert_eq!(
+            configured.source,
+            PythonResolutionSource::ConfiguredOverride
+        );
+
+        std::fs::remove_file(&venv_python).unwrap();
+        let fallback = resolve_python_for_root(&root, None);
+        assert_eq!(fallback.executable, "python3");
+        assert_eq!(fallback.source, PythonResolutionSource::SystemFallback);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn gui_python_override_skips_generic_python_defaults() {
+        assert!(!should_apply_gui_python_override("python3"));
+        assert!(!should_apply_gui_python_override("python"));
+        assert!(!should_apply_gui_python_override("   "));
+        assert!(should_apply_gui_python_override(
+            "/workspaces/Ghostlink/.venv/bin/python"
+        ));
+        assert!(should_apply_gui_python_override("python3.12"));
+    }
+
+    #[test]
+    fn network_probe_rejects_invalid_target() {
+        let result = probe_network_target("not-a-target", Duration::from_millis(50));
+        assert!(matches!(result, NetworkProbeOutcome::InvalidTarget(_)));
+    }
+
+    #[test]
+    fn network_probe_accepts_hostname_and_reports_reachable_latency() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut buf = [0_u8; 1];
+            let _ = stream.read(&mut buf);
+        });
+
+        let result = probe_network_target(
+            &format!("localhost:{}", addr.port()),
+            Duration::from_millis(250),
+        );
+
+        assert!(matches!(
+            result,
+            NetworkProbeOutcome::Reachable { latency_ms, .. } if latency_ms >= 0.0
+        ));
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn doctor_json_includes_structured_network_probe_context() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut buf = [0_u8; 1];
+            let _ = stream.read(&mut buf);
+        });
+
+        let mut checks = Vec::new();
+        run_optional_network_probe(&format!("localhost:{}", addr.port()), &mut checks);
+
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("ghostlink-doctor-{unique}.json"));
+        write_doctor_report_json(&path, &checks, 1, 0, 0).unwrap();
+        let payload = std::fs::read_to_string(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+
+        assert!(payload.contains("\"name\":\"network-probe\""));
+        assert!(payload.contains("\"context\":{"));
+        assert!(payload.contains("\"target\":\"localhost:"));
+        assert!(payload.contains("\"reachable\":true"));
+        assert!(payload.contains("\"latency_ms\":"));
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn doctor_json_serializes_generic_check_context() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("ghostlink-doctor-generic-{unique}.json"));
+
+        let checks = vec![DoctorCheck {
+            area: "readiness",
+            name: "local-config",
+            status: DoctorStatus::Pass,
+            detail: "using ./ghostlink.toml".to_string(),
+            fix: None,
+            context_json: Some("{\"path\":\"./ghostlink.toml\",\"exists\":true}".to_string()),
+        }];
+
+        write_doctor_report_json(&path, &checks, 1, 0, 0).unwrap();
+        let payload = std::fs::read_to_string(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+
+        assert!(payload.contains("\"name\":\"local-config\""));
+        assert!(payload.contains("\"context\":{"));
+        assert!(payload.contains("\"path\":\"./ghostlink.toml\""));
+        assert!(payload.contains("\"exists\":true"));
     }
 
     #[test]

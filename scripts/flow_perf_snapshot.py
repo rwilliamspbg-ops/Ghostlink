@@ -92,7 +92,7 @@ def summarize(files: list[Path]) -> dict[str, float]:
     throughput = [float(v["throughput_tokens_per_sec"]) for v in values]
     p95 = [float(v["p95_token_latency_ms"]) for v in values]
     wall = [float(v["total_time_ms"]) for v in values]
-    return {
+    summary = {
         "runs": len(values),
         "throughput_avg": statistics.mean(throughput),
         "throughput_min": min(throughput),
@@ -102,6 +102,17 @@ def summarize(files: list[Path]) -> dict[str, float]:
         "p95_max": max(p95),
         "wall_avg": statistics.mean(wall),
     }
+
+    first = values[0] if values else {}
+    for key in (
+        "tcp_max_inflight_batches",
+        "tcp_reconnect_attempts",
+        "tcp_reconnect_backoff_ms",
+    ):
+        if key in first:
+            summary[key] = first[key]
+
+    return summary
 
 
 def main() -> int:

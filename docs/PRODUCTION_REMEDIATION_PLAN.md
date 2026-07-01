@@ -16,16 +16,29 @@ It is aligned to the current readiness checklist in `PRODUCTION_READINESS.md` an
 - Runtime smoke, SLO checks, perf drift, and stage-tail/canary guardrails are active.
 - GUI launch and diagnostics checks are active, but GUI packaging is optional.
 
+## Gap-to-Plan Coverage
+
+This matrix maps the current documented issues to the phases below so every known gap has an explicit owner lane.
+
+| Gap | Primary Phase | Planned Improvement | Exit Signal |
+| --- | --- | --- | --- |
+| Broad production LAN qualification is incomplete | Phase 2 | Real-LAN validation matrix, soak runs, failover validation | 7 consecutive daily runs without critical regression |
+| Real multi-node soak and fault tolerance coverage is limited | Phase 2 | Packet loss, restart, partition, and recovery scenarios | Published reproducible LAN/fault report |
+| Dynamic rebalancing is early-stage | Phase 3 | Runtime rebalance triggers with guarded rollout | Rebalance e2e suite passes |
+| Tensor/layer migration is incomplete | Phase 3 | Migration planner plus safe in-flight handoff | Migration e2e suite passes |
+| AF_XDP/eBPF needs real-hardware matrix validation | Phase 4 | Kernel/NIC compatibility matrix and fallback validation | Supported matrix is green in CI or nightly lab lane |
+| Health monitoring lacks active path probes | Phase 5 | ICMP/TCP probe module plus surfaced probe health | Operators can distinguish host vs path issues |
+| Full hardware probing depends on `nvidia-smi` / `lspci` | Phase 4 | Tool-independent probe fallback and degraded-mode reporting | Probe output is useful and deterministic with or without host tools |
+| Trusted-LAN security posture is insufficient for zero-trust use | Phase 1 | Optional mTLS and stricter authenticated discovery | Secure mode integration suite passes |
+| GUI still depends on Python/PyQt runtime packaging | Phase 6 | Produce reproducible standalone GUI bundle and install path | GUI bundle is published for release candidates |
+| GUI validation is partly manual/devcontainer-only | Phase 6 | Add headless GUI function-matrix lane to CI/nightly | GUI automation is green in CI or nightly lane |
+| Hardware diversity testing is narrow | Phase 2 + 4 | Add heterogeneous host matrix across CPU/GPU/NIC classes | Coverage report includes supported host classes |
+
 ## Phase 0: Gap Triage and Tracking (Week 1)
 
 ### Deliverables
 
-- Create a GitHub project board with tracks:
-  - Security
-  - Reliability
-  - Networking
-  - Observability
-  - Packaging
+- Create a GitHub project board with these tracks: Security, Reliability, Networking, Observability, GUI / UX, Packaging, Hardware Matrix.
 - Open one issue per work item in this plan and label by phase.
 - Add a weekly status template to PR descriptions for this branch family.
 
@@ -33,6 +46,7 @@ It is aligned to the current readiness checklist in `PRODUCTION_READINESS.md` an
 
 - Every item below exists as a tracked issue with owner and target sprint.
 - All production-risk issues are tagged `risk:prod`.
+- Initial issue draft pack exists in `docs/PRODUCTION_ISSUE_SEEDS.md` for the first cross-phase P0 work queue.
 
 ## Phase 1: Security Hardening (Weeks 1-3)
 
@@ -62,8 +76,10 @@ It is aligned to the current readiness checklist in `PRODUCTION_READINESS.md` an
 1. Real-LAN validation matrix:
    - Run 2-node, 4-node, and 8-node scenarios on real hardware.
    - Validate discovery convergence, steady-state throughput, and failover.
+   - Include heterogeneous host classes (CPU-only, mixed GPU sizes, and varied NIC/kernel combinations).
 2. Fault injection harness:
    - Add packet loss, node restart, and temporary partition scenarios.
+   - Add long-duration soak scenarios with repeated join/leave cycles.
 3. Recovery semantics:
    - Define and implement bounded retry/backoff + rejoin behavior.
 
@@ -72,6 +88,7 @@ It is aligned to the current readiness checklist in `PRODUCTION_READINESS.md` an
 - Publish reproducible LAN test report in CI artifacts.
 - Meet SLO thresholds for failover and recovery time under defined fault cases.
 - No critical regressions across 7 consecutive daily runs.
+- Coverage includes at least one heterogeneous hardware lane beyond the primary developer setup.
 
 ## Phase 3: Feature Completeness (Weeks 4-7)
 
@@ -100,11 +117,15 @@ It is aligned to the current readiness checklist in `PRODUCTION_READINESS.md` an
    - Add integration tests for AF_XDP fallback to standard transport.
 3. Linux packaging docs:
    - Provide minimal host requirements and preflight checker output.
+4. Tool-independent hardware probing:
+   - Normalize probe output when `nvidia-smi`, `lspci`, or similar tools are absent.
+   - Emit explicit degraded-mode reasons instead of silently reducing probe depth.
 
 ### Phase 4 Exit Criteria
 
 - AF_XDP mode passes supported matrix in CI or nightly hardware lane.
 - Fallback behavior is deterministic and tested.
+- Hardware probe reports remain actionable on minimally provisioned hosts.
 
 ## Phase 5: Monitoring and Operations (Weeks 6-9)
 
@@ -132,11 +153,15 @@ It is aligned to the current readiness checklist in `PRODUCTION_READINESS.md` an
    - Add reproducible install script and checksum verification.
 3. Release checklist:
    - Tie `PRODUCTION_READINESS.md` gates to release tag process.
+4. GUI packaging and automation:
+   - Add a headless GUI function-matrix lane to CI or nightly runners.
+   - Publish a reproducible standalone GUI bundle for supported platforms.
 
 ### Phase 6 Exit Criteria
 
 - Signed artifacts and checksums are published for each release candidate.
 - Release process is documented and repeatable by a second maintainer.
+- GUI bundle and GUI automation lane are green for supported release targets.
 
 ## Metrics and Governance
 
@@ -146,6 +171,8 @@ Track these weekly:
 - Reliability: pass rate of LAN/fault-injection matrix.
 - Performance: drift ratio vs baseline in deterministic/stress profiles.
 - Operations: mean time to detect and classify node/network faults.
+- Packaging: GUI bundle success rate and install verification pass rate.
+- Hardware coverage: count of distinct validated host classes and NIC/kernel combinations.
 
 ## Suggested Order of Execution
 
@@ -165,3 +192,4 @@ Ghost-Link is considered production-ready when:
 - AF_XDP behavior is documented, tested, and safely fallbacks.
 - Monitoring includes active network probes with actionable alerts.
 - Release artifacts are signed and repeatably published.
+- GUI packaging and automated GUI validation are part of the release path.

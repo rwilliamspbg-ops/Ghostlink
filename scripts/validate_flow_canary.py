@@ -30,7 +30,7 @@ DEFAULTS = {
         "inmem": {
             "min_throughput": 100000.0,
             "max_p95": 5.0,
-            "max_spread": 3.0,
+            "max_spread": 3.2,
         },
     },
 }

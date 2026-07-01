@@ -58,7 +58,20 @@ The `ghost-link` CLI provides powerful primitives for cluster management and per
 
 Ghostlink can be configured via a `ghostlink.toml` file or environment variables.
 
+Doctor JSON checks now include an optional `context` object for machine-readable fields.
+For example, `network-probe` can emit `target`, `resolved`, `reachable`, `latency_ms`, and `timeout_ms`.
+When `GHOSTLINK_PYTHON` is unset, GUI and doctor commands prefer the repository `.venv/bin/python`
+before falling back to `python3`.
 
+Optionally test connectivity to a target endpoint:
+
+```bash
+# Override the GUI/doctor Python interpreter only when you need something other than the repo .venv
+GHOSTLINK_PYTHON=/usr/bin/python3 cargo run -p ghost-link -- gui-check --strict
+
+# Include optional lightweight connectivity probe
+cargo run -p ghost-link -- doctor --network-probe --network-target 127.0.0.1:8003
+```
 
 ### Environment Variables
 

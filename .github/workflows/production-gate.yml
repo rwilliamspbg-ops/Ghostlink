@@ -68,12 +68,70 @@ jobs:
       - name: GUI API Contract Check
         run: python3 scripts/validate_gui_api_contract.py
 
+      - name: Doctor JSON (Strict)
+        run: |
+          cargo run -p ghost-link -- doctor --strict --json ./tmp/doctor-report.json
+
+      - name: Validate Doctor JSON Context
+        run: |
+          python3 scripts/validate_doctor_context.py \
+            --report ./tmp/doctor-report.json \
+            --allow-headless \
+            --allow-missing-gui-modules
+
+      - name: Summarize Doctor JSON
+        run: |
+          python3 scripts/summarize_doctor_report.py \
+            --report ./tmp/doctor-report.json \
+            --output ./tmp/doctor-report-summary.md
+
       - name: XDP/eBPF Preflight Signals
         run: |
           python3 scripts/xdp_preflight_check.py --output ./tmp/xdp-preflight.json
 
       - name: Create tmp directory
         run: mkdir -p ./tmp
+
+      - name: GUI Diagnostics JSON
+        run: |
+          GHOSTLINK_GUI_DIAG_JSON=./tmp/gui-diagnostics.json \
+          cargo run -p ghost-link -- gui-diagnose
+
+      - name: Validate GUI Diagnostics JSON
+        run: |
+          python3 scripts/validate_gui_diagnostics.py \
+            --report ./tmp/gui-diagnostics.json \
+            --allow-headless \
+            --allow-missing-python-modules \
+            --require-python-source
+
+      - name: Summarize GUI Diagnostics
+        run: |
+          python3 scripts/summarize_gui_diagnostics.py \
+            --report ./tmp/gui-diagnostics.json \
+            --output ./tmp/gui-diagnostics-summary.md
+
+      - name: GUI Dashboard Smoke (Headless)
+        run: |
+          QT_QPA_PLATFORM=offscreen xvfb-run -a ./.venv/bin/python third_party/mohawk_gui/test_dashboard.py | tee ./tmp/gui-dashboard-smoke.txt
+
+      - name: Summarize GUI Dashboard Smoke
+        run: |
+          python3 scripts/summarize_gui_dashboard_smoke.py \
+            --input ./tmp/gui-dashboard-smoke.txt \
+            --output ./tmp/gui-dashboard-smoke-summary.md
+
+      - name: Publish GUI diagnostics summary to job summary
+        run: |
+          {
+            echo "## GUI Diagnostics Summary"
+            echo
+            cat ./tmp/gui-diagnostics-summary.md
+            echo
+            echo "## GUI Dashboard Smoke"
+            echo
+            cat ./tmp/gui-dashboard-smoke-summary.md
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Runtime Smoke (TCP)
         env:
@@ -107,6 +165,12 @@ jobs:
             --transport inmem \
             --profile production
 
+      - name: Validate Runtime Metrics Schema Contract
+        run: |
+          python3 scripts/validate_flow_metrics_schema_contract.py \
+            --tcp-file ./tmp/flow-metrics-tcp.json \
+            --inmem-file ./tmp/flow-metrics-inmem.json
+
       - name: Fault Matrix (Quick)
         env:
           GHOSTLINK_TCP_AUTH_TOKEN: "ci-production-gate-token"
@@ -138,6 +202,12 @@ jobs:
             --max-failure-ratio 0.0 \
             --output ./tmp/active-probe.json
 
+      - name: Summarize Active Network Probe
+        run: |
+          python3 scripts/summarize_active_probe.py \
+            --report ./tmp/active-probe.json \
+            --output ./tmp/doctor-probe-summary.md
+
       - name: Upload Runtime Metrics Artifacts
         uses: actions/upload-artifact@v7
         with:
@@ -146,7 +216,14 @@ jobs:
             ./tmp/flow-metrics-*.json
             ./tmp/fault_matrix_ci/
             ./tmp/active-probe.json
+            ./tmp/gui-diagnostics.json
+            ./tmp/gui-diagnostics-summary.md
+            ./tmp/gui-dashboard-smoke.txt
+            ./tmp/gui-dashboard-smoke-summary.md
             ./tmp/xdp-preflight.json
+            ./tmp/doctor-report.json
+            ./tmp/doctor-report-summary.md
+            ./tmp/doctor-probe-summary.md
           retention-days: 14
 
       - name: Perf Snapshot (Deterministic)
@@ -218,6 +295,42 @@ jobs:
             --summary ./tmp/perf_snapshot_stress_ci/summary.json \
             --profile stress
 
+      - name: Summarize Production Gate Artifacts
+        run: |
+          python3 scripts/summarize_production_gate.py \
+            --doctor-summary ./tmp/doctor-report-summary.md \
+            --doctor-probe-summary ./tmp/doctor-probe-summary.md \
+            --gui-summary ./tmp/gui-diagnostics-summary.md \
+            --gui-smoke-summary ./tmp/gui-dashboard-smoke-summary.md \
+            --active-probe ./tmp/active-probe.json \
+            --xdp-preflight ./tmp/xdp-preflight.json \
+            --perf-deterministic ./tmp/perf_snapshot_ci/summary.json \
+            --perf-stress ./tmp/perf_snapshot_stress_ci/summary.json \
+            --fail-on-fail \
+            --verdict-json ./tmp/production-gate-verdict.json \
+            --output ./tmp/production-gate-summary.md
+
+      - name: Validate Production Gate Verdict Schema
+        run: |
+          python3 scripts/validate_production_gate_verdict.py \
+            --file ./tmp/production-gate-verdict.json
+
+      - name: Smoke Test Verdict Validator Fixtures
+        run: |
+          bash scripts/smoke_validate_production_gate_verdict.sh
+
+      - name: Publish production gate summary to job summary
+        run: |
+          {
+            echo "## Gate Verdict"
+            echo
+            awk '/^## Gate Verdict/{flag=1; next} /^## Operational Snapshot/{flag=0} flag' ./tmp/production-gate-summary.md
+            echo
+            echo "## Production Gate Summary"
+            echo
+            cat ./tmp/production-gate-summary.md
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Upload Perf Snapshot Artifacts
         uses: actions/upload-artifact@v7
         with:
@@ -225,4 +338,6 @@ jobs:
           path: |
             ./tmp/perf_snapshot_ci/
             ./tmp/perf_snapshot_stress_ci/
+            ./tmp/production-gate-summary.md
+            ./tmp/production-gate-verdict.json
           retention-days: 14

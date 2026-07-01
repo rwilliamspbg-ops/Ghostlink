@@ -14,6 +14,31 @@ body:
       required: true
 
   - type: input
+    id: target_sprint
+    attributes:
+      label: Target sprint
+      description: Which sprint or milestone is this planned for?
+      placeholder: "Sprint 32 / RC-1"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: track
+    attributes:
+      label: Track
+      description: Which Phase 0 board track should own this work?
+      options:
+        - Security
+        - Reliability
+        - Networking
+        - Observability
+        - GUI / UX
+        - Packaging
+        - Hardware Matrix
+    validations:
+      required: true
+
+  - type: input
     id: owner
     attributes:
       label: Owner
@@ -39,6 +64,16 @@ body:
       required: true
 
   - type: textarea
+    id: dependencies
+    attributes:
+      label: Dependencies / prerequisites
+      description: What must land first, or what hardware/runners are required?
+      placeholder: |
+        - Depends on:
+        - Requires:
+        - External blockers:
+
+  - type: textarea
     id: exit
     attributes:
       label: Exit criteria
@@ -49,6 +84,16 @@ body:
         - [ ] Docs updated
     validations:
       required: true
+
+  - type: textarea
+    id: validation
+    attributes:
+      label: Validation and artifacts
+      description: Which commands, dashboards, or CI artifacts prove the change?
+      placeholder: |
+        - Commands:
+        - CI workflows:
+        - Artifact/report links:
 
   - type: checkboxes
     id: risk

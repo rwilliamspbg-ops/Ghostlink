@@ -1,0 +1,17 @@
+{
+  "endpoints": [
+    "/api/inference/chat",
+    "/api/metrics",
+    "/api/models",
+    "/api/models/download",
+    "/api/models/load",
+    "/api/queue",
+    "/api/security/jwt/refresh",
+    "/api/security/pqc/enable",
+    "/api/sessions",
+    "/api/sessions/{session_id}/cancel",
+    "/api/workers",
+    "/api/workers/add",
+    "/api/workers/connect"
+  ]
+}

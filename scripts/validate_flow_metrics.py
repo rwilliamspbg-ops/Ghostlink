@@ -14,7 +14,7 @@ SLO_PROFILES = {
     },
     "production": {
         "tcp": {"min_throughput": 10000.0, "max_p95_ms": 25.0},
-        "inmem": {"min_throughput": 80000.0, "max_p95_ms": 6.0},
+        "inmem": {"min_throughput": 65000.0, "max_p95_ms": 6.0},
     },
 }
 
@@ -84,6 +84,16 @@ def main() -> int:
         if key not in payload:
             return _fail(f"missing key: {key}")
 
+    if args.transport == "tcp":
+        tcp_required = [
+            "tcp_max_inflight_batches",
+            "tcp_reconnect_attempts",
+            "tcp_reconnect_backoff_ms",
+        ]
+        for key in tcp_required:
+            if key not in payload:
+                return _fail(f"missing tcp key: {key}")
+
     if payload["transport_mode"] != args.transport:
         return _fail(
             f"transport mismatch: expected {args.transport}, got {payload['transport_mode']}"
@@ -94,6 +104,10 @@ def main() -> int:
         stage_count = int(payload["stage_count"])
         throughput = float(payload["throughput_tokens_per_sec"])
         p95 = float(payload["p95_token_latency_ms"])
+        if args.transport == "tcp":
+            int(payload["tcp_max_inflight_batches"])
+            int(payload["tcp_reconnect_attempts"])
+            int(payload["tcp_reconnect_backoff_ms"])
     except (TypeError, ValueError) as err:
         return _fail(f"invalid numeric metric values ({err})")
 

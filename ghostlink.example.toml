@@ -33,4 +33,6 @@ reconnect_backoff_ms = 10
 auth_token = "replace-with-secret"
 
 [gui]
-python = "python3"
+# Optional override. Leave unset to prefer the repo `.venv/bin/python`, then
+# fall back to `python3` when no workspace virtualenv is present.
+# python = "/path/to/python"
