@@ -27,7 +27,7 @@ jobs:
     name: Docs Consistency
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v4
 
       - name: Verify required docs exist
         shell: bash

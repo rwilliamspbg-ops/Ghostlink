@@ -45,7 +45,7 @@ The `ghost-link` CLI provides powerful primitives for cluster management and per
 - `serve` - Start the OpenAI-compatible API server.
 - `join [id]` - Broadcast discovery frames to join a local cluster.
 - `listen [id]` - Listen for and respond to discovery requests from peers.
-- `flow` - Run a full 30B model planning and execution flow (simulated transport).
+- `flow` - Run a full 30B model planning and execution flow over real runtime transport (`tcp` or `inmem`).
 - `doctor` - Run unified troubleshooting checks for environment and network.
 - `dashboard` - Display the live ASCII cluster status dashboard.
 - `cluster-start` - Spin up a multi-node local cluster for validation.
@@ -81,7 +81,7 @@ cargo run -p ghost-link -- doctor --network-probe --network-target 127.0.0.1:800
 | `GHOSTLINK_TCP_AUTH_TOKEN` | Shared secret for transport authentication | - |
 | `GHOSTLINK_DISCOVERY_AUTH_TOKEN` | Shared secret for UDP discovery authentication | - |
 | `GHOSTLINK_TCP_MAX_INFLIGHT` | Max concurrent batches in TCP bridge | `512` |
-| `GHOSTLINK_PYTHON` | Path to Python executable for GUI | `python3` |
+| `GHOSTLINK_PYTHON` | Path override for GUI/doctor Python executable (when unset, prefers repo `.venv/bin/python` then `python3`) | `repo .venv/bin/python` if present, else `python3` |
 | `GHOSTLINK_DISTRIBUTED_SMOKE` | Enable distributed runtime validation in `flow` | `false` |
 
 ## 📚 Documentation
