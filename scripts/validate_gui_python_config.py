@@ -18,16 +18,36 @@ except ModuleNotFoundError:  # pragma: no cover
 
 
 ROOT = Path(__file__).resolve().parents[1]
-CONFIG_FILES = [ROOT / "ghostlink.toml", ROOT / "ghostlink.example.toml"]
+REQUIRED_CONFIG_FILES = [ROOT / "ghostlink.example.toml"]
+OPTIONAL_CONFIG_FILES = [ROOT / "ghostlink.toml"]
 DISALLOWED = {"python", "python3"}
 
 
 def main() -> int:
     failures: list[str] = []
 
-    for path in CONFIG_FILES:
+    for path in REQUIRED_CONFIG_FILES:
         if not path.exists():
             failures.append(f"missing config file: {path}")
+            continue
+
+        payload = tomllib.loads(path.read_text(encoding="utf-8"))
+        gui = payload.get("gui")
+        if not isinstance(gui, dict):
+            continue
+
+        python_value = gui.get("python")
+        if not isinstance(python_value, str):
+            continue
+
+        normalized = python_value.strip()
+        if normalized in DISALLOWED:
+            failures.append(
+                f"{path.name} sets gui.python={normalized!r}; leave it unset to prefer the repo .venv or set an explicit custom interpreter path"
+            )
+
+    for path in OPTIONAL_CONFIG_FILES:
+        if not path.exists():
             continue
 
         payload = tomllib.loads(path.read_text(encoding="utf-8"))
