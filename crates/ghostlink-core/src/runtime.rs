@@ -163,6 +163,20 @@ fn run_stage_compute(payload: &mut [f32], stage: &StagePlacement) {
     }
 }
 
+fn avg_and_p95_token_latency_ms(token_latencies: &mut Vec<f32>) -> (f32, f32) {
+    if token_latencies.is_empty() {
+        return (0.0, 0.0);
+    }
+
+    let avg_token_latency_ms =
+        token_latencies.iter().copied().sum::<f32>() / token_latencies.len() as f32;
+    let p95_idx = ((token_latencies.len().saturating_sub(1)) as f32 * 0.95).round() as usize;
+    token_latencies.select_nth_unstable_by(p95_idx, |a, b| {
+        a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)
+    });
+    (avg_token_latency_ms, token_latencies[p95_idx])
+}
+
 /// Per-stage runtime telemetry captured from real in-process execution.
 #[derive(Clone, Debug, PartialEq)]
 pub struct StageExecutionStats {
@@ -473,7 +487,7 @@ pub fn execute_pipeline_with_rebalance_and_measured(
     // Drop entry ring to signal completion to stage threads
     drop(entry_ring);
 
-    let token_latencies = latencies_handle.join().unwrap_or_default();
+    let mut token_latencies = latencies_handle.join().unwrap_or_default();
     let total_time_ms = exec_start.elapsed().as_secs_f32() * 1000.0;
 
     let mut stage_stats = Vec::with_capacity(stage_count);
@@ -511,16 +525,8 @@ pub fn execute_pipeline_with_rebalance_and_measured(
         0.0
     };
 
-    let avg_token_latency_ms = if token_latencies.is_empty() {
-        0.0
-    } else {
-        token_latencies.iter().sum::<f32>() / token_latencies.len() as f32
-    };
-
-    let mut sorted = token_latencies.clone();
-    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    let p95_idx = ((sorted.len() - 1) as f32 * 0.95).round() as usize;
-    let p95_token_latency_ms = sorted.get(p95_idx).copied().unwrap_or(0.0);
+    let (avg_token_latency_ms, p95_token_latency_ms) =
+        avg_and_p95_token_latency_ms(&mut token_latencies);
 
     ExecutionResult {
         token_count,
@@ -630,7 +636,6 @@ fn read_transport_batch(
     reader: &mut impl Read,
     expected_source_stage: usize,
     token: Option<&str>,
-    payload_buf: &mut Vec<f32>,
 ) -> io::Result<Option<TransportBatch>> {
     let mut source_stage_bytes = [0u8; 2];
     match reader.read_exact(&mut source_stage_bytes) {
@@ -664,13 +669,13 @@ fn read_transport_batch(
     if tag_present {
         reader.read_exact(&mut received_tag)?;
     }
-    payload_buf.resize(payload_len, 0.0);
+    let mut payload = vec![0.0_f32; payload_len];
 
     if cfg!(target_endian = "little") {
-        // SAFETY: payload_buf points to initialized contiguous f32 memory; we reinterpret as bytes for I/O.
+        // SAFETY: payload points to initialized contiguous f32 memory; we reinterpret as bytes for I/O.
         let payload_bytes = unsafe {
             slice::from_raw_parts_mut(
-                payload_buf.as_mut_ptr() as *mut u8,
+                payload.as_mut_ptr() as *mut u8,
                 payload_len * std::mem::size_of::<f32>(),
             )
         };
@@ -679,7 +684,7 @@ fn read_transport_batch(
         let mut payload_bytes = vec![0u8; payload_len * 4];
         reader.read_exact(&mut payload_bytes)?;
         for (i, chunk) in payload_bytes.chunks_exact(4).enumerate() {
-            payload_buf[i] = f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+            payload[i] = f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
         }
     };
 
@@ -693,7 +698,7 @@ fn read_transport_batch(
                 "transport authentication required but tag missing",
             ));
         }
-        let expected_tag = auth_tag(source_stage, batch_id, tokens_in_batch, payload_buf, t);
+        let expected_tag = auth_tag(source_stage, batch_id, tokens_in_batch, &payload, t);
         if received_tag != expected_tag {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -705,7 +710,7 @@ fn read_transport_batch(
     Ok(Some(TransportBatch {
         batch_id,
         tokens_in_batch,
-        payload: payload_buf.clone(),
+        payload,
     }))
 }
 
@@ -728,6 +733,7 @@ pub fn spawn_tcp_bridge(
             for attempt in 0..attempts {
                 match TcpStream::connect_timeout(&connect_addr, Duration::from_secs(1)) {
                     Ok(stream) => {
+                        let _ = stream.set_nodelay(true);
                         connected = Some(stream);
                         break;
                     }
@@ -762,7 +768,10 @@ pub fn spawn_tcp_bridge(
         };
 
         let (server_stream, _) = match listener.accept() {
-            Ok(parts) => parts,
+            Ok((stream, addr)) => {
+                let _ = stream.set_nodelay(true);
+                (stream, addr)
+            }
             Err(_) => {
                 for batch in input_rx {
                     if output_tx.send(batch).is_err() {
@@ -805,7 +814,6 @@ pub fn spawn_tcp_bridge(
         let mut reader = BufReader::with_capacity(64 * 1024, server_stream);
         let mut read_batches = 0usize;
         let mut total_read_ms = 0.0_f32;
-        let mut payload_buf = Vec::with_capacity(16 * 1024);
 
         loop {
             let read_start = Instant::now();
@@ -813,7 +821,6 @@ pub fn spawn_tcp_bridge(
                 &mut reader,
                 source_stage,
                 reader_auth_token.as_deref(),
-                &mut payload_buf,
             ) {
                 Ok(Some(batch)) => {
                     total_read_ms += read_start.elapsed().as_secs_f32() * 1000.0;
@@ -1002,9 +1009,11 @@ pub fn execute_pipeline_distributed(
         let batch_start_token = batch_idx * micro_batch;
         let tokens_in_batch = (token_count - batch_start_token).min(micro_batch);
         let payload_len = (tokens_in_batch.max(1) * 16).max(32);
-        let payload = (0..payload_len)
-            .map(|idx| (batch_idx as f32 * 0.01) + (idx as f32 * 0.0001))
-            .collect();
+        let mut payload = vec![0.0_f32; payload_len];
+        let batch_term = batch_idx as f32 * 0.01;
+        for (idx, value) in payload.iter_mut().enumerate() {
+            *value = batch_term + (idx as f32 * 0.0001);
+        }
 
         *batch_started_slot = Instant::now();
         let _ = entry_tx.send(TransportBatch {
@@ -1091,16 +1100,8 @@ pub fn execute_pipeline_distributed(
         0.0
     };
 
-    let avg_token_latency_ms = if token_latencies.is_empty() {
-        0.0
-    } else {
-        token_latencies.iter().sum::<f32>() / token_latencies.len() as f32
-    };
-
-    let mut sorted = token_latencies.clone();
-    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    let p95_idx = ((sorted.len().saturating_sub(1)) as f32 * 0.95).round() as usize;
-    let p95_token_latency_ms = sorted.get(p95_idx).copied().unwrap_or(0.0);
+    let (avg_token_latency_ms, p95_token_latency_ms) =
+        avg_and_p95_token_latency_ms(&mut token_latencies);
 
     Ok(ExecutionResult {
         token_count,
@@ -1255,9 +1256,11 @@ pub fn execute_pipeline_tcp_loopback_with_config(
         let batch_start_token = batch_idx * micro_batch;
         let tokens_in_batch = (token_count - batch_start_token).min(micro_batch);
         let payload_len = (tokens_in_batch.max(1) * 16).max(32);
-        let payload = (0..payload_len)
-            .map(|idx| (batch_idx as f32 * 0.01) + (idx as f32 * 0.0001))
-            .collect();
+        let mut payload = vec![0.0_f32; payload_len];
+        let batch_term = batch_idx as f32 * 0.01;
+        for (idx, value) in payload.iter_mut().enumerate() {
+            *value = batch_term + (idx as f32 * 0.0001);
+        }
 
         *batch_started_slot = Instant::now();
         if entry_tx
@@ -1332,16 +1335,8 @@ pub fn execute_pipeline_tcp_loopback_with_config(
         0.0
     };
 
-    let avg_token_latency_ms = if token_latencies.is_empty() {
-        0.0
-    } else {
-        token_latencies.iter().sum::<f32>() / token_latencies.len() as f32
-    };
-
-    let mut sorted = token_latencies.clone();
-    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    let p95_idx = ((sorted.len().saturating_sub(1)) as f32 * 0.95).round() as usize;
-    let p95_token_latency_ms = sorted.get(p95_idx).copied().unwrap_or(0.0);
+    let (avg_token_latency_ms, p95_token_latency_ms) =
+        avg_and_p95_token_latency_ms(&mut token_latencies);
 
     Ok(ExecutionResult {
         token_count,
@@ -1577,8 +1572,7 @@ mod tests {
             .expect("encode frame");
 
         let mut cursor = Cursor::new(encoded);
-        let mut payload_buf = Vec::new();
-        let err = read_transport_batch(&mut cursor, 0, Some("token-b"), &mut payload_buf)
+        let err = read_transport_batch(&mut cursor, 0, Some("token-b"))
             .expect_err("mismatched token should fail");
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
     }
@@ -1596,8 +1590,7 @@ mod tests {
             .expect("encode frame");
 
         let mut cursor = Cursor::new(encoded);
-        let mut payload_buf = Vec::new();
-        let err = read_transport_batch(&mut cursor, 0, Some("token"), &mut payload_buf)
+        let err = read_transport_batch(&mut cursor, 0, Some("token"))
             .expect_err("source-stage mismatch should fail");
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
     }
