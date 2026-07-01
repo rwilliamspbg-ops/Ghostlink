@@ -229,7 +229,10 @@ jobs:
           CODECOV_TOKEN: ""
         with:
           files: ./coverage/lcov.info
+          disable_search: true
+          slug: rwilliamspbg-ops/Ghostlink
           use_oidc: true
+          version: v11.2.8
           fail_ci_if_error: true
           verbose: true
 
