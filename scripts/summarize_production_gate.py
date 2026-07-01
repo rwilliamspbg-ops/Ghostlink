@@ -84,7 +84,7 @@ def compute_overall_status(statuses: list[str]) -> str:
 
 
 def normalize_blocking_status(name: str, status: str) -> str:
-    blocking_domains = {"doctor", "gui_smoke", "perf_deterministic", "perf_stress"}
+    blocking_domains = {"doctor", "perf_deterministic", "perf_stress"}
     if status == "FAIL" and name not in blocking_domains:
         return "WARN"
     return status

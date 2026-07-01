@@ -45,10 +45,6 @@ def test_ui_components():
     try:
         from main_window import MohawkGUI
         
-        # Create QApplication (needed for GUI testing)
-        from PyQt6.QtWidgets import QApplication
-        app = QApplication(sys.argv)
-        
         # Test MohawkGUI initialization
         print("✅ Creating MohawkGUI instance...")
         gui = MohawkGUI()
@@ -94,8 +90,6 @@ def test_dashboard_features():
     try:
         from main_window import MohawkGUI
 
-        from PyQt6.QtWidgets import QApplication
-        app = QApplication(sys.argv)
         gui = MohawkGUI()
 
         features = {
@@ -136,7 +130,11 @@ def main():
     print("\n" + "=" * 60)
     print("🦅 Mohawk Inference Engine Dashboard - Test Suite")
     print("=" * 60 + "\n")
-    
+
+    # Create a single QApplication for the entire test suite
+    from PyQt6.QtWidgets import QApplication
+    app = QApplication(sys.argv)  # noqa: F841 (kept alive for the duration of tests)
+
     results = []
     
     # Test imports
