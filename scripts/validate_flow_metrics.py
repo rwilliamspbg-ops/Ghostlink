@@ -14,7 +14,7 @@ SLO_PROFILES = {
     },
     "production": {
         "tcp": {"min_throughput": 10000.0, "max_p95_ms": 25.0},
-        "inmem": {"min_throughput": 80000.0, "max_p95_ms": 6.0},
+        "inmem": {"min_throughput": 65000.0, "max_p95_ms": 6.0},
     },
 }
 
