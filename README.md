@@ -31,10 +31,10 @@ Measured in a standard development environment:
 
 | Transport Mode | Avg Throughput (tokens/s) | Avg P95 Latency (ms) |
 | :--- | :---: | :---: |
-| **In-Memory (Zero-Copy)** | **118,840.29** | **1.83** |
-| **TCP Loopback (Optimized)** | **67,794.12** | **3.65** |
+| **In-Memory (Zero-Copy)** | **235,563.63** | **1.26** |
+| **TCP Loopback (Optimized)** | **96,917.48** | **3.25** |
 
-*Benchmarks conducted on 2024-11-20 using Mistral-7B baseline.*
+*Benchmarks from local gate-profile runs on 2026-07-01 (`flow` with 256 tokens, micro-batch 4).* 
 
 ## 🛠 Command Line Interface
 
@@ -83,6 +83,11 @@ cargo run -p ghost-link -- doctor --network-probe --network-target 127.0.0.1:800
 | `GHOSTLINK_TCP_MAX_INFLIGHT` | Max concurrent batches in TCP bridge | `512` |
 | `GHOSTLINK_PYTHON` | Path override for GUI/doctor Python executable (when unset, prefers repo `.venv/bin/python` then `python3`) | `repo .venv/bin/python` if present, else `python3` |
 | `GHOSTLINK_DISTRIBUTED_SMOKE` | Enable distributed runtime validation in `flow` | `false` |
+
+## ⚠️ Runtime Notes
+
+- `crates/ghostlink-core/src/xdp.rs` is currently experimental scaffolding and does not provide a working AF_XDP data path in this build.
+- Discovery authentication is HMAC-SHA256 by default. Enabling `GHOSTLINK_DISCOVERY_ALLOW_LEGACY_CRC32` switches discovery fallback parsing to a compatibility checksum mode that is not cryptographic authentication.
 
 ## 📚 Documentation
 

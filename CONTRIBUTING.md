@@ -21,6 +21,40 @@ cargo fmt
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 python3 scripts/validate_gui_api_contract.py
+python3 scripts/validate_flow_canary.py --summary ./tmp/perf_snapshot/summary.json --profile production
+```
+
+## Pre-Push Checklist (Required)
+
+Run these before pushing branch updates:
+
+```bash
+# 1) Rust correctness and style
+cargo fmt --all --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+
+# 2) Core Python contract checks
+python3 scripts/validate_gui_api_contract.py
+python3 scripts/validate_flow_metrics_schema_contract.py --tcp-file ./tmp/flow-metrics-tcp.json --inmem-file ./tmp/flow-metrics-inmem.json
+python3 scripts/validate_production_gate_verdict.py --file ./tmp/production-gate-verdict.json
+
+# 3) Security and dependency checks
+cargo audit
+python3 -m pip install --upgrade pip-audit
+pip-audit -r third_party/mohawk_gui/requirements-runtime.txt
+
+# 4) Workflow consistency sanity checks
+python3 scripts/check_license_consistency.sh
+```
+
+When perf/runtime code changes, also run gate-like performance checks and include the artifact paths and canary results in the PR body:
+
+```bash
+python3 scripts/flow_perf_snapshot.py --release --runs 3 --warmup-runs 1 --modes tcp inmem --output-dir ./tmp/perf_snapshot_gate
+python3 scripts/flow_perf_snapshot.py --release --runs 4 --warmup-runs 1 --modes tcp inmem --exec-tokens 512 --micro-batch 8 --output-dir ./tmp/perf_snapshot_stress_gate
+python3 scripts/validate_flow_canary.py --summary ./tmp/perf_snapshot_gate/summary.json --profile production
+python3 scripts/validate_flow_canary.py --summary ./tmp/perf_snapshot_stress_gate/summary.json --profile stress
 ```
 
 If you touch integration behavior, also run:

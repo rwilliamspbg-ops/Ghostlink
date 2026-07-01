@@ -121,6 +121,8 @@ impl<T> SpscRingBuffer<T> {
             self.tail.store(next_tail, Ordering::Release);
         }
 
+        self.empty_count.fetch_sub(1, Ordering::Relaxed);
+
         Ok(())
     }
 
@@ -150,6 +152,8 @@ impl<T> SpscRingBuffer<T> {
 
             val
         };
+
+        self.empty_count.fetch_add(1, Ordering::Relaxed);
 
         Some(value)
     }

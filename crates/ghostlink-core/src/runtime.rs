@@ -169,7 +169,7 @@ fn run_stage_compute(payload: &mut [f32], stage: &StagePlacement) {
     }
 }
 
-fn avg_and_p95_token_latency_ms(token_latencies: &mut Vec<f32>) -> (f32, f32) {
+fn avg_and_p95_token_latency_ms(token_latencies: &mut [f32]) -> (f32, f32) {
     if token_latencies.is_empty() {
         return (0.0, 0.0);
     }
@@ -572,6 +572,27 @@ fn auth_tag(
     mac.finalize().into_bytes().into()
 }
 
+fn verify_auth_tag(
+    source_stage: usize,
+    batch_id: usize,
+    tokens_in_batch: usize,
+    payload: &[f32],
+    token: &str,
+    received_tag: &[u8],
+) -> io::Result<()> {
+    let mut mac = Hmac::<Sha256>::new_from_slice(token.as_bytes())
+        .expect("HMAC key setup for transport auth failed");
+    mac.update(&(source_stage as u32).to_le_bytes());
+    mac.update(&(batch_id as u64).to_le_bytes());
+    mac.update(&(tokens_in_batch as u32).to_le_bytes());
+    mac.update(&(payload.len() as u32).to_le_bytes());
+    let payload_bytes = payload_as_le_bytes(payload);
+    mac.update(payload_bytes.as_ref());
+    mac.verify_slice(received_tag).map_err(|_| {
+        io::Error::new(io::ErrorKind::InvalidData, "transport auth tag mismatch")
+    })
+}
+
 fn payload_as_le_bytes(payload: &[f32]) -> std::borrow::Cow<'_, [u8]> {
     if cfg!(target_endian = "little") {
         // SAFETY: f32 is POD; casting [f32] to its contiguous byte representation is valid.
@@ -704,13 +725,14 @@ fn read_transport_batch(
                 "transport authentication required but tag missing",
             ));
         }
-        let expected_tag = auth_tag(source_stage, batch_id, tokens_in_batch, &payload, t);
-        if received_tag != expected_tag {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "transport auth tag mismatch",
-            ));
-        }
+        verify_auth_tag(
+            source_stage,
+            batch_id,
+            tokens_in_batch,
+            &payload,
+            t,
+            &received_tag,
+        )?;
     }
 
     Ok(Some(TransportBatch {

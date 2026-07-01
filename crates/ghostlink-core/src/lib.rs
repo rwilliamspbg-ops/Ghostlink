@@ -8,7 +8,7 @@
 //! - Binary protocol with CRC32 checksums for frame integrity
 //! - Thread-safe cluster state with metrics collection
 //! - Greedy layer assignment with fault tolerance
-//! - AF_XDP/eBPF socket integration (Linux)
+//! - Experimental XDP scaffolding (currently unavailable in this build)
 //! - Network health monitoring
 //! - Load balancing and tensor distribution
 //!
@@ -22,7 +22,7 @@
 //! │   ├── planning.rs      # Layer assignment + fault tolerance
 //! │   ├── health.rs        # Network health monitoring
 //! │   ├── load_balance.rs  # Tensor distribution
-//! │   ├── xdp.rs           # AF_XDP/eBPF integration (Linux)
+//! │   ├── xdp.rs           # Experimental XDP scaffolding (stubbed)
 //! │   └── dashboard.rs     # Terminal UI with ratatui
 //! └── ghost-link/          # CLI demo entrypoint
 //! ```
@@ -38,6 +38,7 @@ pub mod planning;
 pub mod protocol;
 pub mod ring;
 pub mod runtime;
+#[doc(hidden)]
 pub mod xdp;
 
 // Re-export common types for convenience
