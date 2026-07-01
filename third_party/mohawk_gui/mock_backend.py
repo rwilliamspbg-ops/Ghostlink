@@ -139,7 +139,9 @@ async def metrics() -> dict:
     # Keep values in GUI progress bar ranges.
     return {
         "metrics": {
-            "throughput": 420,
+            "throughput": 118420,
+            "latency_p50": 2,
+            "latency_p95": 4,
             "cpu": 31,
             "memory": 44,
             "gpu": 27,

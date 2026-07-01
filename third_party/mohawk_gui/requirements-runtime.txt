@@ -11,3 +11,4 @@ requests
 tomli
 pyqtgraph
 certifi
+huggingface_hub

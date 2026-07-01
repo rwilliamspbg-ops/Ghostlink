@@ -233,6 +233,7 @@ jobs:
           python3 scripts/flow_perf_snapshot.py \
             --warmup-runs 1 \
             --runs 3 \
+            --release \
             --output-dir ./tmp/perf_snapshot_ci
 
       - name: Perf Drift Check
@@ -268,6 +269,7 @@ jobs:
             --modes tcp inmem \
             --exec-tokens 512 \
             --micro-batch 8 \
+            --release \
             --output-dir ./tmp/perf_snapshot_stress_ci
 
       - name: Perf Drift Check (Stress)

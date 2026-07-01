@@ -6,6 +6,7 @@
 //! - Fault detection and recovery
 
 use std::collections::HashMap;
+use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -43,6 +44,8 @@ pub struct NodeMetrics {
     pub compute_capability: String,
     /// GPU name/model
     pub gpu_name: Option<String>,
+    /// Resolved IP address of the node
+    pub ip_address: Option<SocketAddr>,
 
     /// Last heartbeat time
     pub last_heartbeat: Instant,
@@ -103,6 +106,7 @@ impl Default for NodeMetrics {
             af_xdp_gbps: 0.0,
             latency_micros: 0.0,
             delivery_ratio_initialized: false,
+            ip_address: None,
         }
     }
 }
@@ -123,6 +127,7 @@ impl NodeMetrics {
             system_memory_gb,
             compute_capability,
             gpu_name: None,
+            ip_address: None,
             last_heartbeat: Instant::now(),
             heartbeat_timeout,
             avg_latency_us: 0.0,
@@ -242,6 +247,11 @@ impl ClusterState {
 
     /// Register a new node with the cluster
     pub fn register(&self, node: NodeResources) {
+        self.register_with_addr(node, None);
+    }
+
+    /// Register a new node with a specific socket address
+    pub fn register_with_addr(&self, node: NodeResources, addr: Option<SocketAddr>) {
         let mut nodes = self.nodes.lock().unwrap();
         let mut metrics = self.metrics.lock().unwrap();
 
@@ -270,6 +280,9 @@ impl ClusterState {
             existing_metrics.compute_capability = compute_capability;
             existing_metrics.gpu_name = gpu_name;
             existing_metrics.heartbeat_timeout = Duration::from_secs(5);
+            if addr.is_some() {
+                existing_metrics.ip_address = addr;
+            }
         } else {
             let mut node_metrics = NodeMetrics::new(
                 vram_gb,
@@ -279,6 +292,7 @@ impl ClusterState {
             );
             node_metrics.name = id.clone();
             node_metrics.gpu_name = gpu_name;
+            node_metrics.ip_address = addr;
             metrics.insert(id, node_metrics);
         }
 
@@ -314,9 +328,11 @@ impl ClusterState {
         if self.nodes_snapshot_dirty.load(Ordering::Acquire)
             && self.nodes_snapshot_dirty.swap(false, Ordering::AcqRel)
         {
-            let nodes = self.nodes.lock().unwrap();
-            self.nodes_snapshot
-                .store(Arc::new(nodes.values().cloned().collect::<Vec<_>>()));
+            let nodes_map = self.nodes.lock().unwrap();
+            let mut nodes: Vec<_> = nodes_map.values().cloned().collect();
+            // Sort by ID to ensure deterministic layer assignment across runs
+            nodes.sort_by(|a, b| a.id.cmp(&b.id));
+            self.nodes_snapshot.store(Arc::new(nodes));
         }
 
         self.nodes_snapshot.load_full()

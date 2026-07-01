@@ -19,21 +19,25 @@ def run_once(mode: str, run_index: int, args: argparse.Namespace, output_dir: Pa
     if mode == "tcp":
         env["GHOSTLINK_TCP_AUTH_TOKEN"] = args.tcp_auth_token
 
-    command = [
-        "cargo",
-        "run",
-        "-p",
-        "ghost-link",
-        "--",
-        "flow",
-        args.local_id,
-        args.remote_id,
-        str(args.remote_vram_gb),
-        str(args.remote_mem_gb),
-        str(args.exec_tokens),
-        str(args.micro_batch),
-        mode,
-    ]
+    command = ["cargo", "run"]
+    if args.release:
+        command.append("--release")
+
+    command.extend(
+        [
+            "-p",
+            "ghost-link",
+            "--",
+            "flow",
+            args.local_id,
+            args.remote_id,
+            str(args.remote_vram_gb),
+            str(args.remote_mem_gb),
+            str(args.exec_tokens),
+            str(args.micro_batch),
+            mode,
+        ]
+    )
 
     merged_env = dict(os.environ)
     merged_env.update(env)
@@ -52,21 +56,25 @@ def run_warmup(mode: str, _warmup_index: int, args: argparse.Namespace) -> None:
     if mode == "tcp":
         env["GHOSTLINK_TCP_AUTH_TOKEN"] = args.tcp_auth_token
 
-    command = [
-        "cargo",
-        "run",
-        "-p",
-        "ghost-link",
-        "--",
-        "flow",
-        args.local_id,
-        args.remote_id,
-        str(args.remote_vram_gb),
-        str(args.remote_mem_gb),
-        str(args.exec_tokens),
-        str(args.micro_batch),
-        mode,
-    ]
+    command = ["cargo", "run"]
+    if args.release:
+        command.append("--release")
+
+    command.extend(
+        [
+            "-p",
+            "ghost-link",
+            "--",
+            "flow",
+            args.local_id,
+            args.remote_id,
+            str(args.remote_vram_gb),
+            str(args.remote_mem_gb),
+            str(args.exec_tokens),
+            str(args.micro_batch),
+            mode,
+        ]
+    )
 
     merged_env = dict(os.environ)
     merged_env.update(env)
@@ -119,6 +127,7 @@ def main() -> int:
     parser.add_argument("--remote-mem-gb", type=float, default=32.0)
     parser.add_argument("--exec-tokens", type=int, default=256)
     parser.add_argument("--micro-batch", type=int, default=4)
+    parser.add_argument("--release", action="store_true", help="Run with --release")
     parser.add_argument(
         "--warmup-runs",
         type=int,
