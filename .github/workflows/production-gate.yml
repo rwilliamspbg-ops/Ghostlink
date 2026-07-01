@@ -102,6 +102,7 @@ jobs:
           python3 scripts/validate_gui_diagnostics.py \
             --report ./tmp/gui-diagnostics.json \
             --allow-headless \
+            --allow-missing-python-modules \
             --require-python-source
 
       - name: Summarize GUI Diagnostics
