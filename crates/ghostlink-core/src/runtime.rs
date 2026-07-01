@@ -156,9 +156,15 @@ fn run_stage_compute(payload: &mut [f32], stage: &StagePlacement) {
         DeviceKind::Cpu => 1.005_f32,
     };
 
+    #[inline]
+    fn fast_bounded_transform(x: f32) -> f32 {
+        // Fast odd rational approximation that keeps values in a stable range.
+        x / (1.0 + x.abs())
+    }
+
     for _ in 0..rounds {
         for value in payload.iter_mut() {
-            *value = ((*value * alpha) + 0.125).sin();
+            *value = fast_bounded_transform((*value * alpha) + 0.125);
         }
     }
 }
