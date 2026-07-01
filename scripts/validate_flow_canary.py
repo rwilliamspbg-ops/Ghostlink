@@ -70,7 +70,19 @@ def main() -> int:
         except (KeyError, ValueError, TypeError) as err:
             return fail(f"invalid metric payload for {mode}: {err}")
 
-        spread = (t_max / t_min) if t_min > 0 else float("inf")
+        # Prefer robust spread over percentile band when available.
+        # Fallback to max/min spread for backward compatibility.
+        p10_raw = current.get("throughput_p10")
+        p90_raw = current.get("throughput_p90")
+        try:
+            if p10_raw is not None and p90_raw is not None:
+                t_p10 = float(p10_raw)
+                t_p90 = float(p90_raw)
+                spread = (t_p90 / t_p10) if t_p10 > 0 else float("inf")
+            else:
+                spread = (t_max / t_min) if t_min > 0 else float("inf")
+        except (ValueError, TypeError):
+            spread = (t_max / t_min) if t_min > 0 else float("inf")
 
         if throughput < thresholds["min_throughput"]:
             return fail(

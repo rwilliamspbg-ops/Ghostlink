@@ -11,6 +11,21 @@ import subprocess
 from pathlib import Path
 
 
+def quantile_linear(sorted_values: list[float], q: float) -> float:
+    if not sorted_values:
+        raise ValueError("quantile requires non-empty values")
+    if q <= 0.0:
+        return sorted_values[0]
+    if q >= 1.0:
+        return sorted_values[-1]
+
+    position = (len(sorted_values) - 1) * q
+    lower = int(position)
+    upper = min(lower + 1, len(sorted_values) - 1)
+    frac = position - lower
+    return sorted_values[lower] * (1.0 - frac) + sorted_values[upper] * frac
+
+
 def run_once(mode: str, run_index: int, args: argparse.Namespace, output_dir: Path) -> Path:
     out_file = output_dir / f"{mode}-{run_index}.json"
     env = {
@@ -92,11 +107,17 @@ def summarize(files: list[Path]) -> dict[str, float]:
     throughput = [float(v["throughput_tokens_per_sec"]) for v in values]
     p95 = [float(v["p95_token_latency_ms"]) for v in values]
     wall = [float(v["total_time_ms"]) for v in values]
+    sorted_throughput = sorted(throughput)
+    throughput_p10 = quantile_linear(sorted_throughput, 0.10)
+    throughput_p90 = quantile_linear(sorted_throughput, 0.90)
+
     summary = {
         "runs": len(values),
         "throughput_avg": statistics.mean(throughput),
         "throughput_min": min(throughput),
         "throughput_max": max(throughput),
+        "throughput_p10": throughput_p10,
+        "throughput_p90": throughput_p90,
         "p95_avg": statistics.mean(p95),
         "p95_min": min(p95),
         "p95_max": max(p95),

@@ -31,10 +31,10 @@ Measured in a standard development environment:
 
 | Transport Mode | Avg Throughput (tokens/s) | Avg P95 Latency (ms) |
 | :--- | :---: | :---: |
-| **In-Memory (Zero-Copy)** | **118,840.29** | **1.83** |
-| **TCP Loopback (Optimized)** | **67,794.12** | **3.65** |
+| **In-Memory (Zero-Copy)** | **235,563.63** | **1.26** |
+| **TCP Loopback (Optimized)** | **96,917.48** | **3.25** |
 
-*Benchmarks conducted on 2024-11-20 using Mistral-7B baseline.*
+*Benchmarks from local gate-profile runs on 2026-07-01 (`flow` with 256 tokens, micro-batch 4).* 
 
 ## 🛠 Command Line Interface
 
@@ -45,7 +45,7 @@ The `ghost-link` CLI provides powerful primitives for cluster management and per
 - `serve` - Start the OpenAI-compatible API server.
 - `join [id]` - Broadcast discovery frames to join a local cluster.
 - `listen [id]` - Listen for and respond to discovery requests from peers.
-- `flow` - Run a full 30B model planning and execution flow (simulated transport).
+- `flow` - Run a full 30B model planning and execution flow over real runtime transport (`tcp` or `inmem`).
 - `doctor` - Run unified troubleshooting checks for environment and network.
 - `dashboard` - Display the live ASCII cluster status dashboard.
 - `cluster-start` - Spin up a multi-node local cluster for validation.
@@ -81,8 +81,13 @@ cargo run -p ghost-link -- doctor --network-probe --network-target 127.0.0.1:800
 | `GHOSTLINK_TCP_AUTH_TOKEN` | Shared secret for transport authentication | - |
 | `GHOSTLINK_DISCOVERY_AUTH_TOKEN` | Shared secret for UDP discovery authentication | - |
 | `GHOSTLINK_TCP_MAX_INFLIGHT` | Max concurrent batches in TCP bridge | `512` |
-| `GHOSTLINK_PYTHON` | Path to Python executable for GUI | `python3` |
+| `GHOSTLINK_PYTHON` | Path override for GUI/doctor Python executable (when unset, prefers repo `.venv/bin/python` then `python3`) | `repo .venv/bin/python` if present, else `python3` |
 | `GHOSTLINK_DISTRIBUTED_SMOKE` | Enable distributed runtime validation in `flow` | `false` |
+
+## ⚠️ Runtime Notes
+
+- `crates/ghostlink-core/src/xdp.rs` is currently experimental scaffolding and does not provide a working AF_XDP data path in this build.
+- Discovery authentication is HMAC-SHA256 by default. Enabling `GHOSTLINK_DISCOVERY_ALLOW_LEGACY_CRC32` switches discovery fallback parsing to a compatibility checksum mode that is not cryptographic authentication.
 
 ## 📚 Documentation
 

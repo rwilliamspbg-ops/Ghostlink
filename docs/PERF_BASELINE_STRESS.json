@@ -7,18 +7,18 @@
   },
   "modes": {
     "tcp": {
-      "throughput_avg": 71272.78,
-      "p95_avg": 7.06,
-      "wall_avg": 7.41,
+      "throughput_avg": 192344.75,
+      "p95_avg": 2.78,
+      "wall_avg": 2.84,
       "drift_policy": {
         "max_throughput_drop_ratio": 0.42,
         "max_p95_rise_ratio": 0.55
       }
     },
     "inmem": {
-      "throughput_avg": 159996.96,
-      "p95_avg": 2.94,
-      "wall_avg": 3.36,
+      "throughput_avg": 441292.36,
+      "p95_avg": 1.21,
+      "wall_avg": 1.35,
       "drift_policy": {
         "max_throughput_drop_ratio": 0.35,
         "max_p95_rise_ratio": 0.35
