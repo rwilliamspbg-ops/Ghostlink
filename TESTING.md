@@ -169,7 +169,7 @@ Use CI workflow summaries as the source of truth for branch-level totals.
 
 ## Coverage Status
 
-Coverage is reported by CI via `cargo tarpaulin` (`Lcov` output) and uploaded to Codecov, with raw coverage artifacts retained in workflow artifacts.
+Coverage is reported by CI via `cargo tarpaulin` (`Lcov` output) and uploaded to Codecov using GitHub Actions OIDC, with raw coverage artifacts retained in workflow artifacts.
 
 ## Runtime Detection Tests
 
