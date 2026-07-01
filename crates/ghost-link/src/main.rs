@@ -2015,8 +2015,14 @@ const DOCTOR_NETWORK_PROBE_WARN_LATENCY_MS: f64 = 150.0;
 
 #[derive(Debug, Clone, PartialEq)]
 enum NetworkProbeOutcome {
-    Reachable { resolved: SocketAddr, latency_ms: f64 },
-    Unreachable { resolved: SocketAddr, error: String },
+    Reachable {
+        resolved: SocketAddr,
+        latency_ms: f64,
+    },
+    Unreachable {
+        resolved: SocketAddr,
+        error: String,
+    },
     InvalidTarget(String),
 }
 
@@ -2153,7 +2159,8 @@ fn print_doctor_report(options: &DoctorOptions) -> Result<()> {
     let crate_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let repo_root = crate_root.join("..").join("..");
 
-    let python = resolve_python_executable_for_root(&repo_root, std::env::var("GHOSTLINK_PYTHON").ok());
+    let python =
+        resolve_python_executable_for_root(&repo_root, std::env::var("GHOSTLINK_PYTHON").ok());
 
     match run_command_capture("cargo", &["--version"]) {
         Ok(version) => push_doctor_check(
@@ -2592,7 +2599,8 @@ fn launch_mohawk_gui(args: &[String]) -> Result<()> {
     }
 
     let repo_root = crate_root.join("..").join("..");
-    let python = resolve_python_executable_for_root(&repo_root, std::env::var("GHOSTLINK_PYTHON").ok());
+    let python =
+        resolve_python_executable_for_root(&repo_root, std::env::var("GHOSTLINK_PYTHON").ok());
 
     if !skip_preflight {
         run_gui_preflight_checks()?;
@@ -2646,7 +2654,8 @@ fn print_gui_diagnostics(strict: bool) -> Result<()> {
         .join("mohawk_gui")
         .join("requirements.txt");
     let repo_root = crate_root.join("..").join("..");
-    let python_resolution = resolve_python_for_root(&repo_root, std::env::var("GHOSTLINK_PYTHON").ok());
+    let python_resolution =
+        resolve_python_for_root(&repo_root, std::env::var("GHOSTLINK_PYTHON").ok());
     let python = python_resolution.executable.clone();
 
     let mut categories: Vec<(String, String)> = Vec::new();
@@ -2818,7 +2827,8 @@ fn print_gui_readiness(strict: bool) -> Result<()> {
         .join("mohawk_gui")
         .join("requirements.txt");
     let repo_root = crate_root.join("..").join("..");
-    let python = resolve_python_executable_for_root(&repo_root, std::env::var("GHOSTLINK_PYTHON").ok());
+    let python =
+        resolve_python_executable_for_root(&repo_root, std::env::var("GHOSTLINK_PYTHON").ok());
 
     let mut issues: Vec<String> = Vec::new();
 
@@ -3229,7 +3239,10 @@ mod tests {
         assert_eq!(venv_resolved.source, PythonResolutionSource::RepoVenv);
         let configured = resolve_python_for_root(&root, Some("custom-python".to_string()));
         assert_eq!(configured.executable, "custom-python");
-        assert_eq!(configured.source, PythonResolutionSource::ConfiguredOverride);
+        assert_eq!(
+            configured.source,
+            PythonResolutionSource::ConfiguredOverride
+        );
 
         std::fs::remove_file(&venv_python).unwrap();
         let fallback = resolve_python_for_root(&root, None);
@@ -3243,7 +3256,9 @@ mod tests {
         assert!(!should_apply_gui_python_override("python3"));
         assert!(!should_apply_gui_python_override("python"));
         assert!(!should_apply_gui_python_override("   "));
-        assert!(should_apply_gui_python_override("/workspaces/Ghostlink/.venv/bin/python"));
+        assert!(should_apply_gui_python_override(
+            "/workspaces/Ghostlink/.venv/bin/python"
+        ));
         assert!(should_apply_gui_python_override("python3.12"));
     }
 
