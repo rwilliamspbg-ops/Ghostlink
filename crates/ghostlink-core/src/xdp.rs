@@ -44,11 +44,8 @@ pub struct XdpSocketHandle {
 impl XdpSocketHandle {
     /// Create new XDP socket handle
     pub fn new(interface_name: &str) -> Result<Self, String> {
-        // Note: This is a placeholder for Linux-specific implementation
-        // Actual implementation would use syscall! macro or bindgen
-
         Err(format!(
-            "AF_XDP sockets are Linux-only (requested interface: {interface_name})"
+            "AF_XDP sockets are not enabled in this build (requested interface: {interface_name})"
         ))
     }
 
@@ -61,7 +58,6 @@ impl XdpSocketHandle {
     ///
     /// Returns the raw frame bytes.
     pub fn recv_frame(&self, _buffer: &mut [u8]) -> Option<usize> {
-        // Placeholder - actual implementation uses recvmsg syscall
         None
     }
 
@@ -258,10 +254,10 @@ impl XdpReceiver {
 
     /// Receive and process frames from socket
     pub fn recv_loop(&self) -> Result<(), String> {
-        // In production, this would use AF_XDP recvmsg in a loop
-        // Placeholder implementation
-        let _ = (&self.config.interface_name, self.config.memory_order);
-        Ok(())
+        Err(format!(
+            "AF_XDP recv loop unavailable for interface '{}' in this build",
+            self.config.interface_name
+        ))
     }
 
     /// Process received frame and extract discovery frame
@@ -303,15 +299,14 @@ impl XdpSocketManager {
 
     /// Initialize AF_XDP socket and bind to interface
     pub fn init(&mut self) -> Result<(), String> {
-        // This would use syscall! macro for Linux-specific syscalls
-        // Placeholder implementation
-        let _ = &self.interface_name;
-        Ok(())
+        Err(format!(
+            "AF_XDP socket manager is unavailable for interface '{}' in this build",
+            self.interface_name
+        ))
     }
 
     /// Receive frame using AF_XDP recvmsg
     pub fn recv_frame(&mut self, _buffer: &mut [u8]) -> Option<usize> {
-        // Placeholder - actual implementation uses recvmsg syscall
         None
     }
 

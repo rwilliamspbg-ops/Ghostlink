@@ -369,7 +369,14 @@ fn chunk_distribution_plan(
         .distributions
         .into_iter()
         .map(|(node_id, slices)| {
-            let mut chunked = Vec::new();
+            let estimated_chunks = slices
+                .iter()
+                .map(|slice| {
+                    let total_layers = slice.layer_range.1.saturating_sub(slice.layer_range.0);
+                    total_layers.div_ceil(slice_limit).max(1)
+                })
+                .sum();
+            let mut chunked = Vec::with_capacity(estimated_chunks);
             for slice in slices {
                 let total_layers = slice.layer_range.1.saturating_sub(slice.layer_range.0);
                 if total_layers <= slice_limit {

@@ -13,6 +13,12 @@
 - Blockers:
 - Next actions:
 
+## Tracker Links
+
+- Issue(s):
+- Artifact/report links:
+- Related tracker entry: docs/PRODUCTION_PHASE_TRACKER.md
+
 ## Validation
 
 - [ ] cargo fmt --all --check

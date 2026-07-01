@@ -1,0 +1,37 @@
+{
+  "schema_version": "1",
+  "overall": {
+    "status": "WARN",
+    "detail": "no blocking failures"
+  },
+  "domains": {
+    "doctor": {
+      "status": "PASS",
+      "detail": "pass=10, warn=0, fail=0"
+    },
+    "doctor_probe": {
+      "status": "PASS",
+      "detail": "failure_ratio=0.0, failures=0"
+    },
+    "gui_diagnostics": {
+      "status": "WARN",
+      "detail": "summary missing"
+    },
+    "gui_smoke": {
+      "status": "PASS",
+      "detail": "overall=PASS"
+    },
+    "xdp_preflight": {
+      "status": "WARN",
+      "detail": "has_bpftool=False, has_ethtool=False"
+    },
+    "perf_deterministic": {
+      "status": "PASS",
+      "detail": "tcp+inmem present"
+    },
+    "perf_stress": {
+      "status": "PASS",
+      "detail": "tcp+inmem present"
+    }
+  }
+}

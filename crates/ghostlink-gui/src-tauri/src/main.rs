@@ -266,8 +266,13 @@ fn cluster_preview(node_id: String, full: bool) -> Result<ClusterPreview, String
         ));
     }
 
-    let nodes = vec![parse_probe_to_node(command.stdout.as_str())
-        .unwrap_or_else(|| fallback_node(node_id.as_str()))];
+    let parsed = parse_probe_to_node(command.stdout.as_str()).ok_or_else(|| {
+        format!(
+            "failed to parse live probe output for node '{}'",
+            node_id.as_str()
+        )
+    })?;
+    let nodes = vec![parsed];
     let healthy = nodes.iter().filter(|node| node.health == "healthy").count();
     let degraded = nodes.len().saturating_sub(healthy);
 
@@ -676,15 +681,18 @@ fn chat_infer(
         .unwrap_or_else(|| "unknown".to_string());
 
     let response = format!(
-        "Live runtime completed for prompt '{}' using model '{}'. Backend={} transport={} temp={:.2}. Metrics: throughput={} tokens/sec, avg_latency={} ms, p95={} ms.",
-        concise_prompt,
-        model,
-        backend,
-        transport,
-        temperature,
-        throughput,
-        avg_latency,
-        p95_latency
+        "{}",
+        build_live_chat_response(
+            concise_prompt,
+            model.as_str(),
+            backend,
+            transport,
+            temperature,
+            throughput.as_str(),
+            avg_latency.as_str(),
+            p95_latency.as_str(),
+            command_result.stdout.as_str()
+        )
     );
 
     let trace = format!(
@@ -806,15 +814,49 @@ fn command_version(program: &str, args: &[&str]) -> Option<String> {
     None
 }
 
-fn fallback_node(node_id: &str) -> ClusterNodeCard {
-    ClusterNodeCard {
-        id: node_id.to_string(),
-        acceleration: "unknown".to_string(),
-        workers: 1,
-        system_memory_gb: 0.0,
-        gpu_vram_gb: 0.0,
-        health: "degraded".to_string(),
-    }
+fn build_live_chat_response(
+    prompt: &str,
+    model: &str,
+    backend: &str,
+    transport: &str,
+    temperature: f32,
+    throughput: &str,
+    avg_latency: &str,
+    p95_latency: &str,
+    flow_stdout: &str,
+) -> String {
+    let runtime_excerpt = extract_runtime_excerpt(flow_stdout);
+    format!(
+        "Live flow execution complete for model '{}' and prompt '{}'. Backend={} transport={} temperature={:.2}. Throughput={} tokens/sec, avg_latency={} ms, p95={} ms.\n\nRuntime excerpt:\n{}",
+        model,
+        prompt,
+        backend,
+        transport,
+        temperature,
+        throughput,
+        avg_latency,
+        p95_latency,
+        runtime_excerpt
+    )
+}
+
+fn extract_runtime_excerpt(flow_stdout: &str) -> String {
+    let lines = flow_stdout
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>();
+    let start = lines
+        .iter()
+        .position(|line| *line == "Execution Runtime")
+        .unwrap_or(0);
+    lines
+        .iter()
+        .skip(start)
+        .take(14)
+        .copied()
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn parse_probe_to_node(output: &str) -> Option<ClusterNodeCard> {
