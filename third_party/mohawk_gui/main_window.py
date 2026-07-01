@@ -5,7 +5,10 @@
 import sys
 import requests
 import json
+import os
+import time
 from datetime import datetime
+from urllib.parse import urlparse
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QTabWidget, QStatusBar, QMessageBox, QGroupBox,
@@ -30,16 +33,33 @@ class WorkerHealthCheck(QThread):
     def run(self):
         """Check health periodically."""
         while self.running:
+            started = time.perf_counter()
+            checked_at = datetime.now().strftime("%H:%M:%S")
             try:
                 response = requests.get(f"{self.base_url}/health", timeout=2)
+                latency_ms = (time.perf_counter() - started) * 1000.0
                 if response.status_code == 200:
-                    self.health_updated.emit({"status": "healthy", "code": 200})
+                    self.health_updated.emit({
+                        "status": "healthy",
+                        "code": 200,
+                        "checked_at": checked_at,
+                        "latency_ms": round(latency_ms, 2),
+                    })
                 else:
-                    self.health_updated.emit({"status": "degraded", "code": response.status_code})
+                    self.health_updated.emit({
+                        "status": "degraded",
+                        "code": response.status_code,
+                        "checked_at": checked_at,
+                        "latency_ms": round(latency_ms, 2),
+                    })
             except requests.ConnectionError:
-                self.health_updated.emit({"status": "disconnected", "error": "Connection refused"})
+                self.health_updated.emit({
+                    "status": "disconnected",
+                    "error": "Connection refused",
+                    "checked_at": checked_at,
+                })
             except Exception as e:
-                self.health_updated.emit({"status": "error", "error": str(e)})
+                self.health_updated.emit({"status": "error", "error": str(e), "checked_at": checked_at})
             
             self.msleep(3000)  # Check every 3 seconds
     
@@ -51,14 +71,27 @@ class WorkerHealthCheck(QThread):
 class MohawkGUI(QMainWindow):
     """Main window for Ghostlink Studio - Professional Inference Surface."""
     
-    def __init__(self):
+    def __init__(self, base_url=None):
         super().__init__()
         self.setWindowTitle("Ghostlink Studio")
         self.setMinimumSize(1400, 900)
-        
-        # API endpoints
-        self.gui_service_url = "http://localhost:8003"
-        self.worker_service_url = "http://localhost:8004"
+
+        self.http = requests.Session()
+        self.request_timeout = (1.0, 3.0)
+        self.backend_online = None
+        self.last_backend_error = None
+        self.last_successful_ping = "never"
+
+        env_base_url = os.getenv("GHOSTLINK_GUI_BASE_URL")
+        configured_base_url = base_url or env_base_url or "http://localhost:8003"
+        self.gui_service_url = self.normalize_base_url(configured_base_url)
+
+        parsed_gui = urlparse(self.gui_service_url)
+        worker_port = (parsed_gui.port or 8003) + 1
+        self.worker_service_url = os.getenv(
+            "GHOSTLINK_WORKER_SERVICE_URL",
+            f"{parsed_gui.scheme}://{parsed_gui.hostname}:{worker_port}",
+        )
         
         # Apply dark professional theme
         self.apply_styles()
@@ -87,6 +120,8 @@ class MohawkGUI(QMainWindow):
         # Main Tab Stack
         self.stack = QTabWidget()
         self.stack.tabBar().hide() # Use sidebar for switching
+        # Backward-compatible alias used by older smoke tests.
+        self.tabs = self.stack
         self.content_layout.addWidget(self.stack)
         
         # Status bar
@@ -125,6 +160,19 @@ class MohawkGUI(QMainWindow):
         self.update_timer = QTimer()
         self.update_timer.timeout.connect(self.periodic_update)
         self.update_timer.start(5000)  # Update every 5 seconds
+
+    def normalize_base_url(self, value):
+        """Normalize backend URL and ensure we always have scheme + host."""
+        candidate = (value or "").strip().rstrip("/")
+        if not candidate:
+            return "http://localhost:8003"
+        if "://" not in candidate:
+            candidate = f"http://{candidate}"
+
+        parsed = urlparse(candidate)
+        if not parsed.scheme or not parsed.netloc:
+            return "http://localhost:8003"
+        return f"{parsed.scheme}://{parsed.netloc}"
 
     def apply_styles(self):
         """Apply modern dark theme styles."""
@@ -276,6 +324,18 @@ class MohawkGUI(QMainWindow):
         self.health_label.setFont(QFont("Inter", 12))
         layout.addWidget(self.health_label)
 
+        self.backend_url_label = QLabel(f"Backend: {self.gui_service_url}")
+        self.backend_url_label.setStyleSheet(
+            "color: #9ca3af; background-color: #25262b; padding: 4px 10px; border-radius: 10px;"
+        )
+        layout.addWidget(self.backend_url_label)
+
+        self.last_ping_label = QLabel("Last ping: never")
+        self.last_ping_label.setStyleSheet(
+            "color: #9ca3af; background-color: #25262b; padding: 4px 10px; border-radius: 10px;"
+        )
+        layout.addWidget(self.last_ping_label)
+
         layout.addStretch()
 
         self.active_model_badge = QLabel("No Active Model")
@@ -293,29 +353,47 @@ class MohawkGUI(QMainWindow):
     def on_health_update(self, health_info):
         """Handle health check updates."""
         status = health_info.get("status")
+        checked_at = health_info.get("checked_at")
+        latency_ms = health_info.get("latency_ms")
+
+        if checked_at and latency_ms is not None and status in {"healthy", "degraded"}:
+            self.last_successful_ping = f"{checked_at} ({latency_ms} ms)"
+            self.last_ping_label.setText(f"Last ping: {self.last_successful_ping}")
+        elif checked_at and self.last_successful_ping == "never":
+            self.last_ping_label.setText(f"Last ping: never (last check {checked_at})")
         
         if status == "healthy":
+            self.backend_online = True
+            self.last_backend_error = None
             self.health_label.setText("Ghostlink Fabric Online")
             self.health_status_icon.setStyleSheet("color: #10b981; font-size: 20px;")
             self.status_bar.showMessage("Connected to inference cluster")
         elif status == "degraded":
+            self.backend_online = True
             self.health_label.setText("Fabric Performance Degraded")
             self.health_status_icon.setStyleSheet("color: #f59e0b; font-size: 20px;")
         else:
+            self.backend_online = False
+            self.last_backend_error = health_info.get("error")
             self.health_label.setText("Fabric Disconnected")
             self.health_status_icon.setStyleSheet("color: #ef4444; font-size: 20px;")
+            if self.last_backend_error:
+                self.status_bar.showMessage(f"Disconnected: {self.last_backend_error}")
     
     def api_call(self, endpoint, method="GET", data=None):
         """Make API call to backend service."""
+        if self.backend_online is False and endpoint != "/health":
+            return {"error": "Backend offline"}
+
         try:
             url = f"{self.gui_service_url}{endpoint}"
             
             if method == "GET":
-                response = requests.get(url, timeout=5)
+                response = self.http.get(url, timeout=self.request_timeout)
             elif method == "POST":
-                response = requests.post(url, json=data, timeout=5)
+                response = self.http.post(url, json=data, timeout=self.request_timeout)
             elif method == "PUT":
-                response = requests.put(url, json=data, timeout=5)
+                response = self.http.put(url, json=data, timeout=self.request_timeout)
             else:
                 return {"error": f"Unsupported HTTP method: {method}"}
             
@@ -337,8 +415,10 @@ class MohawkGUI(QMainWindow):
                 return {"error": f"HTTP {response.status_code}"}
         
         except requests.ConnectionError:
+            self.backend_online = False
             return {"error": "Connection refused - is the service running?"}
         except requests.Timeout:
+            self.backend_online = False
             return {"error": "Request timeout"}
         except Exception as e:
             return {"error": str(e)}
@@ -978,6 +1058,9 @@ class MohawkGUI(QMainWindow):
     
     def periodic_update(self):
         """Periodic updates for live data."""
+        if self.backend_online is False:
+            return
+
         result = self.api_call("/api/metrics")
 
         if "error" not in result:
@@ -1025,6 +1108,7 @@ class MohawkGUI(QMainWindow):
     def closeEvent(self, event):
         """Handle window close."""
         self.health_thread.stop()
+        self.http.close()
         event.accept()
 
 

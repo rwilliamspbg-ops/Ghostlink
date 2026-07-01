@@ -197,4 +197,4 @@ Current benchmark targets cover:
 - Full hardware probing only exercises `nvidia-smi` and `lspci` when those tools exist on the host
 - Health monitoring uses collected cluster metrics and heartbeat state instead of direct ping-style network probes
 - Tensor migration remains incomplete; dynamic rebalance heuristics are now improved but still early-stage
-- GUI function-matrix validation currently runs as a local/devcontainer procedure, not a dedicated CI workflow job
+- GUI function-matrix smoke is executed in CI via the `production-gate.yml` workflow (`xvfb-run ... third_party/mohawk_gui/test_dashboard.py`)

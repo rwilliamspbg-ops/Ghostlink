@@ -16,6 +16,8 @@ This index is the source of truth for active documentation in Ghost-Link.
 - [TROUBLESHOOTING.md](TROUBLESHOOTING.md): common failures and operational fixes.
 - [PRODUCTION_READINESS.md](PRODUCTION_READINESS.md): production readiness checklist and status.
 - [PRODUCTION_REMEDIATION_PLAN.md](PRODUCTION_REMEDIATION_PLAN.md): phased closure plan for known production gaps.
+- [PRODUCTION_PHASE_TRACKER.md](PRODUCTION_PHASE_TRACKER.md): issue-ready tracker table mapped to remediation phases.
+- [PRODUCTION_ISSUE_SEEDS.md](PRODUCTION_ISSUE_SEEDS.md): copy/paste issue drafts for production backlog seeding.
 - [GHOSTLINK_STUDIO_PRODUCT_VISION.md](GHOSTLINK_STUDIO_PRODUCT_VISION.md): Ghostlink Studio UX and product scope.
 - [GHOSTLINK_STUDIO_EXECUTION_PLAN.md](GHOSTLINK_STUDIO_EXECUTION_PLAN.md): sprint-by-sprint implementation roadmap.
 

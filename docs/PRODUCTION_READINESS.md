@@ -51,7 +51,6 @@ python3 scripts/verify_hf_models.py
 
 ## Upgrade Backlog
 
-1. Add a dedicated CI job for GUI function-matrix execution in headless mode.
-2. Expand release artifacts from checksums to mandatory cryptographic signing in CI runners.
-3. Extend fault-injection coverage to real multi-node LAN and partition simulations.
-4. Publish SLO dashboards from uploaded metrics artifacts.
+1. Expand release artifacts from checksums to mandatory cryptographic signing in CI runners.
+2. Extend fault-injection coverage to real multi-node LAN and partition simulations.
+3. Publish SLO dashboards from uploaded metrics artifacts.

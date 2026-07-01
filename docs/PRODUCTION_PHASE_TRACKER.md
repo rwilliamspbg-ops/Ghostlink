@@ -73,7 +73,8 @@ It is aligned to [docs/PRODUCTION_REMEDIATION_PLAN.md](docs/PRODUCTION_REMEDIATI
 | Signed runtime binaries and checksums | Packaging | P0 | TODO | Release candidates publish signed artifacts |
 | Reproducible install path with verification | Packaging | P1 | TODO | Second maintainer can reproduce install flow |
 | Release checklist tied to readiness gates | Packaging | P0 | TODO | Tag process blocks on readiness checklist |
-| Headless GUI function-matrix CI/nightly lane | GUI / UX | P0 | TODO | GUI automation lane is green |
+| Headless GUI function-matrix CI lane | GUI / UX | P0 | DONE | `production-gate.yml` runs xvfb dashboard smoke |
+| Expand GUI automation to additional platform lanes | GUI / UX | P1 | TODO | GUI automation is green across supported platform lanes |
 | Standalone GUI bundle for supported targets | GUI / UX | P1 | TODO | GUI bundle ships with release candidate |
 
 ## Weekly Review

@@ -1,5 +1,15 @@
 # Ghostlink Studio
 
+[![CI](https://github.com/rwilliamspbg-ops/Ghostlink/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/rwilliamspbg-ops/Ghostlink/actions/workflows/ci.yml)
+[![Production Gate](https://github.com/rwilliamspbg-ops/Ghostlink/actions/workflows/production-gate.yml/badge.svg?branch=main)](https://github.com/rwilliamspbg-ops/Ghostlink/actions/workflows/production-gate.yml)
+[![Tests](https://github.com/rwilliamspbg-ops/Ghostlink/actions/workflows/tests.yml/badge.svg?branch=main)](https://github.com/rwilliamspbg-ops/Ghostlink/actions/workflows/tests.yml)
+[![Lint](https://github.com/rwilliamspbg-ops/Ghostlink/actions/workflows/lint.yml/badge.svg?branch=main)](https://github.com/rwilliamspbg-ops/Ghostlink/actions/workflows/lint.yml)
+[![Security](https://github.com/rwilliamspbg-ops/Ghostlink/actions/workflows/security.yml/badge.svg?branch=main)](https://github.com/rwilliamspbg-ops/Ghostlink/actions/workflows/security.yml)
+[![Docs](https://github.com/rwilliamspbg-ops/Ghostlink/actions/workflows/docs.yml/badge.svg?branch=main)](https://github.com/rwilliamspbg-ops/Ghostlink/actions/workflows/docs.yml)
+[![Markdown Lint](https://github.com/rwilliamspbg-ops/Ghostlink/actions/workflows/markdownlint.yml/badge.svg?branch=main)](https://github.com/rwilliamspbg-ops/Ghostlink/actions/workflows/markdownlint.yml)
+[![Benchmarks](https://github.com/rwilliamspbg-ops/Ghostlink/actions/workflows/benchmarks.yml/badge.svg?branch=main)](https://github.com/rwilliamspbg-ops/Ghostlink/actions/workflows/benchmarks.yml)
+[![HF Model Verify](https://github.com/rwilliamspbg-ops/Ghostlink/actions/workflows/hf-model-verify.yml/badge.svg)](https://github.com/rwilliamspbg-ops/Ghostlink/actions/workflows/hf-model-verify.yml)
+[![Release Artifacts](https://github.com/rwilliamspbg-ops/Ghostlink/actions/workflows/release-artifacts.yml/badge.svg)](https://github.com/rwilliamspbg-ops/Ghostlink/actions/workflows/release-artifacts.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Rust](https://img.shields.io/badge/Rust-stable-orange.svg)](https://www.rust-lang.org)
 [![Python](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org)
@@ -35,6 +45,33 @@ Measured in a standard development environment:
 | **TCP Loopback (Optimized)** | **96,917.48** | **3.25** |
 
 *Benchmarks from local gate-profile runs on 2026-07-01 (`flow` with 256 tokens, micro-batch 4).* 
+
+### Performance Maturity Scorecard
+
+Use the maturity profiler to rank optimization priority by stability, tail risk,
+baseline headroom, and noise index from each snapshot run:
+
+```bash
+# Deterministic profile scorecard
+python3 scripts/perf_maturity_profile.py \
+  --summary tmp/perf_maturity_det/summary.json \
+  --baseline docs/PERF_BASELINE.json \
+  --stage-glob-template 'tmp/perf_maturity_det/{mode}-*.json' \
+  --output-json tmp/perf_maturity_det/maturity_scorecard.json
+
+# Stress profile scorecard
+python3 scripts/perf_maturity_profile.py \
+  --summary tmp/perf_maturity_stress/summary.json \
+  --baseline docs/PERF_BASELINE_STRESS.json \
+  --stage-glob-template 'tmp/perf_maturity_stress/{mode}-*.json' \
+  --output-json tmp/perf_maturity_stress/maturity_scorecard.json
+```
+
+Recommended publication pattern:
+
+- Attach the markdown scorecard table to the README release/perf section.
+- Keep raw run files in CI artifacts or `tmp/` outputs, not inline in README.
+- Treat classes as action levels: `optimize-now`, `next-batch`, `likely-noise`.
 
 ## 🛠 Command Line Interface
 
@@ -105,6 +142,19 @@ Ghost-Link is released under the MIT License.
 Ghostlink maintains high quality through automated testing and validation gates:
 
 - **Workspace Tests**: `cargo test --workspace`
-- **Full Validation**: `bash scripts/run_full_validation.sh`
+- **Full Local Validation Bundle**: `bash scripts/setup_full_test_env.sh && bash scripts/run_full_validation.sh`
 - **Linting**: `cargo clippy --workspace --all-targets -- -D warnings`
 - **Model Verification**: `python3 scripts/verify_hf_models.py`
+
+GitHub Actions gate workflows:
+
+- **CI**: `.github/workflows/ci.yml`
+- **Production Gate**: `.github/workflows/production-gate.yml`
+- **Tests**: `.github/workflows/tests.yml`
+- **Lint**: `.github/workflows/lint.yml`
+- **Security**: `.github/workflows/security.yml`
+- **Docs**: `.github/workflows/docs.yml`
+- **Markdown Lint**: `.github/workflows/markdownlint.yml`
+- **Benchmarks**: `.github/workflows/benchmarks.yml`
+- **HF Model Verify**: `.github/workflows/hf-model-verify.yml`
+- **Release Artifacts**: `.github/workflows/release-artifacts.yml`
