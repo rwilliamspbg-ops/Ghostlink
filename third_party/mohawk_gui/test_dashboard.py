@@ -131,9 +131,11 @@ def main():
     print("🦅 Mohawk Inference Engine Dashboard - Test Suite")
     print("=" * 60 + "\n")
 
-    # Create a single QApplication for the entire test suite
+    # Create a single QApplication for the entire test suite.
+    # Must be assigned to a variable so the object stays alive for all tests;
+    # Qt requires exactly one QApplication instance per process.
     from PyQt6.QtWidgets import QApplication
-    app = QApplication(sys.argv)  # noqa: F841 (kept alive for the duration of tests)
+    app = QApplication(sys.argv)  # noqa: F841
 
     results = []
     
