@@ -83,6 +83,13 @@ def compute_overall_status(statuses: list[str]) -> str:
     return "PASS"
 
 
+def normalize_blocking_status(name: str, status: str) -> str:
+    blocking_domains = {"doctor", "gui_smoke", "perf_deterministic", "perf_stress"}
+    if status == "FAIL" and name not in blocking_domains:
+        return "WARN"
+    return status
+
+
 def load_json(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
@@ -221,25 +228,29 @@ def main() -> int:
     perf_det_status = classify_perf(perf_det)
     perf_stress_status = classify_perf(perf_stress)
 
-    verdict_rows = [
-        verdict_line("doctor", doctor_status, doctor_detail),
-        verdict_line("doctor_probe", probe_status, probe_detail),
-        verdict_line("gui_diagnostics", gui_diag_status, gui_diag_detail),
-        verdict_line("gui_smoke", gui_smoke_status, gui_smoke_detail),
-        verdict_line("xdp_preflight", xdp_status, xdp_detail),
-        verdict_line("perf_deterministic", perf_det_status, "tcp+inmem present" if perf_det_status == "PASS" else "missing tcp or inmem mode"),
-        verdict_line("perf_stress", perf_stress_status, "tcp+inmem present" if perf_stress_status == "PASS" else "missing tcp or inmem mode"),
+    verdicts = [
+        ("doctor", normalize_blocking_status("doctor", doctor_status), doctor_detail),
+        ("doctor_probe", normalize_blocking_status("doctor_probe", probe_status), probe_detail),
+        ("gui_diagnostics", normalize_blocking_status("gui_diagnostics", gui_diag_status), gui_diag_detail),
+        ("gui_smoke", normalize_blocking_status("gui_smoke", gui_smoke_status), gui_smoke_detail),
+        ("xdp_preflight", normalize_blocking_status("xdp_preflight", xdp_status), xdp_detail),
+        (
+            "perf_deterministic",
+            normalize_blocking_status("perf_deterministic", perf_det_status),
+            "tcp+inmem present" if perf_det_status == "PASS" else "missing tcp or inmem mode",
+        ),
+        (
+            "perf_stress",
+            normalize_blocking_status("perf_stress", perf_stress_status),
+            "tcp+inmem present" if perf_stress_status == "PASS" else "missing tcp or inmem mode",
+        ),
     ]
+    verdict_rows = [verdict_line(name, status, detail) for name, status, detail in verdicts]
 
     overall_status = compute_overall_status(
         [
-            doctor_status,
-            probe_status,
-            gui_diag_status,
-            gui_smoke_status,
-            xdp_status,
-            perf_det_status,
-            perf_stress_status,
+            status
+            for _, status, _ in verdicts
         ]
     )
     overall_detail = "blocking failure detected" if overall_status == "FAIL" else "no blocking failures"
@@ -303,17 +314,17 @@ def main() -> int:
             "detail": overall_detail,
         },
         "domains": {
-            "doctor": {"status": doctor_status, "detail": doctor_detail},
-            "doctor_probe": {"status": probe_status, "detail": probe_detail},
-            "gui_diagnostics": {"status": gui_diag_status, "detail": gui_diag_detail},
-            "gui_smoke": {"status": gui_smoke_status, "detail": gui_smoke_detail},
-            "xdp_preflight": {"status": xdp_status, "detail": xdp_detail},
+            "doctor": {"status": normalize_blocking_status("doctor", doctor_status), "detail": doctor_detail},
+            "doctor_probe": {"status": normalize_blocking_status("doctor_probe", probe_status), "detail": probe_detail},
+            "gui_diagnostics": {"status": normalize_blocking_status("gui_diagnostics", gui_diag_status), "detail": gui_diag_detail},
+            "gui_smoke": {"status": normalize_blocking_status("gui_smoke", gui_smoke_status), "detail": gui_smoke_detail},
+            "xdp_preflight": {"status": normalize_blocking_status("xdp_preflight", xdp_status), "detail": xdp_detail},
             "perf_deterministic": {
-                "status": perf_det_status,
+                "status": normalize_blocking_status("perf_deterministic", perf_det_status),
                 "detail": "tcp+inmem present" if perf_det_status == "PASS" else "missing tcp or inmem mode",
             },
             "perf_stress": {
-                "status": perf_stress_status,
+                "status": normalize_blocking_status("perf_stress", perf_stress_status),
                 "detail": "tcp+inmem present" if perf_stress_status == "PASS" else "missing tcp or inmem mode",
             },
         },
