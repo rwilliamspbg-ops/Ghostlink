@@ -588,9 +588,8 @@ fn verify_auth_tag(
     mac.update(&(payload.len() as u32).to_le_bytes());
     let payload_bytes = payload_as_le_bytes(payload);
     mac.update(payload_bytes.as_ref());
-    mac.verify_slice(received_tag).map_err(|_| {
-        io::Error::new(io::ErrorKind::InvalidData, "transport auth tag mismatch")
-    })
+    mac.verify_slice(received_tag)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "transport auth tag mismatch"))
 }
 
 fn payload_as_le_bytes(payload: &[f32]) -> std::borrow::Cow<'_, [u8]> {
@@ -845,11 +844,7 @@ pub fn spawn_tcp_bridge(
 
         loop {
             let read_start = Instant::now();
-            match read_transport_batch(
-                &mut reader,
-                source_stage,
-                reader_auth_token.as_deref(),
-            ) {
+            match read_transport_batch(&mut reader, source_stage, reader_auth_token.as_deref()) {
                 Ok(Some(batch)) => {
                     total_read_ms += read_start.elapsed().as_secs_f32() * 1000.0;
                     if output_tx.send(batch).is_err() {
