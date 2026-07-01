@@ -20,7 +20,7 @@ echo "[validate] cargo clippy --workspace --all-targets -- -D warnings"
 cargo clippy --workspace --all-targets -- -D warnings
 
 echo "[validate] flow perf snapshot (3 runs)"
-"$VENV_PYTHON" scripts/flow_perf_snapshot.py --runs 3 --output-dir ./tmp/perf_snapshot_full_validation
+"$VENV_PYTHON" scripts/flow_perf_snapshot.py --runs 3 --release --output-dir ./tmp/perf_snapshot_full_validation
 
 echo "[validate] perf drift check"
 "$VENV_PYTHON" scripts/check_perf_drift.py --baseline ./docs/PERF_BASELINE.json --current ./tmp/perf_snapshot_full_validation/summary.json
