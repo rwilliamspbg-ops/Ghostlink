@@ -1,0 +1,26 @@
+# Multi-stage Ghostlink tensor streaming test environment
+# For testing layer-split inference across two networked containers
+
+FROM rust:1.82-bookworm as builder
+WORKDIR /build
+COPY Cargo.toml Cargo.lock ./
+COPY crates ./crates
+RUN cargo build --release -p ghost-link -p ghostlink-core
+
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y \
+    ca-certificates \
+    curl \
+    net-tools \
+    iproute2 \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /build/target/release/ghost-link /usr/local/bin/
+WORKDIR /app
+COPY . .
+
+# Default to no special role; accept role via environment or CLI args
+ENV GHOSTLINK_TCP_AUTH_TOKEN=""
+ENV GHOSTLINK_ROLE="worker"
+ENTRYPOINT ["ghost-link"]
+CMD ["--help"]

@@ -1,0 +1,85 @@
+version: '3.9'
+
+services:
+  # Worker node 1: 16GB GPU equivalent
+  ghostlink-worker-1:
+    build:
+      context: .
+      dockerfile: Dockerfile.ghostlink
+    container_name: ghostlink-node-iprada-16gb
+    hostname: iprada-16gb
+    networks:
+      ghostlink-fabric:
+        ipv4_address: 172.20.0.2
+    environment:
+      GHOSTLINK_TCP_AUTH_TOKEN: "fabric-test-token"
+      GHOSTLINK_TCP_MAX_INFLIGHT: "512"
+      GHOSTLINK_DISTRIBUTED_SMOKE: "true"
+      RUST_LOG: info
+    command: ["serve", "--port", "8001"]
+    ports:
+      - "8001:8001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+    cpus: '2'
+    mem_limit: 2g
+
+  # Worker node 2: 32GB GPU equivalent
+  ghostlink-worker-2:
+    build:
+      context: .
+      dockerfile: Dockerfile.ghostlink
+    container_name: ghostlink-node-zenbook-32gb
+    hostname: zenbook-32gb
+    networks:
+      ghostlink-fabric:
+        ipv4_address: 172.20.0.3
+    environment:
+      GHOSTLINK_TCP_AUTH_TOKEN: "fabric-test-token"
+      GHOSTLINK_TCP_MAX_INFLIGHT: "512"
+      GHOSTLINK_DISTRIBUTED_SMOKE: "true"
+      RUST_LOG: info
+    command: ["serve", "--port", "8002"]
+    ports:
+      - "8002:8002"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+    cpus: '4'
+    mem_limit: 4g
+
+  # Orchestrator / test harness
+  ghostlink-coordinator:
+    build:
+      context: .
+      dockerfile: Dockerfile.ghostlink
+    container_name: ghostlink-coordinator
+    hostname: coordinator
+    networks:
+      ghostlink-fabric:
+        ipv4_address: 172.20.0.10
+    environment:
+      GHOSTLINK_TCP_AUTH_TOKEN: "fabric-test-token"
+      GHOSTLINK_TCP_MAX_INFLIGHT: "512"
+      GHOSTLINK_DISTRIBUTED_SMOKE: "true"
+      RUST_LOG: debug
+    depends_on:
+      ghostlink-worker-1:
+        condition: service_healthy
+      ghostlink-worker-2:
+        condition: service_healthy
+    command: ["flow", "iprada-16gb", "zenbook-32gb", "32", "32", "256", "8", "tcp"]
+    cpus: '1'
+    mem_limit: 1g
+
+networks:
+  ghostlink-fabric:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
