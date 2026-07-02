@@ -33,6 +33,9 @@ def run_once(mode: str, run_index: int, args: argparse.Namespace, output_dir: Pa
     }
     if mode == "tcp":
         env["GHOSTLINK_TCP_AUTH_TOKEN"] = args.tcp_auth_token
+    elif mode == "xdp":
+        env["GHOSTLINK_XDP_INTERFACE"] = args.xdp_interface
+        env["GHOSTLINK_TCP_AUTH_TOKEN"] = args.tcp_auth_token
 
     command = ["cargo", "run"]
     if args.release:
@@ -69,6 +72,9 @@ def run_once(mode: str, run_index: int, args: argparse.Namespace, output_dir: Pa
 def run_warmup(mode: str, _warmup_index: int, args: argparse.Namespace) -> None:
     env = {}
     if mode == "tcp":
+        env["GHOSTLINK_TCP_AUTH_TOKEN"] = args.tcp_auth_token
+    elif mode == "xdp":
+        env["GHOSTLINK_XDP_INTERFACE"] = args.xdp_interface
         env["GHOSTLINK_TCP_AUTH_TOKEN"] = args.tcp_auth_token
 
     command = ["cargo", "run"]
@@ -125,6 +131,8 @@ def summarize(files: list[Path]) -> dict[str, float]:
     }
 
     first = values[0] if values else {}
+    if "transport_mode" in first:
+        summary["effective_transport_mode"] = first["transport_mode"]
     for key in (
         "tcp_max_inflight_batches",
         "tcp_reconnect_attempts",
@@ -141,7 +149,12 @@ def main() -> int:
     parser.add_argument("--repo-root", default=".")
     parser.add_argument("--output-dir", default="tmp/perf_snapshot")
     parser.add_argument("--runs", type=int, default=5)
-    parser.add_argument("--modes", nargs="+", default=["tcp", "inmem"], choices=["tcp", "inmem"])
+    parser.add_argument(
+        "--modes",
+        nargs="+",
+        default=["tcp", "inmem"],
+        choices=["tcp", "inmem", "xdp"],
+    )
     parser.add_argument("--local-id", default="iprada-16gb")
     parser.add_argument("--remote-id", default="zenbook-32gb")
     parser.add_argument("--remote-vram-gb", type=float, default=32.0)
@@ -156,6 +169,7 @@ def main() -> int:
         help="Warmup executions per mode (not included in summary)",
     )
     parser.add_argument("--tcp-auth-token", default="local-token")
+    parser.add_argument("--xdp-interface", default="eth0")
     args = parser.parse_args()
 
     if args.runs <= 0:

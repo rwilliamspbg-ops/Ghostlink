@@ -606,7 +606,11 @@ fn xdp_interface_from_env() -> String {
 
 fn xdp_optimized_tcp_config() -> TcpTransportConfig {
     let mut cfg = tcp_transport_config_from_env();
-    cfg.max_inflight_batches = cfg.max_inflight_batches.max(1024);
+    cfg.max_inflight_batches = std::env::var("GHOSTLINK_XDP_MAX_INFLIGHT")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(256)
+        .max(1);
     cfg.reconnect_attempts = cfg.reconnect_attempts.min(2);
     cfg.reconnect_backoff_ms = cfg.reconnect_backoff_ms.min(10);
     cfg
@@ -1166,7 +1170,17 @@ fn print_flow(opts: FlowOptions) -> Result<()> {
                         "AF_XDP probe succeeded on interface '{}'; using xdp-optimized runtime settings.",
                         interface
                     );
-                    let tcp_cfg = xdp_optimized_tcp_config();
+                    let base_tcp_cfg = xdp_optimized_tcp_config();
+                    let tcp_cfg = if is_env_truthy("GHOSTLINK_TCP_AUTOTUNE") {
+                        autotune_tcp_transport_config(
+                            &pipeline_plan,
+                            opts.execution_tokens,
+                            opts.micro_batch,
+                            base_tcp_cfg,
+                        )?
+                    } else {
+                        base_tcp_cfg
+                    };
                     selected_tcp_cfg = Some(tcp_cfg.clone());
                     execute_pipeline_xdp_loopback_with_config(
                         &pipeline_plan,
@@ -1182,7 +1196,17 @@ fn print_flow(opts: FlowOptions) -> Result<()> {
                         interface, reason
                     );
                     effective_transport_mode = FlowTransportMode::TcpLoopback;
-                    let tcp_cfg = tcp_transport_config_from_env();
+                    let base_tcp_cfg = tcp_transport_config_from_env();
+                    let tcp_cfg = if is_env_truthy("GHOSTLINK_TCP_AUTOTUNE") {
+                        autotune_tcp_transport_config(
+                            &pipeline_plan,
+                            opts.execution_tokens,
+                            opts.micro_batch,
+                            base_tcp_cfg,
+                        )?
+                    } else {
+                        base_tcp_cfg
+                    };
                     selected_tcp_cfg = Some(tcp_cfg.clone());
                     execute_pipeline_tcp_loopback_with_config(
                         &pipeline_plan,
