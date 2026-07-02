@@ -1,29 +1,29 @@
 /// Tensor streaming fabric benchmark for multi-node inference
 /// Simplified test harness measuring throughput and latency only
-
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use ghostlink_core::runtime::{
-    execute_pipeline, execute_pipeline_tcp_loopback, PipelinePlan, StagePlacement, DeviceKind,
+    execute_pipeline, execute_pipeline_tcp_loopback, DeviceKind, PipelinePlan, StagePlacement,
 };
 
 /// Baseline: zero-copy in-memory execution (single GPU)
 fn benchmark_inmem_baseline(c: &mut Criterion) {
     let plan = PipelinePlan {
-        stages: vec![
-            StagePlacement {
-                node_id: "gpu-0".to_string(),
-                start_layer: 0,
-                end_layer: 30,
-                device: DeviceKind::Gpu,
-                est_latency_ms: 1.5,
-            },
-        ],
+        stages: vec![StagePlacement {
+            node_id: "gpu-0".to_string(),
+            start_layer: 0,
+            end_layer: 30,
+            device: DeviceKind::Gpu,
+            est_latency_ms: 1.5,
+        }],
     };
 
     c.bench_function("fabric_inmem_single_gpu", |b| {
         b.iter(|| {
             let result = execute_pipeline(&plan, black_box(128), 4);
-            (result.throughput_tokens_per_sec, result.avg_token_latency_ms)
+            (
+                result.throughput_tokens_per_sec,
+                result.avg_token_latency_ms,
+            )
         });
     });
 }
@@ -51,9 +51,12 @@ fn benchmark_tcp_two_stage_split(c: &mut Criterion) {
 
     c.bench_function("fabric_tcp_two_stage_split", |b| {
         b.iter(|| {
-            let result = execute_pipeline_tcp_loopback(&plan, black_box(128), 4)
-                .expect("loopback failed");
-            (result.throughput_tokens_per_sec, result.avg_token_latency_ms)
+            let result =
+                execute_pipeline_tcp_loopback(&plan, black_box(128), 4).expect("loopback failed");
+            (
+                result.throughput_tokens_per_sec,
+                result.avg_token_latency_ms,
+            )
         });
     });
 }
@@ -95,9 +98,12 @@ fn benchmark_tcp_four_stage_split(c: &mut Criterion) {
 
     c.bench_function("fabric_tcp_four_stage_split", |b| {
         b.iter(|| {
-            let result = execute_pipeline_tcp_loopback(&plan, black_box(128), 4)
-                .expect("loopback failed");
-            (result.throughput_tokens_per_sec, result.avg_token_latency_ms)
+            let result =
+                execute_pipeline_tcp_loopback(&plan, black_box(128), 4).expect("loopback failed");
+            (
+                result.throughput_tokens_per_sec,
+                result.avg_token_latency_ms,
+            )
         });
     });
 }
