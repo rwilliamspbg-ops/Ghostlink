@@ -4,7 +4,7 @@
 
 This checklist covers runtime reliability, CI gate coverage, GUI readiness, and operational hygiene for Ghost-Link.
 
-## Current Status (2026-06-29)
+## Current Status (2026-07-02)
 
 - Rust workspace build/test/lint gates are configured and exercised in CI.
 - Runtime smoke + SLO validation gates are enforced via `production-gate.yml`.
@@ -13,6 +13,8 @@ This checklist covers runtime reliability, CI gate coverage, GUI readiness, and 
 - Security workflow now enforces secret scanning and dependency advisory checks.
 - Production gate now includes fault-matrix runs, active network probes, and XDP/eBPF preflight signal collection.
 - Release workflow and local release bundle script are available for reproducible artifact packaging.
+- Current PR branch status is fully green (19/19 checks passing across CI, security, docs, tests, benchmarks, and production gates).
+- AF_XDP mode is now validated in privileged runs with autotune-on-by-default behavior and automatic fallback to TCP when probe fails.
 
 ## Release Gates
 
@@ -45,7 +47,7 @@ python3 scripts/verify_hf_models.py
 
 ## Known Gaps
 
-- AF_XDP/eBPF paths are still primarily unit-tested and Linux-specific.
+- AF_XDP/eBPF fast path still depends on privileged host profile and compatible kernel/NIC capabilities.
 - Full hardware probing depth depends on host tooling (`nvidia-smi`, `lspci`) availability.
 - GUI currently relies on a Python runtime and desktop dependencies; packaging remains optional.
 

@@ -37,6 +37,13 @@ This script automates environment setup, builds the high-performance core, and l
 
 ## 📊 Performance Results (July 2026)
 
+### Repository State Snapshot (2026-07-02)
+
+- CI status for PR #36: **19/19 checks passing** (0 failing, 0 pending)
+- Security lanes: secret scan, Python dependency audit, and Rust advisory audit all green
+- Production gates: `Production Gate` and `CI/Production Gate` green
+- Latest optimization commits: `f1b55e9`, `6abcdc2`
+
 ### Real Throughput Measurements
 
 **Deterministic Profile**: 256 tokens, micro-batch 4, 5 runs (+1 warmup), release mode  
@@ -54,6 +61,25 @@ This script automates environment setup, builds the high-performance core, and l
 - Deterministic in-memory: +91.9% throughput (257,236.81 -> 493,793.92 tok/s)
 - Stress TCP: +7.6% throughput (211,834.01 -> 227,919.80 tok/s)
 - Stress in-memory: +21.2% throughput (447,816.14 -> 542,615.61 tok/s)
+
+### AF_XDP Validated Profile (Privileged Host Run)
+
+Root-backed AF_XDP runs in this workspace now produce true `effective_transport_mode: xdp`.
+
+| Mode | Throughput Avg (tok/s) | P95 Avg (ms) | Effective Transport | Selected Inflight |
+| :--- | ---: | ---: | :--- | ---: |
+| XDP (`GHOSTLINK_XDP_AUTOTUNE` default on) | 596,995.66 | 0.41 | xdp | 64 |
+| XDP (`GHOSTLINK_XDP_AUTOTUNE=0`) | 331,150.29 | 0.99 | xdp | 256 |
+
+Observed gain from default xdp autotune in this host profile:
+- Throughput: **+80.3%**
+- P95 latency average: **-58.8%**
+
+Reference artifacts:
+- `tmp/perf_nextstep_xdp_default/summary.json`
+- `tmp/perf_nextstep_xdp_noautotune/summary.json`
+- `tmp/perf_sweetspot_afxdp/xdp_autotune/summary.json`
+- `tmp/perf_sweetspot_afxdp/tcp_baseline/summary.json`
 
 **Baseline files**: `docs/PERF_BASELINE.json`, `docs/PERF_BASELINE_STRESS.json`  
 **Criterion summary**: `artifacts/criterion-summary.json`
@@ -196,10 +222,15 @@ sudo -E bash -lc 'export RUSTUP_HOME=/home/codespace/.rustup CARGO_HOME=/home/co
 ```
 
 Recent workspace sweep identified a stable sweet spot with xdp autotune:
-- `throughput_avg`: **480,384.57 tok/s**
-- `p95_avg`: **0.57 ms**
+- `throughput_avg`: **480,384.57 tok/s** (6-run sweep)
+- `p95_avg`: **0.57 ms** (6-run sweep)
 - `effective_transport_mode`: **xdp**
 - selected `tcp_max_inflight_batches`: **192**
+
+Latest focused A/B validation (4 runs) improved further with cached autotune selection:
+- `throughput_avg`: **596,995.66 tok/s**
+- `p95_avg`: **0.41 ms**
+- selected `tcp_max_inflight_batches`: **64**
 
 Reference artifacts: `tmp/perf_sweetspot_afxdp/xdp_autotune/summary.json` and `tmp/perf_sweetspot_afxdp/tcp_baseline/summary.json`.
 
