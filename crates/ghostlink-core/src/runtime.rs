@@ -370,7 +370,8 @@ pub fn execute_pipeline_with_rebalance_and_measured(
     // Use zero-copy SPSC ring buffers for high-throughput in-memory execution.
     let ring_cfg = RingConfig {
         capacity: 512,
-        backpressure_threshold: 400,
+        // Keep backpressure near capacity so stage handoff can utilize the ring depth.
+        backpressure_threshold: 510,
     };
 
     let mut rings = Vec::with_capacity(stage_count + 1);
@@ -395,8 +396,12 @@ pub fn execute_pipeline_with_rebalance_and_measured(
 
             loop {
                 let recv_start = Instant::now();
-                while rx_ring.is_empty() {
-                    if Arc::strong_count(&rx_ring) <= 1 {
+                let mut spins = 0usize;
+                let mut batch = loop {
+                    if let Some(batch) = rx_ring.pop() {
+                        break batch;
+                    }
+                    if spins > 0 && spins % 256 == 0 && Arc::strong_count(&rx_ring) <= 1 {
                         return StageAccumulator {
                             stage_idx,
                             processed_batches,
@@ -405,10 +410,12 @@ pub fn execute_pipeline_with_rebalance_and_measured(
                             total_send_wait_ms,
                         };
                     }
-                    thread::yield_now();
-                }
-                let Some(mut batch) = rx_ring.pop() else {
-                    continue;
+                    if spins < 100 {
+                        core::hint::spin_loop();
+                    } else {
+                        thread::yield_now();
+                    }
+                    spins += 1;
                 };
                 total_recv_wait_ms += recv_start.elapsed().as_secs_f32() * 1000.0;
 

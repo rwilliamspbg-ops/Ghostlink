@@ -39,30 +39,36 @@ This script automates environment setup, builds the high-performance core, and l
 
 ### Real Throughput Measurements
 
-**Test Configuration**: 30B model, 5-stage layer split, 256 tokens, micro-batch size 8
+**Deterministic Profile**: 256 tokens, micro-batch 4, 5 runs (+1 warmup), release mode  
+**Stress Profile**: 512 tokens, micro-batch 8, 12 runs (+2 warmup), release mode
 
-| Transport Mode | Throughput (tok/s) | Avg Latency (ms) | P95 Latency (ms) | Notes |
-| :--- | ---: | ---: | ---: | :--- |
-| **In-Memory (Zero-Copy SPSC)** | **433,164** | **0.44** | **0.46** | Single GPU baseline; lock-free ring buffers |
-| **TCP Loopback (Baseline)** | 149,918 | 1.55 | 1.69 | Standard TCP stack; serial layer-split bound |
-| **TCP Loopback (Autotuned)** | 198,403 | 1.28 | 1.29 | +32.3% improvement via queue depth tuning |
-| **AF_XDP (Target, Phase 2)** | >1,500,000 | ~0.10 | ~0.15 | Kernel bypass; 7.5× throughput improvement |
+| Profile | Transport Mode | Throughput (tok/s) | P95 Latency (ms) | Wall Avg (s) |
+| :--- | :--- | ---: | ---: | ---: |
+| Deterministic | TCP loopback | 136,279.81 | 1.86 | 1.89 |
+| Deterministic | In-memory | 493,793.92 | 0.64 | 0.78 |
+| Stress | TCP loopback | 227,919.80 | 2.23 | 2.28 |
+| Stress | In-memory | 542,615.61 | 0.85 | 1.04 |
 
-**Test Date**: 2026-07-01  
-**Environment**: Multi-threaded Rust runtime with criterion benchmarks (n=10 samples)  
-**Full Results**: See [TENSOR_STREAMING_TEST_REPORT.md](tmp/TENSOR_STREAMING_TEST_REPORT.md)
+**Optimization delta (2026-07-02 runtime tuning refresh)**:
+- Deterministic TCP: +10.7% throughput (123,097.05 -> 136,279.81 tok/s)
+- Deterministic in-memory: +91.9% throughput (257,236.81 -> 493,793.92 tok/s)
+- Stress TCP: +7.6% throughput (211,834.01 -> 227,919.80 tok/s)
+- Stress in-memory: +21.2% throughput (447,816.14 -> 542,615.61 tok/s)
+
+**Baseline files**: `docs/PERF_BASELINE.json`, `docs/PERF_BASELINE_STRESS.json`  
+**Criterion summary**: `artifacts/criterion-summary.json`
 
 ### Test Summary
 
 - ✅ **86 unit tests passing** (all core modules)
 - ✅ **28 integration tests passing** (multi-node cluster scenarios)
-- ✅ **6 criterion benchmarks** (in-memory, TCP 2-stage, 4-stage splits)
+- ✅ **16 criterion micro-benchmarks** summarized in `artifacts/criterion-summary.json`
 - ✅ **Zero data loss** verified via CRC32 + HMAC-SHA256 auth
 - ✅ **Fault tolerance validated** (node rejoin, concurrent failures)
 
 ### Fabric Efficiency Analysis
 
-**Current TCP Throughput Relative to Peak**: 198,403 / 433,164 = **45.9%**
+**Current TCP Throughput Relative to in-memory baseline (deterministic profile)**: 136,279.81 / 493,793.92 = **27.6%**
 
 **Why the ~54% Degradation?** The bottleneck is **per-token LAN latency, not protocol overhead**:
 
@@ -124,9 +130,9 @@ bash scripts/run_all_tests.sh
 # Individual commands:
 cargo test --workspace                                    # 86 unit + 28 integration tests
 cargo bench --bench tensor_streaming_fabric              # Criterion benchmarks
-cargo run -p ghost-link --release -- flow ... inmem      # In-memory baseline (~433K tok/s)
-cargo run -p ghost-link --release -- flow ... tcp        # TCP transport (~150K tok/s)
-GHOSTLINK_TCP_AUTOTUNE=1 cargo run -p ghost-link ... tcp # Autotuned TCP (+32% improvement)
+cargo run -p ghost-link --release -- flow ... inmem      # In-memory baseline (~494K tok/s deterministic on current host)
+cargo run -p ghost-link --release -- flow ... tcp        # TCP transport (~136K tok/s deterministic on current host)
+GHOSTLINK_TCP_AUTOTUNE=1 cargo run -p ghost-link ... tcp # Autotune queue depth for host-specific TCP gain
 ```
 
 See [Test Runner Scripts](#-development--validation) for detailed invocations.
@@ -260,7 +266,7 @@ python3 scripts/verify_hf_models.py
 - ✅ Real throughput measurement & benchmarking
 - ✅ TCP autotune (queue depth optimization)
 
-**Phase 1 Result**: 198K tok/s (45% efficiency) on TCP; **bottleneck identified as LAN latency** (not software).
+**Phase 1 Result**: ~228K tok/s (stress) / ~136K tok/s (deterministic) on TCP; **bottleneck remains dominated by transport latency**.
 
 ### Phase 2 (Planned - AF_XDP Kernel Bypass)
 - ⏳ AF_XDP socket integration
