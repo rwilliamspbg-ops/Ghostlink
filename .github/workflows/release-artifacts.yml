@@ -63,7 +63,7 @@ jobs:
       - name: Generate SBOM
         uses: anchore/sbom-action@v0
         with:
-          path: ./artifacts/release/ghost-link
+          file: ./artifacts/release/ghost-link
           format: spdx-json
           output-file: ./artifacts/release/sbom.spdx.json
 
