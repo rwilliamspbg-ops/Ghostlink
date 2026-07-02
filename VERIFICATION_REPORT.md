@@ -44,8 +44,8 @@ This report summarizes the verification status of the Ghostlink codebase as of t
 - **Verdict**: PASS (privileged host profile)
 - **effective_transport_mode**: `xdp` confirmed in benchmark summaries
 - **A/B outcome**:
-	- autotune default on: 596,995.66 tok/s, p95 0.41 ms
-	- autotune disabled: 331,150.29 tok/s, p95 0.99 ms
+  - autotune default on: 596,995.66 tok/s, p95 0.41 ms
+  - autotune disabled: 331,150.29 tok/s, p95 0.99 ms
 
 ### `cluster-start` (Discovery)
 - **Verdict**: PASS
