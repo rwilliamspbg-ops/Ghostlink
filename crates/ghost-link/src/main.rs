@@ -788,12 +788,34 @@ fn tcp_transport_config_from_env() -> TcpTransportConfig {
 }
 
 fn is_env_truthy(name: &str) -> bool {
-    matches!(
-        std::env::var(name)
-            .ok()
-            .map(|v| v.trim().to_ascii_lowercase())
-            .as_deref(),
-        Some("1" | "true" | "yes" | "on")
+    env_bool(name) == Some(true)
+}
+
+fn parse_env_bool_value(raw: &str) -> Option<bool> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "on" => Some(true),
+        "0" | "false" | "no" | "off" => Some(false),
+        _ => None,
+    }
+}
+
+fn env_bool(name: &str) -> Option<bool> {
+    std::env::var(name)
+        .ok()
+        .and_then(|raw| parse_env_bool_value(&raw))
+}
+
+fn xdp_autotune_enabled_from_flags(
+    tcp_autotune_flag: Option<bool>,
+    xdp_autotune_flag: Option<bool>,
+) -> bool {
+    xdp_autotune_flag.or(tcp_autotune_flag).unwrap_or(true)
+}
+
+fn xdp_autotune_enabled() -> bool {
+    xdp_autotune_enabled_from_flags(
+        env_bool("GHOSTLINK_TCP_AUTOTUNE"),
+        env_bool("GHOSTLINK_XDP_AUTOTUNE"),
     )
 }
 
@@ -1171,7 +1193,7 @@ fn print_flow(opts: FlowOptions) -> Result<()> {
                         interface
                     );
                     let base_tcp_cfg = xdp_optimized_tcp_config();
-                    let tcp_cfg = if is_env_truthy("GHOSTLINK_TCP_AUTOTUNE") {
+                    let tcp_cfg = if xdp_autotune_enabled() {
                         autotune_tcp_transport_config(
                             &pipeline_plan,
                             opts.execution_tokens,
@@ -1305,7 +1327,7 @@ fn print_flow(opts: FlowOptions) -> Result<()> {
         );
         if matches!(opts.transport_mode, FlowTransportMode::Xdp) {
             println!(
-                "XDP control: GHOSTLINK_XDP_INTERFACE (default: eth0). If AF_XDP probe fails, runtime falls back to TCP automatically.\n"
+                "XDP control: GHOSTLINK_XDP_INTERFACE (default: eth0), GHOSTLINK_XDP_AUTOTUNE (default: true when AF_XDP probe succeeds). If AF_XDP probe fails, runtime falls back to TCP automatically.\n"
             );
         }
     }
@@ -3985,6 +4007,30 @@ mod tests {
             normalize_tcp_autotune_candidates(vec![256, 64, 256, 0, 32], 512),
             vec![32, 64, 256]
         );
+    }
+
+    #[test]
+    fn parse_env_bool_value_supports_common_literals() {
+        assert_eq!(parse_env_bool_value("1"), Some(true));
+        assert_eq!(parse_env_bool_value("true"), Some(true));
+        assert_eq!(parse_env_bool_value("YES"), Some(true));
+        assert_eq!(parse_env_bool_value("on"), Some(true));
+        assert_eq!(parse_env_bool_value("0"), Some(false));
+        assert_eq!(parse_env_bool_value("false"), Some(false));
+        assert_eq!(parse_env_bool_value("No"), Some(false));
+        assert_eq!(parse_env_bool_value("off"), Some(false));
+        assert_eq!(parse_env_bool_value("maybe"), None);
+    }
+
+    #[test]
+    fn xdp_autotune_flag_precedence_is_stable() {
+        assert!(xdp_autotune_enabled_from_flags(None, None));
+        assert!(!xdp_autotune_enabled_from_flags(Some(false), None));
+        assert!(xdp_autotune_enabled_from_flags(Some(true), None));
+        assert!(!xdp_autotune_enabled_from_flags(None, Some(false)));
+        assert!(xdp_autotune_enabled_from_flags(None, Some(true)));
+        assert!(xdp_autotune_enabled_from_flags(Some(false), Some(true)));
+        assert!(!xdp_autotune_enabled_from_flags(Some(true), Some(false)));
     }
 
     #[test]

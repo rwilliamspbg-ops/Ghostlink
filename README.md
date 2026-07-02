@@ -134,6 +134,7 @@ cargo run -p ghost-link --release -- flow ... inmem      # In-memory baseline (~
 cargo run -p ghost-link --release -- flow ... tcp        # TCP transport (~136K tok/s deterministic on current host)
 cargo run -p ghost-link --release -- flow ... xdp        # AF_XDP-first mode with automatic fallback to TCP
 GHOSTLINK_TCP_AUTOTUNE=1 cargo run -p ghost-link ... tcp # Autotune queue depth for host-specific TCP gain
+GHOSTLINK_XDP_AUTOTUNE=0 cargo run -p ghost-link ... xdp # Disable xdp-mode autotune (enabled by default on AF_XDP success)
 ```
 
 See [Test Runner Scripts](#-development--validation) for detailed invocations.
@@ -166,6 +167,7 @@ cargo run -p ghost-link -- doctor --network-probe --network-target 127.0.0.1:800
 | `GHOSTLINK_DISCOVERY_AUTH_TOKEN` | Shared secret for UDP discovery authentication | - |
 | `GHOSTLINK_TCP_MAX_INFLIGHT` | Max concurrent batches in TCP bridge | `256` |
 | `GHOSTLINK_TCP_AUTOTUNE` | Enable automatic queue depth optimization (Phase 1.1) | `false` |
+| `GHOSTLINK_XDP_AUTOTUNE` | Override autotune behavior in `xdp` mode (defaults to autotune when AF_XDP probe succeeds) | `true` in xdp mode |
 | `GHOSTLINK_XDP_INTERFACE` | Interface used for AF_XDP probe when transport mode is `xdp`; runtime falls back to TCP if probe fails | `eth0` |
 | `GHOSTLINK_PYTHON` | Path override for GUI/doctor Python executable (when unset, prefers repo `.venv/bin/python` then `python3`) | `repo .venv/bin/python` if present, else `python3` |
 | `GHOSTLINK_DISTRIBUTED_SMOKE` | Enable distributed runtime validation in `flow` | `false` |
@@ -183,7 +185,23 @@ GHOSTLINK_TCP_AUTOTUNE=1 GHOSTLINK_TCP_AUTOTUNE_RUNS=3 \
 GHOSTLINK_TCP_MAX_INFLIGHT=256 cargo run -p ghost-link --release -- flow ... tcp
 ```
 
-**Result**: +32% throughput improvement (198K → 149K tok/s) by reducing head-of-line blocking.
+**Result**: +32% throughput improvement (149K -> 198K tok/s) by reducing head-of-line blocking.
+
+**AF_XDP tuning (root + AF_XDP-capable interface):**
+
+```bash
+# Default xdp behavior now autotunes automatically after AF_XDP probe succeeds
+sudo -E bash -lc 'export RUSTUP_HOME=/home/codespace/.rustup CARGO_HOME=/home/codespace/.cargo PATH=/home/codespace/.cargo/bin:$PATH; \
+  python3 scripts/flow_perf_snapshot.py --runs 6 --warmup-runs 1 --release --modes tcp xdp --xdp-interface vethx0 --exec-tokens 256 --micro-batch 4 --output-dir ./tmp/perf_afxdp_true_workspace'
+```
+
+Recent workspace sweep identified a stable sweet spot with xdp autotune:
+- `throughput_avg`: **480,384.57 tok/s**
+- `p95_avg`: **0.57 ms**
+- `effective_transport_mode`: **xdp**
+- selected `tcp_max_inflight_batches`: **192**
+
+Reference artifacts: `tmp/perf_sweetspot_afxdp/xdp_autotune/summary.json` and `tmp/perf_sweetspot_afxdp/tcp_baseline/summary.json`.
 
 ## ⚠️ Runtime Notes
 
