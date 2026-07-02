@@ -1,0 +1,3 @@
+## 2026-07-02 - [SPSC Ring Buffer Optimization]
+**Learning:** Shared atomic counters in SPSC (Single-Producer Single-Consumer) structures cause significant cache line contention (false sharing or simply bouncing) even if the rest of the structure is properly padded. The length of a ring buffer can be derived from head/tail pointers, making an explicit shared 'count' or 'empty_count' redundant and slow.
+**Action:** Always derive length/fullness from head and tail pointers in SPSC buffers instead of using a shared atomic counter. Ensure power-of-two capacities to allow bitwise masking for wrapping.

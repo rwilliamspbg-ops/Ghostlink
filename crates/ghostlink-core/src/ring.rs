@@ -54,8 +54,6 @@ pub struct SpscRingBuffer<T> {
     _pad3: [u8; 64],
     /// Overflow counter for backpressure monitoring
     overflow_count: AtomicUsize,
-    /// Empty count for backpressure monitoring
-    empty_count: AtomicUsize,
     /// Configuration for this ring buffer
     config: RingConfig,
 }
@@ -83,7 +81,6 @@ impl<T> SpscRingBuffer<T> {
             tail: AtomicUsize::new(0),
             _pad3: [0; 64],
             overflow_count: AtomicUsize::new(0),
-            empty_count: AtomicUsize::new(Self::CAPACITY - config.capacity),
             config,
         }
     }
@@ -99,11 +96,7 @@ impl<T> SpscRingBuffer<T> {
         let head = self.head.load(Ordering::Acquire);
 
         // Check if ring is full using count (respects config.capacity)
-        let current_len = if tail >= head {
-            tail - head
-        } else {
-            Self::CAPACITY - head + tail
-        };
+        let current_len = tail.wrapping_sub(head) & (Self::CAPACITY - 1);
 
         if current_len >= self.config.capacity {
             self.overflow_count.fetch_add(1, Ordering::Relaxed);
@@ -121,8 +114,6 @@ impl<T> SpscRingBuffer<T> {
             self.tail.store(next_tail, Ordering::Release);
         }
 
-        self.empty_count.fetch_sub(1, Ordering::Relaxed);
-
         Ok(())
     }
 
@@ -136,7 +127,7 @@ impl<T> SpscRingBuffer<T> {
         let tail = self.tail.load(Ordering::Acquire);
 
         // Check if ring is empty (with wrap-around handling)
-        let is_empty = if head >= tail { head == tail } else { false };
+        let is_empty = head == tail;
 
         if is_empty {
             return None;
@@ -152,8 +143,6 @@ impl<T> SpscRingBuffer<T> {
 
             val
         };
-
-        self.empty_count.fetch_add(1, Ordering::Relaxed);
 
         Some(value)
     }
@@ -183,7 +172,7 @@ impl<T> SpscRingBuffer<T> {
 
     /// Get empty count for backpressure monitoring
     pub fn empty_count(&self) -> usize {
-        self.empty_count.load(Ordering::Relaxed)
+        self.config.capacity.saturating_sub(self.len())
     }
 
     /// Check if backpressure should be applied (ring >= threshold)
