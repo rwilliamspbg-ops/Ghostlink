@@ -3,9 +3,10 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::fs;
+use std::net::{TcpStream, ToSocketAddrs};
 use std::path::PathBuf;
 use std::process::Command;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 #[derive(Serialize)]
 struct StudioStatus {
@@ -31,6 +32,8 @@ fn main() {
             studio_status,
             studio_snapshot,
             cluster_preview,
+            discover_workers,
+            load_flow_defaults,
             list_model_presets,
             run_validation_tier,
             load_ghostlink_config,
@@ -39,8 +42,10 @@ fn main() {
             import_studio_profile,
             run_doctor,
             run_doctor_with_json,
+            quick_tcp_probe,
             run_probe,
             run_flow_quick,
+            run_flow_between,
             run_cluster_start,
             verify_hf_repo,
             chat_infer
@@ -225,6 +230,36 @@ struct ClusterPreview {
 }
 
 #[derive(Serialize)]
+struct WorkerDiscoveryCard {
+    id: String,
+    available: bool,
+    workers: usize,
+    system_memory_gb: f32,
+    gpu_vram_gb: f32,
+    acceleration: String,
+    health: String,
+    probe_mode: String,
+    error: Option<String>,
+}
+
+#[derive(Serialize)]
+struct WorkerDiscoveryResult {
+    query: Vec<String>,
+    available_count: usize,
+    workers: Vec<WorkerDiscoveryCard>,
+    summary: String,
+}
+
+#[derive(Serialize)]
+struct FlowDefaults {
+    local_id: String,
+    remote_id: String,
+    execution_tokens: u32,
+    micro_batch: u32,
+    transport: String,
+}
+
+#[derive(Serialize)]
 struct ModelPreset {
     name: String,
     repo: String,
@@ -244,6 +279,35 @@ struct StudioProfile {
     chat_model: String,
     chat_distributed: bool,
     config_content: String,
+    #[serde(default)]
+    worker_probe_hints: String,
+    #[serde(default)]
+    worker_probe_full: bool,
+    #[serde(default)]
+    local_node_id: String,
+    #[serde(default)]
+    remote_node_id: String,
+    #[serde(default)]
+    flow_transport: String,
+    #[serde(default)]
+    flow_execution_tokens: u32,
+    #[serde(default)]
+    flow_micro_batch: u32,
+    #[serde(default)]
+    start_node_count: u32,
+    #[serde(default)]
+    start_base_port: u16,
+    #[serde(default)]
+    show_advanced_cluster_buttons: bool,
+}
+
+#[derive(Serialize)]
+struct TcpProbeResult {
+    host: String,
+    port: u16,
+    reachable: bool,
+    latency_ms: Option<u128>,
+    error: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -285,6 +349,92 @@ fn cluster_preview(node_id: String, full: bool) -> Result<ClusterPreview, String
         ),
         nodes,
     })
+}
+
+#[tauri::command]
+fn discover_workers(node_ids: Vec<String>, full: bool) -> Result<WorkerDiscoveryResult, String> {
+    let mut query = merge_worker_discovery_ids(node_ids);
+    if query.is_empty() {
+        query = vec!["studio-local".to_string(), "studio-remote".to_string()];
+    }
+
+    let probe_mode = if full { "full" } else { "fast" };
+    let mut workers = Vec::with_capacity(query.len());
+    let mut available_count = 0usize;
+
+    for node_id in &query {
+        let command = run_ghostlink_command(if full {
+            vec!["probe", node_id.as_str(), "full"]
+        } else {
+            vec!["probe", node_id.as_str(), "fast"]
+        })?;
+
+        if command.ok {
+            if let Some(parsed) = parse_probe_to_node(command.stdout.as_str()) {
+                available_count = available_count.saturating_add(1);
+                workers.push(WorkerDiscoveryCard {
+                    id: parsed.id,
+                    available: true,
+                    workers: parsed.workers,
+                    system_memory_gb: parsed.system_memory_gb,
+                    gpu_vram_gb: parsed.gpu_vram_gb,
+                    acceleration: parsed.acceleration,
+                    health: parsed.health,
+                    probe_mode: probe_mode.to_string(),
+                    error: None,
+                });
+                continue;
+            }
+        }
+
+        let stderr = command.stderr.trim();
+        let stdout = command.stdout.trim();
+        let detail = if !stderr.is_empty() {
+            stderr
+        } else if !stdout.is_empty() {
+            stdout
+        } else {
+            "probe command produced no details"
+        };
+
+        workers.push(WorkerDiscoveryCard {
+            id: node_id.clone(),
+            available: false,
+            workers: 0,
+            system_memory_gb: 0.0,
+            gpu_vram_gb: 0.0,
+            acceleration: "unknown".to_string(),
+            health: "unreachable".to_string(),
+            probe_mode: probe_mode.to_string(),
+            error: Some(detail.to_string()),
+        });
+    }
+
+    Ok(WorkerDiscoveryResult {
+        summary: format!("{} of {} workers reachable", available_count, workers.len()),
+        query,
+        available_count,
+        workers,
+    })
+}
+
+#[tauri::command]
+fn load_flow_defaults() -> FlowDefaults {
+    let defaults = parse_flow_config_defaults().unwrap_or(FlowDefaults {
+        local_id: "studio-local".to_string(),
+        remote_id: "studio-remote".to_string(),
+        execution_tokens: 64,
+        micro_batch: 2,
+        transport: "tcp".to_string(),
+    });
+
+    FlowDefaults {
+        local_id: sanitize_node_id(defaults.local_id.as_str(), "studio-local"),
+        remote_id: sanitize_node_id(defaults.remote_id.as_str(), "studio-remote"),
+        execution_tokens: defaults.execution_tokens.clamp(16, 512),
+        micro_batch: defaults.micro_batch.clamp(1, 16),
+        transport: sanitize_transport(defaults.transport.as_str()),
+    }
 }
 
 #[tauri::command]
@@ -420,6 +570,16 @@ fn export_studio_profile(
     chat_model: String,
     chat_distributed: bool,
     config_content: String,
+    worker_probe_hints: String,
+    worker_probe_full: bool,
+    local_node_id: String,
+    remote_node_id: String,
+    flow_transport: String,
+    flow_execution_tokens: u32,
+    flow_micro_batch: u32,
+    start_node_count: u32,
+    start_base_port: u16,
+    show_advanced_cluster_buttons: bool,
 ) -> Result<StudioProfileExportResult, String> {
     let root = repo_root();
     let sanitized = sanitize_profile_name(profile_name.as_str());
@@ -443,6 +603,16 @@ fn export_studio_profile(
         chat_model,
         chat_distributed,
         config_content,
+        worker_probe_hints,
+        worker_probe_full,
+        local_node_id,
+        remote_node_id,
+        flow_transport,
+        flow_execution_tokens,
+        flow_micro_batch,
+        start_node_count,
+        start_base_port,
+        show_advanced_cluster_buttons,
     };
 
     let out_path = profile_dir.join(format!("{}.json", sanitized));
@@ -576,6 +746,43 @@ fn run_doctor_with_json(strict: bool) -> Result<DoctorJsonSummary, String> {
 }
 
 #[tauri::command]
+fn quick_tcp_probe(host: String, port: u16, timeout_ms: u64) -> Result<TcpProbeResult, String> {
+    let host_trimmed = host.trim();
+    if host_trimmed.is_empty() {
+        return Err("host cannot be empty".to_string());
+    }
+    if port == 0 {
+        return Err("port must be > 0".to_string());
+    }
+
+    let timeout = Duration::from_millis(timeout_ms.clamp(50, 10_000));
+    let address = format!("{}:{}", host_trimmed, port);
+    let socket = address
+        .to_socket_addrs()
+        .map_err(|err| format!("failed to resolve {}: {}", address, err))?
+        .next()
+        .ok_or_else(|| format!("failed to resolve {}", address))?;
+
+    let start = Instant::now();
+    match TcpStream::connect_timeout(&socket, timeout) {
+        Ok(_) => Ok(TcpProbeResult {
+            host: host_trimmed.to_string(),
+            port,
+            reachable: true,
+            latency_ms: Some(start.elapsed().as_millis()),
+            error: None,
+        }),
+        Err(err) => Ok(TcpProbeResult {
+            host: host_trimmed.to_string(),
+            port,
+            reachable: false,
+            latency_ms: None,
+            error: Some(err.to_string()),
+        }),
+    }
+}
+
+#[tauri::command]
 fn run_probe(node_id: String, full: bool) -> Result<CommandResult, String> {
     run_ghostlink_command(if full {
         vec!["probe", node_id.as_str(), "full"]
@@ -595,6 +802,32 @@ fn run_flow_quick() -> Result<CommandResult, String> {
         "64",
         "2",
         "tcp",
+    ])
+}
+
+#[tauri::command]
+fn run_flow_between(
+    local_id: String,
+    remote_id: String,
+    execution_tokens: u32,
+    micro_batch: u32,
+    transport: String,
+) -> Result<CommandResult, String> {
+    let local = sanitize_node_id(local_id.as_str(), "studio-local");
+    let remote = sanitize_node_id(remote_id.as_str(), "studio-remote");
+    let transport = sanitize_transport(transport.as_str());
+    let tokens_arg = execution_tokens.clamp(16, 512).to_string();
+    let micro_batch_arg = micro_batch.clamp(1, 16).to_string();
+
+    run_ghostlink_command(vec![
+        "flow",
+        local.as_str(),
+        remote.as_str(),
+        "32",
+        "32",
+        tokens_arg.as_str(),
+        micro_batch_arg.as_str(),
+        transport.as_str(),
     ])
 }
 
@@ -895,6 +1128,136 @@ fn parse_probe_to_node(output: &str) -> Option<ClusterNodeCard> {
         gpu_vram_gb: vram,
         health: if vram > 0.0 { "healthy" } else { "degraded" }.to_string(),
     })
+}
+
+fn merge_worker_discovery_ids(mut requested: Vec<String>) -> Vec<String> {
+    requested.extend(node_ids_from_config());
+    requested.push("studio-local".to_string());
+    requested.push("studio-remote".to_string());
+    requested.push("local-node".to_string());
+
+    let mut merged = Vec::new();
+    for candidate in requested {
+        let trimmed = candidate.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if merged.iter().any(|known| known == trimmed) {
+            continue;
+        }
+        merged.push(trimmed.to_string());
+    }
+    merged
+}
+
+fn node_ids_from_config() -> Vec<String> {
+    let defaults = parse_flow_config_defaults();
+    let mut ids = Vec::new();
+    if let Some(flow) = defaults {
+        if !flow.local_id.trim().is_empty() {
+            ids.push(flow.local_id);
+        }
+        if !flow.remote_id.trim().is_empty() {
+            ids.push(flow.remote_id);
+        }
+    }
+    ids
+}
+
+fn parse_flow_config_defaults() -> Option<FlowDefaults> {
+    let root = repo_root();
+    let local = root.join("ghostlink.toml");
+    let example = root.join("ghostlink.example.toml");
+    let source = if local.exists() { local } else { example };
+    let raw = fs::read_to_string(source).ok()?;
+
+    let mut in_flow = false;
+    let mut local_id = None;
+    let mut remote_id = None;
+    let mut execution_tokens = None;
+    let mut micro_batch = None;
+    let mut transport = None;
+
+    for line in raw.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+
+        if trimmed.starts_with('[') && trimmed.ends_with(']') {
+            in_flow = trimmed == "[flow]";
+            continue;
+        }
+
+        if !in_flow {
+            continue;
+        }
+
+        if let Some(value) = parse_toml_string_value(trimmed, "local_id") {
+            local_id = Some(value);
+        } else if let Some(value) = parse_toml_string_value(trimmed, "remote_id") {
+            remote_id = Some(value);
+        } else if let Some(value) = parse_toml_u32_value(trimmed, "execution_tokens") {
+            execution_tokens = Some(value);
+        } else if let Some(value) = parse_toml_u32_value(trimmed, "micro_batch") {
+            micro_batch = Some(value);
+        } else if let Some(value) = parse_toml_string_value(trimmed, "transport") {
+            transport = Some(value);
+        }
+    }
+
+    Some(FlowDefaults {
+        local_id: local_id.unwrap_or_else(|| "studio-local".to_string()),
+        remote_id: remote_id.unwrap_or_else(|| "studio-remote".to_string()),
+        execution_tokens: execution_tokens.unwrap_or(64),
+        micro_batch: micro_batch.unwrap_or(2),
+        transport: transport.unwrap_or_else(|| "tcp".to_string()),
+    })
+}
+
+fn parse_toml_string_value(line: &str, key: &str) -> Option<String> {
+    let mut parts = line.splitn(2, '=');
+    let lhs = parts.next()?.trim();
+    if lhs != key {
+        return None;
+    }
+    let rhs = parts.next()?.trim();
+    if !rhs.starts_with('"') {
+        return None;
+    }
+    let value = rhs.trim_matches('"').trim();
+    if value.is_empty() {
+        None
+    } else {
+        Some(value.to_string())
+    }
+}
+
+fn parse_toml_u32_value(line: &str, key: &str) -> Option<u32> {
+    let mut parts = line.splitn(2, '=');
+    let lhs = parts.next()?.trim();
+    if lhs != key {
+        return None;
+    }
+    let rhs = parts.next()?.trim();
+    rhs.parse::<u32>().ok()
+}
+
+fn sanitize_node_id(value: &str, fallback: &str) -> String {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        fallback.to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+fn sanitize_transport(value: &str) -> String {
+    let candidate = value.trim().to_ascii_lowercase();
+    match candidate.as_str() {
+        "tcp" | "inmem" | "ibverbs" | "ucx" => candidate,
+        _ => "tcp".to_string(),
+    }
 }
 
 fn sanitize_profile_name(value: &str) -> String {

@@ -296,6 +296,72 @@ button:disabled {
   gap: 0.75rem;
 }
 
+.cluster-controls {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(220px, 1fr));
+  gap: 0.75rem;
+}
+
+.worker-discovery-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(220px, 1fr));
+  gap: 0.75rem;
+}
+
+.tcp-target-row {
+  align-items: center;
+}
+
+.tcp-pass {
+  color: #b8f8de;
+  font-size: 0.8rem;
+}
+
+.tcp-fail {
+  color: #ffd6d6;
+  font-size: 0.8rem;
+}
+
+.batch-results {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: rgba(16, 39, 55, 0.72);
+  padding: 0.8rem;
+  display: grid;
+  gap: 0.65rem;
+}
+
+.batch-results h3 {
+  margin: 0;
+}
+
+.batch-results-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(200px, 1fr));
+  gap: 0.6rem;
+}
+
+.batch-result {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.18);
+  padding: 0.6rem;
+}
+
+.batch-result p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.batch-result.ok {
+  border-color: rgba(63, 209, 159, 0.45);
+}
+
+.batch-result.fail {
+  border-color: rgba(255, 140, 140, 0.45);
+}
+
 .cluster-card {
   border: 1px solid var(--border);
   border-radius: 12px;
@@ -312,6 +378,13 @@ button:disabled {
   margin: 0.35rem 0 0;
   color: var(--muted);
   font-size: 0.82rem;
+}
+
+.cluster-card .worker-error {
+  color: #ffd6d6;
+  margin-top: 0.45rem;
+  max-height: 90px;
+  overflow: auto;
 }
 
 .cluster-card.healthy {
@@ -482,6 +555,14 @@ button:disabled {
   gap: 0.35rem;
 }
 
+.checkbox {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
 .profile-portability {
   border: 1px solid var(--border);
   border-radius: 12px;
@@ -601,6 +682,13 @@ button:disabled {
   }
 
   .history-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .cluster-controls,
+  .worker-discovery-grid,
+  .batch-results-grid,
+  .cluster-grid {
     grid-template-columns: 1fr;
   }
 

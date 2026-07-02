@@ -7,6 +7,22 @@ HOST="${1:-127.0.0.1}"
 PORT="${2:-8003}"
 BACKEND_URL="http://${HOST}:${PORT}"
 BACKEND_LOG="${ROOT_DIR}/tmp/gui-real-backend.log"
+CHECK_ONLY="${GHOSTLINK_CHECK_ONLY:-0}"
+
+if [[ "${3:-}" == "--check" ]]; then
+  CHECK_ONLY="1"
+fi
+
+require_cmd() {
+  local cmd="$1"
+  if ! command -v "$cmd" >/dev/null 2>&1; then
+    echo "[ERROR] Missing required command: ${cmd}" >&2
+    exit 1
+  fi
+}
+
+require_cmd cargo
+require_cmd curl
 
 mkdir -p "${ROOT_DIR}/tmp"
 
@@ -14,6 +30,11 @@ cd "${ROOT_DIR}"
 
 echo "[INFO] Building ghost-link binary"
 cargo build -p ghost-link >/dev/null
+
+if [[ "$CHECK_ONLY" == "1" ]]; then
+  echo "[OK] Preflight completed (check-only mode)"
+  exit 0
+fi
 
 echo "[INFO] Starting real backend on ${BACKEND_URL}"
 cargo run -p ghost-link -- serve "${HOST}" "${PORT}" >"${BACKEND_LOG}" 2>&1 &

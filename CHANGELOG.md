@@ -4,6 +4,17 @@ All notable changes to Ghost-Link will be documented in this file.
 
 ## Unreleased
 
+- Ghostlink Studio GUI v1.0.0 release prep:
+  - Added worker discovery with configurable node hints and fast/full probe modes.
+  - Added multi-select batch connect for reachable workers with per-worker result summaries.
+  - Added per-worker quick TCP connectivity checks with latency reporting.
+  - Persisted cluster/discovery preferences in both local UI prefs and profile export/import bundles.
+  - Added launch script preflight check modes and unsigned release bundle mode for easier packaging workflows.
+  - Added signed release verification assets:
+    - Public key: `artifacts/release/v1.0.0/GHOSTLINK_RELEASE_PUBLIC_KEY.asc`
+    - Signing key fingerprint: `53B7 2478 A086 201F 2D0E  2CC6 8286 9E53 C58B 384E`
+    - Verify command: `gpg --verify artifacts/release/v1.0.0/SHA256SUMS.asc artifacts/release/v1.0.0/SHA256SUMS`
+
 - Enabled xdp-mode autotune by default when AF_XDP probe succeeds, with explicit opt-out via `GHOSTLINK_XDP_AUTOTUNE=0`.
 - Added boolean env parsing + precedence tests for xdp/tcp autotune flags to lock in deterministic configuration behavior.
 - Extended flow benchmark harness usage guidance for privileged AF_XDP validation and documented true `effective_transport_mode=xdp` results.

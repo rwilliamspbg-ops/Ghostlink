@@ -21,10 +21,26 @@ Ghostlink is a high-performance LAN fabric designed to turn spare local GPUs and
 Get Ghostlink Studio up and running in seconds:
 
 ```bash
+bash scripts/launch_studio.sh --check
 bash scripts/launch_studio.sh
 ```
 
 This script automates environment setup, builds the high-performance core, and launches the Ghostlink Studio GUI.
+
+Real-backend GUI validation:
+
+```bash
+bash scripts/run_gui_real_stack.sh 127.0.0.1 8003 --check
+bash scripts/run_gui_real_stack.sh 127.0.0.1 8003
+```
+
+Release package creation:
+
+```bash
+bash scripts/release_bundle.sh artifacts/release/v1.0.0 unsigned
+# or signed:
+bash scripts/release_bundle.sh artifacts/release/v1.0.0 signed
+```
 
 ## 💎 Professional Features
 
