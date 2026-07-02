@@ -164,7 +164,7 @@ cargo run -p ghost-link -- doctor --network-probe --network-target 127.0.0.1:800
 | `GHOSTLINK_CONFIG` | Path to TOML configuration file | `./ghostlink.toml` |
 | `GHOSTLINK_TCP_AUTH_TOKEN` | Shared secret for transport authentication | - |
 | `GHOSTLINK_DISCOVERY_AUTH_TOKEN` | Shared secret for UDP discovery authentication | - |
-| `GHOSTLINK_TCP_MAX_INFLIGHT` | Max concurrent batches in TCP bridge | `512` |
+| `GHOSTLINK_TCP_MAX_INFLIGHT` | Max concurrent batches in TCP bridge | `256` |
 | `GHOSTLINK_TCP_AUTOTUNE` | Enable automatic queue depth optimization (Phase 1.1) | `false` |
 | `GHOSTLINK_XDP_INTERFACE` | Interface used for AF_XDP probe when transport mode is `xdp`; runtime falls back to TCP if probe fails | `eth0` |
 | `GHOSTLINK_PYTHON` | Path override for GUI/doctor Python executable (when unset, prefers repo `.venv/bin/python` then `python3`) | `repo .venv/bin/python` if present, else `python3` |

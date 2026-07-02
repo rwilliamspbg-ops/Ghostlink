@@ -23,7 +23,8 @@ use ghostlink_core::protocol::NodeResources;
 use ghostlink_core::protocol::{DiscoveryFrame, FrameKind};
 use ghostlink_core::runtime::{
     build_token_schedule, execute_pipeline_tcp_loopback_with_config,
-    execute_pipeline_with_rebalance_and_measured, DeviceKind, PipelinePlan, TcpTransportConfig,
+    execute_pipeline_with_rebalance_and_measured, execute_pipeline_xdp_loopback_with_config,
+    DeviceKind, PipelinePlan, TcpTransportConfig,
 };
 use ghostlink_core::xdp::probe_xdp_support;
 use serde::Deserialize;
@@ -754,7 +755,7 @@ fn tcp_transport_config_from_env() -> TcpTransportConfig {
     let max_inflight_batches = std::env::var("GHOSTLINK_TCP_MAX_INFLIGHT")
         .ok()
         .and_then(|v| v.parse::<usize>().ok())
-        .unwrap_or(512)
+        .unwrap_or(256)
         .max(1);
 
     let reconnect_attempts = std::env::var("GHOSTLINK_TCP_RECONNECT_ATTEMPTS")
@@ -1167,11 +1168,12 @@ fn print_flow(opts: FlowOptions) -> Result<()> {
                     );
                     let tcp_cfg = xdp_optimized_tcp_config();
                     selected_tcp_cfg = Some(tcp_cfg.clone());
-                    execute_pipeline_tcp_loopback_with_config(
+                    execute_pipeline_xdp_loopback_with_config(
                         &pipeline_plan,
                         opts.execution_tokens,
                         opts.micro_batch,
                         tcp_cfg,
+                        &interface,
                     )
                 }
                 Err(reason) => {
