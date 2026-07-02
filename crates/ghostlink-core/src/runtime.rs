@@ -401,7 +401,7 @@ pub fn execute_pipeline_with_rebalance_and_measured(
                     if let Some(batch) = rx_ring.pop() {
                         break batch;
                     }
-                    if spins > 0 && spins % 256 == 0 && Arc::strong_count(&rx_ring) <= 1 {
+                    if spins > 0 && spins.is_multiple_of(256) && Arc::strong_count(&rx_ring) <= 1 {
                         return StageAccumulator {
                             stage_idx,
                             processed_batches,

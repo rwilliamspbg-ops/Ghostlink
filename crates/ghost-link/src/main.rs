@@ -25,6 +25,7 @@ use ghostlink_core::runtime::{
     build_token_schedule, execute_pipeline_tcp_loopback_with_config,
     execute_pipeline_with_rebalance_and_measured, DeviceKind, PipelinePlan, TcpTransportConfig,
 };
+use ghostlink_core::xdp::probe_xdp_support;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::fs;
@@ -95,6 +96,7 @@ struct BootstrapArgs {
 enum FlowTransportMode {
     InMemory,
     TcpLoopback,
+    Xdp,
 }
 
 impl FlowTransportMode {
@@ -102,6 +104,7 @@ impl FlowTransportMode {
         match self {
             Self::InMemory => "inmem",
             Self::TcpLoopback => "tcp",
+            Self::Xdp => "xdp",
         }
     }
 }
@@ -588,8 +591,24 @@ fn parse_flow_transport_mode(value: Option<&str>) -> Result<FlowTransportMode> {
     match value {
         None | Some("tcp" | "tcp-loopback") => Ok(FlowTransportMode::TcpLoopback),
         Some("inmem" | "in-memory") => Ok(FlowTransportMode::InMemory),
+        Some("xdp" | "af_xdp" | "afxdp") => Ok(FlowTransportMode::Xdp),
         Some(other) => anyhow::bail!("invalid flow transport mode: {other}"),
     }
+}
+
+fn xdp_interface_from_env() -> String {
+    std::env::var("GHOSTLINK_XDP_INTERFACE")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "eth0".to_string())
+}
+
+fn xdp_optimized_tcp_config() -> TcpTransportConfig {
+    let mut cfg = tcp_transport_config_from_env();
+    cfg.max_inflight_batches = cfg.max_inflight_batches.max(1024);
+    cfg.reconnect_attempts = cfg.reconnect_attempts.min(2);
+    cfg.reconnect_backoff_ms = cfg.reconnect_backoff_ms.min(10);
+    cfg
 }
 
 fn parse_f32_arg(value: &str) -> Result<f32> {
@@ -991,7 +1010,7 @@ fn print_usage() {
         "  probe [id] [fast|full|--fast|--full] - Detect local workers and acceleration profile"
     );
     eprintln!(
-        "  flow [local_id] [remote_id] [remote_vram_gb] [remote_mem_gb] [exec_tokens] [micro_batch] [transport=tcp|inmem] - Run full 30B planning flow"
+        "  flow [local_id] [remote_id] [remote_vram_gb] [remote_mem_gb] [exec_tokens] [micro_batch] [transport=tcp|xdp|inmem] - Run full 30B planning flow"
     );
     eprintln!("  help      - Show this help message");
     eprintln!();
@@ -1023,7 +1042,7 @@ fn print_help() {
         "  probe [id] [fast|full|--fast|--full] - Detect local workers and acceleration profile"
     );
     println!(
-        "  flow [local_id] [remote_id] [remote_vram_gb] [remote_mem_gb] [exec_tokens] [micro_batch] [transport=tcp|inmem] - Run full 30B planning flow"
+        "  flow [local_id] [remote_id] [remote_vram_gb] [remote_mem_gb] [exec_tokens] [micro_batch] [transport=tcp|xdp|inmem] - Run full 30B planning flow"
     );
     println!("  serve [host] [port] - Start OpenAI-compatible API server");
     println!("  help      - Show this help message");
@@ -1108,6 +1127,7 @@ fn print_flow(opts: FlowOptions) -> Result<()> {
     let schedule_preview_tokens = opts.execution_tokens.min(8);
     let token_schedule = build_token_schedule(pipeline_plan.stages.len(), schedule_preview_tokens);
     let mut selected_tcp_cfg: Option<TcpTransportConfig> = None;
+    let mut effective_transport_mode = opts.transport_mode;
     let execution = match opts.transport_mode {
         FlowTransportMode::TcpLoopback => {
             let base_tcp_cfg = tcp_transport_config_from_env();
@@ -1137,6 +1157,40 @@ fn print_flow(opts: FlowOptions) -> Result<()> {
             Some(&cluster),
             Some(&placement_context),
         )),
+        FlowTransportMode::Xdp => {
+            let interface = xdp_interface_from_env();
+            match probe_xdp_support(&interface) {
+                Ok(()) => {
+                    println!(
+                        "AF_XDP probe succeeded on interface '{}'; using xdp-optimized runtime settings.",
+                        interface
+                    );
+                    let tcp_cfg = xdp_optimized_tcp_config();
+                    selected_tcp_cfg = Some(tcp_cfg.clone());
+                    execute_pipeline_tcp_loopback_with_config(
+                        &pipeline_plan,
+                        opts.execution_tokens,
+                        opts.micro_batch,
+                        tcp_cfg,
+                    )
+                }
+                Err(reason) => {
+                    println!(
+                        "AF_XDP unavailable on '{}': {}. Falling back to TCP transport.",
+                        interface, reason
+                    );
+                    effective_transport_mode = FlowTransportMode::TcpLoopback;
+                    let tcp_cfg = tcp_transport_config_from_env();
+                    selected_tcp_cfg = Some(tcp_cfg.clone());
+                    execute_pipeline_tcp_loopback_with_config(
+                        &pipeline_plan,
+                        opts.execution_tokens,
+                        opts.micro_batch,
+                        tcp_cfg,
+                    )
+                }
+            }
+        }
     };
 
     let load_balancer =
@@ -1202,21 +1256,32 @@ fn print_flow(opts: FlowOptions) -> Result<()> {
     );
     let execution = execution.map_err(|e| anyhow::anyhow!(e))?;
     println!("{}", execution.summary());
-    maybe_write_flow_metrics_json(&execution, opts.transport_mode, selected_tcp_cfg.as_ref())?;
+    maybe_write_flow_metrics_json(
+        &execution,
+        effective_transport_mode,
+        selected_tcp_cfg.as_ref(),
+    )?;
 
     println!("Execution Modes:");
     println!("- NPU/GPU/CPU backend selection is runtime-profile driven");
     println!("- Flow currently provides transparent planning and health-driven orchestration");
     println!(
         "- Inter-stage transport mode: {} (real runtime wiring)",
-        opts.transport_mode.as_str()
+        effective_transport_mode.as_str()
     );
-    println!("- Use tcp for socket-backed transport or inmem for channel-backed baseline\n");
+    println!("- Use tcp for socket-backed transport, xdp for AF_XDP-first with automatic fallback, or inmem for channel-backed baseline\n");
 
-    if matches!(opts.transport_mode, FlowTransportMode::TcpLoopback) {
+    if matches!(effective_transport_mode, FlowTransportMode::TcpLoopback)
+        || matches!(opts.transport_mode, FlowTransportMode::Xdp)
+    {
         println!(
             "TCP transport controls: GHOSTLINK_TCP_MAX_INFLIGHT, GHOSTLINK_TCP_RECONNECT_ATTEMPTS, GHOSTLINK_TCP_RECONNECT_BACKOFF_MS, GHOSTLINK_TCP_AUTH_TOKEN, GHOSTLINK_TCP_AUTOTUNE\n"
         );
+        if matches!(opts.transport_mode, FlowTransportMode::Xdp) {
+            println!(
+                "XDP control: GHOSTLINK_XDP_INTERFACE (default: eth0). If AF_XDP probe fails, runtime falls back to TCP automatically.\n"
+            );
+        }
     }
 
     Ok(())
@@ -3790,6 +3855,20 @@ mod tests {
                 execution_tokens: 128,
                 micro_batch: 4,
                 transport_mode: FlowTransportMode::InMemory,
+                top_k: 40,
+                penalty: 1.1,
+            }
+        );
+        assert_eq!(
+            parse_cli(args(&["flow", "a", "b", "32", "64", "128", "4", "xdp"])).unwrap(),
+            CliCommand::Flow {
+                local_id: "a".to_string(),
+                remote_id: "b".to_string(),
+                remote_vram_gb: 32.0,
+                remote_system_memory_gb: 64.0,
+                execution_tokens: 128,
+                micro_batch: 4,
+                transport_mode: FlowTransportMode::Xdp,
                 top_k: 40,
                 penalty: 1.1,
             }

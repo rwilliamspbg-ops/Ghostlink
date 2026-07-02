@@ -132,6 +132,7 @@ cargo test --workspace                                    # 86 unit + 28 integra
 cargo bench --bench tensor_streaming_fabric              # Criterion benchmarks
 cargo run -p ghost-link --release -- flow ... inmem      # In-memory baseline (~494K tok/s deterministic on current host)
 cargo run -p ghost-link --release -- flow ... tcp        # TCP transport (~136K tok/s deterministic on current host)
+cargo run -p ghost-link --release -- flow ... xdp        # AF_XDP-first mode with automatic fallback to TCP
 GHOSTLINK_TCP_AUTOTUNE=1 cargo run -p ghost-link ... tcp # Autotune queue depth for host-specific TCP gain
 ```
 
@@ -165,6 +166,7 @@ cargo run -p ghost-link -- doctor --network-probe --network-target 127.0.0.1:800
 | `GHOSTLINK_DISCOVERY_AUTH_TOKEN` | Shared secret for UDP discovery authentication | - |
 | `GHOSTLINK_TCP_MAX_INFLIGHT` | Max concurrent batches in TCP bridge | `512` |
 | `GHOSTLINK_TCP_AUTOTUNE` | Enable automatic queue depth optimization (Phase 1.1) | `false` |
+| `GHOSTLINK_XDP_INTERFACE` | Interface used for AF_XDP probe when transport mode is `xdp`; runtime falls back to TCP if probe fails | `eth0` |
 | `GHOSTLINK_PYTHON` | Path override for GUI/doctor Python executable (when unset, prefers repo `.venv/bin/python` then `python3`) | `repo .venv/bin/python` if present, else `python3` |
 | `GHOSTLINK_DISTRIBUTED_SMOKE` | Enable distributed runtime validation in `flow` | `false` |
 
@@ -185,7 +187,7 @@ GHOSTLINK_TCP_MAX_INFLIGHT=256 cargo run -p ghost-link --release -- flow ... tcp
 
 ## ⚠️ Runtime Notes
 
-- `crates/ghostlink-core/src/xdp.rs` is currently experimental scaffolding for Phase 2 AF_XDP kernel bypass. This build does not provide a working AF_XDP data path yet.
+- `crates/ghostlink-core/src/xdp.rs` includes AF_XDP capability probing and xdp-mode transport fallback; full kernel-bypass data-plane wiring remains a Phase 2 target.
 - Discovery authentication is HMAC-SHA256 by default. Enabling `GHOSTLINK_DISCOVERY_ALLOW_LEGACY_CRC32` switches discovery fallback parsing to a compatibility checksum mode that is not cryptographic authentication.
 - **TCP throughput plateau**: Standard TCP stack adds ~1.5ms per-token latency due to serial layer-split dependency. This is a physical constraint, not a tuning issue. AF_XDP (Phase 2) will reduce this to ~100μs via kernel bypass.
 
