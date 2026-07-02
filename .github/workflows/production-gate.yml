@@ -266,7 +266,7 @@ jobs:
         run: |
           python3 scripts/flow_perf_snapshot.py \
             --warmup-runs 1 \
-            --runs 4 \
+            --runs 6 \
             --modes tcp inmem \
             --exec-tokens 512 \
             --micro-batch 8 \
