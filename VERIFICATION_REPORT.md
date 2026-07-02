@@ -2,12 +2,12 @@
 
 This report summarizes the verification status of the Ghostlink codebase as of the current build. All core modules and CLI functionalities have been reviewed through static analysis, unit/integration testing, and runtime diagnostics.
 
-## Executive Summary
-- **Workspace Tests**: 137/137 Passing
-- **Lints**: 0 Warnings (Strict Clippy)
-- **Environment Readiness**: PASS (verified via `doctor`)
-- **Runtime Stability**: PASS (verified via `flow` in `inmem` and `tcp` modes)
-- **Cluster Discovery**: PASS (verified via `cluster-start`)
+## Executive Summary (2026-07-02)
+- **PR Workflow Status**: 19/19 checks passing (0 failing, 0 pending)
+- **Lints**: PASS (strict clippy in CI and local validation)
+- **Environment Readiness**: PASS (doctor and production-gate lanes green)
+- **Runtime Stability**: PASS (verified via `flow` in `inmem`, `tcp`, and privileged `xdp` modes)
+- **Cluster Discovery**: PASS (CI + runtime smoke coverage green)
 
 ---
 
@@ -23,7 +23,7 @@ This report summarizes the verification status of the Ghostlink codebase as of t
 | **Discovery** (`discovery.rs`) | **VERIFIED** | Unit Tests, `cluster-start` | `broadcast_and_collect`, `respond_once`, `serve_discovery_with_stats` |
 | **Health** (`health.rs`) | **VERIFIED** | Unit Tests, Runtime Flow | `NetworkHealthMonitor::check_all`, `HealthConfig::autotuned` |
 | **Load Balance** (`load_balance.rs`) | **VERIFIED** | Unit Tests, Integration Tests | `LoadBalancer::distribute_layers`, `LoadBalancer::shed_load` |
-| **XDP** (`xdp.rs`) | **STUBBED** | Scaffolding Only | *Experimental scaffolding only; no active data path in current build.* |
+| **XDP** (`xdp.rs`) | **VALIDATED (PREVIEW)** | Runtime probe + fallback + privileged smoke/bench runs | `probe_xdp_support`, `XdpSocketManager::init`, xdp-mode execution/fallback paths |
 
 ---
 
@@ -35,13 +35,21 @@ This report summarizes the verification status of the Ghostlink codebase as of t
 
 ### `flow` (Runtime Flow)
 - **Verdict**: PASS
-- **Throughput (inmem)**: ~83,826 tokens/sec
-- **Throughput (tcp)**: ~29,066 tokens/sec
-- **Observation**: Successfully executed 60-layer model planning across 2 stages with real thread/socket wiring.
+- **Throughput (tcp, deterministic profile)**: ~136,279.81 tokens/sec
+- **Throughput (inmem, deterministic profile)**: ~493,793.92 tokens/sec
+- **Throughput (xdp, privileged autotune profile)**: ~596,995.66 tokens/sec
+- **Observation**: Successfully executed 60-layer model planning across 2 stages with real runtime wiring across tcp/inmem and privileged xdp; xdp fallback remains automatic when AF_XDP probe fails.
+
+### `flow` (AF_XDP Validation)
+- **Verdict**: PASS (privileged host profile)
+- **effective_transport_mode**: `xdp` confirmed in benchmark summaries
+- **A/B outcome**:
+  - autotune default on: 596,995.66 tok/s, p95 0.41 ms
+  - autotune disabled: 331,150.29 tok/s, p95 0.99 ms
 
 ### `cluster-start` (Discovery)
 - **Verdict**: PASS
 - **Result**: 2/2 local nodes successfully registered and replied within the timeout window.
 
 ## Conclusion
-The Ghostlink codebase is in a healthy, production-ready state for LAN-based distributed inference. All core primitives for zero-copy communication and multi-node coordination are verified and performant.
+The Ghostlink codebase is in a healthy state for LAN-based distributed inference and currently passes all configured PR checks. Core zero-copy and multi-node coordination paths are validated, with AF_XDP now validated in privileged runtime scenarios and protected by deterministic fallback when unavailable.

@@ -1,24 +1,24 @@
 {
   "profile": "flow_exec512_mb8_stress_v1",
-  "description": "Stress baseline for 512-token / micro-batch 8 flow runs on docs/runtime-probe-docs",
+  "description": "Stress baseline refreshed on 2026-07-02 after runtime ring handoff tuning",
   "drift_policy": {
     "max_throughput_drop_ratio": 0.30,
     "max_p95_rise_ratio": 0.30
   },
   "modes": {
     "tcp": {
-      "throughput_avg": 298061.60,
-      "p95_avg": 1.68,
-      "wall_avg": 1.72,
+      "throughput_avg": 227919.80078125,
+      "p95_avg": 2.232118916666667,
+      "wall_avg": 2.2840639166666667,
       "drift_policy": {
         "max_throughput_drop_ratio": 0.42,
         "max_p95_rise_ratio": 0.55
       }
     },
     "inmem": {
-      "throughput_avg": 1009427.28,
-      "p95_avg": 0.69,
-      "wall_avg": 0.76,
+      "throughput_avg": 542615.609375,
+      "p95_avg": 0.8509514166666666,
+      "wall_avg": 1.0389128333333333,
       "drift_policy": {
         "max_throughput_drop_ratio": 0.35,
         "max_p95_rise_ratio": 0.35

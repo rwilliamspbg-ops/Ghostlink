@@ -1,0 +1,18 @@
+{
+  "autotune/accelerator_scale_f32_slice": 1172.3700758194716,
+  "autotune/detect_runtime_profile_fast": 137.98636846572765,
+  "autotune/detect_runtime_profile_full": 153296.22133105603,
+  "autotune/load_balance_80_layers_autotuned": 1602.061623103786,
+  "cluster/nodes_snapshot_10": 11.064088372737242,
+  "cluster/register_update": 205.2851130001265,
+  "cluster/total_vram_10": 1.9696694189860733,
+  "planning/33_layers_2_nodes": 165.30163553935424,
+  "planning/80_layers_8_nodes": 343.4004204016977,
+  "planning/80_layers_8_nodes_autotuned": 749.1925710599188,
+  "protocol/decode": 119.29460439223827,
+  "protocol/encode": 102.20515170731532,
+  "protocol/round_trip": 230.42999900922115,
+  "ring/push_only/st": 2.0100872330909674,
+  "ring/push_pop_round_trip/st": 2.9352838155037073,
+  "ring/spsc_throughput/mt": 10.912048022178745
+}

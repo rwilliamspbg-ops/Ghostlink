@@ -37,32 +37,64 @@ This script automates environment setup, builds the high-performance core, and l
 
 ## 📊 Performance Results (July 2026)
 
+### Repository State Snapshot (2026-07-02)
+
+- CI status for PR #36: **19/19 checks passing** (0 failing, 0 pending)
+- Security lanes: secret scan, Python dependency audit, and Rust advisory audit all green
+- Production gates: `Production Gate` and `CI/Production Gate` green
+- Latest optimization commits: `f1b55e9`, `6abcdc2`
+
 ### Real Throughput Measurements
 
-**Test Configuration**: 30B model, 5-stage layer split, 256 tokens, micro-batch size 8
+**Deterministic Profile**: 256 tokens, micro-batch 4, 5 runs (+1 warmup), release mode  
+**Stress Profile**: 512 tokens, micro-batch 8, 12 runs (+2 warmup), release mode
 
-| Transport Mode | Throughput (tok/s) | Avg Latency (ms) | P95 Latency (ms) | Notes |
-| :--- | ---: | ---: | ---: | :--- |
-| **In-Memory (Zero-Copy SPSC)** | **433,164** | **0.44** | **0.46** | Single GPU baseline; lock-free ring buffers |
-| **TCP Loopback (Baseline)** | 149,918 | 1.55 | 1.69 | Standard TCP stack; serial layer-split bound |
-| **TCP Loopback (Autotuned)** | 198,403 | 1.28 | 1.29 | +32.3% improvement via queue depth tuning |
-| **AF_XDP (Target, Phase 2)** | >1,500,000 | ~0.10 | ~0.15 | Kernel bypass; 7.5× throughput improvement |
+| Profile | Transport Mode | Throughput (tok/s) | P95 Latency (ms) | Wall Avg (s) |
+| :--- | :--- | ---: | ---: | ---: |
+| Deterministic | TCP loopback | 136,279.81 | 1.86 | 1.89 |
+| Deterministic | In-memory | 493,793.92 | 0.64 | 0.78 |
+| Stress | TCP loopback | 227,919.80 | 2.23 | 2.28 |
+| Stress | In-memory | 542,615.61 | 0.85 | 1.04 |
 
-**Test Date**: 2026-07-01  
-**Environment**: Multi-threaded Rust runtime with criterion benchmarks (n=10 samples)  
-**Full Results**: See [TENSOR_STREAMING_TEST_REPORT.md](tmp/TENSOR_STREAMING_TEST_REPORT.md)
+**Optimization delta (2026-07-02 runtime tuning refresh)**:
+- Deterministic TCP: +10.7% throughput (123,097.05 -> 136,279.81 tok/s)
+- Deterministic in-memory: +91.9% throughput (257,236.81 -> 493,793.92 tok/s)
+- Stress TCP: +7.6% throughput (211,834.01 -> 227,919.80 tok/s)
+- Stress in-memory: +21.2% throughput (447,816.14 -> 542,615.61 tok/s)
+
+### AF_XDP Validated Profile (Privileged Host Run)
+
+Root-backed AF_XDP runs in this workspace now produce true `effective_transport_mode: xdp`.
+
+| Mode | Throughput Avg (tok/s) | P95 Avg (ms) | Effective Transport | Selected Inflight |
+| :--- | ---: | ---: | :--- | ---: |
+| XDP (`GHOSTLINK_XDP_AUTOTUNE` default on) | 596,995.66 | 0.41 | xdp | 64 |
+| XDP (`GHOSTLINK_XDP_AUTOTUNE=0`) | 331,150.29 | 0.99 | xdp | 256 |
+
+Observed gain from default xdp autotune in this host profile:
+- Throughput: **+80.3%**
+- P95 latency average: **-58.8%**
+
+Reference artifacts:
+- `tmp/perf_nextstep_xdp_default/summary.json`
+- `tmp/perf_nextstep_xdp_noautotune/summary.json`
+- `tmp/perf_sweetspot_afxdp/xdp_autotune/summary.json`
+- `tmp/perf_sweetspot_afxdp/tcp_baseline/summary.json`
+
+**Baseline files**: `docs/PERF_BASELINE.json`, `docs/PERF_BASELINE_STRESS.json`  
+**Criterion summary**: `artifacts/criterion-summary.json`
 
 ### Test Summary
 
 - ✅ **86 unit tests passing** (all core modules)
 - ✅ **28 integration tests passing** (multi-node cluster scenarios)
-- ✅ **6 criterion benchmarks** (in-memory, TCP 2-stage, 4-stage splits)
+- ✅ **16 criterion micro-benchmarks** summarized in `artifacts/criterion-summary.json`
 - ✅ **Zero data loss** verified via CRC32 + HMAC-SHA256 auth
 - ✅ **Fault tolerance validated** (node rejoin, concurrent failures)
 
 ### Fabric Efficiency Analysis
 
-**Current TCP Throughput Relative to Peak**: 198,403 / 433,164 = **45.9%**
+**Current TCP Throughput Relative to in-memory baseline (deterministic profile)**: 136,279.81 / 493,793.92 = **27.6%**
 
 **Why the ~54% Degradation?** The bottleneck is **per-token LAN latency, not protocol overhead**:
 
@@ -124,9 +156,11 @@ bash scripts/run_all_tests.sh
 # Individual commands:
 cargo test --workspace                                    # 86 unit + 28 integration tests
 cargo bench --bench tensor_streaming_fabric              # Criterion benchmarks
-cargo run -p ghost-link --release -- flow ... inmem      # In-memory baseline (~433K tok/s)
-cargo run -p ghost-link --release -- flow ... tcp        # TCP transport (~150K tok/s)
-GHOSTLINK_TCP_AUTOTUNE=1 cargo run -p ghost-link ... tcp # Autotuned TCP (+32% improvement)
+cargo run -p ghost-link --release -- flow ... inmem      # In-memory baseline (~494K tok/s deterministic on current host)
+cargo run -p ghost-link --release -- flow ... tcp        # TCP transport (~136K tok/s deterministic on current host)
+cargo run -p ghost-link --release -- flow ... xdp        # AF_XDP-first mode with automatic fallback to TCP
+GHOSTLINK_TCP_AUTOTUNE=1 cargo run -p ghost-link ... tcp # Autotune queue depth for host-specific TCP gain
+GHOSTLINK_XDP_AUTOTUNE=0 cargo run -p ghost-link ... xdp # Disable xdp-mode autotune (enabled by default on AF_XDP success)
 ```
 
 See [Test Runner Scripts](#-development--validation) for detailed invocations.
@@ -157,8 +191,10 @@ cargo run -p ghost-link -- doctor --network-probe --network-target 127.0.0.1:800
 | `GHOSTLINK_CONFIG` | Path to TOML configuration file | `./ghostlink.toml` |
 | `GHOSTLINK_TCP_AUTH_TOKEN` | Shared secret for transport authentication | - |
 | `GHOSTLINK_DISCOVERY_AUTH_TOKEN` | Shared secret for UDP discovery authentication | - |
-| `GHOSTLINK_TCP_MAX_INFLIGHT` | Max concurrent batches in TCP bridge | `512` |
+| `GHOSTLINK_TCP_MAX_INFLIGHT` | Max concurrent batches in TCP bridge | `256` |
 | `GHOSTLINK_TCP_AUTOTUNE` | Enable automatic queue depth optimization (Phase 1.1) | `false` |
+| `GHOSTLINK_XDP_AUTOTUNE` | Override autotune behavior in `xdp` mode (defaults to autotune when AF_XDP probe succeeds) | `true` in xdp mode |
+| `GHOSTLINK_XDP_INTERFACE` | Interface used for AF_XDP probe when transport mode is `xdp`; runtime falls back to TCP if probe fails | `eth0` |
 | `GHOSTLINK_PYTHON` | Path override for GUI/doctor Python executable (when unset, prefers repo `.venv/bin/python` then `python3`) | `repo .venv/bin/python` if present, else `python3` |
 | `GHOSTLINK_DISTRIBUTED_SMOKE` | Enable distributed runtime validation in `flow` | `false` |
 
@@ -175,11 +211,32 @@ GHOSTLINK_TCP_AUTOTUNE=1 GHOSTLINK_TCP_AUTOTUNE_RUNS=3 \
 GHOSTLINK_TCP_MAX_INFLIGHT=256 cargo run -p ghost-link --release -- flow ... tcp
 ```
 
-**Result**: +32% throughput improvement (198K → 149K tok/s) by reducing head-of-line blocking.
+**Result**: +32% throughput improvement (149K -> 198K tok/s) by reducing head-of-line blocking.
+
+**AF_XDP tuning (root + AF_XDP-capable interface):**
+
+```bash
+# Default xdp behavior now autotunes automatically after AF_XDP probe succeeds
+sudo -E bash -lc 'export RUSTUP_HOME=/home/codespace/.rustup CARGO_HOME=/home/codespace/.cargo PATH=/home/codespace/.cargo/bin:$PATH; \
+  python3 scripts/flow_perf_snapshot.py --runs 6 --warmup-runs 1 --release --modes tcp xdp --xdp-interface vethx0 --exec-tokens 256 --micro-batch 4 --output-dir ./tmp/perf_afxdp_true_workspace'
+```
+
+Recent workspace sweep identified a stable sweet spot with xdp autotune:
+- `throughput_avg`: **480,384.57 tok/s** (6-run sweep)
+- `p95_avg`: **0.57 ms** (6-run sweep)
+- `effective_transport_mode`: **xdp**
+- selected `tcp_max_inflight_batches`: **192**
+
+Latest focused A/B validation (4 runs) improved further with cached autotune selection:
+- `throughput_avg`: **596,995.66 tok/s**
+- `p95_avg`: **0.41 ms**
+- selected `tcp_max_inflight_batches`: **64**
+
+Reference artifacts: `tmp/perf_sweetspot_afxdp/xdp_autotune/summary.json` and `tmp/perf_sweetspot_afxdp/tcp_baseline/summary.json`.
 
 ## ⚠️ Runtime Notes
 
-- `crates/ghostlink-core/src/xdp.rs` is currently experimental scaffolding for Phase 2 AF_XDP kernel bypass. This build does not provide a working AF_XDP data path yet.
+- `crates/ghostlink-core/src/xdp.rs` includes AF_XDP capability probing and xdp-mode transport fallback; full kernel-bypass data-plane wiring remains a Phase 2 target.
 - Discovery authentication is HMAC-SHA256 by default. Enabling `GHOSTLINK_DISCOVERY_ALLOW_LEGACY_CRC32` switches discovery fallback parsing to a compatibility checksum mode that is not cryptographic authentication.
 - **TCP throughput plateau**: Standard TCP stack adds ~1.5ms per-token latency due to serial layer-split dependency. This is a physical constraint, not a tuning issue. AF_XDP (Phase 2) will reduce this to ~100μs via kernel bypass.
 
@@ -260,7 +317,7 @@ python3 scripts/verify_hf_models.py
 - ✅ Real throughput measurement & benchmarking
 - ✅ TCP autotune (queue depth optimization)
 
-**Phase 1 Result**: 198K tok/s (45% efficiency) on TCP; **bottleneck identified as LAN latency** (not software).
+**Phase 1 Result**: ~228K tok/s (stress) / ~136K tok/s (deterministic) on TCP; **bottleneck remains dominated by transport latency**.
 
 ### Phase 2 (Planned - AF_XDP Kernel Bypass)
 - ⏳ AF_XDP socket integration

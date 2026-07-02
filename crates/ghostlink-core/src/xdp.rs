@@ -7,6 +7,7 @@
 //! - eBPF program loading helpers
 
 use std::os::raw::c_int;
+use std::path::Path;
 
 use crate::protocol::{DiscoveryFrame, GHOSTLINK_ETHERTYPE};
 use crate::ring::RingConfig;
@@ -65,6 +66,42 @@ impl XdpSocketHandle {
     pub fn send_frame(&self, _data: &[u8]) -> Result<(), String> {
         Err("AF_XDP send requires specific setup".into())
     }
+}
+
+/// Probe whether AF_XDP is usable on the current host/interface.
+pub fn probe_xdp_support(interface_name: &str) -> Result<(), String> {
+    if !cfg!(target_os = "linux") {
+        return Err("AF_XDP requires Linux".to_string());
+    }
+
+    if interface_name.trim().is_empty() {
+        return Err("AF_XDP interface name cannot be empty".to_string());
+    }
+
+    let iface_path = Path::new("/sys/class/net").join(interface_name);
+    if !iface_path.exists() {
+        return Err(format!(
+            "network interface '{}' not found under {}",
+            interface_name,
+            iface_path.display()
+        ));
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        let fd = unsafe { libc::socket(libc::AF_XDP, libc::SOCK_RAW, 0) };
+        if fd < 0 {
+            return Err(format!(
+                "AF_XDP socket creation failed: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+        unsafe {
+            libc::close(fd);
+        }
+    }
+
+    Ok(())
 }
 
 /// Frame reception loop with zero-copy buffers
@@ -299,10 +336,24 @@ impl XdpSocketManager {
 
     /// Initialize AF_XDP socket and bind to interface
     pub fn init(&mut self) -> Result<(), String> {
-        Err(format!(
-            "AF_XDP socket manager is unavailable for interface '{}' in this build",
-            self.interface_name
-        ))
+        probe_xdp_support(&self.interface_name)?;
+
+        #[cfg(target_os = "linux")]
+        {
+            let fd = unsafe { libc::socket(libc::AF_XDP, libc::SOCK_RAW, 0) };
+            if fd < 0 {
+                return Err(format!(
+                    "AF_XDP socket init failed for '{}': {}",
+                    self.interface_name,
+                    std::io::Error::last_os_error()
+                ));
+            }
+            self.fd = Some(fd);
+            return Ok(());
+        }
+
+        #[allow(unreachable_code)]
+        Err("AF_XDP init unavailable on this platform".to_string())
     }
 
     /// Receive frame using AF_XDP recvmsg

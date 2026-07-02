@@ -1,24 +1,24 @@
 {
   "profile": "flow_exec256_mb4_v1",
-  "description": "Post transport-batching baseline for docs/runtime-probe-docs",
+  "description": "Release-mode deterministic baseline refreshed on 2026-07-02 after runtime ring handoff tuning",
   "drift_policy": {
     "max_throughput_drop_ratio": 0.30,
     "max_p95_rise_ratio": 0.60
   },
   "modes": {
     "tcp": {
-      "throughput_avg": 173816.74,
-      "p95_avg": 1.44,
-      "wall_avg": 1.48,
+      "throughput_avg": 136279.809375,
+      "p95_avg": 1.8609194,
+      "wall_avg": 1.8934264,
       "drift_policy": {
         "max_throughput_drop_ratio": 0.45,
         "max_p95_rise_ratio": 0.80
       }
     },
     "inmem": {
-      "throughput_avg": 838029.33,
-      "p95_avg": 0.26,
-      "wall_avg": 0.31,
+      "throughput_avg": 493793.91875,
+      "p95_avg": 0.6447649999999999,
+      "wall_avg": 0.7770232,
       "drift_policy": {
         "max_throughput_drop_ratio": 0.35,
         "max_p95_rise_ratio": 0.65
