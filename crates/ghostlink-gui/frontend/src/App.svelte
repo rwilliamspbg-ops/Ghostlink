@@ -33,6 +33,23 @@
   let chatHistory = [];
   let clusterNodes = [];
   let clusterSummary = 'No live cluster snapshot loaded.';
+  let workerDiscovery = [];
+  let workerDiscoverySummary = 'Run discovery to list available workers.';
+  let workerProbeHints = '';
+  let workerProbeFull = false;
+  let localNodeId = 'studio-local';
+  let remoteNodeId = 'studio-remote';
+  let flowTransport = 'tcp';
+  let flowExecutionTokens = 64;
+  let flowMicroBatch = 2;
+  let selectedWorkerIds = [];
+  let batchConnectResults = [];
+  let workerTcpTargets = {};
+  let workerTcpResults = {};
+  let tcpProbeTimeoutMs = 500;
+  let startNodeCount = 3;
+  let startBasePort = 46000;
+  let showAdvancedClusterButtons = false;
   let validationTier = 'fast';
   let validationReport = null;
   let snapshotHistory = [];
@@ -59,6 +76,17 @@
       reducedMotion,
       highContrast,
       chatHistory,
+      workerProbeHints,
+      workerProbeFull,
+      localNodeId,
+      remoteNodeId,
+      flowTransport,
+      flowExecutionTokens,
+      flowMicroBatch,
+      startNodeCount,
+      startBasePort,
+      showAdvancedClusterButtons,
+      tcpProbeTimeoutMs,
     };
     localStorage.setItem('ghostlink-studio-prefs-v1', JSON.stringify(prefs));
   }
@@ -77,6 +105,17 @@
       reducedMotion = Boolean(prefs.reducedMotion);
       highContrast = Boolean(prefs.highContrast);
       chatHistory = Array.isArray(prefs.chatHistory) ? prefs.chatHistory.slice(0, 12) : [];
+      workerProbeHints = String(prefs.workerProbeHints ?? workerProbeHints);
+      workerProbeFull = Boolean(prefs.workerProbeFull);
+      localNodeId = String(prefs.localNodeId ?? localNodeId);
+      remoteNodeId = String(prefs.remoteNodeId ?? remoteNodeId);
+      flowTransport = String(prefs.flowTransport ?? flowTransport).toLowerCase();
+      flowExecutionTokens = Number(prefs.flowExecutionTokens ?? flowExecutionTokens);
+      flowMicroBatch = Number(prefs.flowMicroBatch ?? flowMicroBatch);
+      startNodeCount = Number(prefs.startNodeCount ?? startNodeCount);
+      startBasePort = Number(prefs.startBasePort ?? startBasePort);
+      showAdvancedClusterButtons = Boolean(prefs.showAdvancedClusterButtons);
+      tcpProbeTimeoutMs = Number(prefs.tcpProbeTimeoutMs ?? tcpProbeTimeoutMs);
     } catch {
       showOnboarding = true;
     }
@@ -110,6 +149,16 @@
         chatModel,
         chatDistributed,
         configContent,
+        workerProbeHints,
+        workerProbeFull,
+        localNodeId,
+        remoteNodeId,
+        flowTransport,
+        flowExecutionTokens: Number(flowExecutionTokens),
+        flowMicroBatch: Number(flowMicroBatch),
+        startNodeCount: Number(startNodeCount),
+        startBasePort: Number(startBasePort),
+        showAdvancedClusterButtons,
       });
       profilePath = result.profilePath;
       status = 'Studio profile exported';
@@ -136,6 +185,16 @@
       chatModel = profile.chatModel;
       chatDistributed = Boolean(profile.chatDistributed);
       configContent = profile.configContent;
+      workerProbeHints = String(flowArg(workerProbeHints, profile.workerProbeHints, profile.worker_probe_hints));
+      workerProbeFull = Boolean(flowArg(workerProbeFull, profile.workerProbeFull, profile.worker_probe_full));
+      localNodeId = String(flowArg(localNodeId, profile.localNodeId, profile.local_node_id));
+      remoteNodeId = String(flowArg(remoteNodeId, profile.remoteNodeId, profile.remote_node_id));
+      flowTransport = String(flowArg(flowTransport, profile.flowTransport, profile.flow_transport)).toLowerCase();
+      flowExecutionTokens = Number(flowArg(flowExecutionTokens, profile.flowExecutionTokens, profile.flow_execution_tokens));
+      flowMicroBatch = Number(flowArg(flowMicroBatch, profile.flowMicroBatch, profile.flow_micro_batch));
+      startNodeCount = Number(flowArg(startNodeCount, profile.startNodeCount, profile.start_node_count));
+      startBasePort = Number(flowArg(startBasePort, profile.startBasePort, profile.start_base_port));
+      showAdvancedClusterButtons = Boolean(flowArg(showAdvancedClusterButtons, profile.showAdvancedClusterButtons, profile.show_advanced_cluster_buttons));
       configLoaded = true;
       applyVisualPreferences();
       persistPreferences();
@@ -280,6 +339,250 @@
     modelFile = preset.defaultFile;
   }
 
+  function parseNodeHints(raw) {
+    return String(raw)
+      .split(',')
+      .map((part) => part.trim())
+      .filter(Boolean);
+  }
+
+  function flowArg(defaultValue, camelValue, snakeValue) {
+    if (camelValue !== undefined && camelValue !== null && `${camelValue}`.trim() !== '') {
+      return camelValue;
+    }
+    if (snakeValue !== undefined && snakeValue !== null && `${snakeValue}`.trim() !== '') {
+      return snakeValue;
+    }
+    return defaultValue;
+  }
+
+  async function loadFlowDefaults() {
+    try {
+      const defaults = await invoke('load_flow_defaults');
+      localNodeId = String(flowArg(localNodeId, defaults.localId, defaults.local_id));
+      remoteNodeId = String(flowArg(remoteNodeId, defaults.remoteId, defaults.remote_id));
+      flowExecutionTokens = Number(flowArg(flowExecutionTokens, defaults.executionTokens, defaults.execution_tokens));
+      flowMicroBatch = Number(flowArg(flowMicroBatch, defaults.microBatch, defaults.micro_batch));
+      flowTransport = String(flowArg(flowTransport, defaults.transport, defaults.transport)).toLowerCase();
+      workerProbeHints = [localNodeId, remoteNodeId].filter(Boolean).join(', ');
+    } catch {
+      workerProbeHints = [localNodeId, remoteNodeId].join(', ');
+    }
+  }
+
+  async function discoverWorkers() {
+    busy = true;
+    try {
+      const nodeIds = parseNodeHints(workerProbeHints);
+      const result = await invoke('discover_workers', { nodeIds, full: workerProbeFull });
+      workerDiscovery = Array.isArray(result.workers) ? result.workers : [];
+      workerDiscoverySummary = result.summary ?? 'Worker discovery completed.';
+
+      const nextTargets = { ...workerTcpTargets };
+      for (const worker of workerDiscovery) {
+        if (!nextTargets[worker.id]) {
+          nextTargets[worker.id] = { host: '127.0.0.1', port: Number(startBasePort) };
+        }
+      }
+      workerTcpTargets = nextTargets;
+
+      const knownIds = new Set(workerDiscovery.map((item) => item.id));
+      selectedWorkerIds = selectedWorkerIds.filter((id) => knownIds.has(id));
+      batchConnectResults = batchConnectResults.filter((item) => knownIds.has(item.workerId));
+
+      const firstHealthy = workerDiscovery.find((item) => item.available);
+      if (firstHealthy && !nodeIds.includes(firstHealthy.id)) {
+        workerProbeHints = [workerProbeHints, firstHealthy.id].filter(Boolean).join(', ');
+      }
+
+      status = workerDiscoverySummary;
+      command = `discover_workers (${workerProbeFull ? 'full' : 'fast'})`;
+      output = workerDiscovery
+        .map((item) => {
+          if (item.available) {
+            return `${item.id}: reachable, workers=${item.workers}, acceleration=${item.acceleration}`;
+          }
+          return `${item.id}: unreachable${item.error ? ` (${item.error})` : ''}`;
+        })
+        .join('\n');
+    } catch (err) {
+      status = 'Worker discovery failed';
+      output = String(err);
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function connectFlow() {
+    busy = true;
+    try {
+      const result = await invoke('run_flow_between', {
+        localId: localNodeId,
+        remoteId: remoteNodeId,
+        executionTokens: Number(flowExecutionTokens),
+        microBatch: Number(flowMicroBatch),
+        transport: flowTransport,
+      });
+      status = result.ok ? `Flow connected: ${localNodeId} -> ${remoteNodeId}` : 'Flow connection failed';
+      command = result.command;
+      output = [result.stdout?.trim(), result.stderr?.trim()].filter(Boolean).join('\n\n');
+      if (!output) {
+        output = 'Flow command completed with no output.';
+      }
+      await refreshCluster(false);
+    } catch (err) {
+      status = 'Flow connection failed';
+      output = String(err);
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function connectToWorker(workerId) {
+    remoteNodeId = workerId;
+    await connectFlow();
+  }
+
+  function ensureTcpTarget(workerId) {
+    const current = workerTcpTargets[workerId];
+    if (current && current.host && Number(current.port) > 0) {
+      return current;
+    }
+
+    const target = {
+      host: current?.host ?? '127.0.0.1',
+      port: Number(current?.port ?? startBasePort ?? 46000),
+    };
+    workerTcpTargets = { ...workerTcpTargets, [workerId]: target };
+    return target;
+  }
+
+  function tcpTargetFor(workerId) {
+    const current = workerTcpTargets[workerId];
+    return {
+      host: current?.host ?? '127.0.0.1',
+      port: Number(current?.port ?? startBasePort ?? 46000),
+    };
+  }
+
+  function updateTcpTarget(workerId, key, value) {
+    const existing = ensureTcpTarget(workerId);
+    const next = {
+      ...existing,
+      [key]: key === 'port' ? Number(value) : value,
+    };
+    workerTcpTargets = { ...workerTcpTargets, [workerId]: next };
+  }
+
+  function isWorkerSelected(workerId) {
+    return selectedWorkerIds.includes(workerId);
+  }
+
+  function toggleWorkerSelection(workerId, checked) {
+    if (checked) {
+      selectedWorkerIds = Array.from(new Set([...selectedWorkerIds, workerId]));
+      return;
+    }
+    selectedWorkerIds = selectedWorkerIds.filter((id) => id !== workerId);
+  }
+
+  function selectAllReachableWorkers() {
+    selectedWorkerIds = workerDiscovery.filter((item) => item.available).map((item) => item.id);
+  }
+
+  function clearWorkerSelection() {
+    selectedWorkerIds = [];
+  }
+
+  async function testWorkerTcp(workerId) {
+    const target = ensureTcpTarget(workerId);
+    busy = true;
+    try {
+      const result = await invoke('quick_tcp_probe', {
+        host: target.host,
+        port: Number(target.port),
+        timeoutMs: Number(tcpProbeTimeoutMs),
+      });
+      workerTcpResults = {
+        ...workerTcpResults,
+        [workerId]: {
+          ...result,
+          testedAt: new Date().toLocaleTimeString(),
+        },
+      };
+      status = result.reachable ? `TCP reachable: ${target.host}:${target.port}` : `TCP unreachable: ${target.host}:${target.port}`;
+      output = result.reachable
+        ? `latency=${result.latencyMs ?? result.latency_ms ?? 'n/a'} ms`
+        : String(result.error ?? 'connection failed');
+    } catch (err) {
+      status = `TCP probe failed for ${workerId}`;
+      output = String(err);
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function connectAllReachableWorkers() {
+    busy = true;
+    batchConnectResults = [];
+
+    try {
+      const selectedSet = new Set(selectedWorkerIds);
+      const targets = workerDiscovery
+        .filter((worker) => worker.available)
+        .filter((worker) => (selectedSet.size === 0 ? true : selectedSet.has(worker.id)))
+        .filter((worker) => worker.id !== localNodeId);
+
+      if (targets.length === 0) {
+        status = 'No reachable workers selected';
+        output = 'Select workers or run discovery first.';
+        return;
+      }
+
+      const results = [];
+      for (const worker of targets) {
+        const started = Date.now();
+        try {
+          const result = await invoke('run_flow_between', {
+            localId: localNodeId,
+            remoteId: worker.id,
+            executionTokens: Number(flowExecutionTokens),
+            microBatch: Number(flowMicroBatch),
+            transport: flowTransport,
+          });
+          results.push({
+            workerId: worker.id,
+            ok: Boolean(result.ok),
+            exitCode: result.exitCode ?? result.exit_code ?? null,
+            durationMs: Date.now() - started,
+            command: result.command,
+            error: result.ok ? null : [result.stderr?.trim(), result.stdout?.trim()].filter(Boolean).join(' | '),
+          });
+        } catch (err) {
+          results.push({
+            workerId: worker.id,
+            ok: false,
+            exitCode: null,
+            durationMs: Date.now() - started,
+            command: 'run_flow_between',
+            error: String(err),
+          });
+        }
+      }
+
+      batchConnectResults = results;
+      const passed = results.filter((item) => item.ok).length;
+      const failed = results.length - passed;
+      status = `Batch connect complete: ${passed} ok, ${failed} failed`;
+      output = results
+        .map((item) => `${item.workerId}: ${item.ok ? 'OK' : 'FAIL'} (${item.durationMs} ms)${item.error ? ` - ${item.error}` : ''}`)
+        .join('\n');
+      await refreshCluster(false);
+    } finally {
+      busy = false;
+    }
+  }
+
   async function refreshCluster(full = false) {
     busy = true;
     try {
@@ -368,8 +671,10 @@
       output = `Repo root: ${studio.repo_root}`;
       await loadSnapshot();
       await loadConfig();
+      await loadFlowDefaults();
       await loadModelPresets();
       await refreshCluster(false);
+      await discoverWorkers();
     } catch (err) {
       status = 'Studio bridge unavailable';
       output = String(err);
@@ -468,23 +773,124 @@
     {:else if activeTab === 'Cluster'}
       <header class="hero">
         <h1>Cluster Operations</h1>
-        <p>{clusterSummary}</p>
+        <p>{clusterSummary} · {workerDiscoverySummary}</p>
         <div class="actions">
-          <button class="primary" on:click={() => run('run_cluster_start', { nodeCount: 3, basePort: 46000 })} disabled={busy}>Start 3-Node Local Cluster</button>
-          <button on:click={() => run('run_probe', { nodeId: 'studio-local', full: true })} disabled={busy}>Full Probe</button>
-          <button on:click={() => run('run_flow_quick')} disabled={busy}>Run Quick Flow</button>
+          <button class="primary" on:click={discoverWorkers} disabled={busy}>Discover Workers</button>
+          <button class="primary" on:click={connectFlow} disabled={busy}>Connect Local -> Remote</button>
+          <button class="primary" on:click={connectAllReachableWorkers} disabled={busy || workerDiscovery.length === 0}>Connect Selected/Reachable</button>
+          <button on:click={selectAllReachableWorkers} disabled={busy || workerDiscovery.length === 0}>Select Reachable</button>
+          <button on:click={clearWorkerSelection} disabled={busy || selectedWorkerIds.length === 0}>Clear Selection</button>
           <button on:click={() => refreshCluster(false)} disabled={busy}>Refresh Cluster</button>
-          <button on:click={() => refreshCluster(true)} disabled={busy}>Deep Refresh</button>
+          <button on:click={() => (showAdvancedClusterButtons = !showAdvancedClusterButtons)} disabled={busy}>
+            {showAdvancedClusterButtons ? 'Hide Advanced Buttons' : 'Show Advanced Buttons'}
+          </button>
+          {#if showAdvancedClusterButtons}
+            <button on:click={() => run('run_cluster_start', { nodeCount: Number(startNodeCount), basePort: Number(startBasePort) })} disabled={busy}>Start Local Cluster</button>
+            <button on:click={() => run('run_probe', { nodeId: localNodeId, full: true })} disabled={busy}>Full Probe (Local)</button>
+            <button on:click={() => run('run_flow_quick')} disabled={busy}>Run Legacy Quick Flow</button>
+            <button on:click={() => refreshCluster(true)} disabled={busy}>Deep Refresh</button>
+          {/if}
         </div>
       </header>
+
+      <section class="cluster-controls">
+        <article class="cluster-card">
+          <h3>Discovery Settings</h3>
+          <p>Enter worker IDs to probe. Defaults from config are auto-included.</p>
+          <div class="actions">
+            <input bind:value={workerProbeHints} placeholder="studio-local, studio-remote, workstation-a" />
+            <label class="checkbox"><input type="checkbox" bind:checked={workerProbeFull} /> Full probe</label>
+            <input type="number" min="50" max="10000" step="50" bind:value={tcpProbeTimeoutMs} placeholder="tcp timeout ms" />
+          </div>
+        </article>
+
+        <article class="cluster-card">
+          <h3>Connection Settings</h3>
+          <p>Run flow directly between selected workers.</p>
+          <div class="actions">
+            <input bind:value={localNodeId} placeholder="local node id" />
+            <input bind:value={remoteNodeId} placeholder="remote node id" />
+            <select bind:value={flowTransport}>
+              <option value="tcp">tcp</option>
+              <option value="inmem">inmem</option>
+              <option value="ibverbs">ibverbs</option>
+              <option value="ucx">ucx</option>
+            </select>
+            <input type="number" min="16" max="512" step="16" bind:value={flowExecutionTokens} placeholder="tokens" />
+            <input type="number" min="1" max="16" step="1" bind:value={flowMicroBatch} placeholder="micro-batch" />
+          </div>
+          <div class="actions">
+            <input type="number" min="1" max="12" step="1" bind:value={startNodeCount} placeholder="cluster node count" />
+            <input type="number" min="1024" max="65535" step="1" bind:value={startBasePort} placeholder="cluster base port" />
+          </div>
+        </article>
+      </section>
+
+      {#if workerDiscovery.length > 0}
+        <section class="worker-discovery-grid">
+          {#each workerDiscovery as worker}
+            <article class="cluster-card" class:healthy={worker.available} class:degraded={!worker.available}>
+              <h3>{worker.id}</h3>
+              <p>{worker.available ? 'reachable' : 'unreachable'} · {worker.acceleration} · probe {worker.probeMode ?? worker.probe_mode}</p>
+              <p>Workers: {worker.workers}</p>
+              <p>System RAM: {(worker.systemMemoryGb ?? worker.system_memory_gb ?? 0).toFixed(1)} GB</p>
+              <p>GPU VRAM: {(worker.gpuVramGb ?? worker.gpu_vram_gb ?? 0).toFixed(1)} GB</p>
+              <label class="checkbox">
+                <input type="checkbox" checked={isWorkerSelected(worker.id)} on:change={(event) => toggleWorkerSelection(worker.id, event.currentTarget.checked)} />
+                Include in batch connect
+              </label>
+              {#if worker.error}
+                <p class="worker-error">{worker.error}</p>
+              {/if}
+              <div class="actions tcp-target-row">
+                <input value={tcpTargetFor(worker.id).host} on:input={(event) => updateTcpTarget(worker.id, 'host', event.currentTarget.value)} placeholder="tcp host" />
+                <input type="number" min="1" max="65535" value={tcpTargetFor(worker.id).port} on:input={(event) => updateTcpTarget(worker.id, 'port', event.currentTarget.value)} placeholder="tcp port" />
+                <button on:click={() => testWorkerTcp(worker.id)} disabled={busy}>Quick TCP Test</button>
+              </div>
+              {#if workerTcpResults[worker.id]}
+                <p class:tcp-pass={workerTcpResults[worker.id].reachable} class:tcp-fail={!workerTcpResults[worker.id].reachable}>
+                  TCP {workerTcpResults[worker.id].reachable ? 'OK' : 'FAIL'} at {workerTcpResults[worker.id].testedAt} ·
+                  {#if workerTcpResults[worker.id].reachable}
+                    latency {workerTcpResults[worker.id].latencyMs ?? workerTcpResults[worker.id].latency_ms ?? 'n/a'} ms
+                  {:else}
+                    {workerTcpResults[worker.id].error ?? 'connection failed'}
+                  {/if}
+                </p>
+              {/if}
+              <div class="actions">
+                <button on:click={() => (localNodeId = worker.id)} disabled={busy}>Set Local</button>
+                <button on:click={() => (remoteNodeId = worker.id)} disabled={busy}>Set Remote</button>
+                <button class="primary" on:click={() => connectToWorker(worker.id)} disabled={busy || !worker.available}>Connect</button>
+              </div>
+            </article>
+          {/each}
+        </section>
+      {/if}
+
+      {#if batchConnectResults.length > 0}
+        <section class="batch-results">
+          <h3>Batch Connect Results</h3>
+          <div class="batch-results-grid">
+            {#each batchConnectResults as item}
+              <article class="batch-result" class:ok={item.ok} class:fail={!item.ok}>
+                <p><strong>{item.workerId}</strong> · {item.ok ? 'OK' : 'FAIL'} · {item.durationMs} ms</p>
+                {#if item.error}
+                  <p>{item.error}</p>
+                {/if}
+              </article>
+            {/each}
+          </div>
+        </section>
+      {/if}
+
       <section class="cluster-grid">
         {#each clusterNodes as node}
           <article class="cluster-card" class:healthy={node.health === 'healthy'} class:degraded={node.health === 'degraded'}>
             <h3>{node.id}</h3>
             <p>{node.acceleration} · {node.health}</p>
             <p>Workers: {node.workers}</p>
-            <p>System RAM: {node.systemMemoryGb.toFixed(1)} GB</p>
-            <p>GPU VRAM: {node.gpuVramGb.toFixed(1)} GB</p>
+            <p>System RAM: {(node.systemMemoryGb ?? node.system_memory_gb ?? 0).toFixed(1)} GB</p>
+            <p>GPU VRAM: {(node.gpuVramGb ?? node.gpu_vram_gb ?? 0).toFixed(1)} GB</p>
           </article>
         {/each}
       </section>

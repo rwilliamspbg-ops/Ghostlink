@@ -1,6 +1,6 @@
 [package]
 name = "ghostlink-gui-tauri"
-version = "0.1.0-alpha.0"
+version = "1.0.0"
 edition = "2021"
 license = "MIT"
 description = "Ghostlink Studio desktop shell"
