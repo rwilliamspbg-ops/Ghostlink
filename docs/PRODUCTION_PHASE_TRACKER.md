@@ -11,13 +11,14 @@ It is aligned to [docs/PRODUCTION_REMEDIATION_PLAN.md](docs/PRODUCTION_REMEDIATI
 3. Link the issue in the matching tracker row.
 4. Update PRs with weekly status using `.github/pull_request_template.md`.
 
-## Snapshot (2026-07-02)
+## Snapshot (2026-07-03)
 
 - PR branch status: 19/19 checks passing.
 - Security and production gates: green.
 - AF_XDP status: validated in privileged host runs with true `effective_transport_mode=xdp`.
 - Latest measured xdp autotune profile: `596,995.66 tok/s`, `p95=0.41 ms`.
 - Fallback behavior: deterministic automatic fallback to tcp remains in place when AF_XDP probe fails.
+- Linux devcontainer validation: workspace tests, clippy, deterministic perf snapshot, drift check, and GUI strict readiness all passed on 2026-07-03.
 
 ## Phase 0: Triage and Tracking
 

@@ -5,9 +5,12 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VENV_PATH="${ROOT_DIR}/.venv"
 CHECK_ONLY=0
+GUI_ARGS=()
 
 if [[ "${1:-}" == "--check" ]]; then
   CHECK_ONLY=1
+else
+  GUI_ARGS=("$@")
 fi
 
 log() {
@@ -56,4 +59,4 @@ fi
 
 # 4. Launch Studio
 log "Launching Ghostlink Studio..."
-GHOSTLINK_PYTHON="${VENV_PATH}/bin/python" ./target/release/ghost-link gui
+./target/release/ghost-link gui "${GUI_ARGS[@]}"

@@ -1816,7 +1816,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
 
         backend.last_latency_ms = (started.elapsed().as_secs_f32() * 1000.0).max(1.0);
 
-        Json(serde_json::json!({
+        let mut response = serde_json::json!({
             "response": format!(
                 "[{}] {}",
                 current_model,
@@ -1824,7 +1824,16 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             ),
             "request_id": format!("req-{}", backend.chat_requests),
             "tokens_estimated": token_estimate,
-        }))
+        });
+
+        if let Some(mcp) = req.mcp {
+            if let Some(response_object) = response.as_object_mut() {
+                response_object.insert("tool_access".to_string(), serde_json::json!(true));
+                response_object.insert("mcp".to_string(), mcp);
+            }
+        }
+
+        Json(response)
     }
 
     async fn handle_health(
@@ -3195,13 +3204,11 @@ fn launch_mohawk_gui(args: &[String]) -> Result<()> {
     let gui_entry = crate_root
         .join("..")
         .join("..")
-        .join("third_party")
-        .join("mohawk_gui")
-        .join("main.py");
+        .join("ghostlink_gui_tkinter.py");
 
     if !gui_entry.exists() {
         anyhow::bail!(
-            "Mohawk GUI entrypoint not found at {}. Ensure third_party/mohawk_gui is present.",
+            "Ghostlink GUI entrypoint not found at {}. Ensure ghostlink_gui_tkinter.py is present.",
             gui_entry.display()
         );
     }
@@ -3219,7 +3226,7 @@ fn launch_mohawk_gui(args: &[String]) -> Result<()> {
     let backend_url = format!("http://{}:{}", backend_host, backend_port);
     let mut managed_backend = maybe_spawn_managed_gui_backend(args, &backend_host, backend_port)?;
 
-    println!("Launching Mohawk GUI from {}", gui_entry.display());
+    println!("Launching Ghostlink GUI from {}", gui_entry.display());
     println!("Python executable: {}", python);
     println!("GUI backend target: {}", backend_url);
 
@@ -3228,7 +3235,7 @@ fn launch_mohawk_gui(args: &[String]) -> Result<()> {
         .env("GHOSTLINK_GUI_BASE_URL", &backend_url)
         .args(&forwarded_args)
         .status()
-        .map_err(|err| anyhow::anyhow!("failed to launch Mohawk GUI with {}: {}", python, err))?;
+        .map_err(|err| anyhow::anyhow!("failed to launch Ghostlink GUI with {}: {}", python, err))?;
 
     if let Some(child) = managed_backend.as_mut() {
         let _ = child.kill();
@@ -3237,7 +3244,7 @@ fn launch_mohawk_gui(args: &[String]) -> Result<()> {
 
     if !status.success() {
         anyhow::bail!(
-            "Mohawk GUI exited with status {}. Install dependencies from third_party/mohawk_gui and retry.",
+            "Ghostlink GUI exited with status {}. Install dependencies from third_party/mohawk_gui and retry.",
             status
         );
     }
@@ -3417,15 +3424,13 @@ fn print_gui_diagnostics(strict: bool) -> Result<()> {
     let gui_entry = crate_root
         .join("..")
         .join("..")
-        .join("third_party")
-        .join("mohawk_gui")
-        .join("main.py");
+        .join("ghostlink_gui_tkinter.py");
     let requirements = crate_root
         .join("..")
         .join("..")
         .join("third_party")
         .join("mohawk_gui")
-        .join("requirements.txt");
+        .join("requirements-runtime.txt");
     let repo_root = crate_root.join("..").join("..");
     let python_resolution =
         resolve_python_for_root(&repo_root, std::env::var("GHOSTLINK_PYTHON").ok());
@@ -3590,15 +3595,13 @@ fn print_gui_readiness(strict: bool) -> Result<()> {
     let gui_entry = crate_root
         .join("..")
         .join("..")
-        .join("third_party")
-        .join("mohawk_gui")
-        .join("main.py");
+        .join("ghostlink_gui_tkinter.py");
     let requirements = crate_root
         .join("..")
         .join("..")
         .join("third_party")
         .join("mohawk_gui")
-        .join("requirements.txt");
+        .join("requirements-runtime.txt");
     let repo_root = crate_root.join("..").join("..");
     let python =
         resolve_python_executable_for_root(&repo_root, std::env::var("GHOSTLINK_PYTHON").ok());
@@ -3638,7 +3641,7 @@ fn print_gui_readiness(strict: bool) -> Result<()> {
 
     match detect_missing_gui_python_modules(&python) {
         Ok(missing) if missing.is_empty() => {
-            println!("Python modules: OK (PyQt6, requests, pyqtgraph)");
+            println!("Python modules: OK (tkinter, requests, huggingface_hub, transformers, torch)");
         }
         Ok(missing) => {
             issues.push(format!("Missing Python modules: {}", missing.join(", ")));
@@ -3720,7 +3723,7 @@ fn detect_missing_gui_python_modules(python: &str) -> Result<Vec<String>> {
     let output = Command::new(python)
         .args([
             "-c",
-            "import importlib.util as u;mods=['PyQt6','requests','pyqtgraph'];missing=[m for m in mods if u.find_spec(m) is None];print(','.join(missing))",
+            "import importlib.util as u;mods=['tkinter','requests','huggingface_hub','transformers','torch'];missing=[m for m in mods if u.find_spec(m) is None];print(','.join(missing))",
         ])
         .output()
         .map_err(|err| anyhow::anyhow!("unable to execute Python '{}': {}", python, err))?;
@@ -3765,21 +3768,17 @@ fn has_linux_libxkbcommon() -> bool {
 }
 
 fn run_gui_preflight_checks() -> Result<()> {
-    #[cfg(target_os = "linux")]
-    {
-        if !has_linux_libgl() {
-            anyhow::bail!(
-                "GUI preflight failed: required OpenGL runtime library libGL.so.1 is missing. \
-Install system dependency (Debian/Ubuntu): sudo apt-get update && sudo apt-get install -y libgl1"
-            );
-        }
+    let crate_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let gui_entry = crate_root
+        .join("..")
+        .join("..")
+        .join("ghostlink_gui_tkinter.py");
 
-        if !has_linux_libxkbcommon() {
-            anyhow::bail!(
-                "GUI preflight failed: required XKB runtime library libxkbcommon.so.0 is missing. \
-Install system dependency (Debian/Ubuntu): sudo apt-get update && sudo apt-get install -y libxkbcommon0"
-            );
-        }
+    if !gui_entry.exists() {
+        anyhow::bail!(
+            "GUI preflight failed: missing frontend entrypoint {}",
+            gui_entry.display()
+        );
     }
 
     Ok(())

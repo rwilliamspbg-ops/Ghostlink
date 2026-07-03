@@ -53,28 +53,30 @@ bash scripts/release_bundle.sh artifacts/release/v1.0.0 signed
 
 ## 📊 Performance Results (July 2026)
 
-### Repository State Snapshot (2026-07-02)
+### Repository State Snapshot (2026-07-03)
 
 - CI status for PR #36: **19/19 checks passing** (0 failing, 0 pending)
 - Security lanes: secret scan, Python dependency audit, and Rust advisory audit all green
 - Production gates: `Production Gate` and `CI/Production Gate` green
 - Latest optimization commits: `f1b55e9`, `6abcdc2`
+- Fresh Linux devcontainer validation: `cargo test --workspace`, `cargo clippy --workspace --all-targets -- -D warnings`, perf snapshot, drift check, and `gui-check --strict` all passed
+- Cross-platform hardware lanes were not executed in this Linux-only workspace
 
 ### Real Throughput Measurements
 
-**Deterministic Profile**: 256 tokens, micro-batch 4, 5 runs (+1 warmup), release mode  
+**Deterministic Profile**: 256 tokens, micro-batch 4, 3 runs (+1 warmup), release mode, Linux devcontainer validation  
 **Stress Profile**: 512 tokens, micro-batch 8, 12 runs (+2 warmup), release mode
 
 | Profile | Transport Mode | Throughput (tok/s) | P95 Latency (ms) | Wall Avg (s) |
 | :--- | :--- | ---: | ---: | ---: |
-| Deterministic | TCP loopback | 136,279.81 | 1.86 | 1.89 |
-| Deterministic | In-memory | 493,793.92 | 0.64 | 0.78 |
+| Deterministic | TCP loopback | 125,473.95 | 2.02 | 2.08 |
+| Deterministic | In-memory | 528,634.27 | 0.42 | 0.56 |
 | Stress | TCP loopback | 227,919.80 | 2.23 | 2.28 |
 | Stress | In-memory | 542,615.61 | 0.85 | 1.04 |
 
-**Optimization delta (2026-07-02 runtime tuning refresh)**:
-- Deterministic TCP: +10.7% throughput (123,097.05 -> 136,279.81 tok/s)
-- Deterministic in-memory: +91.9% throughput (257,236.81 -> 493,793.92 tok/s)
+**Optimization delta (2026-07-03 Linux validation refresh)**:
+- Deterministic TCP: +1.9% throughput versus the prior deterministic baseline refresh (123,097.05 -> 125,473.95 tok/s)
+- Deterministic in-memory: +105.4% throughput versus the prior deterministic baseline refresh (257,236.81 -> 528,634.27 tok/s)
 - Stress TCP: +7.6% throughput (211,834.01 -> 227,919.80 tok/s)
 - Stress in-memory: +21.2% throughput (447,816.14 -> 542,615.61 tok/s)
 
@@ -110,7 +112,7 @@ Reference artifacts:
 
 ### Fabric Efficiency Analysis
 
-**Current TCP Throughput Relative to in-memory baseline (deterministic profile)**: 136,279.81 / 493,793.92 = **27.6%**
+**Current TCP Throughput Relative to in-memory baseline (deterministic profile)**: 125,473.95 / 528,634.27 = **23.7%**
 
 **Why the ~54% Degradation?** The bottleneck is **per-token LAN latency, not protocol overhead**:
 
@@ -286,9 +288,9 @@ cargo bench --bench tensor_streaming_fabric
 bash scripts/run_all_tests.sh
 
 # Real end-to-end flows
-cargo run -p ghost-link --release -- flow iprada-16gb zenbook-32gb 32 32 256 8 inmem  # 433K tok/s
-cargo run -p ghost-link --release -- flow iprada-16gb zenbook-32gb 32 32 256 8 tcp   # 150K tok/s
-GHOSTLINK_TCP_AUTOTUNE=1 cargo run -p ghost-link --release -- flow ... tcp           # 198K tok/s
+cargo run -p ghost-link --release -- flow iprada-16gb zenbook-32gb 32 32 256 8 inmem  # ~529K tok/s deterministic Linux validation
+cargo run -p ghost-link --release -- flow iprada-16gb zenbook-32gb 32 32 256 8 tcp   # ~125K tok/s deterministic Linux validation
+GHOSTLINK_TCP_AUTOTUNE=1 cargo run -p ghost-link --release -- flow ... tcp           # ~198K tok/s prior autotune refresh
 ```
 
 ### Full Local Validation
@@ -333,7 +335,7 @@ python3 scripts/verify_hf_models.py
 - ✅ Real throughput measurement & benchmarking
 - ✅ TCP autotune (queue depth optimization)
 
-**Phase 1 Result**: ~228K tok/s (stress) / ~136K tok/s (deterministic) on TCP; **bottleneck remains dominated by transport latency**.
+**Phase 1 Result**: ~228K tok/s (stress) / ~125K tok/s (deterministic Linux validation) on TCP; **bottleneck remains dominated by transport latency**.
 
 ### Phase 2 (Planned - AF_XDP Kernel Bypass)
 - ⏳ AF_XDP socket integration
