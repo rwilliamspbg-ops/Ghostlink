@@ -3540,7 +3540,9 @@ fn launch_mohawk_gui(args: &[String]) -> Result<()> {
         .env("GHOSTLINK_GUI_BASE_URL", &backend_url)
         .args(&forwarded_args)
         .status()
-        .map_err(|err| anyhow::anyhow!("failed to launch Ghostlink GUI with {}: {}", python, err))?;
+        .map_err(|err| {
+            anyhow::anyhow!("failed to launch Ghostlink GUI with {}: {}", python, err)
+        })?;
 
     if let Some(child) = managed_backend.as_mut() {
         let _ = child.kill();
@@ -3946,7 +3948,9 @@ fn print_gui_readiness(strict: bool) -> Result<()> {
 
     match detect_missing_gui_python_modules(&python) {
         Ok(missing) if missing.is_empty() => {
-            println!("Python modules: OK (tkinter, requests, huggingface_hub, transformers, torch)");
+            println!(
+                "Python modules: OK (tkinter, requests, huggingface_hub, transformers, torch)"
+            );
         }
         Ok(missing) => {
             issues.push(format!("Missing Python modules: {}", missing.join(", ")));
