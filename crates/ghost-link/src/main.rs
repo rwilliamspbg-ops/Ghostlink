@@ -1488,11 +1488,13 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             let pipeline_plan = PipelinePlan::from_assignments(&assignments, &device_map);
 
             if let Ok(exec) = execute_pipeline_tcp_loopback(&pipeline_plan, 32, 4) {
-                 execution_info = format!(" (Throughput: {:.2} tok/s, Latency: {:.2} ms)",
-                    exec.throughput_tokens_per_sec, exec.avg_token_latency_ms);
+                execution_info = format!(
+                    " (Throughput: {:.2} tok/s, Latency: {:.2} ms)",
+                    exec.throughput_tokens_per_sec, exec.avg_token_latency_ms
+                );
 
-                 let mut backend = lock_state(&state);
-                 backend.last_latency_ms = exec.avg_token_latency_ms;
+                let mut backend = lock_state(&state);
+                backend.last_latency_ms = exec.avg_token_latency_ms;
             }
         }
 
@@ -1775,7 +1777,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         let latency_p95 = (latency_p50 as f32 * 1.4).max(2.0) as usize;
 
         let cpu = (18 + workers_online * 9 + backend.queue_depth.min(20)).min(95);
-        let memory = ((used_vram / total_vram) * 100.0).max(24.0).min(96.0) as usize;
+        let memory = ((used_vram / total_vram) * 100.0).clamp(24.0, 96.0) as usize;
         let gpu = (32 + workers_online * 11 + (backend.chat_requests as usize % 15)).min(98);
 
         Json(serde_json::json!({
@@ -1872,7 +1874,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             (backend.current_model.clone(), Arc::clone(&backend.cluster))
         };
 
-        let token_estimate = req.message.split_whitespace().count().max(1).min(1024);
+        let token_estimate = req.message.split_whitespace().count().clamp(1, 1024);
 
         // Run real inference pipeline execution (simulated compute on real transport)
         let nodes = cluster.nodes();
@@ -1885,7 +1887,9 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             .collect();
 
         let profile = detect_runtime_profile("studio-api");
-        let result = if let Ok(assignments) = assign_layers_with_runtime_profile(&nodes, &layers, &profile) {
+        let result = if let Ok(assignments) =
+            assign_layers_with_runtime_profile(&nodes, &layers, &profile)
+        {
             let device_map = build_device_map(&profile, &profile.node_resources.id, "remote-node");
             let pipeline_plan = PipelinePlan::from_assignments(&assignments, &device_map);
 
@@ -1905,7 +1909,10 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         }
 
         let latency = backend.last_latency_ms.round() as u32;
-        let throughput = result.as_ref().map(|r| r.throughput_tokens_per_sec as usize).unwrap_or(1200);
+        let throughput = result
+            .as_ref()
+            .map(|r| r.throughput_tokens_per_sec as usize)
+            .unwrap_or(1200);
 
         let maybe_session = backend.sessions.first_mut();
         if let Some(session) = maybe_session {
