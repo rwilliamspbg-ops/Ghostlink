@@ -22,7 +22,7 @@ use ghostlink_core::planning::{
 use ghostlink_core::protocol::NodeResources;
 use ghostlink_core::protocol::{DiscoveryFrame, FrameKind};
 use ghostlink_core::runtime::{
-    build_token_schedule, execute_pipeline_tcp_loopback_with_config,
+    build_token_schedule, execute_pipeline_tcp_loopback, execute_pipeline_tcp_loopback_with_config,
     execute_pipeline_with_rebalance_and_measured, execute_pipeline_xdp_loopback_with_config,
     DeviceKind, PipelinePlan, TcpTransportConfig,
 };
@@ -36,6 +36,7 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::process::{Child, Command};
 use std::sync::Arc;
+use std::thread;
 use std::time::{Duration, Instant};
 
 #[derive(Debug, Default, Deserialize)]
@@ -1432,6 +1433,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         last_latency_ms: f32,
         started_at: Instant,
         backend_url: String,
+        cluster: Arc<ClusterState>,
     }
 
     #[derive(Debug, Serialize)]
@@ -1458,13 +1460,41 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         State(state): State<Arc<Mutex<BackendState>>>,
         Json(req): Json<ChatCompletionRequest>,
     ) -> Json<ChatCompletionResponse> {
-        let mut backend = lock_state(&state);
-        backend.chat_requests = backend.chat_requests.saturating_add(1);
-        let model = if req.model.trim().is_empty() {
-            backend.current_model.clone()
-        } else {
-            req.model.clone()
+        let (model, cluster, chat_req_id) = {
+            let mut backend = lock_state(&state);
+            backend.chat_requests = backend.chat_requests.saturating_add(1);
+            let model = if req.model.trim().is_empty() {
+                backend.current_model.clone()
+            } else {
+                req.model.clone()
+            };
+            (model, Arc::clone(&backend.cluster), backend.chat_requests)
         };
+
+        // Run real inference pipeline execution (simulated compute on real transport)
+        let nodes = cluster.nodes();
+        let layers: Vec<LayerSpec> = (0..60)
+            .map(|index| LayerSpec {
+                index,
+                vram_gb: 0.5,
+                num_weights: 500_000_000 / 60,
+            })
+            .collect();
+
+        let profile = detect_runtime_profile("studio-api");
+        let mut execution_info = String::new();
+        if let Ok(assignments) = assign_layers_with_runtime_profile(&nodes, &layers, &profile) {
+            let device_map = build_device_map(&profile, &profile.node_resources.id, "remote-node");
+            let pipeline_plan = PipelinePlan::from_assignments(&assignments, &device_map);
+
+            if let Ok(exec) = execute_pipeline_tcp_loopback(&pipeline_plan, 32, 4) {
+                 execution_info = format!(" (Throughput: {:.2} tok/s, Latency: {:.2} ms)",
+                    exec.throughput_tokens_per_sec, exec.avg_token_latency_ms);
+
+                 let mut backend = lock_state(&state);
+                 backend.last_latency_ms = exec.avg_token_latency_ms;
+            }
+        }
 
         Json(ChatCompletionResponse {
             id: format!("chatcmpl-{}", rand::random::<u32>()),
@@ -1479,9 +1509,11 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                 message: serde_json::json!({
                     "role": "assistant",
                     "content": format!(
-                        "Ghostlink backend is online. Model '{}' handled request #{}.",
+                        "Ghostlink backend is online. Model '{}' handled request #{}.{}{}",
                         model,
-                        backend.chat_requests
+                        chat_req_id,
+                        execution_info,
+                        if nodes.len() > 1 { format!(" Distributed across {} nodes.", nodes.len()) } else { "".to_string() }
                     )
                 }),
                 finish_reason: "stop".to_string(),
@@ -1593,7 +1625,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         State(state): State<Arc<Mutex<BackendState>>>,
     ) -> Json<serde_json::Value> {
         let backend = lock_state(&state);
-        let workers = backend
+        let mut workers = backend
             .workers
             .iter()
             .map(|worker| {
@@ -1602,12 +1634,37 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                     "host": worker.host,
                     "port": worker.port,
                     "status": worker.status,
-                    "model": worker.model,
+                    "model": worker.model.clone(),
                     "threads": worker.threads,
                     "load": worker.load,
                 })
             })
             .collect::<Vec<_>>();
+
+        // Add discovered nodes from ClusterState
+        for node in backend.cluster.nodes() {
+            if !backend.workers.iter().any(|w| w.id == node.id) {
+                let (host, port) = if let Some(metrics) = backend.cluster.get_metrics(&node.id) {
+                    if let Some(addr) = metrics.ip_address {
+                        (addr.ip().to_string(), addr.port())
+                    } else {
+                        ("unknown".to_string(), 0)
+                    }
+                } else {
+                    ("unknown".to_string(), 0)
+                };
+
+                workers.push(serde_json::json!({
+                    "id": node.id,
+                    "host": host,
+                    "port": port,
+                    "status": "Connected",
+                    "model": backend.current_model.clone(),
+                    "threads": 4,
+                    "load": 0,
+                }));
+            }
+        }
 
         Json(serde_json::json!({
             "workers": workers
@@ -1690,16 +1747,35 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         State(state): State<Arc<Mutex<BackendState>>>,
     ) -> Json<serde_json::Value> {
         let backend = lock_state(&state);
-        let workers_online = backend
-            .workers
-            .iter()
-            .filter(|worker| worker.status == "Connected")
-            .count();
-        let throughput = (workers_online.max(1) * 1200) + (backend.chat_requests as usize * 20);
-        let latency_p50 = backend.last_latency_ms.max(1.0).round() as usize;
-        let latency_p95 = (backend.last_latency_ms * 1.4).max(2.0).round() as usize;
+
+        let active_nodes = backend.cluster.active_nodes();
+        let workers_online = active_nodes.len();
+
+        let total_vram = backend.cluster.total_vram_gb().max(1.0);
+        let mut used_vram = 0.0;
+        let mut total_throughput = 0.0;
+        let mut avg_latency_sum = 0.0;
+        let mut latency_samples = 0;
+
+        for node in &active_nodes {
+            used_vram += node.used_vram_gb;
+            total_throughput += node.throughput_gbps;
+            if node.latency_samples > 0 {
+                avg_latency_sum += node.avg_latency_us;
+                latency_samples += 1;
+            }
+        }
+
+        let throughput = (total_throughput * 1000.0) as usize;
+        let latency_p50 = if latency_samples > 0 {
+            (avg_latency_sum / latency_samples as f32 / 1000.0).max(1.0)
+        } else {
+            backend.last_latency_ms
+        } as usize;
+        let latency_p95 = (latency_p50 as f32 * 1.4).max(2.0) as usize;
+
         let cpu = (18 + workers_online * 9 + backend.queue_depth.min(20)).min(95);
-        let memory = (24 + workers_online * 7 + (backend.sessions.len() * 2)).min(96);
+        let memory = ((used_vram / total_vram) * 100.0).max(24.0).min(96.0) as usize;
         let gpu = (32 + workers_online * 11 + (backend.chat_requests as usize % 15)).min(98);
 
         Json(serde_json::json!({
@@ -1791,16 +1867,51 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         Json(req): Json<GuiChatRequest>,
     ) -> Json<serde_json::Value> {
         let started = Instant::now();
+        let (current_model, cluster) = {
+            let backend = lock_state(&state);
+            (backend.current_model.clone(), Arc::clone(&backend.cluster))
+        };
+
+        let token_estimate = req.message.split_whitespace().count().max(1).min(1024);
+
+        // Run real inference pipeline execution (simulated compute on real transport)
+        let nodes = cluster.nodes();
+        let layers: Vec<LayerSpec> = (0..60)
+            .map(|index| LayerSpec {
+                index,
+                vram_gb: 0.5,
+                num_weights: 500_000_000 / 60,
+            })
+            .collect();
+
+        let profile = detect_runtime_profile("studio-api");
+        let result = if let Ok(assignments) = assign_layers_with_runtime_profile(&nodes, &layers, &profile) {
+            let device_map = build_device_map(&profile, &profile.node_resources.id, "remote-node");
+            let pipeline_plan = PipelinePlan::from_assignments(&assignments, &device_map);
+
+            // Execute using the best available transport for local cluster
+            execute_pipeline_tcp_loopback(&pipeline_plan, token_estimate, 4).ok()
+        } else {
+            None
+        };
+
         let mut backend = lock_state(&state);
-        let current_model = backend.current_model.clone();
         backend.chat_requests = backend.chat_requests.saturating_add(1);
 
-        let token_estimate = req.message.split_whitespace().count().max(1);
+        if let Some(ref exec) = result {
+            backend.last_latency_ms = exec.avg_token_latency_ms;
+        } else {
+            backend.last_latency_ms = (started.elapsed().as_secs_f32() * 1000.0).max(1.0);
+        }
+
+        let latency = backend.last_latency_ms.round() as u32;
+        let throughput = result.as_ref().map(|r| r.throughput_tokens_per_sec as usize).unwrap_or(1200);
+
         let maybe_session = backend.sessions.first_mut();
         if let Some(session) = maybe_session {
             session.tokens = session.tokens.saturating_add(token_estimate);
-            session.throughput = session.throughput.saturating_add(12);
-            session.latency = session.latency.max(1);
+            session.throughput = throughput;
+            session.latency = latency;
             session.model = current_model.clone();
             session.status = "Running".to_string();
         } else {
@@ -1808,13 +1919,11 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                 id: "sess_local_001".to_string(),
                 model: current_model.clone(),
                 status: "Running".to_string(),
-                throughput: 1200,
-                latency: 2,
+                throughput,
+                latency,
                 tokens: token_estimate,
             });
         }
-
-        backend.last_latency_ms = (started.elapsed().as_secs_f32() * 1000.0).max(1.0);
 
         Json(serde_json::json!({
             "response": format!(
@@ -1824,6 +1933,10 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             ),
             "request_id": format!("req-{}", backend.chat_requests),
             "tokens_estimated": token_estimate,
+            "metrics": result.map(|r| serde_json::json!({
+                "throughput": r.throughput_tokens_per_sec,
+                "p95_ms": r.p95_token_latency_ms
+            }))
         }))
     }
 
@@ -1878,6 +1991,65 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         .build()
         .unwrap();
 
+    let cluster = Arc::new(ClusterState::new());
+    cluster.register(profile.node_resources.clone());
+
+    // Spawn discovery listener
+    let _cluster_for_listener = Arc::clone(&cluster);
+    let node_for_listener = profile.node_resources.clone();
+    thread::spawn(move || {
+        let auth_token = std::env::var("GHOSTLINK_DISCOVERY_AUTH_TOKEN")
+            .ok()
+            .filter(|token| !token.is_empty());
+        let listen_addr = std::env::var("GHOSTLINK_DISCOVERY_LISTEN")
+            .ok()
+            .and_then(|raw| raw.parse::<SocketAddr>().ok())
+            .unwrap_or_else(|| SocketAddr::from(([0, 0, 0, 0], DEFAULT_DISCOVERY_PORT)));
+
+        let config = UdpDiscoveryConfig {
+            bind_addr: listen_addr,
+            auth_token,
+            allow_legacy_crc32: env_default_bool("GHOSTLINK_DISCOVERY_ALLOW_LEGACY_CRC32", false),
+            ..UdpDiscoveryConfig::default()
+        };
+
+        let _ = serve_discovery(&node_for_listener, &config, None);
+    });
+
+    // Spawn discovery broadcast task
+    let cluster_for_broadcast = Arc::clone(&cluster);
+    let node_for_broadcast = profile.node_resources.clone();
+    thread::spawn(move || {
+        let auth_token = std::env::var("GHOSTLINK_DISCOVERY_AUTH_TOKEN")
+            .ok()
+            .filter(|token| !token.is_empty());
+        let broadcast_addr = std::env::var("GHOSTLINK_DISCOVERY_BROADCAST")
+            .ok()
+            .and_then(|raw| raw.parse::<SocketAddr>().ok())
+            .unwrap_or_else(|| SocketAddr::from(([255, 255, 255, 255], DEFAULT_DISCOVERY_PORT)));
+
+        let config = UdpDiscoveryConfig {
+            broadcast_addr,
+            auth_token,
+            allow_legacy_crc32: env_default_bool("GHOSTLINK_DISCOVERY_ALLOW_LEGACY_CRC32", false),
+            ..UdpDiscoveryConfig::default()
+        };
+
+        let frame = DiscoveryFrame {
+            kind: FrameKind::Join,
+            node: node_for_broadcast,
+        };
+
+        loop {
+            if let Ok(peers) = broadcast_and_collect(&frame, &config) {
+                for (peer_frame, peer_addr) in peers {
+                    cluster_for_broadcast.register_with_addr(peer_frame.node, Some(peer_addr));
+                }
+            }
+            thread::sleep(Duration::from_secs(10));
+        }
+    });
+
     let state = Arc::new(Mutex::new(BackendState {
         models: vec![
             ModelRecord {
@@ -1897,7 +2069,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         ],
         current_model: "ghostlink-30b-v1".to_string(),
         workers: vec![WorkerRecord {
-            id: "local-node".to_string(),
+            id: profile.node_resources.id.clone(),
             host: host.to_string(),
             port,
             status: "Connected".to_string(),
@@ -1911,6 +2083,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         last_latency_ms: 2.0,
         started_at: Instant::now(),
         backend_url,
+        cluster,
     }));
 
     rt.block_on(async {
