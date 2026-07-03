@@ -1473,29 +1473,72 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
 
         // Run real inference pipeline execution (simulated compute on real transport)
         let nodes = cluster.nodes();
-        let layers: Vec<LayerSpec> = (0..60)
+        let total_vram = cluster.total_vram_gb();
+        // Adaptive layer scaling: model size adjusts to cluster capacity
+        let layer_count = (total_vram * 2.0).clamp(8.0, 60.0) as usize;
+        let layers: Vec<LayerSpec> = (0..layer_count)
             .map(|index| LayerSpec {
                 index,
-                vram_gb: 0.5,
+                vram_gb: (total_vram / (layer_count as f32 + 1.0)).min(0.4),
                 num_weights: 500_000_000 / 60,
             })
             .collect();
 
         let profile = detect_runtime_profile("studio-api");
         let mut execution_info = String::new();
-        if let Ok(assignments) = assign_layers_with_runtime_profile(&nodes, &layers, &profile) {
-            let device_map = build_device_map(&profile, &profile.node_resources.id, "remote-node");
-            let pipeline_plan = PipelinePlan::from_assignments(&assignments, &device_map);
+        let result = match assign_layers_with_runtime_profile(&nodes, &layers, &profile) {
+            Ok(assignments) => {
+                let device_map = build_device_map_from_cluster(&profile, &cluster);
+                let pipeline_plan = PipelinePlan::from_assignments(&assignments, &device_map);
+                let pipeline_plan_clone = pipeline_plan.clone();
 
-            if let Ok(exec) = execute_pipeline_tcp_loopback(&pipeline_plan, 32, 4) {
-                execution_info = format!(
-                    " (Throughput: {:.2} tok/s, Latency: {:.2} ms)",
-                    exec.throughput_tokens_per_sec, exec.avg_token_latency_ms
+                tracing::info!(
+                    "API: Executing completions request with {} layers across {} nodes",
+                    layer_count,
+                    nodes.len()
                 );
 
-                let mut backend = lock_state(&state);
-                backend.last_latency_ms = exec.avg_token_latency_ms;
+                let exec_result = if nodes.len() > 1 {
+                    ghostlink_core::runtime::execute_pipeline_distributed(
+                        &pipeline_plan,
+                        32,
+                        4,
+                        tcp_transport_config_from_env(),
+                        &cluster,
+                        None,
+                        None,
+                    )
+                    .ok()
+                } else {
+                    execute_pipeline_tcp_loopback(&pipeline_plan, 32, 4).ok()
+                };
+
+                if let Some(ref exec) = exec_result {
+                    let mut backend = lock_state(&state);
+                    backend.last_latency_ms = exec.avg_token_latency_ms;
+                    let tokens_per_sec = exec.throughput_tokens_per_sec;
+                    for stage in &exec.stage_stats {
+                        if let Some(stage_p) = pipeline_plan_clone.stages.get(stage.stage_idx) {
+                            backend.cluster.get_metrics_mut(&stage_p.node_id, |m| {
+                                m.record_latency(stage.avg_compute_ms * 1000.0);
+                                m.record_throughput(tokens_per_sec / 100.0);
+                            });
+                        }
+                    }
+                }
+                exec_result
             }
+            Err(e) => {
+                println!("API: Completions layer assignment failed: {}", e);
+                None
+            }
+        };
+
+        if let Some(exec) = result {
+            execution_info = format!(
+                " (Throughput: {:.2} tok/s, Latency: {:.2} ms)",
+                exec.throughput_tokens_per_sec, exec.avg_token_latency_ms
+            );
         }
 
         Json(ChatCompletionResponse {
@@ -1878,33 +1921,85 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
 
         // Run real inference pipeline execution (simulated compute on real transport)
         let nodes = cluster.nodes();
-        let layers: Vec<LayerSpec> = (0..60)
+        let total_vram = cluster.total_vram_gb();
+        // Adaptive layer scaling: model size adjusts to cluster capacity
+        // Each layer is ~0.4GB; we scale from 8 to 60 layers.
+        let layer_count = (total_vram * 2.0).clamp(8.0, 60.0) as usize;
+        let layers: Vec<LayerSpec> = (0..layer_count)
             .map(|index| LayerSpec {
                 index,
-                vram_gb: 0.5,
+                vram_gb: (total_vram / (layer_count as f32 + 1.0)).min(0.4),
                 num_weights: 500_000_000 / 60,
             })
             .collect();
 
         let profile = detect_runtime_profile("studio-api");
-        let result = if let Ok(assignments) =
-            assign_layers_with_runtime_profile(&nodes, &layers, &profile)
-        {
-            let device_map = build_device_map(&profile, &profile.node_resources.id, "remote-node");
-            let pipeline_plan = PipelinePlan::from_assignments(&assignments, &device_map);
+        println!(
+            "API: Processing chat request. Cluster nodes: {}",
+            nodes.len()
+        );
+        let result = match assign_layers_with_runtime_profile(&nodes, &layers, &profile) {
+            Ok(assignments) => {
+                let device_map = build_device_map_from_cluster(&profile, &cluster);
+                let pipeline_plan = PipelinePlan::from_assignments(&assignments, &device_map);
+                let pipeline_plan_clone = pipeline_plan.clone();
 
-            // Execute using the best available transport for local cluster
-            execute_pipeline_tcp_loopback(&pipeline_plan, token_estimate, 4).ok()
-        } else {
-            None
+                println!(
+                    "API: Executing chat request with {} layers across {} nodes ({} assignments)",
+                    layer_count,
+                    nodes.len(),
+                    assignments.len()
+                );
+
+                let exec_result = if nodes.len() > 1 {
+                    ghostlink_core::runtime::execute_pipeline_distributed(
+                        &pipeline_plan,
+                        token_estimate,
+                        4,
+                        tcp_transport_config_from_env(),
+                        &cluster,
+                        None,
+                        None,
+                    )
+                    .map_err(|e| {
+                        println!("API: Distributed execution failed: {}", e);
+                        e
+                    })
+                    .ok()
+                } else {
+                    execute_pipeline_tcp_loopback(&pipeline_plan, token_estimate, 4)
+                        .map_err(|e| {
+                            println!("API: Loopback execution failed: {}", e);
+                            e
+                        })
+                        .ok()
+                };
+
+                if let Some(ref exec) = exec_result {
+                    let mut backend = lock_state(&state);
+                    backend.last_latency_ms = exec.avg_token_latency_ms;
+                    let tokens_per_sec = exec.throughput_tokens_per_sec;
+                    for stage in &exec.stage_stats {
+                        if let Some(stage_p) = pipeline_plan_clone.stages.get(stage.stage_idx) {
+                            backend.cluster.get_metrics_mut(&stage_p.node_id, |m| {
+                                m.record_latency(stage.avg_compute_ms * 1000.0);
+                                m.record_throughput(tokens_per_sec / 100.0);
+                            });
+                        }
+                    }
+                }
+                exec_result
+            }
+            Err(e) => {
+                println!("API: Layer assignment failed: {}", e);
+                None
+            }
         };
 
         let mut backend = lock_state(&state);
         backend.chat_requests = backend.chat_requests.saturating_add(1);
 
-        if let Some(ref exec) = result {
-            backend.last_latency_ms = exec.avg_token_latency_ms;
-        } else {
+        if result.is_none() {
             backend.last_latency_ms = (started.elapsed().as_secs_f32() * 1000.0).max(1.0);
         }
 
@@ -1999,10 +2094,13 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         .unwrap();
 
     let cluster = Arc::new(ClusterState::new());
-    cluster.register(profile.node_resources.clone());
+    let mut local_node = profile.node_resources.clone();
+    // Ensure local node has enough logical capacity for planning
+    local_node.vram_gb = local_node.vram_gb.max(16.0);
+    local_node.system_memory_gb = local_node.system_memory_gb.max(16.0);
+    cluster.register(local_node);
 
     // Spawn discovery listener
-    let _cluster_for_listener = Arc::clone(&cluster);
     let node_for_listener = profile.node_resources.clone();
     thread::spawn(move || {
         let auth_token = std::env::var("GHOSTLINK_DISCOVERY_AUTH_TOKEN")
@@ -2125,6 +2223,33 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
     });
 
     Ok(())
+}
+
+fn build_device_map_from_cluster(
+    local_profile: &ghostlink_core::host::RuntimeProfile,
+    cluster: &ClusterState,
+) -> HashMap<String, DeviceKind> {
+    let local_device = match local_profile.acceleration_mode {
+        ghostlink_core::host::AccelerationMode::Gpu => DeviceKind::Gpu,
+        ghostlink_core::host::AccelerationMode::Neon => DeviceKind::Npu,
+        _ => DeviceKind::Cpu,
+    };
+
+    let mut map = HashMap::new();
+    for node in cluster.nodes() {
+        if node.id == local_profile.node_resources.id {
+            map.insert(node.id, local_device);
+        } else {
+            // Assume remote nodes with VRAM are GPUs
+            let device = if node.vram_gb > 0.0 {
+                DeviceKind::Gpu
+            } else {
+                DeviceKind::Cpu
+            };
+            map.insert(node.id, device);
+        }
+    }
+    map
 }
 
 fn build_device_map(
@@ -2691,7 +2816,7 @@ fn run_planner_accuracy_check() -> Result<String> {
     let layers: Vec<LayerSpec> = (0..60)
         .map(|index| LayerSpec {
             index,
-            vram_gb: 0.5,
+            vram_gb: 0.4,
             num_weights: 500_000_000 / 60,
         })
         .collect();
