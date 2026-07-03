@@ -233,7 +233,7 @@ jobs:
         run: |
           python3 scripts/flow_perf_snapshot.py \
             --warmup-runs 1 \
-            --runs 3 \
+            --runs 6 \
             --release \
             --output-dir ./tmp/perf_snapshot_ci
 
