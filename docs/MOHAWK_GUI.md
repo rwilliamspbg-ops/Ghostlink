@@ -10,6 +10,8 @@ Ghostlink includes a vendored copy of the Mohawk GUI sources in [third_party/moh
 python3 -m pip install -r third_party/mohawk_gui/requirements-runtime.txt
 ```
 
+That runtime set now includes the Hugging Face model stack (`huggingface_hub`, `transformers`, `torch`, `safetensors`, `accelerate`, `sentencepiece`, `tokenizers`) so the build/setup flow provisions it automatically.
+
 If you are in a Linux container, also install system OpenGL runtime packages:
 
 ```bash
