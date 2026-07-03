@@ -411,11 +411,7 @@ fn discover_workers(node_ids: Vec<String>, full: bool) -> Result<WorkerDiscovery
     }
 
     Ok(WorkerDiscoveryResult {
-        summary: format!(
-            "{} of {} workers reachable",
-            available_count,
-            workers.len()
-        ),
+        summary: format!("{} of {} workers reachable", available_count, workers.len()),
         query,
         available_count,
         workers,
