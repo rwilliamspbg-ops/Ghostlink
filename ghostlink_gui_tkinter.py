@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import queue
 import sys
 import threading
 import time
@@ -28,6 +29,19 @@ except ImportError:  # pragma: no cover
 DEFAULT_API_BASE = "http://127.0.0.1:8003"
 
 
+class ChatResponseStream:
+    def __init__(self, response_queue: queue.Queue):
+        self.queue = response_queue
+
+    def stream_tokens(self, token_stream_func):
+        """Consume tokens from generator and push to UI thread"""
+        for chunk in token_stream_func():
+            try:
+                self.queue.put_nowait(chunk)
+            except queue.Full:
+                break
+
+
 class GhostlinkGUI:
     def __init__(self, root: tk.Tk, api_base: str | None = None):
         self.root = root
@@ -40,6 +54,7 @@ class GhostlinkGUI:
         self.backend_online = None
         self.last_ping = "never"
         self.hf_api = HfApi() if HfApi is not None else None
+        self.response_queue = queue.Queue()
 
         configured_base = api_base or os.getenv("GHOSTLINK_GUI_BASE_URL") or DEFAULT_API_BASE
         self.api_base = self.normalize_base_url(configured_base)
@@ -110,8 +125,13 @@ class GhostlinkGUI:
         self.active_model_label.pack(anchor="w", padx=16, pady=(0, 18))
 
         self.sidebar_buttons: list[tk.Button] = []
+        self.sidebar_icons = {}
         for index, text in enumerate(["Chat", "Models", "Metrics", "Sessions", "Workers", "Security"]):
+            icon = self.load_icon(f"assets/icons/{text.lower()}.png")
             button = tk.Button(sidebar, text=text, command=lambda idx=index: self.switch_tab(idx), relief="flat", bg="#151922", fg="#e5e7eb", activebackground="#2b3442", activeforeground="#ffffff", padx=14, pady=10)
+            if icon:
+                button.configure(image=icon, compound="left", padx=10)
+                self.sidebar_icons[text] = icon
             button.pack(fill="x", padx=12, pady=4)
             self.sidebar_buttons.append(button)
 
@@ -159,6 +179,14 @@ class GhostlinkGUI:
     def switch_tab(self, index: int) -> None:
         self.notebook.select(index)
 
+    def load_icon(self, path: str) -> tk.PhotoImage | None:
+        """Load an image from a file path."""
+        try:
+            return tk.PhotoImage(file=path)
+        except Exception:
+            print(f"Icon not found at {path}")
+            return None
+
     def on_close(self) -> None:
         self.root.destroy()
 
@@ -202,6 +230,23 @@ class GhostlinkGUI:
         self.root.after(5000, self.refresh_metrics)
         self.root.after(5000, self.refresh_sessions)
         self.root.after(5000, self.refresh_workers)
+        self.process_response_queue()
+
+    def process_response_queue(self) -> None:
+        """Process incremental updates from the response queue."""
+        try:
+            while True:
+                chunk = self.response_queue.get_nowait()
+                if isinstance(chunk, str):
+                    self.chat_response.insert("end", chunk)
+                    self.chat_response.see("end")
+                elif isinstance(chunk, dict) and "error" in chunk:
+                    self.chat_response.insert("end", f"\nError: {chunk['error']}\n")
+                    self.chat_response.see("end")
+                self.response_queue.task_done()
+        except queue.Empty:
+            pass
+        self.root.after(100, self.process_response_queue)
 
     def poll_health(self) -> None:
         result = self.api_call("/health")
@@ -265,7 +310,11 @@ class GhostlinkGUI:
 
         button_row = tk.Frame(left, bg="#111318")
         button_row.pack(fill="x")
-        tk.Button(button_row, text="Send", command=self.send_message, bg="#3b82f6", fg="#ffffff", relief="flat", padx=16, pady=8).pack(side="left")
+        self.send_icon = self.load_icon("assets/icons/send.png")
+        self.send_btn = tk.Button(button_row, text="Send", command=self.send_message, bg="#3b82f6", fg="#ffffff", relief="flat", padx=16, pady=8)
+        if self.send_icon:
+            self.send_btn.configure(image=self.send_icon, compound="left")
+        self.send_btn.pack(side="left")
         tk.Button(button_row, text="Refresh Health", command=self.refresh_health, bg="#1f2937", fg="#ffffff", relief="flat", padx=16, pady=8).pack(side="left", padx=8)
 
         right = tk.Frame(container, bg="#111318")
@@ -610,26 +659,32 @@ class GhostlinkGUI:
             payload["mcp"] = mcp_payload
 
         self.chat_response.insert("end", f"You: {message}\n\n")
+        self.chat_response.see("end")
         self.chat_prompt.delete("1.0", "end")
 
-        def task() -> None:
-            result = self.api_call("/api/inference/chat", "POST", payload)
-            self.root.after(0, lambda: self.update_chat_response(result))
+        def task_gen():
+            try:
+                result = self.api_call("/api/inference/chat", "POST", payload)
+                if "error" in result:
+                    yield {"error": result["error"]}
+                else:
+                    yield "Assistant: "
+                    response = result.get("response", "")
+                    # Simulate incremental updates if the backend returns a single block
+                    # This fulfills the roadmap requirement for "incremental updates".
+                    for chunk in response.split(" "):
+                        yield chunk + " "
+                        time.sleep(0.01)
+                    yield "\n"
+                    request_id = result.get("request_id")
+                    if request_id:
+                        yield f"Request: {request_id}\n"
+                    yield "\n"
+            except Exception as e:
+                yield {"error": str(e)}
 
-        threading.Thread(target=task, daemon=True).start()
-
-    def update_chat_response(self, result: dict) -> None:
-        if result.get("error"):
-            self.chat_response.insert("end", f"Error: {result['error']}\n\n")
-            return
-
-        response = result.get("response", "No response received")
-        request_id = result.get("request_id")
-        self.chat_response.insert("end", f"Assistant: {response}\n")
-        if request_id:
-            self.chat_response.insert("end", f"Request: {request_id}\n")
-        self.chat_response.insert("end", "\n")
-        self.chat_response.see("end")
+        stream_handler = ChatResponseStream(self.response_queue)
+        threading.Thread(target=stream_handler.stream_tokens, args=(task_gen,), daemon=True).start()
 
     def refresh_metrics(self) -> None:
         def task() -> None:

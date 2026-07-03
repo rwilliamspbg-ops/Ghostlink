@@ -7,32 +7,67 @@
 #   cargo run -p ghost-link -- flow
 
 [flow]
+# Unique identifier for the local node
 local_id = "iprada-16gb"
+
+# Unique identifier for the remote node to connect to
 remote_id = "zenbook-32gb"
+
+# Amount of VRAM (in GB) available on the remote node
 remote_vram_gb = 32.0
+
+# Amount of system memory (in GB) available on the remote node
 remote_system_memory_gb = 32.0
+
+# Number of tokens to process in a single execution flow
 execution_tokens = 128
+
+# Size of micro-batches for pipeline parallel execution
 micro_batch = 4
+
+# Transport mode: "tcp", "xdp", or "inmem" (in-memory)
 transport = "tcp"
 
 [cluster_start]
+# Number of local nodes to start in a simulated cluster
 node_count = 3
+
+# Starting port number for the local cluster nodes
 base_port = 46000
 
 [discovery]
+# UDP address and port to listen for discovery frames
 listen = "0.0.0.0:45885"
+
+# UDP address and port to broadcast discovery frames
 broadcast = "255.255.255.255:45885"
+
+# Timeout in milliseconds for discovery responses
 timeout_ms = 1000
+
+# Whether to allow legacy CRC32 verification (for backward compatibility)
 allow_legacy_crc32 = false
+
+# Maximum number of peer replies to collect during discovery
 max_replies = 8
 
 [tcp]
+# Maximum number of in-flight batches before applying backpressure
+# Increasing this can improve throughput on high-latency links
 max_inflight = 256
+
+# Number of times to attempt reconnection if a TCP bridge fails
 reconnect_attempts = 3
+
+# Delay in milliseconds between reconnection attempts
 reconnect_backoff_ms = 10
+
+# Shared authentication token for TCP transport security
 auth_token = "replace-with-secret"
 
 [gui]
-# Optional override. Leave unset to prefer the repo `.venv/bin/python`, then
-# fall back to `python3` when no workspace virtualenv is present.
+# Optional override for the Python interpreter to use for the Studio GUI.
+# Leave unset to prefer the repo virtualenv (.venv/bin/python), then
+# fall back to the system `python3` when no workspace virtualenv is present.
+# GHOSTLINK_PYTHON env variable also overrides this.
 # python = "/path/to/python"
