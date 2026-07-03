@@ -272,7 +272,7 @@ fn test_multinode_placement_plan_with_device_heterogeneity() {
     let assignments = assign_layers_sequentially(&nodes, &layers).expect("assignment failed");
 
     // Should distribute: NPU (0-16) → GPU1 (if more layers added)
-    assert!(assignments.len() >= 1);
+    assert!(!assignments.is_empty());
     assert_eq!(assignments[0].node_id, "node-npu");
     assert_eq!(assignments[0].num_layers, 16); // NPU can fit all 16 layers
 
@@ -343,7 +343,7 @@ fn test_npu_vs_gpu_performance_ratio() {
     };
 
     let speedup = (gpu_stage.est_latency_ms - npu_stage.est_latency_ms) / gpu_stage.est_latency_ms;
-    assert!(speedup >= 0.20 && speedup <= 0.30);
+    assert!((0.20..=0.30).contains(&speedup));
 }
 
 #[test]
@@ -383,7 +383,7 @@ fn test_distributed_chat_flow_end_to_end() {
     }
 
     let plan = PipelinePlan::from_assignments(&assignments, &device_map);
-    assert!(plan.stages.len() > 0);
+    assert!(!plan.stages.is_empty());
 
     // Verify heterogeneous device distribution in pipeline
     let has_npu = plan.stages.iter().any(|s| s.device == DeviceKind::Npu);
