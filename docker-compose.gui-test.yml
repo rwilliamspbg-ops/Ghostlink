@@ -1,0 +1,40 @@
+version: "3.8"
+
+services:
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ghostlink-ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    environment:
+      - OLLAMA_HOST=0.0.0.0:11434
+    command: >
+      sh -c "ollama pull tinyllama && ollama serve"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  ghostlink-backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.gui-test
+    container_name: ghostlink-backend
+    ports:
+      - "8003:8003"
+    environment:
+      - GHOSTLINK_BACKEND_HOST=0.0.0.0
+      - GHOSTLINK_BACKEND_PORT=8003
+      - OLLAMA_HOST=http://ollama:11434
+    depends_on:
+      ollama:
+        condition: service_healthy
+    volumes:
+      - .:/app
+    command: python3 scripts/backend_test_server.py
+
+volumes:
+  ollama_data:

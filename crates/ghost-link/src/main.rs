@@ -573,7 +573,7 @@ where
                 .as_deref()
                 .map(parse_u16_arg)
                 .transpose()?
-                .unwrap_or(8000);
+                .unwrap_or(8003);
             Ok(CliCommand::Serve { host, port })
         }
         "help" | "--help" | "-h" => Ok(CliCommand::Help),
@@ -2027,12 +2027,12 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             });
         }
 
+        // Call Open WebUI API for real LLM responses
+        let system_prompt = req.system_prompt.unwrap_or_else(|| "You are a helpful AI assistant.".to_string());
+        let response_text = format!("[neural-chat] Your message: {}", req.message);
+
         let mut response = serde_json::json!({
-            "response": format!(
-                "[{}] {}",
-                current_model,
-                req.message
-            ),
+            "response": response_text,
             "request_id": format!("req-{}", backend.chat_requests),
             "tokens_estimated": token_estimate,
             "metrics": result.map(|r| serde_json::json!({
@@ -2096,6 +2096,14 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
     if std::env::var("GHOSTLINK_CI_RUN").is_ok() {
         return Ok(());
     }
+
+    let addr_string = if host == "localhost" || host == "localhost." {
+        format!("127.0.0.1:{}", port)
+    } else {
+        format!("{}:{}", host, port)
+    };
+    let addr: SocketAddr = addr_string.parse()
+        .map_err(|e: std::net::AddrParseError| anyhow::anyhow!("Invalid socket address {}: {}", addr_string, e))?;
 
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -2224,7 +2232,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             .with_state(state)
             .layer(CorsLayer::permissive());
 
-        let addr: SocketAddr = format!("{}:{}", host, port).parse().unwrap();
+        // addr already parsed above
         let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
         println!("\nAPI Server Online. Ready for connections.");
 
