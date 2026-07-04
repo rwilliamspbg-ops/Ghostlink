@@ -624,29 +624,29 @@ fn write_transport_batch(
     batch: &TransportBatch,
     source_stage: usize,
     token: Option<&str>,
-    frame_buf: &mut Vec<u8>,
 ) -> io::Result<()> {
     let batch_id = batch.batch_id as u64;
     let tokens = batch.tokens_in_batch as u32;
     let payload_len = batch.payload.len() as u32;
     let source_stage_u16 = source_stage as u16;
 
-    // Reuse frame buffer to minimize allocations.
-    frame_buf.clear();
+    // Use a stack-allocated header to avoid large intermediate vector copies.
     // Header size: source_stage(2) + batch_id(8) + tokens(4) + payload_len(4) + tag_present(1) + [tag(32) if present]
-    let header_capacity = if token.is_some() {
-        2 + 8 + 4 + 4 + 1 + 32
-    } else {
-        2 + 8 + 4 + 4 + 1
-    };
-    frame_buf.reserve(header_capacity + batch.payload.len() * 4);
-    frame_buf.extend_from_slice(&source_stage_u16.to_le_bytes());
-    frame_buf.extend_from_slice(&batch_id.to_le_bytes());
-    frame_buf.extend_from_slice(&tokens.to_le_bytes());
-    frame_buf.extend_from_slice(&payload_len.to_le_bytes());
+    let mut header = [0u8; 51];
+    let mut offset = 0;
+
+    header[offset..offset + 2].copy_from_slice(&source_stage_u16.to_le_bytes());
+    offset += 2;
+    header[offset..offset + 8].copy_from_slice(&batch_id.to_le_bytes());
+    offset += 8;
+    header[offset..offset + 4].copy_from_slice(&tokens.to_le_bytes());
+    offset += 4;
+    header[offset..offset + 4].copy_from_slice(&payload_len.to_le_bytes());
+    offset += 4;
 
     if let Some(t) = token {
-        frame_buf.push(1); // Tag present
+        header[offset] = 1; // Tag present
+        offset += 1;
         let tag = auth_tag(
             source_stage,
             batch.batch_id,
@@ -654,14 +654,17 @@ fn write_transport_batch(
             &batch.payload,
             t,
         );
-        frame_buf.extend_from_slice(&tag);
+        header[offset..offset + 32].copy_from_slice(&tag);
+        offset += 32;
     } else {
-        frame_buf.push(0); // Tag absent
+        header[offset] = 0; // Tag absent
+        offset += 1;
     }
 
+    writer.write_all(&header[..offset])?;
+
     let payload_bytes = payload_as_le_bytes(&batch.payload);
-    frame_buf.extend_from_slice(payload_bytes.as_ref());
-    writer.write_all(frame_buf)?;
+    writer.write_all(payload_bytes.as_ref())?;
 
     Ok(())
 }
@@ -703,23 +706,28 @@ fn read_transport_batch(
     if tag_present {
         reader.read_exact(&mut received_tag)?;
     }
-    let mut payload = vec![0.0_f32; payload_len];
 
-    if cfg!(target_endian = "little") {
-        // SAFETY: payload points to initialized contiguous f32 memory; we reinterpret as bytes for I/O.
-        let payload_bytes = unsafe {
-            slice::from_raw_parts_mut(
+    let payload = if cfg!(target_endian = "little") {
+        // SAFETY: We allocate capacity and set length before reading to avoid zero-initialization.
+        // Reading from the network immediately overwrites the uninitialized memory.
+        let mut payload = Vec::with_capacity(payload_len);
+        unsafe {
+            let payload_bytes = slice::from_raw_parts_mut(
                 payload.as_mut_ptr() as *mut u8,
                 payload_len * std::mem::size_of::<f32>(),
-            )
-        };
-        reader.read_exact(payload_bytes)?;
+            );
+            reader.read_exact(payload_bytes)?;
+            payload.set_len(payload_len);
+        }
+        payload
     } else {
+        let mut payload = vec![0.0_f32; payload_len];
         let mut payload_bytes = vec![0u8; payload_len * 4];
         reader.read_exact(&mut payload_bytes)?;
         for (i, chunk) in payload_bytes.chunks_exact(4).enumerate() {
             payload[i] = f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
         }
+        payload
     };
 
     let batch_id = u64::from_le_bytes(batch_id_bytes) as usize;
@@ -824,7 +832,6 @@ pub fn spawn_tcp_bridge(
             let mut writer = BufWriter::with_capacity(64 * 1024, client_stream);
             let mut processed_batches = 0usize;
             let mut total_write_ms = 0.0_f32;
-            let mut frame_buf = Vec::with_capacity(64 * 1024);
             for batch in input_rx {
                 let write_start = Instant::now();
                 if write_transport_batch(
@@ -832,7 +839,6 @@ pub fn spawn_tcp_bridge(
                     &batch,
                     source_stage,
                     writer_auth_token.as_deref(),
-                    &mut frame_buf,
                 )
                 .is_err()
                 {
@@ -1703,9 +1709,7 @@ mod tests {
             payload: vec![0.1, 0.2, 0.3, 0.4],
         };
         let mut encoded = Vec::new();
-        let mut frame_buf = Vec::new();
-        write_transport_batch(&mut encoded, &batch, 0, Some("token-a"), &mut frame_buf)
-            .expect("encode frame");
+        write_transport_batch(&mut encoded, &batch, 0, Some("token-a")).expect("encode frame");
 
         let mut cursor = Cursor::new(encoded);
         let err = read_transport_batch(&mut cursor, 0, Some("token-b"))
@@ -1721,9 +1725,7 @@ mod tests {
             payload: vec![1.0, 2.0],
         };
         let mut encoded = Vec::new();
-        let mut frame_buf = Vec::new();
-        write_transport_batch(&mut encoded, &batch, 1, Some("token"), &mut frame_buf)
-            .expect("encode frame");
+        write_transport_batch(&mut encoded, &batch, 1, Some("token")).expect("encode frame");
 
         let mut cursor = Cursor::new(encoded);
         let err = read_transport_batch(&mut cursor, 0, Some("token"))
