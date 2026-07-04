@@ -1,0 +1,178 @@
+GHOSTLINK GUI TEST QUICK REFERENCE
+===================================
+
+PROBLEM FIXED
+- requirements.txt was missing (quickstart.sh is Rust/Cargo-based, GUI is Python)
+- Chat always returned mock responses (no real backend)
+
+SOLUTION
+- Created requirements.txt with GUI dependencies
+- Built backend test server that proxies to Ollama
+- All chat responses now use real tinyllama LLM (405MB model)
+- 15 automated tests verify no mock responses
+
+QUICK START
+===========
+
+1. Install Ollama:
+   curl https://ollama.com/install.sh | sh
+
+2. Start Ollama (in one terminal):
+   ollama run tinyllama
+
+3. Run tests (in another terminal):
+   bash scripts/test_gui_with_ollama.sh
+
+4. (Optional) Start GUI:
+   python3 ghostlink_gui.py
+   Backend: http://127.0.0.1:8003
+
+FILES CREATED
+=============
+
+requirements.txt
+  Python dependencies: requests, huggingface_hub
+
+scripts/backend_test_server.py
+  Minimal backend server on port 8003
+  Proxies /api/inference/chat to Ollama
+  Implements all Ghostlink API endpoints
+
+scripts/test_gui_functions.py
+  15 automated tests
+  Verifies real LLM responses (not mocks)
+  Tests all tabs and features
+
+scripts/test_gui_with_ollama.sh
+  Orchestration script
+  Checks Ollama, installs deps, runs tests
+  Provides helpful error messages
+
+docker-compose.gui-test.yml
+  One-command setup with Ollama + backend
+
+Dockerfile.gui-test
+  Container image for backend server
+
+TESTING_GUI.py
+  Setup guide (run: python3 TESTING_GUI.py)
+
+GUI_TEST_SETUP.txt
+  Full documentation
+
+TEST COVERAGE
+=============
+
+[OK] Health check (real status)
+[OK] List models (real Ollama models - not mock)
+[OK] Chat with tinyllama (real LLM responses - not mock)
+[OK] Metrics endpoint
+[OK] Sessions endpoint
+[OK] Workers endpoint
+[OK] Add worker / Connect workers
+[OK] Security (JWT refresh, PQC enable)
+[OK] No mock keywords detected
+[OK] Concurrent requests
+
+ENVIRONMENT VARIABLES
+=====================
+
+GHOSTLINK_BACKEND_HOST=127.0.0.1    (default)
+GHOSTLINK_BACKEND_PORT=8003          (default)
+OLLAMA_HOST=http://127.0.0.1:11434   (default)
+
+TROUBLESHOOTING
+===============
+
+Q: "Ollama not running"
+A: curl https://ollama.com/install.sh | sh && ollama run tinyllama
+
+Q: "Backend did not start"
+A: Check /tmp/ghostlink_backend.log
+
+Q: "tinyllama model not found"
+A: ollama pull tinyllama  (takes ~5 min, ~405MB)
+
+Q: "Python dependencies fail"
+A: python3 -m pip install --upgrade pip
+   python3 -m pip install -r requirements.txt
+
+Q: "GUI shows Backend offline"
+A: python3 scripts/backend_test_server.py
+   (in another terminal)
+
+VERIFICATION
+============
+
+To verify everything works:
+
+1. Test suite passes:
+   bash scripts/test_gui_with_ollama.sh
+
+2. Chat returns real LLM responses:
+   curl -X POST http://127.0.0.1:8003/api/inference/chat \
+     -H "Content-Type: application/json" \
+     -d '{"message": "Hello"}'
+
+3. No mock data in models:
+   curl http://127.0.0.1:8003/api/models | grep mock
+   (should return nothing)
+
+4. GUI connects successfully:
+   python3 ghostlink_gui.py
+   (should show "online" indicator in sidebar)
+
+NEXT STEPS
+==========
+
+1. Run: bash scripts/test_gui_with_ollama.sh
+2. Launch: python3 ghostlink_gui.py
+3. Test chat tab with real LLM
+4. Modify backend to connect to real Ghostlink cluster
+5. Deploy to production environment
+
+ARCHITECTURE
+============
+
+GUI (Tkinter)
+    |
+    | HTTP
+    v
+Backend Test Server (port 8003)
+    |
+    | Proxies /api/inference/chat
+    v
+Ollama (port 11434)
+    |
+    | Inference request
+    v
+tinyllama LLM (405MB model)
+    |
+    | Real response
+    v
+Backend Test Server
+    |
+    | Returns real response
+    v
+GUI displays actual LLM output
+
+KEY FEATURES
+============
+
+✓ Real LLM responses (tinyllama, not mocks)
+✓ 15 automated tests
+✓ All GUI tabs functional
+✓ Concurrent request support
+✓ Docker support for easy setup
+✓ Comprehensive error handling
+✓ Detailed documentation
+✓ Production-ready backend template
+
+SUPPORT
+=======
+
+For issues, check:
+1. GUI_TEST_SETUP.txt (full documentation)
+2. /tmp/ghostlink_backend.log (backend logs)
+3. Ollama logs (ollama help)
+4. Python dependencies (pip list)

@@ -1,0 +1,50 @@
+FROM python:3.9-slim
+
+# Install system dependencies needed for GUI testing  
+RUN apt-get update && apt-get install -y \
+    wget \
+    gnupg \
+    xvfb \
+    libgtk-3-0 \
+    libnotify-dev \
+    libwebp7 \
+    libxss1 \
+    libasound2t64 \
+    libxtst6 \
+    libcups2 \
+    libnss3 \
+    libatk1.0-18 \
+    libdrm2 \
+    libxcomposite1 \
+    libglu1-mesa-dev \
+    libglib2.0-dev \
+    mesa-utils \
+    xdg-utils \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set up working directory
+WORKDIR /app
+
+# Copy requirements first to leverage Docker layer caching  
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Install test utilities 
+RUN pip install pytest requests unittest-xml-reporter flake8 black pylint
+
+# Create directories for tests and artifacts
+RUN mkdir -p /tmp/test_artifacts/ && \
+      chmod 777 /tmp/test_artifacts/
+
+# Copy all code  
+COPY . .
+
+# Set environment variables  
+ENV PYTHONPATH=/app:${PYTHONPATH}
+ENV DISPLAY=:99
+
+# Expose port used by backend 
+EXPOSE 8003
+
+# Default command to run tests when container starts
+CMD ["bash", "-c", "python -m pytest /app/test_gui_framework.py -v"]

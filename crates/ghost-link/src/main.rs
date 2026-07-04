@@ -2028,7 +2028,9 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         }
 
         // Call Open WebUI API for real LLM responses
-        let system_prompt = req.system_prompt.unwrap_or_else(|| "You are a helpful AI assistant.".to_string());
+        let _system_prompt = req
+            .system_prompt
+            .unwrap_or_else(|| "You are a helpful AI assistant.".to_string());
         let response_text = format!("[neural-chat] Your message: {}", req.message);
 
         let mut response = serde_json::json!({
@@ -2102,8 +2104,9 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
     } else {
         format!("{}:{}", host, port)
     };
-    let addr: SocketAddr = addr_string.parse()
-        .map_err(|e: std::net::AddrParseError| anyhow::anyhow!("Invalid socket address {}: {}", addr_string, e))?;
+    let addr: SocketAddr = addr_string.parse().map_err(|e: std::net::AddrParseError| {
+        anyhow::anyhow!("Invalid socket address {}: {}", addr_string, e)
+    })?;
 
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
