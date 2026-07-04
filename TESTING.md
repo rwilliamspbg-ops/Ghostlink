@@ -126,7 +126,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 # Parse-check all Rust source files (including non-exported modules)
 find crates -name '*.rs' -print0 | xargs -0 -n1 rustfmt --check --edition 2021
 
-# Validate GUI endpoint contract drift against mock backend
+# Validate GUI endpoint contract drift against real-stack
 python3 scripts/validate_gui_api_contract.py
 
 # Fault-injection style runtime matrix (CI-friendly)
