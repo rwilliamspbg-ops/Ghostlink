@@ -708,18 +708,20 @@ fn read_transport_batch(
     }
 
     let payload = if cfg!(target_endian = "little") {
-        // SAFETY: We allocate capacity and set length before reading to avoid zero-initialization.
-        // Reading from the network immediately overwrites the uninitialized memory.
-        let mut payload = Vec::with_capacity(payload_len);
+        // SAFETY: We allocate a vector of MaybeUninit to avoid zero-initialization.
+        // We then read directly into its backing buffer. This is safe because
+        // we only set the length after a successful read_exact.
+        let mut payload_uninit = Vec::<std::mem::MaybeUninit<f32>>::with_capacity(payload_len);
         unsafe {
-            let payload_bytes = slice::from_raw_parts_mut(
-                payload.as_mut_ptr() as *mut u8,
+            let payload_bytes = std::slice::from_raw_parts_mut(
+                payload_uninit.as_mut_ptr() as *mut u8,
                 payload_len * std::mem::size_of::<f32>(),
             );
             reader.read_exact(payload_bytes)?;
-            payload.set_len(payload_len);
+            payload_uninit.set_len(payload_len);
+            // Safety: f32 does not have any invalid bit patterns and we just initialized it.
+            std::mem::transmute::<Vec<std::mem::MaybeUninit<f32>>, Vec<f32>>(payload_uninit)
         }
-        payload
     } else {
         let mut payload = vec![0.0_f32; payload_len];
         let mut payload_bytes = vec![0u8; payload_len * 4];
@@ -1709,7 +1711,8 @@ mod tests {
             payload: vec![0.1, 0.2, 0.3, 0.4],
         };
         let mut encoded = Vec::new();
-        write_transport_batch(&mut encoded, &batch, 0, Some("token-a")).expect("encode frame");
+        write_transport_batch(&mut encoded, &batch, 0, Some("token-a"))
+            .expect("encode frame");
 
         let mut cursor = Cursor::new(encoded);
         let err = read_transport_batch(&mut cursor, 0, Some("token-b"))
@@ -1725,7 +1728,8 @@ mod tests {
             payload: vec![1.0, 2.0],
         };
         let mut encoded = Vec::new();
-        write_transport_batch(&mut encoded, &batch, 1, Some("token")).expect("encode frame");
+        write_transport_batch(&mut encoded, &batch, 1, Some("token"))
+            .expect("encode frame");
 
         let mut cursor = Cursor::new(encoded);
         let err = read_transport_batch(&mut cursor, 0, Some("token"))
