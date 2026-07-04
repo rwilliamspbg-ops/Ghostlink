@@ -8,7 +8,7 @@ This checklist covers runtime reliability, CI gate coverage, GUI readiness, and 
 
 - Rust workspace build/test/lint gates are configured and exercised in CI.
 - Runtime smoke + SLO validation gates are enforced via `production-gate.yml`.
-- GUI launch/readiness/diagnostics and mock backend contract checks are now validated.
+- GUI launch/readiness/diagnostics and real-stack contract checks are now validated.
 - Coverage artifact generation is configured in CI.
 - Security workflow now enforces secret scanning and dependency advisory checks.
 - Production gate now includes fault-matrix runs, active network probes, and XDP/eBPF preflight signal collection.

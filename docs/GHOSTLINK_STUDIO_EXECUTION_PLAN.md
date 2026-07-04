@@ -20,7 +20,7 @@
 
 - Create Tauri app shell and command bridge
 - Build sidebar layout and page routing
-- Implement Home dashboard cards with mock metrics
+- Implement Home dashboard cards with simulated metrics
 
 ### Sprint 2: Runtime Integration
 

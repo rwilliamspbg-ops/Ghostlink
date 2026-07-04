@@ -87,7 +87,7 @@ Render a compact markdown summary from that smoke output:
 python3 scripts/summarize_gui_dashboard_smoke.py --input ./tmp/gui-dashboard-smoke.txt --output ./tmp/gui-dashboard-smoke-summary.md
 ```
 
-Validate GUI/mock-backend API contract drift:
+Validate GUI/real-stack API contract drift:
 
 ```bash
 python3 scripts/validate_gui_api_contract.py

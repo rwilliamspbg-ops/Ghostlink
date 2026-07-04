@@ -16,7 +16,7 @@ use ghostlink_core::{
 };
 use std::collections::HashMap;
 
-/// Helper: Create a mock runtime profile for a device type
+/// Helper: Create a simulated runtime profile for a device type
 fn create_profile_for_device(acceleration: AccelerationMode) -> RuntimeProfile {
     RuntimeProfile {
         node_resources: NodeResources::new("local", 0.0, 16.0, "cpu", None),
