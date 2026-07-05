@@ -37,6 +37,9 @@ fn main() {
             list_model_presets,
             list_hf_models,
             list_backend_models,
+            list_backend_model_status,
+            list_backend_metrics,
+            list_backend_workers,
             ollama_health,
             download_backend_model,
             delete_backend_model,
@@ -975,7 +978,7 @@ fn verify_hf_repo(repo: String, file: Option<String>) -> Result<ModelVerifyResul
 
 fn studio_backend_url() -> String {
     std::env::var("GHOSTLINK_BACKEND_URL")
-        .unwrap_or_else(|_| "http://127.0.0.1:9999".to_string())
+    .unwrap_or_else(|_| "http://127.0.0.1:9999".to_string())
         .trim_end_matches('/')
         .to_string()
 }
@@ -1048,6 +1051,21 @@ fn backend_post_json(path: &str, payload: &Value) -> Result<Value, String> {
 #[tauri::command]
 fn list_backend_models() -> Result<Value, String> {
     backend_get_json("/api/models")
+}
+
+#[tauri::command]
+fn list_backend_model_status() -> Result<Value, String> {
+    backend_get_json("/api/models/status")
+}
+
+#[tauri::command]
+fn list_backend_metrics() -> Result<Value, String> {
+    backend_get_json("/api/metrics")
+}
+
+#[tauri::command]
+fn list_backend_workers() -> Result<Value, String> {
+    backend_get_json("/api/workers")
 }
 
 #[tauri::command]

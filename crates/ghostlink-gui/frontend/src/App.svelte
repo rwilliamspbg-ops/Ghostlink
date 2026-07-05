@@ -34,6 +34,7 @@
   let modelCheck = null;
   let backendModels = [];
   let currentBackendModel = '';
+  let backendModelStatus = { loadedModels: [], downloadingModels: {}, currentModel: '' };
   let selectedBackendModel = '';
   let modelActionMessage = '';
   let modelCatalogFilter = '';
@@ -54,6 +55,7 @@
   let connectivityDetail = '';
   let chatPrompt = '';
   let chatModel = 'ghostlink-live-7b';
+  let chatModelOptions = ['ghostlink-live-7b'];
   let ollamaUrl = 'http://127.0.0.1:11434';
   let ollamaModel = 'neural-chat';
   let chatTemperature = 0.7;
@@ -67,6 +69,17 @@
   let chatAutoFollowHistory = true;
   let clusterNodes = [];
   let clusterSummary = 'No live cluster snapshot loaded.';
+  let liveMetrics = { cpu: null, gpu: null, throughput: null, latencyP95: null, memory: null };
+  let liveWorkers = [];
+  let liveTelemetryError = '';
+  let liveTelemetryUpdatedAt = '';
+  let liveTelemetryUpdatedMs = 0;
+  let liveTelemetryIntervalId = null;
+  let uiClockIntervalId = null;
+  let modelInventoryIntervalId = null;
+  let modelInventoryUpdatedMs = 0;
+  let uiNowMs = Date.now();
+  const STALE_THRESHOLD_MS = 10000;
   let workerDiscovery = [];
   let workerDiscoverySummary = 'Run discovery to list available workers.';
   let workerProbeHints = '';
@@ -207,6 +220,29 @@
             { name: 'mistral:7b', size_gb: 7.0, type: 'LLM', quantization: 'Q4_K_M', status: 'Ready' },
           ],
           current_model: 'neural-chat',
+        };
+      case 'list_backend_model_status':
+        return {
+          loaded_models: ['neural-chat', 'mistral:7b'],
+          downloading_models: {},
+          current_model: 'neural-chat',
+        };
+      case 'list_backend_metrics':
+        return {
+          metrics: {
+            cpu: 27,
+            gpu: 44,
+            throughput: 21000,
+            latency_p95: 3,
+            memory: 24,
+          },
+        };
+      case 'list_backend_workers':
+        return {
+          workers: [
+            { id: 'studio-api', host: '127.0.0.1', port: 9999, status: 'Connected', model: 'neural-chat', threads: 4, load: 35 },
+            { id: 'studio-remote', host: '10.0.0.12', port: 46001, status: 'Connected', model: 'mistral:7b', threads: 3, load: 42 },
+          ],
         };
       case 'download_backend_model':
         return {
@@ -374,6 +410,12 @@
       }
       case 'list_backend_models':
         return fetchJson('/api/models');
+      case 'list_backend_model_status':
+        return fetchJson('/api/models/status');
+      case 'list_backend_metrics':
+        return fetchJson('/api/metrics');
+      case 'list_backend_workers':
+        return fetchJson('/api/workers');
       case 'download_backend_model':
         return postJson('/api/models/download', {
           model_id: String(args.modelId ?? args.model_id ?? ''),
@@ -763,6 +805,98 @@
     modelPresets = presets;
   }
 
+  async function refreshModelStatus() {
+    try {
+      const result = await bridgeInvoke('list_backend_model_status');
+      backendModelStatus = {
+        loadedModels: Array.isArray(result?.loaded_models) ? result.loaded_models : [],
+        downloadingModels: result?.downloading_models ?? {},
+        currentModel: String(result?.current_model ?? ''),
+      };
+    } catch {
+      backendModelStatus = { loadedModels: [], downloadingModels: {}, currentModel: '' };
+    }
+  }
+
+  async function refreshLiveTelemetry(silent = true) {
+    try {
+      const [metricsResult, workersResult] = await Promise.all([
+        bridgeInvoke('list_backend_metrics'),
+        bridgeInvoke('list_backend_workers'),
+      ]);
+
+      const metrics = metricsResult?.metrics ?? {};
+      liveMetrics = {
+        cpu: Number(metrics.cpu ?? 0),
+        gpu: Number(metrics.gpu ?? 0),
+        throughput: Number(metrics.throughput ?? 0),
+        latencyP95: Number(metrics.latency_p95 ?? metrics.latencyP95 ?? 0),
+        memory: Number(metrics.memory ?? 0),
+      };
+
+      liveWorkers = Array.isArray(workersResult?.workers) ? workersResult.workers : [];
+      liveTelemetryUpdatedMs = Date.now();
+      liveTelemetryUpdatedAt = new Date().toLocaleTimeString();
+      liveTelemetryError = '';
+
+      if (!silent) {
+        status = 'Live telemetry refreshed';
+      }
+    } catch (err) {
+      liveTelemetryError = String(err);
+      if (!silent) {
+        status = 'Live telemetry unavailable';
+        output = String(err);
+      }
+    }
+  }
+
+  async function syncModelInventory(silent = false) {
+    try {
+      await loadBackendModels();
+      modelInventoryUpdatedMs = Date.now();
+      if (!silent) {
+        status = 'Model inventory refreshed';
+      }
+    } catch (err) {
+      if (!silent) {
+        status = 'Model inventory refresh failed';
+        output = String(err);
+      }
+    }
+  }
+
+  function useCurrentBackendModelForChat() {
+    if (currentBackendModel) {
+      chatModel = currentBackendModel;
+      status = `Chat model set to ${currentBackendModel}`;
+    }
+  }
+
+  function availableChatModels() {
+    const unique = new Set();
+    for (const model of backendModels) {
+      if (model?.name) {
+        unique.add(String(model.name));
+      }
+    }
+    for (const model of backendModelStatus.loadedModels ?? []) {
+      if (model) {
+        unique.add(String(model));
+      }
+    }
+    if (currentBackendModel) {
+      unique.add(String(currentBackendModel));
+    }
+    if (chatModel) {
+      unique.add(String(chatModel));
+    }
+    if (unique.size === 0) {
+      unique.add('neural-chat');
+    }
+    return Array.from(unique);
+  }
+
   async function loadHfModels() {
     hfLoading = true;
     hfError = '';
@@ -811,6 +945,7 @@
   function applyBackendModels(result) {
     const models = Array.isArray(result?.models) ? result.models : [];
     backendModels = models;
+    modelInventoryUpdatedMs = Date.now();
     currentBackendModel = String(result?.current_model ?? '');
     if (!selectedBackendModel || !models.some((entry) => entry?.name === selectedBackendModel)) {
       selectedBackendModel = String(models[0]?.name ?? currentBackendModel ?? '');
@@ -858,6 +993,7 @@
     }
     const result = await bridgeInvoke('list_backend_models');
     applyBackendModels(result);
+    await refreshModelStatus();
   }
 
   async function downloadSelectedModel() {
@@ -1007,6 +1143,21 @@
     if (chatAutoFollowHistory && chatHistoryScrollEl) {
       chatHistoryScrollEl.scrollTop = chatHistoryScrollEl.scrollHeight;
     }
+  }
+
+  function handleChatPromptKeydown(event) {
+    if ((event.ctrlKey || event.metaKey) && event.key === 'Enter' && !busy && backendReachable && chatPrompt.trim() && chatModel) {
+      event.preventDefault();
+      runChat();
+    }
+  }
+
+  function ageLabel(updatedMs) {
+    if (!updatedMs) {
+      return 'never';
+    }
+    const ageS = Math.max(0, Math.floor((uiNowMs - updatedMs) / 1000));
+    return `${ageS}s ago`;
   }
 
   function parseNodeHints(raw) {
@@ -1272,12 +1423,19 @@
     busy = true;
     chatResult = null;
     try {
+      const normalizedPrompt = String(chatPrompt ?? '').trim();
+      if (!normalizedPrompt) {
+        throw new Error('Enter a prompt before generating a response.');
+      }
+      if (!chatModel) {
+        throw new Error('Select a chat model before generating a response.');
+      }
       await refreshConnectivity();
       if (!backendReachable) {
         throw new Error(`Backend unavailable at ${backendBaseUrl}`);
       }
       const result = await bridgeInvoke('chat_infer', {
-        prompt: chatPrompt,
+        prompt: normalizedPrompt,
         model: chatModel,
         temperature: Number(chatTemperature),
         maxTokens: Number(chatMaxTokens),
@@ -1295,7 +1453,7 @@
       chatHistory = [
         ...chatHistory,
         {
-          prompt: chatPrompt,
+          prompt: normalizedPrompt,
           response: result.response,
           model: result.model,
           backend: result.backend,
@@ -1343,33 +1501,81 @@
     }
   }
 
-  onMount(async () => {
-    loadPreferences();
-    applyVisualPreferences();
-    try {
-      const studio = await bridgeInvoke('studio_status');
-      status = `${studio.app}: ${studio.status}`;
-      output = `Repo root: ${studio.repo_root}`;
-      await loadSnapshot();
-      await loadConfig();
-      await loadFlowDefaults();
-      await loadModelPresets();
-      await loadHfModels();
-      await refreshConnectivity();
-      await loadBackendModels();
-      await refreshCluster(false);
-      await discoverWorkers();
-    } catch (err) {
-      status = 'Studio bridge unavailable';
-      output = String(err);
-    } finally {
-      initializing = false;
-    }
+  onMount(() => {
+    const initialize = async () => {
+      loadPreferences();
+      applyVisualPreferences();
+      try {
+        const studio = await bridgeInvoke('studio_status');
+        status = `${studio.app}: ${studio.status}`;
+        output = `Repo root: ${studio.repo_root}`;
+        await loadSnapshot();
+        await loadConfig();
+        await loadFlowDefaults();
+        await loadModelPresets();
+        await loadHfModels();
+        await refreshConnectivity();
+        await loadBackendModels();
+        await refreshModelStatus();
+        await refreshLiveTelemetry(true);
+        await refreshCluster(false);
+        await discoverWorkers();
+      } catch (err) {
+        status = 'Studio bridge unavailable';
+        output = String(err);
+      } finally {
+        initializing = false;
+      }
+    };
+
+    initialize();
+
+    liveTelemetryIntervalId = setInterval(() => {
+      if (activeTab === 'Cluster' && !busy) {
+        refreshLiveTelemetry(true);
+      }
+    }, 4000);
+
+    uiClockIntervalId = setInterval(() => {
+      uiNowMs = Date.now();
+    }, 1000);
+
+    modelInventoryIntervalId = setInterval(() => {
+      if ((activeTab === 'Models' || activeTab === 'Chat') && !busy) {
+        syncModelInventory(true);
+      }
+    }, 8000);
+
+    return () => {
+      if (liveTelemetryIntervalId) {
+        clearInterval(liveTelemetryIntervalId);
+        liveTelemetryIntervalId = null;
+      }
+      if (uiClockIntervalId) {
+        clearInterval(uiClockIntervalId);
+        uiClockIntervalId = null;
+      }
+      if (modelInventoryIntervalId) {
+        clearInterval(modelInventoryIntervalId);
+        modelInventoryIntervalId = null;
+      }
+    };
   });
 
   $: reachableWorkerCount = workerDiscovery.filter((item) => item.available).length;
   $: selectedWorkerCount = selectedWorkerIds.length;
   $: selectedReachableWorkerCount = workerDiscovery.filter((item) => item.available && selectedWorkerIds.includes(item.id)).length;
+  $: chatModelOptions = availableChatModels();
+  $: downloadingModelCount = Object.keys(backendModelStatus.downloadingModels ?? {}).length;
+  $: loadedModelCount = Array.isArray(backendModelStatus.loadedModels) ? backendModelStatus.loadedModels.length : 0;
+  $: connectedLiveWorkerCount = liveWorkers.filter((worker) => String(worker?.status ?? '').toLowerCase() === 'connected').length;
+  $: liveTelemetryAgeLabel = ageLabel(liveTelemetryUpdatedMs);
+  $: modelInventoryAgeLabel = ageLabel(modelInventoryUpdatedMs);
+  $: telemetryStale = !liveTelemetryUpdatedMs || uiNowMs - liveTelemetryUpdatedMs > STALE_THRESHOLD_MS;
+  $: modelInventoryStale = !modelInventoryUpdatedMs || uiNowMs - modelInventoryUpdatedMs > STALE_THRESHOLD_MS;
+  $: if (chatModelOptions.length > 0 && !chatModelOptions.includes(chatModel)) {
+    chatModel = chatModelOptions[0];
+  }
 
   $: applyVisualPreferences();
   $: persistPreferences();
@@ -1502,11 +1708,15 @@
     {:else if activeTab === 'Cluster'}
       <header class="hero">
         <h1>Cluster Operations</h1>
-        <p>{clusterSummary} · {workerDiscoverySummary}</p>
+        <p>{clusterSummary} · {workerDiscoverySummary} · connected workers {connectedLiveWorkerCount}/{liveWorkers.length || 0} {#if liveTelemetryUpdatedAt}· live @ {liveTelemetryUpdatedAt}{/if}</p>
+        <div class="actions">
+          <span class="state-chip" class:busy={telemetryStale}>{telemetryStale ? `Telemetry stale (${liveTelemetryAgeLabel})` : `Telemetry fresh (${liveTelemetryAgeLabel})`}</span>
+        </div>
         <div class="actions">
           <button class="primary" on:click={discoverWorkers} disabled={busy}>{busy ? 'Discovering...' : 'Discover Workers'}</button>
           <button class="primary" on:click={connectFlow} disabled={busy}>{busy ? 'Connecting...' : 'Connect Local -> Remote'}</button>
           <button class="primary" on:click={connectAllReachableWorkers} disabled={busy || workerDiscovery.length === 0}>{busy ? 'Batch Connecting...' : 'Connect Selected/Reachable'}</button>
+          <button on:click={() => refreshLiveTelemetry(false)} disabled={busy}>{busy ? 'Refreshing...' : 'Refresh Live Telemetry'}</button>
           <button on:click={selectAllReachableWorkers} disabled={busy || workerDiscovery.length === 0}>Select Reachable</button>
           <button on:click={clearWorkerSelection} disabled={busy || selectedWorkerIds.length === 0}>Clear Selection</button>
           <button on:click={() => refreshCluster(false)} disabled={busy}>Refresh Cluster</button>
@@ -1539,7 +1749,46 @@
           <span>Selected + Reachable</span>
           <strong>{selectedReachableWorkerCount}</strong>
         </article>
+        <article class="metric-card">
+          <span>CPU</span>
+          <strong>{liveMetrics.cpu ?? 0}%</strong>
+        </article>
+        <article class="metric-card">
+          <span>GPU</span>
+          <strong>{liveMetrics.gpu ?? 0}%</strong>
+        </article>
+        <article class="metric-card">
+          <span>Throughput</span>
+          <strong>{liveMetrics.throughput ?? 0}</strong>
+        </article>
+        <article class="metric-card">
+          <span>Latency P95</span>
+          <strong>{liveMetrics.latencyP95 ?? 0} ms</strong>
+        </article>
+        <article class="metric-card">
+          <span>Memory</span>
+          <strong>{liveMetrics.memory ?? 0}%</strong>
+        </article>
       </section>
+
+      {#if liveTelemetryError}
+        <p class="model-warning">Live telemetry unavailable: {liveTelemetryError}</p>
+      {/if}
+
+      {#if liveWorkers.length > 0}
+        <section class="card-shell live-workers-panel">
+          <h3>Live Worker Readings</h3>
+          <div class="live-workers-grid">
+            {#each liveWorkers as worker}
+              <article class="live-worker-item">
+                <p class="installed-model-title">{worker.id}</p>
+                <p class="installed-model-meta">{worker.host}:{worker.port} · {worker.status} · model {worker.model}</p>
+                <p class="installed-model-meta">threads {worker.threads} · load {worker.load}%</p>
+              </article>
+            {/each}
+          </div>
+        </section>
+      {/if}
 
       <section class="cluster-controls">
         <article class="cluster-card">
@@ -1708,6 +1957,14 @@
           <strong>{backendModels.length}</strong>
         </article>
         <article class="metric-card">
+          <span>Loaded Models</span>
+          <strong>{backendModelStatus.loadedModels.length}</strong>
+        </article>
+        <article class="metric-card">
+          <span>Downloads In Progress</span>
+          <strong>{Object.keys(backendModelStatus.downloadingModels ?? {}).length}</strong>
+        </article>
+        <article class="metric-card">
           <span>HF Candidates</span>
           <strong>{hfModels.length}</strong>
         </article>
@@ -1845,16 +2102,28 @@
       <header class="hero">
         <h1>Chat / Inference</h1>
         <p>Run live flow-backed inference checks and review runtime metrics.</p>
+        <div class="actions">
+          <button on:click={() => syncModelInventory(false)} disabled={busy}>{busy ? 'Syncing...' : 'Sync Model Inventory'}</button>
+          <button on:click={useCurrentBackendModelForChat} disabled={busy || !currentBackendModel}>Use Active Model</button>
+          <span class="model-connection-detail">Loaded: {loadedModelCount} · Downloading: {downloadingModelCount} · Active: {currentBackendModel || 'none'}</span>
+          <span class="state-chip" class:busy={modelInventoryStale}>{modelInventoryStale ? `Inventory stale (${modelInventoryAgeLabel})` : `Inventory fresh (${modelInventoryAgeLabel})`}</span>
+        </div>
       </header>
       <div class="chat-layout">
         <section class="chat-panel card-shell">
           <h3>Prompt Builder</h3>
           <label>Model
-            <input bind:value={chatModel} placeholder="model name" />
+            <select bind:value={chatModel}>
+              {#each chatModelOptions as modelName}
+                <option value={modelName}>{modelName}</option>
+              {/each}
+            </select>
           </label>
+          <p class="installed-model-meta">Available models: {chatModelOptions.join(', ')}</p>
           <label>Prompt
-            <textarea bind:value={chatPrompt} placeholder="Ask something..." spellcheck="false" />
+            <textarea bind:value={chatPrompt} placeholder="Ask something..." spellcheck="false" on:keydown={handleChatPromptKeydown} />
           </label>
+          <p class="model-connection-detail">Tip: press Ctrl/Cmd + Enter to generate.</p>
           <div class="chat-controls">
             <label>Temperature
               <input type="range" min="0" max="1" step="0.1" bind:value={chatTemperature} />
@@ -1866,7 +2135,7 @@
             <label class="checkbox">
               <input type="checkbox" bind:checked={chatDistributed} /> Distributed backend
             </label>
-            <button class="primary" on:click={runChat} disabled={busy || !backendReachable}>{busy ? 'Generating...' : 'Generate'}</button>
+            <button class="primary" on:click={runChat} disabled={busy || !backendReachable || !chatPrompt.trim() || !chatModel}>{busy ? 'Generating...' : 'Generate'}</button>
           </div>
         </section>
 
