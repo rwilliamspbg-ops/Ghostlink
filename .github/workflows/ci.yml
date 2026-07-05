@@ -51,6 +51,39 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  rust-quality:
+    name: Rust Quality
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Install Tauri Linux system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libgtk-3-dev \
+            libwebkit2gtk-4.1-dev \
+            librsvg2-dev \
+            pkg-config
+      - name: Format Check
+        run: cargo fmt --all --check
+      - name: Clippy Check
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Clippy Check (Tauri crate)
+        working-directory: crates/ghostlink-gui/src-tauri
+        run: cargo clippy --all-targets -- -D warnings
+
+  production-tracker-alignment:
+    name: Production Tracker Alignment
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify tracker-to-gate alignment markers
+        run: python3 scripts/verify_production_tracker_alignment.py
+
   doctor-preflight:
     name: Doctor Preflight
     runs-on: ubuntu-latest
@@ -233,7 +266,7 @@ jobs:
       - name: Generate coverage report
         run: |
           cargo tarpaulin --workspace --out Lcov --output-dir coverage \
-            --timeout 300 --exclude-files benches/* --fail-under 35
+            --timeout 300 --exclude-files benches/* --fail-under 45
 
       - name: Verify coverage artifact
         run: |

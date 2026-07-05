@@ -343,7 +343,7 @@ fn detect_full_gpu_probe_cached() -> Option<GpuProbeResult> {
     let cache = FULL_PROBE_CACHE.get_or_init(|| Mutex::new(None));
     if let Some(probe) = cache
         .lock()
-        .unwrap()
+        .unwrap_or_else(|poison| poison.into_inner())
         .as_ref()
         .filter(|entry| entry.captured_at.elapsed() < FULL_PROBE_CACHE_TTL)
         .map(|entry| entry.probe.clone())
@@ -352,7 +352,7 @@ fn detect_full_gpu_probe_cached() -> Option<GpuProbeResult> {
     }
 
     let probe = detect_nvidia_smi().or_else(detect_lspci_gpu)?;
-    *cache.lock().unwrap() = Some(CachedProbeEntry {
+    *cache.lock().unwrap_or_else(|poison| poison.into_inner()) = Some(CachedProbeEntry {
         captured_at: Instant::now(),
         probe: probe.clone(),
     });

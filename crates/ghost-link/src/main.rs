@@ -1390,6 +1390,8 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
     struct GuiChatRequest {
         message: String,
         #[allow(dead_code)]
+        model: Option<String>,
+        #[allow(dead_code)]
         temperature: Option<f32>,
         #[allow(dead_code)]
         top_p: Option<f32>,
@@ -1401,6 +1403,8 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         max_tokens: Option<usize>,
         #[allow(dead_code)]
         system_prompt: Option<String>,
+        #[allow(dead_code)]
+        ollama_url: Option<String>,
         #[allow(dead_code)]
         mcp: Option<serde_json::Value>,
     }
@@ -1495,6 +1499,88 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
 
     fn chat_exec_token_budget(default_tokens: usize) -> usize {
         env_default_usize("GHOSTLINK_CHAT_EXEC_TOKENS", default_tokens).clamp(16, 4096)
+    }
+
+    fn resolve_ollama_url() -> String {
+        env_default_string("GHOSTLINK_OLLAMA_URL", "http://127.0.0.1:11434")
+            .trim_end_matches('/')
+            .to_string()
+    }
+
+    async fn fetch_ollama_tags(
+        ollama_url: &str,
+        timeout_secs: u64,
+    ) -> Result<serde_json::Value, String> {
+        let tags_url = format!("{}/api/tags", ollama_url);
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(timeout_secs))
+            .build()
+            .map_err(|err| format!("unable to build HTTP client: {}", err))?;
+        let response = client
+            .get(tags_url.as_str())
+            .send()
+            .await
+            .map_err(|err| format!("ollama tags request failed: {}", err))?;
+        let status = response.status();
+        let body = response
+            .text()
+            .await
+            .map_err(|err| format!("unable to read ollama tags response: {}", err))?;
+
+        if !status.is_success() {
+            let detail = body.trim();
+            return Err(if detail.is_empty() {
+                format!("ollama tags request failed with status {}", status)
+            } else {
+                detail.to_string()
+            });
+        }
+
+        serde_json::from_str::<serde_json::Value>(&body)
+            .map_err(|err| format!("invalid JSON from ollama tags: {}", err))
+    }
+
+    fn refresh_models_from_ollama(backend: &mut BackendState, tags_json: &serde_json::Value) {
+        let Some(models) = tags_json.get("models").and_then(|value| value.as_array()) else {
+            return;
+        };
+
+        for entry in models {
+            let Some(name) = entry.get("name").and_then(|value| value.as_str()) else {
+                continue;
+            };
+
+            let size_gb = entry
+                .get("size")
+                .and_then(|value| value.as_f64())
+                .map(|bytes| (bytes / (1024.0 * 1024.0 * 1024.0)) as f32)
+                .unwrap_or(0.0);
+
+            let quantization = entry
+                .get("details")
+                .and_then(|details| details.get("quantization_level"))
+                .and_then(|value| value.as_str())
+                .unwrap_or("Unknown")
+                .to_string();
+
+            if let Some(existing) = backend.models.iter_mut().find(|model| model.name == name) {
+                existing.size_gb = if size_gb > 0.0 {
+                    size_gb
+                } else {
+                    existing.size_gb
+                };
+                existing.quantization = quantization;
+                existing.status = "Ready".to_string();
+            } else {
+                backend.models.push(ModelRecord {
+                    name: name.to_string(),
+                    size_gb,
+                    model_type: "LLM".to_string(),
+                    quantization,
+                    status: "Ready".to_string(),
+                });
+            }
+        }
     }
 
     async fn handle_chat_completions(
@@ -1638,7 +1724,14 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
     async fn handle_gui_models(
         State(state): State<Arc<Mutex<BackendState>>>,
     ) -> Json<serde_json::Value> {
-        let backend = lock_state(&state);
+        let ollama_url = resolve_ollama_url();
+        let tags_json = fetch_ollama_tags(ollama_url.as_str(), 10).await.ok();
+
+        let mut backend = lock_state(&state);
+        if let Some(tags_json) = tags_json.as_ref() {
+            refresh_models_from_ollama(&mut backend, tags_json);
+        }
+
         let models = backend
             .models
             .iter()
@@ -1653,35 +1746,153 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             })
             .collect::<Vec<_>>();
 
+        let total_models = models.len();
+        let loaded_count = models
+            .iter()
+            .filter(|entry| {
+                entry
+                    .get("status")
+                    .and_then(|value| value.as_str())
+                    .map(|status| status.eq_ignore_ascii_case("ready"))
+                    .unwrap_or(false)
+            })
+            .count();
+
         Json(serde_json::json!({
             "models": models,
-            "current_model": backend.current_model
+            "current_model": backend.current_model,
+            "total_models": total_models,
+            "loaded_count": loaded_count
         }))
+    }
+
+    async fn handle_gui_model_status(
+        State(state): State<Arc<Mutex<BackendState>>>,
+    ) -> Json<serde_json::Value> {
+        let backend = lock_state(&state);
+        let loaded_models = backend
+            .models
+            .iter()
+            .filter(|model| model.status.eq_ignore_ascii_case("ready"))
+            .map(|model| model.name.clone())
+            .collect::<Vec<_>>();
+        let downloading_models = backend
+            .models
+            .iter()
+            .filter(|model| model.status.eq_ignore_ascii_case("downloading"))
+            .map(|model| model.name.clone())
+            .collect::<Vec<_>>();
+
+        Json(serde_json::json!({
+            "loaded_models": loaded_models,
+            "downloading_models": downloading_models,
+            "current_model": backend.current_model,
+        }))
+    }
+
+    async fn handle_gui_ollama_health() -> Json<serde_json::Value> {
+        let ollama_url = resolve_ollama_url();
+        match fetch_ollama_tags(ollama_url.as_str(), 8).await {
+            Ok(tags_json) => {
+                let model_count = tags_json
+                    .get("models")
+                    .and_then(|value| value.as_array())
+                    .map(|items| items.len())
+                    .unwrap_or(0);
+                Json(serde_json::json!({
+                    "reachable": true,
+                    "ollama_url": ollama_url,
+                    "model_count": model_count,
+                    "detail": "ok"
+                }))
+            }
+            Err(err) => Json(serde_json::json!({
+                "reachable": false,
+                "ollama_url": ollama_url,
+                "model_count": 0,
+                "detail": err
+            })),
+        }
     }
 
     async fn handle_gui_model_load(
         State(state): State<Arc<Mutex<BackendState>>>,
         Json(req): Json<ModelLoadRequest>,
     ) -> Json<serde_json::Value> {
+        let requested_model = req.model.trim().to_string();
+        if requested_model.is_empty() {
+            return Json(serde_json::json!({
+                "error": "model cannot be empty"
+            }));
+        }
+
+        // Validate that model exists in Ollama before switching active model.
+        let ollama_url = resolve_ollama_url();
+        let tags_json = fetch_ollama_tags(ollama_url.as_str(), 30).await.ok();
+        let model_present_in_ollama = tags_json
+            .as_ref()
+            .and_then(|json| {
+                json.get("models")
+                    .and_then(|value| value.as_array())
+                    .cloned()
+            })
+            .map(|models| {
+                models.into_iter().any(|entry| {
+                    entry
+                        .get("name")
+                        .and_then(|value| value.as_str())
+                        .map(|name| {
+                            name == requested_model
+                                || name
+                                    .split(':')
+                                    .next()
+                                    .map(|base| base == requested_model)
+                                    .unwrap_or(false)
+                        })
+                        .unwrap_or(false)
+                })
+            })
+            .unwrap_or(false);
+
+        if !model_present_in_ollama {
+            return Json(serde_json::json!({
+                "error": format!(
+                    "model '{}' is not available in Ollama at {} (download it first)",
+                    requested_model, ollama_url
+                )
+            }));
+        }
+
         let mut backend = lock_state(&state);
+        if let Some(json) = tags_json.as_ref() {
+            refresh_models_from_ollama(&mut backend, json);
+        }
         let mut found = false;
         for model in &backend.models {
-            if model.name == req.model {
+            if model.name == requested_model {
                 found = true;
                 break;
             }
         }
 
         if !found {
-            return Json(serde_json::json!({
-                "error": format!("model '{}' not found", req.model)
-            }));
+            backend.models.push(ModelRecord {
+                name: requested_model.clone(),
+                size_gb: 0.0,
+                model_type: "LLM".to_string(),
+                quantization: "Unknown".to_string(),
+                status: "Ready".to_string(),
+            });
         }
 
-        backend.current_model = req.model.clone();
+        backend.current_model = requested_model.clone();
+        for worker in &mut backend.workers {
+            worker.model = requested_model.clone();
+        }
+
         Json(serde_json::json!({
             "status": "ok",
-            "model": req.model,
+            "model": requested_model,
             "loaded": true
         }))
     }
@@ -1690,25 +1901,104 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         State(state): State<Arc<Mutex<BackendState>>>,
         Json(req): Json<ModelDownloadRequest>,
     ) -> Json<serde_json::Value> {
-        let mut backend = lock_state(&state);
-        if !backend
-            .models
-            .iter()
-            .any(|model| model.name == req.model_id)
+        let model_id = req.model_id.trim().to_string();
+        if model_id.is_empty() {
+            return Json(serde_json::json!({
+                "error": "model_id cannot be empty"
+            }));
+        }
+
+        let ollama_url = resolve_ollama_url();
+        let pull_url = format!("{}/api/pull", ollama_url);
+        let payload = serde_json::json!({
+            "name": model_id,
+            "stream": false
+        });
+
+        let client = match reqwest::Client::builder()
+            .timeout(Duration::from_secs(900))
+            .build()
         {
-            backend.models.push(ModelRecord {
-                name: req.model_id.clone(),
-                size_gb: 4.0,
-                model_type: "LLM".to_string(),
-                quantization: "Q4_K_M".to_string(),
-                status: "Ready".to_string(),
-            });
+            Ok(client) => client,
+            Err(err) => {
+                return Json(serde_json::json!({
+                    "status": "error",
+                    "model_id": model_id,
+                    "downloaded": false,
+                    "detail": format!("unable to build HTTP client: {}", err),
+                    "ollama_url": ollama_url
+                }));
+            }
+        };
+
+        let (ok, detail) = match client.post(pull_url.as_str()).json(&payload).send().await {
+            Ok(response) => {
+                let status = response.status();
+                let body = response.text().await.unwrap_or_default();
+                let parsed = serde_json::from_str::<serde_json::Value>(&body).ok();
+                let err_message = parsed.as_ref().and_then(|json| {
+                    json.get("error")
+                        .and_then(|value| value.as_str())
+                        .map(|s| s.to_string())
+                });
+                if status.is_success() && err_message.is_none() {
+                    let status_message = parsed
+                        .as_ref()
+                        .and_then(|json| {
+                            json.get("status")
+                                .and_then(|value| value.as_str())
+                                .map(|s| s.to_string())
+                        })
+                        .unwrap_or_else(|| "download completed".to_string());
+                    (true, status_message)
+                } else {
+                    let detail = err_message.unwrap_or_else(|| {
+                        if body.trim().is_empty() {
+                            format!("ollama pull failed with status {}", status)
+                        } else {
+                            body.trim().to_string()
+                        }
+                    });
+                    (false, detail)
+                }
+            }
+            Err(err) => (false, format!("ollama pull request failed: {}", err)),
+        };
+
+        let tags_json = if ok {
+            fetch_ollama_tags(ollama_url.as_str(), 20).await.ok()
+        } else {
+            None
+        };
+
+        let mut backend = lock_state(&state);
+        if ok {
+            if let Some(tags_json) = tags_json.as_ref() {
+                refresh_models_from_ollama(&mut backend, tags_json);
+            }
+            if let Some(existing) = backend
+                .models
+                .iter_mut()
+                .find(|model| model.name == model_id)
+            {
+                existing.status = "Ready".to_string();
+            } else {
+                backend.models.push(ModelRecord {
+                    name: model_id.clone(),
+                    size_gb: 0.0,
+                    model_type: "LLM".to_string(),
+                    quantization: "Unknown".to_string(),
+                    status: "Ready".to_string(),
+                });
+            }
         }
 
         Json(serde_json::json!({
-            "status": "ok",
-            "model_id": req.model_id,
-            "queued": true
+            "status": if ok { "ok" } else { "error" },
+            "model_id": model_id,
+            "downloaded": ok,
+            "detail": detail,
+            "ollama_url": ollama_url
         }))
     }
 
@@ -2045,46 +2335,139 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             }
         };
 
-        let mut backend = lock_state(&state);
-        backend.chat_requests = backend.chat_requests.saturating_add(1);
+        let (request_id, session_id) = {
+            let mut backend = lock_state(&state);
+            backend.chat_requests = backend.chat_requests.saturating_add(1);
+            let request_seq = backend.chat_requests;
 
-        if result.is_none() {
-            backend.last_latency_ms = (started.elapsed().as_secs_f32() * 1000.0).max(1.0);
-        }
+            if result.is_none() {
+                backend.last_latency_ms = (started.elapsed().as_secs_f32() * 1000.0).max(1.0);
+            }
 
-        let latency = backend.last_latency_ms.round() as u32;
-        let throughput = result
-            .as_ref()
-            .map(|r| r.throughput_tokens_per_sec as usize)
-            .unwrap_or(1200);
+            let latency = backend.last_latency_ms.round() as u32;
+            let throughput = result
+                .as_ref()
+                .map(|r| r.throughput_tokens_per_sec as usize)
+                .unwrap_or(1200);
 
-        let maybe_session = backend.sessions.first_mut();
-        if let Some(session) = maybe_session {
-            session.tokens = session.tokens.saturating_add(token_estimate);
-            session.throughput = throughput;
-            session.latency = latency;
-            session.model = current_model.clone();
-            session.status = "Running".to_string();
-        } else {
-            backend.sessions.push(SessionRecord {
-                id: "sess_local_001".to_string(),
-                model: current_model.clone(),
-                status: "Running".to_string(),
-                throughput,
-                latency,
-                tokens: token_estimate,
-            });
-        }
+            let maybe_session = backend.sessions.first_mut();
+            if let Some(session) = maybe_session {
+                session.tokens = session.tokens.saturating_add(token_estimate);
+                session.throughput = throughput;
+                session.latency = latency;
+                session.model = current_model.clone();
+                session.status = "Running".to_string();
+                let session_id = session.id.clone();
+                (request_seq, session_id)
+            } else {
+                let session_id = "sess_local_001".to_string();
+                backend.sessions.push(SessionRecord {
+                    id: session_id.clone(),
+                    model: current_model.clone(),
+                    status: "Running".to_string(),
+                    throughput,
+                    latency,
+                    tokens: token_estimate,
+                });
+                (request_seq, session_id)
+            }
+        };
 
-        // Call Open WebUI API for real LLM responses
-        let _system_prompt = req
+        // Prefer a real Ollama response; if unavailable, keep a clear fallback.
+        let system_prompt = req
             .system_prompt
+            .clone()
             .unwrap_or_else(|| "You are a helpful AI assistant.".to_string());
-        let response_text = format!("[Ghostlink] Simulated response to: {}", req.message);
+        let ollama_url = req
+            .ollama_url
+            .clone()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| {
+                env_default_string("GHOSTLINK_OLLAMA_URL", "http://127.0.0.1:11434")
+            });
+        let ollama_url_normalized = ollama_url.trim_end_matches('/').to_string();
+        let ollama_model = req
+            .model
+            .clone()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| {
+                env_default_string("GHOSTLINK_OLLAMA_MODEL", current_model.as_str())
+            });
+        let ollama_generate_url = format!("{}/api/generate", ollama_url_normalized);
+        let response_text = {
+            let payload = serde_json::json!({
+                "model": ollama_model,
+                "prompt": req.message,
+                "system": system_prompt,
+                "stream": false,
+                "options": {
+                    "temperature": req.temperature.unwrap_or(0.7)
+                }
+            });
+
+            let client = reqwest::Client::builder()
+                .timeout(Duration::from_secs(120))
+                .build();
+
+            match client {
+                Ok(client) => match client
+                    .post(ollama_generate_url.as_str())
+                    .json(&payload)
+                    .send()
+                    .await
+                {
+                    Ok(response) if response.status().is_success() => {
+                        let body = response.text().await.unwrap_or_default();
+                        match serde_json::from_str::<serde_json::Value>(&body)
+                            .ok()
+                            .and_then(|json| {
+                                json.get("response")
+                                    .and_then(|value| value.as_str())
+                                    .map(|value| value.to_string())
+                            }) {
+                            Some(real_response) if !real_response.trim().is_empty() => {
+                                real_response
+                            }
+                            _ => format!(
+                                "[Ghostlink fallback] Could not parse Ollama response. Request: {}",
+                                req.message
+                            ),
+                        }
+                    }
+                    Ok(response) => {
+                        let status = response.status();
+                        let body = response.text().await.unwrap_or_default();
+                        if body.trim().is_empty() {
+                            format!(
+                                "[Ghostlink fallback] Ollama request failed with status {}. Request: {}",
+                                status, req.message
+                            )
+                        } else {
+                            format!(
+                                "[Ghostlink fallback] Ollama unavailable ({}). Request: {}",
+                                body.trim(),
+                                req.message
+                            )
+                        }
+                    }
+                    Err(err) => format!(
+                        "[Ghostlink fallback] Unable to reach Ollama ({}). Request: {}",
+                        err, req.message
+                    ),
+                },
+                Err(err) => format!(
+                    "[Ghostlink fallback] Unable to build HTTP client ({}). Request: {}",
+                    err, req.message
+                ),
+            }
+        };
 
         let mut response = serde_json::json!({
             "response": response_text,
-            "request_id": format!("req-{}", backend.chat_requests),
+            "request_id": format!("req-{}", request_id),
+            "session_id": session_id,
+            "model": ollama_model,
+            "ollama_url": ollama_url_normalized,
             "tokens_estimated": token_estimate,
             "exec_tokens": exec_tokens,
             "exec_micro_batch": exec_micro_batch,
@@ -2125,8 +2508,10 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
     println!("  - GET  /v1/models");
     println!("  - GET  /health");
     println!("  - GET  /api/models");
+    println!("  - GET  /api/models/status");
     println!("  - POST /api/models/load");
     println!("  - POST /api/models/download");
+    println!("  - GET  /api/ollama/health");
     println!("  - GET  /api/workers");
     println!("  - POST /api/workers/connect");
     println!("  - POST /api/workers/add");
@@ -2162,7 +2547,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
-        .unwrap();
+        .map_err(|err| anyhow::anyhow!("failed to initialize runtime: {}", err))?;
 
     let cluster = Arc::new(ClusterState::new());
     let mut local_node = profile.node_resources.clone();
@@ -2268,15 +2653,17 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             .route("/v1/models", get(handle_models))
             .route("/health", get(handle_health))
             .route("/api/models", get(handle_gui_models))
+            .route("/api/models/status", get(handle_gui_model_status))
             .route("/api/models/load", post(handle_gui_model_load))
             .route("/api/models/download", post(handle_gui_model_download))
+            .route("/api/ollama/health", get(handle_gui_ollama_health))
             .route("/api/workers", get(handle_gui_workers))
             .route("/api/workers/connect", post(handle_gui_workers_connect))
             .route("/api/workers/add", post(handle_gui_workers_add))
             .route("/api/metrics", get(handle_gui_metrics))
             .route("/api/sessions", get(handle_gui_sessions))
             .route(
-                "/api/sessions/{session_id}/cancel",
+                "/api/sessions/:session_id/cancel",
                 post(handle_gui_session_cancel),
             )
             .route("/api/queue", post(handle_gui_queue))
@@ -2287,11 +2674,15 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             .layer(CorsLayer::permissive());
 
         // addr already parsed above
-        let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
+        let listener = tokio::net::TcpListener::bind(addr)
+            .await
+            .map_err(|err| anyhow::anyhow!("failed to bind API server on {}: {}", addr, err))?;
         println!("\nAPI Server Online. Ready for connections.");
 
-        axum::serve(listener, app).await.unwrap();
-    });
+        axum::serve(listener, app)
+            .await
+            .map_err(|err| anyhow::anyhow!("API server terminated with error: {}", err))
+    })?;
 
     Ok(())
 }
@@ -3057,8 +3448,14 @@ fn probe_network_target(target: &str, timeout: Duration) -> NetworkProbeOutcome 
         }
     }
 
-    let (resolved, error) = last_error.expect("resolved address list should not be empty");
-    NetworkProbeOutcome::Unreachable { resolved, error }
+    if let Some((resolved, error)) = last_error {
+        NetworkProbeOutcome::Unreachable { resolved, error }
+    } else {
+        NetworkProbeOutcome::InvalidTarget(format!(
+            "invalid network target '{}', no connection attempts were made",
+            target
+        ))
+    }
 }
 
 fn run_optional_network_probe(target: &str, checks: &mut Vec<DoctorCheck>) {

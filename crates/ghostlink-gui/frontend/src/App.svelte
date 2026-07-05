@@ -31,8 +31,17 @@
   let modelFile = 'config.json';
   let modelPresets = [];
   let modelCheck = null;
+  let backendModels = [];
+  let currentBackendModel = '';
+  let selectedBackendModel = '';
+  let modelActionMessage = '';
+  let backendReachable = null;
+  let ollamaReachable = null;
+  let connectivityDetail = '';
   let chatPrompt = '';
   let chatModel = 'ghostlink-live-7b';
+  let ollamaUrl = 'http://127.0.0.1:11434';
+  let ollamaModel = 'neural-chat';
   let chatTemperature = 0.7;
   let chatMaxTokens = 256;
   let chatDistributed = true;
@@ -72,7 +81,30 @@
 
   const forceMockBridge = typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('mock');
   const tauriRuntimeAvailable = typeof window !== 'undefined' && ('__TAURI_INTERNALS__' in window || '__TAURI_METADATA__' in window);
-  const useMockBridge = forceMockBridge || !tauriRuntimeAvailable;
+  const queryBackend = typeof window !== 'undefined' ? new URLSearchParams(window.location.search).get('backend') : null;
+  const backendBaseUrl = (queryBackend || import.meta.env.VITE_GHOSTLINK_BACKEND_URL || 'http://127.0.0.1:9999').replace(/\/$/, '');
+  const useMockBridge = forceMockBridge;
+  const useHttpBridge = !tauriRuntimeAvailable && !useMockBridge;
+
+  async function fetchJson(path) {
+    const response = await fetch(`${backendBaseUrl}${path}`);
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status} while requesting ${path}`);
+    }
+    return response.json();
+  }
+
+  async function postJson(path, body) {
+    const response = await fetch(`${backendBaseUrl}${path}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status} while requesting ${path}`);
+    }
+    return response.json();
+  }
 
   async function mockInvoke(commandName, args = {}) {
     await new Promise((resolve) => setTimeout(resolve, 120));
@@ -140,6 +172,33 @@
           { name: 'Balanced OSS', repo: 'mistralai/Mistral-7B-Instruct-v0.2', quant: 'q4', defaultFile: 'config.json' },
           { name: 'High Quality', repo: 'meta-llama/Meta-Llama-3-8B-Instruct', quant: 'q6', defaultFile: 'config.json' },
         ];
+      case 'list_backend_models':
+        return {
+          models: [
+            { name: 'neural-chat', size_gb: 7.0, type: 'LLM', quantization: 'Q4_K_M', status: 'Ready' },
+            { name: 'mistral:7b', size_gb: 7.0, type: 'LLM', quantization: 'Q4_K_M', status: 'Ready' },
+          ],
+          current_model: 'neural-chat',
+        };
+      case 'download_backend_model':
+        return {
+          status: 'ok',
+          model_id: String(args.modelId ?? args.model_id ?? ''),
+          downloaded: true,
+          detail: 'mock download completed',
+        };
+      case 'load_backend_model':
+        return {
+          status: 'ok',
+          model: String(args.model ?? ''),
+          loaded: true,
+        };
+      case 'ollama_health':
+        return {
+          reachable: true,
+          ollama_url: String(ollamaUrl),
+          detail: 'mock bridge connected',
+        };
       case 'load_flow_defaults':
         return {
           localId: 'studio-local',
@@ -182,7 +241,7 @@
         return {
           backend: args.distributed ? 'distributed-backend' : 'local-loopback',
           model: args.model,
-          response: 'Polished chat preview response from Ghostlink runtime (mock bridge).',
+          response: 'Polished chat preview response from Ghostlink runtime.',
           trace: `tokens=${args.maxTokens} temp=${args.temperature}`,
         };
       case 'run_validation_tier':
@@ -201,11 +260,151 @@
     }
   }
 
+  async function httpInvoke(commandName, args = {}) {
+    switch (commandName) {
+      case 'studio_status': {
+        const health = await fetchJson('/health');
+        return {
+          app: 'Ghostlink Studio',
+          status: health.status === 'healthy' ? 'http-bridge-ready' : 'http-bridge-degraded',
+          repo_root: 'served backend',
+        };
+      }
+      case 'studio_snapshot': {
+        const health = await fetchJson('/health');
+        return {
+          metrics: [
+            { label: 'Backend Health', value: String(health.status ?? 'unknown') },
+            { label: 'Model', value: String(health.current_model ?? 'unknown') },
+            { label: 'Backend URL', value: String(health.backend_url ?? backendBaseUrl) },
+            { label: 'Uptime', value: `${Number(health.uptime_s ?? 0)}s` },
+          ],
+          summary: 'Snapshot loaded from HTTP backend bridge.',
+          checksPassed: health.status === 'healthy' ? 4 : 2,
+          checksWarn: health.status === 'healthy' ? 0 : 2,
+        };
+      }
+      case 'load_ghostlink_config':
+        return {
+          path: 'browser-http-bridge',
+          exists: false,
+          content: '# Config editing requires Tauri runtime.\n',
+        };
+      case 'save_ghostlink_config':
+        return { path: 'browser-http-bridge' };
+      case 'list_model_presets':
+        return [
+          { name: 'Tiny GPT-2 (smoke)', repo: 'sshleifer/tiny-gpt2', quant: 'int8', defaultFile: 'config.json' },
+          { name: 'Mistral 7B', repo: 'mistralai/Mistral-7B-v0.1', quant: 'q4', defaultFile: 'config.json' },
+          { name: 'Llama 3 8B', repo: 'meta-llama/Meta-Llama-3-8B-Instruct', quant: 'q4', defaultFile: 'config.json' },
+        ];
+      case 'list_backend_models':
+        return fetchJson('/api/models');
+      case 'download_backend_model':
+        return postJson('/api/models/download', {
+          model_id: String(args.modelId ?? args.model_id ?? ''),
+        });
+      case 'load_backend_model':
+        return postJson('/api/models/load', {
+          model: String(args.model ?? ''),
+        });
+      case 'ollama_health':
+        return fetchJson('/api/ollama/health');
+      case 'load_flow_defaults':
+        return {
+          localId: 'studio-local',
+          remoteId: 'studio-remote',
+          executionTokens: 256,
+          microBatch: 8,
+          transport: 'tcp',
+        };
+      case 'discover_workers': {
+        const workersPayload = await fetchJson('/api/workers');
+        const workers = Array.isArray(workersPayload.workers)
+          ? workersPayload.workers.map((worker) => ({
+              id: String(worker.id ?? 'unknown'),
+              available: String(worker.status ?? '').toLowerCase() !== 'disconnected',
+              workers: Number(worker.threads ?? 0),
+              systemMemoryGb: 0,
+              gpuVramGb: 0,
+              acceleration: 'runtime',
+              health: String(worker.status ?? 'unknown').toLowerCase(),
+              probeMode: args.full ? 'full' : 'http',
+              error: null,
+            }))
+          : [];
+        return {
+          workers,
+          summary: `${workers.filter((item) => item.available).length} of ${workers.length} workers reachable`,
+        };
+      }
+      case 'cluster_preview': {
+        const workersPayload = await fetchJson('/api/workers');
+        const nodes = Array.isArray(workersPayload.workers)
+          ? workersPayload.workers.map((worker) => ({
+              id: String(worker.id ?? 'unknown'),
+              acceleration: 'runtime',
+              workers: Number(worker.threads ?? 0),
+              systemMemoryGb: 0,
+              gpuVramGb: 0,
+              health: String(worker.status ?? 'unknown').toLowerCase() === 'connected' ? 'healthy' : 'degraded',
+            }))
+          : [];
+        return {
+          nodes,
+          summary: `HTTP snapshot loaded (${nodes.length} nodes).`,
+        };
+      }
+      case 'run_flow_between': {
+        const result = await postJson('/api/workers/connect', {});
+        const connected = Number(result.connected ?? 0);
+        const total = Number(result.total ?? 0);
+        return {
+          ok: true,
+          command: `POST /api/workers/connect`,
+          stdout: `Connected ${connected}/${total} worker(s) via backend API.`,
+          stderr: '',
+          exitCode: 0,
+        };
+      }
+      case 'quick_tcp_probe':
+        return {
+          reachable: false,
+          latencyMs: null,
+          error: 'Quick TCP probe is only available in Tauri mode.',
+        };
+      case 'chat_infer': {
+        const payload = {
+          message: String(args.prompt ?? ''),
+          model: String(args.model ?? ollamaModel),
+          ollama_url: String(ollamaUrl ?? ''),
+          temperature: Number(args.temperature ?? 0.7),
+            max_tokens: Number(args.maxTokens ?? args.max_tokens ?? 256),
+        };
+        const result = await postJson('/api/inference/chat', payload);
+        return {
+          backend: 'http-backend-api',
+          model: args.model,
+          response: String(result.response ?? ''),
+          trace: `request_id=${result.request_id ?? 'n/a'} exec_tokens=${result.exec_tokens ?? 'n/a'} micro_batch=${result.exec_micro_batch ?? 'n/a'}`,
+        };
+      }
+      default:
+        throw new Error(`Command '${commandName}' is only available in Tauri mode.`);
+    }
+  }
+
   async function bridgeInvoke(commandName, args = {}) {
+    if (tauriRuntimeAvailable) {
+      return invoke(commandName, args);
+    }
+    if (useHttpBridge) {
+      return httpInvoke(commandName, args);
+    }
     if (useMockBridge) {
       return mockInvoke(commandName, args);
     }
-    return invoke(commandName, args);
+    throw new Error('No bridge is available for this runtime.');
   }
 
   function applyVisualPreferences() {
@@ -221,6 +420,8 @@
       fontScale,
       reducedMotion,
       highContrast,
+      ollamaUrl,
+      ollamaModel,
       chatHistory,
       workerProbeHints,
       workerProbeFull,
@@ -250,6 +451,8 @@
       fontScale = Number(prefs.fontScale ?? 1);
       reducedMotion = Boolean(prefs.reducedMotion);
       highContrast = Boolean(prefs.highContrast);
+      ollamaUrl = String(prefs.ollamaUrl ?? ollamaUrl);
+      ollamaModel = String(prefs.ollamaModel ?? ollamaModel);
       chatHistory = Array.isArray(prefs.chatHistory) ? prefs.chatHistory.slice(0, 12) : [];
       workerProbeHints = String(prefs.workerProbeHints ?? workerProbeHints);
       workerProbeFull = Boolean(prefs.workerProbeFull);
@@ -277,6 +480,8 @@
     fontScale = 1;
     reducedMotion = false;
     highContrast = false;
+    ollamaUrl = 'http://127.0.0.1:11434';
+    ollamaModel = 'neural-chat';
     applyVisualPreferences();
     persistPreferences();
   }
@@ -294,6 +499,8 @@
         modelFile,
         chatModel,
         chatDistributed,
+        ollamaUrl,
+        ollamaModel,
         configContent,
         workerProbeHints,
         workerProbeFull,
@@ -330,6 +537,8 @@
       modelFile = profile.modelFile;
       chatModel = profile.chatModel;
       chatDistributed = Boolean(profile.chatDistributed);
+      ollamaUrl = String(flowArg(ollamaUrl, profile.ollamaUrl, profile.ollama_url));
+      ollamaModel = String(flowArg(ollamaModel, profile.ollamaModel, profile.ollama_model));
       configContent = profile.configContent;
       workerProbeHints = String(flowArg(workerProbeHints, profile.workerProbeHints, profile.worker_probe_hints));
       workerProbeFull = Boolean(flowArg(workerProbeFull, profile.workerProbeFull, profile.worker_probe_full));
@@ -472,6 +681,113 @@
   async function loadModelPresets() {
     const presets = await bridgeInvoke('list_model_presets');
     modelPresets = presets;
+  }
+
+  async function refreshConnectivity() {
+    if (useMockBridge) {
+      backendReachable = true;
+      ollamaReachable = true;
+      connectivityDetail = 'mock bridge';
+      return;
+    }
+
+    try {
+      await fetchJson('/health');
+      backendReachable = true;
+    } catch (err) {
+      backendReachable = false;
+      ollamaReachable = null;
+      connectivityDetail = String(err);
+      return;
+    }
+
+    try {
+      const ollama = await bridgeInvoke('ollama_health');
+      ollamaReachable = Boolean(ollama.reachable);
+      connectivityDetail = String(ollama.detail ?? '');
+    } catch (err) {
+      ollamaReachable = false;
+      connectivityDetail = String(err);
+    }
+  }
+
+  function applyBackendModels(result) {
+    const models = Array.isArray(result?.models) ? result.models : [];
+    backendModels = models;
+    currentBackendModel = String(result?.current_model ?? '');
+    if (!selectedBackendModel || !models.some((entry) => entry?.name === selectedBackendModel)) {
+      selectedBackendModel = String(models[0]?.name ?? currentBackendModel ?? '');
+    }
+  }
+
+  async function loadBackendModels() {
+    await refreshConnectivity();
+    if (!backendReachable) {
+      throw new Error(`Backend unavailable at ${backendBaseUrl}`);
+    }
+    const result = await bridgeInvoke('list_backend_models');
+    applyBackendModels(result);
+  }
+
+  async function downloadSelectedModel() {
+    if (!selectedBackendModel.trim()) {
+      modelActionMessage = 'Select a model first.';
+      return;
+    }
+    busy = true;
+    try {
+      await refreshConnectivity();
+      if (!backendReachable) {
+        throw new Error(`Backend unavailable at ${backendBaseUrl}`);
+      }
+      if (!ollamaReachable) {
+        throw new Error(`Ollama unavailable at ${ollamaUrl}`);
+      }
+      const result = await bridgeInvoke('download_backend_model', {
+        modelId: selectedBackendModel,
+        model_id: selectedBackendModel,
+      });
+      modelActionMessage = String(result.detail ?? `Download requested for ${selectedBackendModel}`);
+      status = `Model download: ${result.status ?? 'unknown'}`;
+      await loadBackendModels();
+    } catch (err) {
+      status = 'Model download failed';
+      modelActionMessage = String(err);
+      output = String(err);
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function loadSelectedModel() {
+    if (!selectedBackendModel.trim()) {
+      modelActionMessage = 'Select a model first.';
+      return;
+    }
+    busy = true;
+    try {
+      await refreshConnectivity();
+      if (!backendReachable) {
+        throw new Error(`Backend unavailable at ${backendBaseUrl}`);
+      }
+      if (!ollamaReachable) {
+        throw new Error(`Ollama unavailable at ${ollamaUrl}`);
+      }
+      const result = await bridgeInvoke('load_backend_model', {
+        model: selectedBackendModel,
+      });
+      modelActionMessage = result.loaded
+        ? `Loaded ${result.model ?? selectedBackendModel}`
+        : String(result.error ?? 'Model load failed');
+      status = result.loaded ? 'Model switched' : 'Model load failed';
+      await loadBackendModels();
+    } catch (err) {
+      status = 'Model load failed';
+      modelActionMessage = String(err);
+      output = String(err);
+    } finally {
+      busy = false;
+    }
   }
 
   function applyPreset(indexValue) {
@@ -748,12 +1064,21 @@
     busy = true;
     chatResult = null;
     try {
+      await refreshConnectivity();
+      if (!backendReachable) {
+        throw new Error(`Backend unavailable at ${backendBaseUrl}`);
+      }
       const result = await bridgeInvoke('chat_infer', {
         prompt: chatPrompt,
         model: chatModel,
         temperature: Number(chatTemperature),
         maxTokens: Number(chatMaxTokens),
+        max_tokens: Number(chatMaxTokens),
         distributed: chatDistributed,
+        ollamaUrl,
+        ollama_url: ollamaUrl,
+        ollamaModel,
+        ollama_model: ollamaModel,
       });
       chatResult = result;
       status = `Chat response generated via ${result.backend}`;
@@ -819,6 +1144,8 @@
       await loadConfig();
       await loadFlowDefaults();
       await loadModelPresets();
+      await refreshConnectivity();
+      await loadBackendModels();
       await refreshCluster(false);
       await discoverWorkers();
     } catch (err) {
@@ -846,7 +1173,9 @@
         <small>Fabric Control Plane</small>
       </div>
     </div>
-    {#if useMockBridge}
+    {#if useHttpBridge}
+      <div class="preview-banner">Browser mode (HTTP bridge)</div>
+    {:else if useMockBridge}
       <div class="preview-banner">Preview mode (mock bridge)</div>
     {/if}
     {#each navItems as item}
@@ -861,6 +1190,15 @@
   </aside>
 
   <main class="dashboard">
+    <div class="actions">
+      <span>Backend: {backendReachable === null ? 'unknown' : backendReachable ? 'online' : 'offline'}</span>
+      <span>Ollama: {ollamaReachable === null ? 'unknown' : ollamaReachable ? 'online' : 'offline'}</span>
+      <button on:click={refreshConnectivity} disabled={busy}>Recheck Connectivity</button>
+    </div>
+    {#if connectivityDetail}
+      <p>{connectivityDetail}</p>
+    {/if}
+
     {#if busy}
       <div class="busy-banner"><span class="busy-dot"></span>Working... {status}</div>
     {/if}
@@ -1132,7 +1470,7 @@
     {:else if activeTab === 'Models'}
       <header class="hero">
         <h1>Model Management</h1>
-        <p>Verify Hugging Face model accessibility and basic repository readiness.</p>
+        <p>Manage backend models and verify Hugging Face repository readiness.</p>
         <div class="actions">
           <select on:change={(e) => applyPreset(e.currentTarget.value)}>
             <option value="">Select preset</option>
@@ -1142,9 +1480,32 @@
           </select>
           <input bind:value={modelRepo} placeholder="repo id (owner/model)" />
           <input bind:value={modelFile} placeholder="file" />
+          <button on:click={loadBackendModels} disabled={busy || !backendReachable}>Refresh Backend Models</button>
+          <select bind:value={selectedBackendModel}>
+            <option value="">Select backend model</option>
+            {#each backendModels as model}
+              <option value={model.name}>{model.name}</option>
+            {/each}
+          </select>
+          <button on:click={downloadSelectedModel} disabled={busy || !selectedBackendModel || !backendReachable || !ollamaReachable}>Download/Pull</button>
+          <button on:click={loadSelectedModel} disabled={busy || !selectedBackendModel || !backendReachable || !ollamaReachable}>Set Active</button>
           <button class="primary" on:click={verifyModel} disabled={busy}>Verify Model</button>
         </div>
       </header>
+      <section class="model-check">
+        <article class="metric-card">
+          <span>Current Backend Model</span>
+          <strong>{currentBackendModel || 'unknown'}</strong>
+        </article>
+        <article class="metric-card">
+          <span>Known Models</span>
+          <strong>{backendModels.length}</strong>
+        </article>
+        <article class="metric-card">
+          <span>Last Model Action</span>
+          <strong>{modelActionMessage || 'none'}</strong>
+        </article>
+      </section>
       {#if modelCheck}
         <section class="model-check">
           <article class="metric-card">
@@ -1186,7 +1547,7 @@
             <label class="checkbox">
               <input type="checkbox" bind:checked={chatDistributed} /> Distributed backend
             </label>
-            <button class="primary" on:click={runChat} disabled={busy}>{busy ? 'Generating...' : 'Generate'}</button>
+            <button class="primary" on:click={runChat} disabled={busy || !backendReachable}>{busy ? 'Generating...' : 'Generate'}</button>
           </div>
         </section>
 
@@ -1239,6 +1600,14 @@
         </label>
         <label class="checkbox"><input type="checkbox" bind:checked={reducedMotion} /> Reduced Motion</label>
         <label class="checkbox"><input type="checkbox" bind:checked={highContrast} /> High Contrast</label>
+      </section>
+      <section class="profile-portability">
+        <h3>LLM Backend Overrides</h3>
+        <p>Optional values passed to chat requests and persisted in Studio profile/preferences.</p>
+        <div class="actions">
+          <input bind:value={ollamaUrl} placeholder="ollama base url (e.g. http://127.0.0.1:11434)" />
+          <input bind:value={ollamaModel} placeholder="ollama model (e.g. neural-chat)" />
+        </div>
       </section>
       <section class="profile-portability">
         <h3>Profile Portability</h3>

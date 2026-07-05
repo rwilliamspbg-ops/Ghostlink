@@ -9,6 +9,7 @@ import time
 import os
 import signal
 import shutil
+from urllib.parse import urlparse
 from pathlib import Path
 
 ROOT_DIR = Path(__file__).parent.parent
@@ -39,6 +40,14 @@ def check_service(url):
         resp = requests.get(url, timeout=1)
         return resp.status_code == 200
     except:
+        return False
+
+def is_loopback_url(url):
+    try:
+        parsed = urlparse(url)
+        host = (parsed.hostname or '').strip().lower()
+        return host in {'127.0.0.1', 'localhost'}
+    except Exception:
         return False
 
 def command_exists(name):
@@ -72,6 +81,14 @@ def ensure_frontend_deps():
 
 def main():
     check_only = '--check' in sys.argv
+    ollama_url = os.getenv('GHOSTLINK_OLLAMA_URL', 'http://127.0.0.1:11434').strip().rstrip('/')
+    ollama_model = os.getenv('GHOSTLINK_OLLAMA_MODEL', os.getenv('GHOSTLINK_PROXY_MODEL', 'neural-chat')).strip()
+    if not ollama_model:
+        ollama_model = 'neural-chat'
+    os.environ.setdefault('GHOSTLINK_OLLAMA_URL', ollama_url)
+    os.environ.setdefault('GHOSTLINK_OLLAMA_MODEL', ollama_model)
+    os.environ.setdefault('GHOSTLINK_PROXY_MODEL', ollama_model)
+
     chat_backend_mode = os.getenv('GHOSTLINK_STUDIO_CHAT_BACKEND', 'backend').strip().lower()
     if chat_backend_mode not in {'backend', 'ollama'}:
         chat_backend_mode = 'backend'
@@ -84,6 +101,8 @@ def main():
     log("Starting Ghostlink Studio initialization...")
     log(f"GUI mode requested: {requested_gui_mode}")
     log(f"GUI mode effective: {effective_gui_mode}")
+    log(f"Ollama URL: {ollama_url}")
+    log(f"Ollama model: {ollama_model}")
 
     for key, value in DEFAULT_PERF_ENV.items():
         os.environ.setdefault(key, value)
@@ -93,11 +112,14 @@ def main():
         log("Running preflight checks...")
 
         # Check Ollama - use /api/tags as it definitely exists if Ollama is up
-        if check_service("http://127.0.0.1:11434/api/tags"):
-            log("  [OK] Ollama running on port 11434")
+        if check_service(f"{ollama_url}/api/tags"):
+            log(f"  [OK] Ollama running at {ollama_url}")
         else:
-            log("  [WARN] Ollama not detected on port 11434")
-            log("         (Will attempt to start it during full launch)")
+            log(f"  [WARN] Ollama not detected at {ollama_url}")
+            if is_loopback_url(ollama_url):
+                log("         (Will attempt to start it during full launch)")
+            else:
+                log("         (Remote Ollama URL configured; launcher will not auto-start remote service)")
 
         log("  [OK] Backend will run on port 8003")
         log("  [OK] Model Manager will run on port 8001")
@@ -129,10 +151,16 @@ def main():
         return proc
 
     # Start Ollama if needed
-    if not check_service("http://127.0.0.1:11434/api/tags"):
-        log("Ollama not running. Attempting to start 'ollama serve'...")
-        subprocess.Popen(['ollama', 'serve'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        time.sleep(3)
+    if not check_service(f"{ollama_url}/api/tags"):
+        if is_loopback_url(ollama_url):
+            if command_exists('ollama'):
+                log("Ollama not running. Attempting to start 'ollama serve'...")
+                subprocess.Popen(['ollama', 'serve'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                time.sleep(3)
+            else:
+                log("[WARN] Ollama CLI not found; local Ollama auto-start skipped")
+        else:
+            log(f"[WARN] Ollama not reachable at configured URL {ollama_url}; skipping auto-start")
 
     # Start Model Manager (8001)
     start_proc([sys.executable, 'model_manager.py'], "Model Manager")

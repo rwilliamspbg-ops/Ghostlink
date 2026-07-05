@@ -4,8 +4,9 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
+    "ensure:deps": "node scripts/ensure_deps.mjs",
     "dev": "vite",
-    "build": "vite build",
+    "build": "npm run ensure:deps && vite build",
     "preview": "vite preview",
     "screenshots:ui": "node scripts/capture_ui_screenshots.mjs"
   },

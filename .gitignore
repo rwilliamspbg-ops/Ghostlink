@@ -17,6 +17,13 @@ third_party/mohawk_gui/certs/
 # Local runtime output and diagnostics artifacts
 tmp/
 artifacts/release/
+crates/ghostlink-gui/src-tauri/target/
+crates/ghostlink-gui/src-tauri/gen/schemas/
 
 # Local quickstart config bootstrap artifact
 ghostlink.toml
+
+# Local scratch / runtime artifacts that should never be committed
+.git_commit_msg
+server.log
+.github_pr_template.md

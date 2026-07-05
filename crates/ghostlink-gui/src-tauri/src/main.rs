@@ -35,6 +35,9 @@ fn main() {
             discover_workers,
             load_flow_defaults,
             list_model_presets,
+            list_backend_models,
+            download_backend_model,
+            load_backend_model,
             run_validation_tier,
             load_ghostlink_config,
             save_ghostlink_config,
@@ -278,6 +281,10 @@ struct StudioProfile {
     model_file: String,
     chat_model: String,
     chat_distributed: bool,
+    #[serde(default)]
+    ollama_url: String,
+    #[serde(default)]
+    ollama_model: String,
     config_content: String,
     #[serde(default)]
     worker_probe_hints: String,
@@ -569,6 +576,8 @@ fn export_studio_profile(
     model_file: String,
     chat_model: String,
     chat_distributed: bool,
+    ollama_url: String,
+    ollama_model: String,
     config_content: String,
     worker_probe_hints: String,
     worker_probe_full: bool,
@@ -602,6 +611,8 @@ fn export_studio_profile(
         model_file,
         chat_model,
         chat_distributed,
+        ollama_url,
+        ollama_model,
         config_content,
         worker_probe_hints,
         worker_probe_full,
@@ -863,6 +874,111 @@ fn verify_hf_repo(repo: String, file: String) -> Result<ModelVerifyResult, Strin
     })
 }
 
+fn studio_backend_url() -> String {
+    std::env::var("GHOSTLINK_BACKEND_URL")
+        .unwrap_or_else(|_| "http://127.0.0.1:9999".to_string())
+        .trim_end_matches('/')
+        .to_string()
+}
+
+fn backend_get_json(path: &str) -> Result<Value, String> {
+    let backend_url = studio_backend_url();
+    let target = format!("{}{}", backend_url, path);
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .build()
+        .map_err(|err| format!("failed to build backend HTTP client for {}: {}", path, err))?;
+    let response = client
+        .get(target.as_str())
+        .send()
+        .map_err(|err| format!("failed to query backend endpoint {}: {}", path, err))?;
+    let status = response.status();
+    let body = response
+        .text()
+        .map_err(|err| format!("failed to read backend response {}: {}", path, err))?;
+
+    if !status.is_success() {
+        let detail = if body.trim().is_empty() {
+            format!("HTTP {}", status)
+        } else {
+            body.trim().to_string()
+        };
+        return Err(format!(
+            "backend endpoint {} returned non-zero status: {}",
+            path, detail
+        ));
+    }
+
+    serde_json::from_str::<Value>(&body)
+        .map_err(|err| format!("invalid JSON from backend endpoint {}: {}", path, err))
+}
+
+fn backend_post_json(path: &str, payload: &Value) -> Result<Value, String> {
+    let backend_url = studio_backend_url();
+    let target = format!("{}{}", backend_url, path);
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(120))
+        .build()
+        .map_err(|err| format!("failed to build backend HTTP client for {}: {}", path, err))?;
+    let response = client
+        .post(target.as_str())
+        .json(payload)
+        .send()
+        .map_err(|err| format!("failed to post backend endpoint {}: {}", path, err))?;
+    let status = response.status();
+    let body = response
+        .text()
+        .map_err(|err| format!("failed to read backend response {}: {}", path, err))?;
+
+    if !status.is_success() {
+        let detail = if body.trim().is_empty() {
+            format!("HTTP {}", status)
+        } else {
+            body.trim().to_string()
+        };
+        return Err(format!(
+            "backend endpoint {} returned non-zero status: {}",
+            path, detail
+        ));
+    }
+
+    serde_json::from_str::<Value>(&body)
+        .map_err(|err| format!("invalid JSON from backend endpoint {}: {}", path, err))
+}
+
+#[tauri::command]
+fn list_backend_models() -> Result<Value, String> {
+    backend_get_json("/api/models")
+}
+
+#[tauri::command]
+fn download_backend_model(model_id: String) -> Result<Value, String> {
+    let normalized = model_id.trim().to_string();
+    if normalized.is_empty() {
+        return Err("model_id cannot be empty".to_string());
+    }
+    backend_post_json(
+        "/api/models/download",
+        &serde_json::json!({
+            "model_id": normalized
+        }),
+    )
+}
+
+#[tauri::command]
+fn load_backend_model(model: String) -> Result<Value, String> {
+    let normalized = model.trim().to_string();
+    if normalized.is_empty() {
+        return Err("model cannot be empty".to_string());
+    }
+    backend_post_json(
+        "/api/models/load",
+        &serde_json::json!({
+            "model": normalized
+        }),
+    )
+}
+
 #[tauri::command]
 fn chat_infer(
     prompt: String,
@@ -870,102 +986,62 @@ fn chat_infer(
     temperature: f32,
     max_tokens: u32,
     distributed: bool,
+    ollama_url: Option<String>,
+    ollama_model: Option<String>,
 ) -> Result<ChatResult, String> {
     let concise_prompt = prompt.trim();
     if concise_prompt.is_empty() {
         return Err("prompt cannot be empty".to_string());
     }
 
-    let backend = if distributed {
-        "distributed-flow"
-    } else {
-        "single-node-flow"
-    };
-    let transport = if distributed { "tcp" } else { "inmem" };
-    let execution_tokens = max_tokens.clamp(16, 512);
-    let execution_tokens_arg = execution_tokens.to_string();
+    let resolved_ollama_url = ollama_url.unwrap_or_else(|| {
+        std::env::var("GHOSTLINK_OLLAMA_URL")
+            .unwrap_or_else(|_| "http://127.0.0.1:11434".to_string())
+    });
+    let resolved_ollama_model = ollama_model
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| model.clone());
 
-    let command_result = run_ghostlink_command(vec![
-        "flow",
-        "studio-local",
-        "studio-remote",
-        "32",
-        "32",
-        execution_tokens_arg.as_str(),
-        "1",
-        transport,
-    ])?;
+    let payload = serde_json::json!({
+        "message": concise_prompt,
+        "model": resolved_ollama_model,
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+        "ollama_url": resolved_ollama_url,
+        "distributed": distributed,
+    });
 
-    if !command_result.ok {
-        let stderr = command_result.stderr.trim();
-        let stdout = command_result.stdout.trim();
-        let detail = if !stderr.is_empty() { stderr } else { stdout };
-        return Err(format!(
-            "live flow execution failed (exit code {:?}): {}",
-            command_result.exit_code, detail
-        ));
+    let response = backend_post_json("/api/inference/chat", &payload)?;
+    if let Some(error) = response.get("error").and_then(|value| value.as_str()) {
+        return Err(error.to_string());
     }
 
-    let throughput = extract_metric(command_result.stdout.as_str(), "Throughput:", "tokens/sec")
-        .unwrap_or_else(|| "unknown".to_string());
-    let avg_latency = extract_metric(command_result.stdout.as_str(), "Avg token latency:", "ms")
-        .unwrap_or_else(|| "unknown".to_string());
-    let p95_latency = extract_metric(command_result.stdout.as_str(), "P95:", "ms")
-        .unwrap_or_else(|| "unknown".to_string());
-
-    let response = format!(
-        "{}",
-        build_live_chat_response(
-            concise_prompt,
-            model.as_str(),
-            backend,
-            transport,
-            temperature,
-            throughput.as_str(),
-            avg_latency.as_str(),
-            p95_latency.as_str(),
-            command_result.stdout.as_str()
-        )
-    );
+    let response_text = response
+        .get("response")
+        .and_then(|value| value.as_str())
+        .unwrap_or("")
+        .to_string();
 
     let trace = format!(
-        "{}\n\n{}\n{}",
-        command_result.command,
-        format!(
-            "prompt_len={} requested_max_tokens={} execution_tokens={} distributed={}",
-            concise_prompt.len(),
-            max_tokens,
-            execution_tokens,
-            distributed
-        ),
-        command_result.stdout.trim()
+        "POST /api/inference/chat\nprompt_len={} requested_max_tokens={} distributed={}\nrequest_id={} exec_tokens={} micro_batch={}",
+        concise_prompt.len(),
+        max_tokens,
+        distributed,
+        response.get("request_id").and_then(|value| value.as_str()).unwrap_or("n/a"),
+        response.get("exec_tokens").and_then(|value| value.as_u64()).map(|value| value.to_string()).unwrap_or_else(|| "n/a".to_string()),
+        response.get("exec_micro_batch").and_then(|value| value.as_u64()).map(|value| value.to_string()).unwrap_or_else(|| "n/a".to_string()),
     );
 
     Ok(ChatResult {
-        backend: backend.to_string(),
-        model,
-        response,
+        backend: "http-backend-api".to_string(),
+        model: response
+            .get("model")
+            .and_then(|value| value.as_str())
+            .unwrap_or(model.as_str())
+            .to_string(),
+        response: response_text,
         trace,
     })
-}
-
-fn extract_metric(output: &str, prefix: &str, suffix: &str) -> Option<String> {
-    let line = output
-        .lines()
-        .map(str::trim)
-        .find(|line| line.contains(prefix))?;
-    let marker_idx = line.find(prefix)?;
-    let raw = line[(marker_idx + prefix.len())..].trim();
-    let value = if suffix.is_empty() {
-        raw
-    } else {
-        raw.split(suffix).next()?.trim()
-    };
-    if value.is_empty() {
-        None
-    } else {
-        Some(value.to_string())
-    }
 }
 
 fn repo_root() -> PathBuf {
@@ -1047,51 +1123,6 @@ fn command_version(program: &str, args: &[&str]) -> Option<String> {
     None
 }
 
-fn build_live_chat_response(
-    prompt: &str,
-    model: &str,
-    backend: &str,
-    transport: &str,
-    temperature: f32,
-    throughput: &str,
-    avg_latency: &str,
-    p95_latency: &str,
-    flow_stdout: &str,
-) -> String {
-    let runtime_excerpt = extract_runtime_excerpt(flow_stdout);
-    format!(
-        "Live flow execution complete for model '{}' and prompt '{}'. Backend={} transport={} temperature={:.2}. Throughput={} tokens/sec, avg_latency={} ms, p95={} ms.\n\nRuntime excerpt:\n{}",
-        model,
-        prompt,
-        backend,
-        transport,
-        temperature,
-        throughput,
-        avg_latency,
-        p95_latency,
-        runtime_excerpt
-    )
-}
-
-fn extract_runtime_excerpt(flow_stdout: &str) -> String {
-    let lines = flow_stdout
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .collect::<Vec<_>>();
-    let start = lines
-        .iter()
-        .position(|line| *line == "Execution Runtime")
-        .unwrap_or(0);
-    lines
-        .iter()
-        .skip(start)
-        .take(14)
-        .copied()
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
 fn parse_probe_to_node(output: &str) -> Option<ClusterNodeCard> {
     let mut id = None;
     let mut workers = None;
@@ -1106,9 +1137,9 @@ fn parse_probe_to_node(output: &str) -> Option<ClusterNodeCard> {
         } else if let Some(value) = trimmed.strip_prefix("Recommended workers:") {
             workers = value.trim().parse::<usize>().ok();
         } else if let Some(value) = trimmed.strip_prefix("System memory:") {
-            system_memory_gb = value.trim().split_whitespace().next()?.parse::<f32>().ok();
+            system_memory_gb = value.split_whitespace().next()?.parse::<f32>().ok();
         } else if let Some(value) = trimmed.strip_prefix("GPU VRAM:") {
-            gpu_vram_gb = value.trim().split_whitespace().next()?.parse::<f32>().ok();
+            gpu_vram_gb = value.split_whitespace().next()?.parse::<f32>().ok();
         } else if let Some(value) = trimmed.strip_prefix("Acceleration:") {
             acceleration = Some(value.trim().to_string());
         }
