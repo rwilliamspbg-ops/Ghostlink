@@ -50,7 +50,7 @@ class GhostlinkGUI:
         self.root.minsize(1100, 720)
 
         self.http = requests.Session()
-        self.request_timeout = (1.0, 3.0)
+        self.request_timeout = (5.0, 120.0)
         self.backend_online = None
         self.last_ping = "never"
         self.hf_api = HfApi() if HfApi is not None else None
