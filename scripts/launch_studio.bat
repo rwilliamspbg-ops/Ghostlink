@@ -11,7 +11,7 @@ echo [Ghostlink] Starting Ghostlink Studio initialization...
 REM Check for --check flag
 if "%1"=="--check" (
     echo [Ghostlink] Running preflight checks...
-    
+
     REM Check Ollama
     curl -s http://127.0.0.1:11434/api/health >nul 2>&1
     if !errorlevel! equ 0 (
@@ -20,7 +20,7 @@ if "%1"=="--check" (
         echo [Ghostlink]   [ERROR] Ollama not running
         exit /b 1
     )
-    
+
     REM Check neural-chat model
     ollama list | findstr neural-chat >nul
     if !errorlevel! equ 0 (
@@ -28,7 +28,7 @@ if "%1"=="--check" (
     ) else (
         echo [Ghostlink]   [WARN] neural-chat model not loaded
     )
-    
+
     echo [Ghostlink]   [OK] Backend will run on port 8003
     echo [Ghostlink]   [OK] GUI proxy will run on port 9999
     echo [Ghostlink] Preflight completed successfully

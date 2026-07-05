@@ -2031,7 +2031,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         let _system_prompt = req
             .system_prompt
             .unwrap_or_else(|| "You are a helpful AI assistant.".to_string());
-        let response_text = format!("[neural-chat] Your message: {}", req.message);
+        let response_text = format!("[Ghostlink] Simulated response to: {}", req.message);
 
         let mut response = serde_json::json!({
             "response": response_text,

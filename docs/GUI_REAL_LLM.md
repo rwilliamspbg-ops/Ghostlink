@@ -176,7 +176,7 @@ curl http://127.0.0.1:9999/health
 All functions tested:
 
 - [x] Chat sends message → real LLM response
-- [x] Temperature affects response diversity  
+- [x] Temperature affects response diversity
 - [x] System prompts respected
 - [x] Models endpoint returns real models
 - [x] Metrics endpoint functional
@@ -190,7 +190,7 @@ All functions tested:
 
 ### Requirements
 
-- Ollama installed (https://ollama.com)
+- Ollama installed (<https://ollama.com>)
 - neural-chat model (auto-pulled, 4.1GB)
 - Python 3.9+
 - 500MB+ disk space

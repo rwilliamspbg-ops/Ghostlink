@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
 Ghostlink Studio - Cross-platform Launch Script
+Orchestrates Rust Backend, Model Manager, Gateway Proxy, and GUI.
 """
 import subprocess
 import sys
 import time
 import os
-import socket
-import requests
+import signal
 from pathlib import Path
 
 ROOT_DIR = Path(__file__).parent.parent
@@ -20,98 +20,94 @@ def fail(msg):
     print(f"\033[1;31m[Ghostlink][error]\033[0m {msg}", file=sys.stderr)
     sys.exit(1)
 
-def check_port(port):
+def check_service(url):
     try:
-        requests.get(f'http://127.0.0.1:{port}/health', timeout=2)
-        return True
+        import requests
+        resp = requests.get(url, timeout=1)
+        return resp.status_code == 200
     except:
         return False
 
 def main():
     check_only = '--check' in sys.argv
-    
+
     log("Starting Ghostlink Studio initialization...")
-    
+
+    # Preflight Check
     if check_only:
         log("Running preflight checks...")
-        
-        # Check Ollama
-        if check_port(11434):
+
+        # Check Ollama - use /api/tags as it definitely exists if Ollama is up
+        if check_service("http://127.0.0.1:11434/api/tags"):
             log("  [OK] Ollama running on port 11434")
         else:
-            fail("  [ERROR] Ollama not running on port 11434")
-        
-        # Check neural-chat
-        try:
-            result = subprocess.run(['ollama', 'list'], capture_output=True, text=True)
-            if 'neural-chat' in result.stdout:
-                log("  [OK] neural-chat model available")
-            else:
-                log("  [WARN] neural-chat model not loaded - will be pulled on first use")
-        except:
-            log("  [WARN] Could not check ollama models")
-        
+            log("  [WARN] Ollama not detected on port 11434")
+            log("         (Will attempt to start it during full launch)")
+
         log("  [OK] Backend will run on port 8003")
-        log("  [OK] GUI proxy will run on port 9999")
+        log("  [OK] Model Manager will run on port 8001")
+        log("  [OK] Gateway Proxy will run on port 9999")
         log("Preflight completed successfully")
         return 0
-    
-    # Build
+
+    # 1. Build Backend
     log("Building Ghostlink backend (release)...")
-    result = subprocess.run(['cargo', 'build', '--release', '-p', 'ghost-link'], 
-                          capture_output=True, text=True)
-    if result.returncode != 0:
-        fail(f"Build failed: {result.stderr}")
-    log("Build complete")
-    
-    # Start services
-    log("Starting services...")
-    
-    # Check Ollama
-    if not check_port(11434):
-        log("Starting Ollama...")
-        subprocess.Popen(['ollama', 'serve'], 
-                        stdout=subprocess.DEVNULL, 
-                        stderr=subprocess.DEVNULL)
-        time.sleep(3)
-    
-    # Ensure neural-chat
     try:
-        result = subprocess.run(['ollama', 'list'], capture_output=True, text=True)
-        if 'neural-chat' not in result.stdout:
-            log("Pulling neural-chat model (4.1GB)...")
-            subprocess.run(['ollama', 'pull', 'neural-chat'], timeout=600)
-    except:
-        pass
-    
-    # Start backend
-    log("Starting backend on port 8003...")
-    backend_proc = subprocess.Popen([
-        str(ROOT_DIR / 'target' / 'release' / 'ghost-link'),
-        'serve'
-    ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    time.sleep(2)
-    
-    # Start proxy
-    log("Starting LLM proxy on port 9999...")
-    proxy_proc = subprocess.Popen(['python3', 'real_llm_proxy.py'],
-                                  stdout=subprocess.DEVNULL,
-                                  stderr=subprocess.DEVNULL)
-    time.sleep(2)
-    
-    # Start GUI
+        subprocess.run(['cargo', 'build', '--release', '-p', 'ghost-link'],
+                      check=True, capture_output=True, text=True)
+        log("Build complete")
+    except subprocess.CalledProcessError as e:
+        fail(f"Build failed: {e.stderr}")
+
+    # 2. Start Services
+    processes = []
+
+    def start_proc(args, name, wait_time=1):
+        log(f"Starting {name}...")
+        proc = subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        processes.append((proc, name))
+        time.sleep(wait_time)
+        return proc
+
+    # Start Ollama if needed
+    if not check_service("http://127.0.0.1:11434/api/tags"):
+        log("Ollama not running. Attempting to start 'ollama serve'...")
+        subprocess.Popen(['ollama', 'serve'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        time.sleep(3)
+
+    # Start Model Manager (8001)
+    start_proc([sys.executable, 'model_manager.py'], "Model Manager")
+
+    # Start Backend (8003)
+    backend_path = ROOT_DIR / 'target' / 'release' / 'ghost-link'
+    if not backend_path.exists():
+        # Fallback for debug build if release build failed/missing somehow
+        backend_path = ROOT_DIR / 'target' / 'debug' / 'ghost-link'
+
+    start_proc([str(backend_path), 'serve', '127.0.0.1', '8003'], "Ghostlink Backend")
+
+    # Start Gateway Proxy (9999)
+    start_proc([sys.executable, 'real_llm_proxy.py'], "Gateway Proxy")
+
+    # 3. Launch GUI
     log("Launching Ghostlink Studio GUI...")
     try:
-        subprocess.run(['python3', 'ghostlink_gui.py', 
-                       '--backend-url', 'http://127.0.0.1:9999'])
+        # Pass the Proxy URL as the backend URL
+        subprocess.run([sys.executable, 'ghostlink_gui.py',
+                       '--backend-url', 'http://127.0.0.1:9999'], check=False)
     except KeyboardInterrupt:
-        log("Shutting down...")
+        pass
     finally:
-        backend_proc.terminate()
-        proxy_proc.terminate()
-        backend_proc.wait(timeout=5)
-        proxy_proc.wait(timeout=5)
-    
+        log("Shutting down services...")
+        for proc, name in reversed(processes):
+            log(f"Stopping {name}...")
+            proc.terminate()
+            try:
+                proc.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+        log("Ghostlink Studio exited.")
+
     return 0
 
 if __name__ == '__main__':
