@@ -431,4 +431,84 @@ mod tests {
 
         assert_eq!(dashboard_state.ring_fill_percent(), 15);
     }
+
+    #[test]
+    fn dashboard_ring_fill_percent_zero_capacity() {
+        let cluster = ClusterState::new();
+        let state = DashboardState {
+            cluster,
+            health_monitor: None,
+            ring_stats: (100, 0),
+            status_message: String::new(),
+            quantization_mode: QuantizationMode::None,
+        };
+        assert_eq!(state.ring_fill_percent(), 0);
+    }
+
+    #[test]
+    fn dashboard_state_total_vram_gb() {
+        let cluster = ClusterState::new();
+        cluster.register(NodeResources::new("node-a", 24.0, 64.0, "8.9", None));
+        cluster.register(NodeResources::new("node-b", 12.0, 32.0, "8.6", None));
+
+        let state = DashboardState::new(cluster);
+        assert!((state.total_vram_gb() - 36.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn dashboard_state_update_cluster_all_active() {
+        let cluster = ClusterState::new();
+        cluster.register(NodeResources::new("node-a", 24.0, 64.0, "8.9", None));
+        cluster.register(NodeResources::new("node-b", 12.0, 32.0, "8.6", None));
+
+        let mut state = DashboardState::new(cluster);
+        state.update_cluster();
+        assert!(!state.status_message.is_empty());
+        assert!(state.status_message.contains("Cluster healthy"));
+    }
+
+    #[test]
+    fn dashboard_state_update_cluster_empty() {
+        let cluster = ClusterState::new();
+        let mut state = DashboardState::new(cluster);
+        // No nodes registered — should not panic
+        state.update_cluster();
+        // Status message is set (all nodes zero case goes to else branch)
+        assert!(!state.status_message.is_empty());
+    }
+
+    #[test]
+    fn health_summary_with_failed_nodes() {
+        let summary = HealthSummary::new(3, 1, 2.5, 0.95);
+        let report = summary.render();
+        assert!(report.contains("Failed nodes: 1"));
+        assert!(report.contains("Avg delivery ratio: 0.95"));
+    }
+
+    #[test]
+    fn ascii_dashboard_renders_without_streaming_layers() {
+        let cluster = ClusterState::new();
+        cluster.register(NodeResources::new("node-a", 24.0, 64.0, "8.9", None));
+
+        let dashboard = Dashboard::new(
+            cluster,
+            50,
+            100,
+            vec![NodeMetrics {
+                name: "NODE-02".into(),
+                gpu_name: None,
+                used_vram_gb: 12.0,
+                total_vram_gb: 24.0,
+                streaming_layers: None,
+                af_xdp_gbps: 0.0,
+                latency_micros: 0.0,
+                ..Default::default()
+            }],
+        );
+
+        let rendered = dashboard.render_ascii();
+        assert!(rendered.contains("GHOST-LINK CLUSTER DASHBOARD"));
+        assert!(rendered.contains("Ring Buffer Fill:  50%"));
+        assert!(rendered.contains("Unknown"));
+    }
 }

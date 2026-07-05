@@ -649,4 +649,103 @@ mod tests {
         let tuning = PlanningTuning::from_runtime_profile(&profile, 40);
         assert!(tuning.max_layers_per_assignment <= 4);
     }
+
+    #[test]
+    fn avg_vram_per_layer_divides_correctly() {
+        let assignment = LayerAssignment::new("node-a".into(), 0, 4, 8.0);
+        assert!((assignment.avg_vram_per_layer() - 2.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn avg_vram_per_layer_returns_zero_for_empty() {
+        let mut assignment = LayerAssignment::new("node-a".into(), 0, 0, 0.0);
+        assignment.num_layers = 0;
+        assert_eq!(assignment.avg_vram_per_layer(), 0.0);
+    }
+
+    #[test]
+    fn placement_plan_summary_shows_int8_mode() {
+        let plan = PlacementPlan::new(
+            vec![LayerAssignment::new("node-a".into(), 0, 10, 10.0)],
+            QuantizationMode::Int8,
+        );
+        let summary = plan.summary();
+        assert!(summary.contains("8-bit Quantized"));
+    }
+
+    #[test]
+    fn placement_plan_summary_shows_int4_mode() {
+        let plan = PlacementPlan::new(
+            vec![LayerAssignment::new("node-a".into(), 0, 10, 10.0)],
+            QuantizationMode::Int4,
+        );
+        let summary = plan.summary();
+        assert!(summary.contains("4-bit Quantized"));
+    }
+
+    #[test]
+    fn calculate_cluster_health_empty_cluster() {
+        let cluster = ClusterState::new();
+        let (ratio, failed, ids) = calculate_cluster_health(&cluster);
+        assert_eq!(ratio, 0.0);
+        assert_eq!(failed, 0);
+        assert!(ids.is_empty());
+    }
+
+    #[test]
+    fn calculate_cluster_health_with_active_nodes() {
+        let cluster = ClusterState::new();
+        cluster.register(NodeResources::new("node-a", 24.0, 64.0, "8.9", None));
+        cluster.register(NodeResources::new("node-b", 12.0, 32.0, "8.6", None));
+
+        let (ratio, failed, ids) = calculate_cluster_health(&cluster);
+        assert!(ratio >= 0.0 && ratio <= 1.0);
+        assert_eq!(failed, 0);
+        assert!(ids.is_empty());
+    }
+
+    #[test]
+    fn migration_planner_generates_handoff_steps() {
+        let planner = MigrationPlanner::new("node-a".into(), "node-b".into(), vec![0, 1, 2]);
+        let steps = planner.generate_handoff_plan();
+        assert_eq!(steps.len(), 5);
+        assert!(steps[0].contains("PREPARE"));
+        assert!(steps[1].contains("STREAM"));
+        assert!(steps[2].contains("VERIFY"));
+        assert!(steps[3].contains("COMMIT"));
+        assert!(steps[4].contains("CLEANUP"));
+        assert!((planner.est_migration_time_ms - 135.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn rebalance_trigger_default_thresholds() {
+        let trigger = RebalanceTrigger::default();
+        assert!((trigger.min_imbalance_ratio - 0.25).abs() < f32::EPSILON);
+        assert!((trigger.max_p95_latency_ms - 25.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn rebalance_trigger_evaluate_returns_none_for_single_node() {
+        let cluster = ClusterState::new();
+        cluster.register(NodeResources::new("node-a", 24.0, 64.0, "8.9", None));
+        let plan = PlacementPlan::new(
+            vec![LayerAssignment::new("node-a".into(), 0, 10, 10.0)],
+            QuantizationMode::None,
+        );
+        let trigger = RebalanceTrigger::default();
+        assert!(trigger.evaluate(&cluster, &plan).is_none());
+    }
+
+    #[test]
+    fn assign_layers_empty_nodes_returns_error() {
+        let error = assign_layers_sequentially(&[], &sample_layers(5, 1.0)).unwrap_err();
+        assert!(error.contains("at least one node is required"));
+    }
+
+    #[test]
+    fn assign_layers_empty_layers_returns_empty() {
+        let nodes = vec![NodeResources::new("node-a", 24.0, 64.0, "8.9", None)];
+        let result = assign_layers_sequentially(&nodes, &[]).unwrap();
+        assert!(result.is_empty());
+    }
 }
