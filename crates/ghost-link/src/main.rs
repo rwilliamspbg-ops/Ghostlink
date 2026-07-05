@@ -1420,6 +1420,11 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
     }
 
     #[derive(Debug, Deserialize)]
+    struct ModelDeleteRequest {
+        model: String,
+    }
+
+    #[derive(Debug, Deserialize)]
     struct WorkerAddRequest {
         host: String,
         port: u16,
@@ -2002,6 +2007,110 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         }))
     }
 
+    async fn handle_gui_model_delete(
+        State(state): State<Arc<Mutex<BackendState>>>,
+        Json(req): Json<ModelDeleteRequest>,
+    ) -> Json<serde_json::Value> {
+        let requested_model = req.model.trim().to_string();
+        if requested_model.is_empty() {
+            return Json(serde_json::json!({
+                "error": "model cannot be empty"
+            }));
+        }
+
+        let ollama_url = resolve_ollama_url();
+        let delete_url = format!("{}/api/delete", ollama_url);
+        let payload = serde_json::json!({
+            "name": requested_model
+        });
+
+        let client = match reqwest::Client::builder()
+            .timeout(Duration::from_secs(60))
+            .build()
+        {
+            Ok(client) => client,
+            Err(err) => {
+                return Json(serde_json::json!({
+                    "status": "error",
+                    "model": requested_model,
+                    "deleted": false,
+                    "detail": format!("unable to build HTTP client: {}", err),
+                    "ollama_url": ollama_url,
+                }));
+            }
+        };
+
+        let (deleted, detail) = match client.delete(delete_url.as_str()).json(&payload).send().await {
+            Ok(response) => {
+                let status = response.status();
+                let body = response.text().await.unwrap_or_default();
+                let parsed = serde_json::from_str::<serde_json::Value>(&body).ok();
+                let err_message = parsed.as_ref().and_then(|json| {
+                    json.get("error")
+                        .and_then(|value| value.as_str())
+                        .map(|s| s.to_string())
+                });
+
+                if status.is_success() && err_message.is_none() {
+                    let status_message = parsed
+                        .as_ref()
+                        .and_then(|json| {
+                            json.get("status")
+                                .and_then(|value| value.as_str())
+                                .map(|s| s.to_string())
+                        })
+                        .unwrap_or_else(|| "model deleted".to_string());
+                    (true, status_message)
+                } else {
+                    let message = err_message.unwrap_or_else(|| {
+                        if body.trim().is_empty() {
+                            format!("ollama delete failed with status {}", status)
+                        } else {
+                            body.trim().to_string()
+                        }
+                    });
+                    (false, message)
+                }
+            }
+            Err(err) => (false, format!("ollama delete request failed: {}", err)),
+        };
+
+        let tags_json = if deleted {
+            fetch_ollama_tags(ollama_url.as_str(), 20).await.ok()
+        } else {
+            None
+        };
+
+        let mut backend = lock_state(&state);
+        if deleted {
+            backend.models.retain(|model| model.name != requested_model);
+            if let Some(tags_json) = tags_json.as_ref() {
+                refresh_models_from_ollama(&mut backend, tags_json);
+            }
+
+            if backend.current_model == requested_model {
+                backend.current_model = backend
+                    .models
+                    .first()
+                    .map(|model| model.name.clone())
+                    .unwrap_or_else(|| "none".to_string());
+                let current_model_for_workers = backend.current_model.clone();
+                for worker in &mut backend.workers {
+                    worker.model = current_model_for_workers.clone();
+                }
+            }
+        }
+
+        Json(serde_json::json!({
+            "status": if deleted { "ok" } else { "error" },
+            "model": requested_model,
+            "deleted": deleted,
+            "detail": detail,
+            "ollama_url": ollama_url,
+            "current_model": backend.current_model,
+        }))
+    }
+
     async fn handle_gui_workers(
         State(state): State<Arc<Mutex<BackendState>>>,
     ) -> Json<serde_json::Value> {
@@ -2511,6 +2620,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
     println!("  - GET  /api/models/status");
     println!("  - POST /api/models/load");
     println!("  - POST /api/models/download");
+    println!("  - POST /api/models/delete");
     println!("  - GET  /api/ollama/health");
     println!("  - GET  /api/workers");
     println!("  - POST /api/workers/connect");
@@ -2656,6 +2766,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             .route("/api/models/status", get(handle_gui_model_status))
             .route("/api/models/load", post(handle_gui_model_load))
             .route("/api/models/download", post(handle_gui_model_download))
+            .route("/api/models/delete", post(handle_gui_model_delete))
             .route("/api/ollama/health", get(handle_gui_ollama_health))
             .route("/api/workers", get(handle_gui_workers))
             .route("/api/workers/connect", post(handle_gui_workers_connect))

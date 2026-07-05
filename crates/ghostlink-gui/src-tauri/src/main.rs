@@ -38,6 +38,7 @@ fn main() {
             list_backend_models,
             ollama_health,
             download_backend_model,
+            delete_backend_model,
             load_backend_model,
             run_validation_tier,
             load_ghostlink_config,
@@ -973,6 +974,20 @@ fn download_backend_model(model_id: String) -> Result<Value, String> {
         "/api/models/download",
         &serde_json::json!({
             "model_id": normalized
+        }),
+    )
+}
+
+#[tauri::command]
+fn delete_backend_model(model: String) -> Result<Value, String> {
+    let normalized = model.trim().to_string();
+    if normalized.is_empty() {
+        return Err("model cannot be empty".to_string());
+    }
+    backend_post_json(
+        "/api/models/delete",
+        &serde_json::json!({
+            "model": normalized
         }),
     )
 }

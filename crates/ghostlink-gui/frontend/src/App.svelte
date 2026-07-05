@@ -36,6 +36,15 @@
   let currentBackendModel = '';
   let selectedBackendModel = '';
   let modelActionMessage = '';
+  let modelCatalogFilter = '';
+  const modelDownloadCatalog = [
+    { id: 'neural-chat', family: 'General', sizeHint: '~4-7GB', source: 'ollama' },
+    { id: 'llama3.2:3b', family: 'General', sizeHint: '~2GB', source: 'ollama' },
+    { id: 'mistral:7b', family: 'General', sizeHint: '~4GB', source: 'ollama' },
+    { id: 'qwen2.5:7b', family: 'General', sizeHint: '~4GB', source: 'ollama' },
+    { id: 'phi3:mini', family: 'Lightweight', sizeHint: '~2GB', source: 'ollama' },
+    { id: 'nomic-embed-text', family: 'Embeddings', sizeHint: '~300MB', source: 'ollama' },
+  ];
   let backendReachable = null;
   let ollamaReachable = null;
   let connectivityDetail = '';
@@ -192,6 +201,14 @@
           downloaded: true,
           detail: 'mock download completed',
         };
+      case 'delete_backend_model':
+        return {
+          status: 'ok',
+          model: String(args.model ?? ''),
+          deleted: true,
+          detail: 'mock delete completed',
+          current_model: 'neural-chat',
+        };
       case 'load_backend_model':
         return {
           status: 'ok',
@@ -308,6 +325,10 @@
       case 'download_backend_model':
         return postJson('/api/models/download', {
           model_id: String(args.modelId ?? args.model_id ?? ''),
+        });
+      case 'delete_backend_model':
+        return postJson('/api/models/delete', {
+          model: String(args.model ?? ''),
         });
       case 'load_backend_model':
         return postJson('/api/models/load', {
@@ -727,6 +748,25 @@
     }
   }
 
+  function filteredModelCatalog() {
+    const needle = modelCatalogFilter.trim().toLowerCase();
+    if (!needle) {
+      return modelDownloadCatalog;
+    }
+    return modelDownloadCatalog.filter((entry) => {
+      const haystack = `${entry.id} ${entry.family} ${entry.sizeHint} ${entry.source}`.toLowerCase();
+      return haystack.includes(needle);
+    });
+  }
+
+  function chooseCatalogModel(modelId) {
+    selectedBackendModel = String(modelId ?? '').trim();
+    if (selectedBackendModel) {
+      ollamaModel = selectedBackendModel;
+      modelActionMessage = `Selected catalog model ${selectedBackendModel}`;
+    }
+  }
+
   async function loadBackendModels() {
     await refreshConnectivity();
     if (!backendReachable) {
@@ -766,6 +806,11 @@
     }
   }
 
+  async function downloadCatalogModel(modelId) {
+    selectedBackendModel = String(modelId ?? '').trim();
+    await downloadSelectedModel();
+  }
+
   async function loadSelectedModel() {
     if (!selectedBackendModel.trim()) {
       modelActionMessage = 'Select a model first.';
@@ -795,6 +840,48 @@
     } finally {
       busy = false;
     }
+  }
+
+  async function setActiveModel(modelName) {
+    selectedBackendModel = String(modelName ?? '').trim();
+    await loadSelectedModel();
+  }
+
+  async function deleteSelectedModel() {
+    if (!selectedBackendModel.trim()) {
+      modelActionMessage = 'Select a model first.';
+      return;
+    }
+
+    busy = true;
+    try {
+      await refreshConnectivity();
+      if (!backendReachable) {
+        throw new Error(`Backend unavailable at ${backendBaseUrl}`);
+      }
+      if (!ollamaReachable) {
+        throw new Error(`Ollama unavailable at ${ollamaUrl}`);
+      }
+
+      const target = selectedBackendModel.trim();
+      const result = await bridgeInvoke('delete_backend_model', {
+        model: target,
+      });
+      modelActionMessage = String(result.detail ?? `Deleted ${target}`);
+      status = result.deleted ? 'Model deleted' : 'Model delete failed';
+      await loadBackendModels();
+    } catch (err) {
+      status = 'Model delete failed';
+      modelActionMessage = String(err);
+      output = String(err);
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function deleteModel(modelName) {
+    selectedBackendModel = String(modelName ?? '').trim();
+    await deleteSelectedModel();
   }
 
   function applyPreset(indexValue) {
@@ -1509,35 +1596,29 @@
     {:else if activeTab === 'Models'}
       <header class="hero">
         <h1>Model Management</h1>
-        <p>Manage backend models and verify Hugging Face repository readiness.</p>
+        <p>Discover, pull, activate, delete, and verify models with live backend + Ollama status.</p>
         <div class="actions">
-          <select on:change={(e) => applyPreset(e.currentTarget.value)}>
-            <option value="">Select preset</option>
-            {#each modelPresets as preset, index}
-              <option value={index}>{preset.name} ({preset.quant})</option>
-            {/each}
-          </select>
-          <input bind:value={modelRepo} placeholder="repo id (owner/model)" />
-          <input bind:value={modelFile} placeholder="file" />
-          <button on:click={loadBackendModels} disabled={busy || !backendReachable}>Refresh Backend Models</button>
-          <select bind:value={selectedBackendModel}>
-            <option value="">Select backend model</option>
-            {#each backendModels as model}
-              <option value={model.name}>{model.name}</option>
-            {/each}
-          </select>
-          <button on:click={downloadSelectedModel} disabled={busy || !selectedBackendModel || !backendReachable || !ollamaReachable}>Download/Pull</button>
-          <button on:click={loadSelectedModel} disabled={busy || !selectedBackendModel || !backendReachable || !ollamaReachable}>Set Active</button>
-          <button class="primary" on:click={verifyModel} disabled={busy}>Verify Model</button>
+          <button on:click={refreshConnectivity} disabled={busy}>Refresh Connectivity</button>
+          <button on:click={loadBackendModels} disabled={busy || !backendReachable}>Refresh Installed Models</button>
+          <button class="primary" on:click={verifyModel} disabled={busy}>Verify Hugging Face Repo</button>
         </div>
       </header>
-      <section class="model-check">
+
+      <section class="model-check model-health-grid">
+        <article class="metric-card">
+          <span>Backend</span>
+          <strong>{backendReachable ? 'Online' : 'Offline'}</strong>
+        </article>
+        <article class="metric-card">
+          <span>Ollama</span>
+          <strong>{ollamaReachable ? 'Connected' : 'Unavailable'}</strong>
+        </article>
         <article class="metric-card">
           <span>Current Backend Model</span>
           <strong>{currentBackendModel || 'unknown'}</strong>
         </article>
         <article class="metric-card">
-          <span>Known Models</span>
+          <span>Installed Models</span>
           <strong>{backendModels.length}</strong>
         </article>
         <article class="metric-card">
@@ -1545,6 +1626,87 @@
           <strong>{modelActionMessage || 'none'}</strong>
         </article>
       </section>
+
+      <section class="model-layout">
+        <article class="card-shell model-control-panel">
+          <h3>Model Controls</h3>
+          <label>Preset
+            <select on:change={(e) => applyPreset(e.currentTarget.value)}>
+              <option value="">Select preset</option>
+              {#each modelPresets as preset, index}
+                <option value={index}>{preset.name} ({preset.quant})</option>
+              {/each}
+            </select>
+          </label>
+          <label>Hugging Face Repo
+            <input bind:value={modelRepo} placeholder="repo id (owner/model)" />
+          </label>
+          <label>Verification File
+            <input bind:value={modelFile} placeholder="config.json" />
+          </label>
+          <label>Selected Backend/Ollama Model
+            <select bind:value={selectedBackendModel}>
+              <option value="">Select backend model</option>
+              {#each backendModels as model}
+                <option value={model.name}>{model.name}</option>
+              {/each}
+            </select>
+          </label>
+          <div class="actions model-actions">
+            <button on:click={downloadSelectedModel} disabled={busy || !selectedBackendModel || !backendReachable || !ollamaReachable}>Download/Pull</button>
+            <button on:click={loadSelectedModel} disabled={busy || !selectedBackendModel || !backendReachable || !ollamaReachable}>Set Active</button>
+            <button class="danger" on:click={deleteSelectedModel} disabled={busy || !selectedBackendModel || !backendReachable || !ollamaReachable}>Delete</button>
+          </div>
+          {#if !ollamaReachable}
+            <p class="model-warning">Ollama is unavailable at {ollamaUrl}. Connect Ollama to enable pull/load/delete actions.</p>
+          {/if}
+          {#if connectivityDetail}
+            <p class="model-connection-detail">{connectivityDetail}</p>
+          {/if}
+        </article>
+
+        <article class="card-shell model-catalog-panel">
+          <h3>Available Models To Download</h3>
+          <label>Filter Catalog
+            <input bind:value={modelCatalogFilter} placeholder="Search model id or family" />
+          </label>
+          <div class="model-catalog-grid">
+            {#each filteredModelCatalog() as entry}
+              <article class="model-catalog-item">
+                <p class="catalog-title">{entry.id}</p>
+                <p class="catalog-meta">{entry.family} · {entry.sizeHint} · {entry.source}</p>
+                <div class="actions compact">
+                  <button on:click={() => chooseCatalogModel(entry.id)} disabled={busy}>Use</button>
+                  <button class="primary" on:click={() => downloadCatalogModel(entry.id)} disabled={busy || !backendReachable || !ollamaReachable}>Pull</button>
+                </div>
+              </article>
+            {/each}
+          </div>
+        </article>
+      </section>
+
+      <section class="card-shell installed-models">
+        <h3>Installed Models</h3>
+        {#if backendModels.length === 0}
+          <p class="model-warning">No installed models detected from backend inventory.</p>
+        {:else}
+          <div class="installed-models-grid">
+            {#each backendModels as model}
+              <article class="installed-model-row" class:is-active={model.name === currentBackendModel}>
+                <div>
+                  <p class="installed-model-title">{model.name}</p>
+                  <p class="installed-model-meta">{model.type} · {model.quantization} · {Number(model.size_gb ?? 0).toFixed(1)} GB · {model.status}</p>
+                </div>
+                <div class="actions compact">
+                  <button on:click={() => setActiveModel(model.name)} disabled={busy || !backendReachable || !ollamaReachable}>Set Active</button>
+                  <button class="danger" on:click={() => deleteModel(model.name)} disabled={busy || !backendReachable || !ollamaReachable}>Delete</button>
+                </div>
+              </article>
+            {/each}
+          </div>
+        {/if}
+      </section>
+
       {#if modelCheck}
         <section class="model-check">
           <article class="metric-card">

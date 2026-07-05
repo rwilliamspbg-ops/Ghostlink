@@ -231,6 +231,12 @@ button.primary {
   font-weight: 700;
 }
 
+button.danger {
+  border-color: rgba(255, 130, 130, 0.4);
+  background: rgba(161, 38, 38, 0.28);
+  color: #ffd3d3;
+}
+
 button:disabled {
   opacity: 0.6;
   cursor: wait;
@@ -292,6 +298,127 @@ button:disabled {
   display: grid;
   grid-template-columns: repeat(3, minmax(140px, 1fr));
   gap: 0.75rem;
+}
+
+.model-health-grid {
+  grid-template-columns: repeat(5, minmax(140px, 1fr));
+}
+
+.model-layout {
+  display: grid;
+  grid-template-columns: minmax(340px, 1fr) minmax(340px, 1fr);
+  gap: 0.9rem;
+  align-items: start;
+}
+
+.model-control-panel,
+.model-catalog-panel,
+.installed-models {
+  display: grid;
+  gap: 0.7rem;
+}
+
+.model-control-panel label,
+.model-catalog-panel label {
+  display: grid;
+  gap: 0.35rem;
+  color: var(--muted);
+  font-size: 0.86rem;
+}
+
+.model-control-panel input,
+.model-control-panel select,
+.model-catalog-panel input {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.2);
+  color: var(--text);
+  padding: 0.55rem 0.65rem;
+}
+
+.model-actions button {
+  min-width: 120px;
+}
+
+.model-warning {
+  margin: 0;
+  color: #ffd3d3;
+}
+
+.model-connection-detail {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.model-catalog-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(200px, 1fr));
+  gap: 0.65rem;
+  max-height: 30vh;
+  overflow: auto;
+  padding-right: 0.15rem;
+}
+
+.model-catalog-item {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: rgba(16, 39, 55, 0.64);
+  padding: 0.7rem;
+  display: grid;
+  gap: 0.5rem;
+}
+
+.catalog-title {
+  margin: 0;
+  font-weight: 700;
+}
+
+.catalog-meta {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.actions.compact {
+  gap: 0.45rem;
+}
+
+.actions.compact button {
+  padding: 0.45rem 0.65rem;
+  font-size: 0.8rem;
+}
+
+.installed-models-grid {
+  display: grid;
+  gap: 0.55rem;
+}
+
+.installed-model-row {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: rgba(16, 39, 55, 0.64);
+  padding: 0.7rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.8rem;
+}
+
+.installed-model-row.is-active {
+  border-color: rgba(76, 233, 176, 0.6);
+  box-shadow: inset 0 0 0 1px rgba(76, 233, 176, 0.2);
+}
+
+.installed-model-title {
+  margin: 0;
+  font-weight: 700;
+}
+
+.installed-model-meta {
+  margin: 0.2rem 0 0;
+  color: var(--muted);
+  font-size: 0.82rem;
 }
 
 .chat-panel {
@@ -892,6 +1019,17 @@ button:disabled {
   .chat-layout {
     grid-template-columns: 1fr;
     min-height: auto;
+  }
+
+  .model-layout,
+  .model-health-grid,
+  .model-catalog-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .installed-model-row {
+    flex-direction: column;
+    align-items: flex-start;
   }
 
   .chat-side-column {
