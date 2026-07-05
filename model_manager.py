@@ -10,8 +10,11 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 import subprocess
 import time
+import os
 
-OLLAMA_URL = "http://127.0.0.1:11434"
+OLLAMA_URL = os.getenv('GHOSTLINK_OLLAMA_URL', "http://127.0.0.1:11434").strip().rstrip('/')
+BIND_HOST = os.getenv('GHOSTLINK_MODEL_MANAGER_HOST', '127.0.0.1').strip() or '127.0.0.1'
+PORT = int(os.getenv('GHOSTLINK_MODEL_MANAGER_PORT', '8001'))
 MODELS_CACHE_FILE = Path("/tmp/ghostlink_models_cache.json")
 
 class ModelManager:
@@ -214,8 +217,8 @@ class ModelManagementHandler(BaseHTTPRequestHandler):
 
 
 if __name__ == '__main__':
-    server = HTTPServer(('127.0.0.1', 8001), ModelManagementHandler)
-    print('[Model Manager] Running on http://127.0.0.1:8001')
+    server = HTTPServer((BIND_HOST, PORT), ModelManagementHandler)
+    print(f'[Model Manager] Running on http://{BIND_HOST}:{PORT}')
     print('[Model Manager] Endpoints:')
     print('  GET  /api/models            - List all models')
     print('  GET  /api/models/status     - Model loading status')

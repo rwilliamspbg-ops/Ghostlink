@@ -10,9 +10,10 @@ import sys
 import os
 from urllib.parse import urlparse
 
-OLLAMA_URL = "http://127.0.0.1:11434"
-MODEL_MANAGER_URL = "http://127.0.0.1:8001"
-BACKEND_URL = "http://127.0.0.1:8003"
+OLLAMA_URL = os.getenv('GHOSTLINK_OLLAMA_URL', "http://127.0.0.1:11434").strip().rstrip('/')
+MODEL_MANAGER_URL = os.getenv('GHOSTLINK_MODEL_MANAGER_URL', "http://127.0.0.1:8001").strip().rstrip('/')
+BACKEND_URL = os.getenv('GHOSTLINK_BACKEND_URL', "http://127.0.0.1:8003").strip().rstrip('/')
+BIND_HOST = os.getenv('GHOSTLINK_PROXY_HOST', '127.0.0.1').strip() or '127.0.0.1'
 MODEL = "neural-chat"
 CHAT_BACKEND = "backend"
 REQUEST_TIMEOUT_SECONDS = 180
@@ -148,9 +149,9 @@ if __name__ == '__main__':
     )
     MODEL = os.getenv('GHOSTLINK_PROXY_MODEL', MODEL)
 
-    port = 9999
-    server = HTTPServer(('127.0.0.1', port), GatewayHandler)
-    print(f'[Gateway] Ghostlink Studio Gateway running on http://127.0.0.1:{port}')
+    port = int(os.getenv('GHOSTLINK_PROXY_PORT', '9999'))
+    server = HTTPServer((BIND_HOST, port), GatewayHandler)
+    print(f'[Gateway] Ghostlink Studio Gateway running on http://{BIND_HOST}:{port}')
     if CHAT_BACKEND == 'ollama':
         print(f'  -> /api/inference/chat  => Ollama ({OLLAMA_URL}, model={MODEL})')
     else:

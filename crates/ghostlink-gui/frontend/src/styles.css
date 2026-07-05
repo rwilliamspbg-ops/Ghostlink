@@ -222,6 +222,7 @@ button {
   padding: 0.6rem 0.85rem;
   border-radius: 10px;
   cursor: pointer;
+  transition: transform 120ms ease, border-color 120ms ease, background 120ms ease;
 }
 
 button.primary {
@@ -240,6 +241,19 @@ button.danger {
 button:disabled {
   opacity: 0.6;
   cursor: wait;
+}
+
+button:not(:disabled):hover {
+  transform: translateY(-1px);
+  border-color: rgba(255, 255, 255, 0.2);
+}
+
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline: 2px solid rgba(63, 209, 159, 0.75);
+  outline-offset: 2px;
 }
 
 .metrics-grid {
@@ -494,7 +508,8 @@ button:disabled {
 }
 
 .chat-panel input,
-.chat-panel textarea {
+.chat-panel textarea,
+.chat-panel select {
   border: 1px solid var(--border);
   border-radius: 10px;
   background: rgba(0, 0, 0, 0.2);
@@ -617,6 +632,32 @@ button:disabled {
   display: grid;
   grid-template-columns: repeat(4, minmax(160px, 1fr));
   gap: 0.75rem;
+}
+
+.live-workers-panel {
+  display: grid;
+  gap: 0.65rem;
+}
+
+.live-workers-panel h3 {
+  margin: 0;
+}
+
+.live-workers-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(220px, 1fr));
+  gap: 0.6rem;
+}
+
+.live-worker-item {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: linear-gradient(140deg, rgba(0, 0, 0, 0.24), rgba(20, 46, 62, 0.35));
+  padding: 0.65rem;
+}
+
+.live-worker-item:hover {
+  border-color: rgba(63, 209, 159, 0.35);
 }
 
 .tcp-target-row {
@@ -921,6 +962,7 @@ button:disabled {
   display: flex;
   flex-direction: column;
   gap: 0.35rem;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.01);
 }
 
 .metric-card span {
@@ -957,6 +999,10 @@ button:disabled {
   border-color: rgba(255, 208, 107, 0.45);
   color: #ffe8a8;
   background: rgba(255, 208, 107, 0.18);
+}
+
+.hero .state-chip {
+  width: fit-content;
 }
 
 .details p {
@@ -1071,6 +1117,7 @@ button:disabled {
 
   .cluster-controls,
   .worker-discovery-grid,
+  .live-workers-grid,
   .batch-results-grid,
   .cluster-grid {
     grid-template-columns: 1fr;

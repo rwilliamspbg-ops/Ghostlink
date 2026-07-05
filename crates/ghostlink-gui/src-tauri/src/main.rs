@@ -38,6 +38,8 @@ fn main() {
             list_hf_models,
             list_backend_models,
             list_backend_model_status,
+            list_backend_metrics,
+            list_backend_workers,
             ollama_health,
             download_backend_model,
             delete_backend_model,
@@ -1054,6 +1056,16 @@ fn list_backend_models() -> Result<Value, String> {
 #[tauri::command]
 fn list_backend_model_status() -> Result<Value, String> {
     backend_get_json("/api/models/status")
+}
+
+#[tauri::command]
+fn list_backend_metrics() -> Result<Value, String> {
+    backend_get_json("/api/metrics")
+}
+
+#[tauri::command]
+fn list_backend_workers() -> Result<Value, String> {
+    backend_get_json("/api/workers")
 }
 
 #[tauri::command]

@@ -9,6 +9,7 @@ import time
 import os
 import signal
 import shutil
+import socket
 from urllib.parse import urlparse
 from pathlib import Path
 
@@ -61,6 +62,37 @@ def is_loopback_url(url):
 def command_exists(name):
     return shutil.which(name) is not None
 
+def parse_port(env_name, default):
+    raw = os.getenv(env_name, str(default)).strip()
+    try:
+        value = int(raw)
+        if 1 <= value <= 65535:
+            return value
+    except Exception:
+        pass
+    return int(default)
+
+def is_port_available(host, port):
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            sock.bind((host, int(port)))
+            return True
+        except OSError:
+            return False
+
+def resolve_port(host, requested_port, label, max_tries=40):
+    if is_port_available(host, requested_port):
+        return requested_port
+    for offset in range(1, max_tries + 1):
+        candidate = requested_port + offset
+        if candidate > 65535:
+            break
+        if is_port_available(host, candidate):
+            log(f"[WARN] {label} port {requested_port} is busy, using {candidate}")
+            return candidate
+    fail(f"No free port found for {label} starting at {requested_port}")
+
 def can_launch_tauri():
     if not command_exists('cargo'):
         return False
@@ -89,6 +121,20 @@ def ensure_frontend_deps():
 
 def main():
     check_only = '--check' in sys.argv
+    no_gui = '--no-gui' in sys.argv or os.getenv('GHOSTLINK_STUDIO_NO_GUI', '0').strip() in {'1', 'true', 'yes'}
+    bind_host = os.getenv('GHOSTLINK_BIND_HOST', '127.0.0.1').strip() or '127.0.0.1'
+    desired_model_manager_port = parse_port('GHOSTLINK_MODEL_MANAGER_PORT', 8001)
+    desired_backend_port = parse_port('GHOSTLINK_BACKEND_PORT', 8003)
+    desired_gateway_port = parse_port('GHOSTLINK_PROXY_PORT', 9999)
+
+    model_manager_port = resolve_port(bind_host, desired_model_manager_port, 'Model Manager')
+    backend_port = resolve_port(bind_host, desired_backend_port, 'Backend')
+    gateway_port = resolve_port(bind_host, desired_gateway_port, 'Gateway Proxy')
+
+    model_manager_url = f'http://{bind_host}:{model_manager_port}'
+    backend_url = f'http://{bind_host}:{backend_port}'
+    gateway_url = f'http://{bind_host}:{gateway_port}'
+
     ollama_url = os.getenv('GHOSTLINK_OLLAMA_URL', 'http://127.0.0.1:11434').strip().rstrip('/')
     ollama_model = os.getenv('GHOSTLINK_OLLAMA_MODEL', os.getenv('GHOSTLINK_PROXY_MODEL', 'neural-chat')).strip()
     if not ollama_model:
@@ -96,7 +142,16 @@ def main():
     os.environ.setdefault('GHOSTLINK_OLLAMA_URL', ollama_url)
     os.environ.setdefault('GHOSTLINK_OLLAMA_MODEL', ollama_model)
     os.environ.setdefault('GHOSTLINK_PROXY_MODEL', ollama_model)
-    os.environ.setdefault('GHOSTLINK_BACKEND_URL', 'http://127.0.0.1:8003')
+    os.environ['GHOSTLINK_MODEL_MANAGER_HOST'] = bind_host
+    os.environ['GHOSTLINK_MODEL_MANAGER_PORT'] = str(model_manager_port)
+    os.environ['GHOSTLINK_MODEL_MANAGER_URL'] = model_manager_url
+    os.environ['GHOSTLINK_BACKEND_HOST'] = bind_host
+    os.environ['GHOSTLINK_BACKEND_PORT'] = str(backend_port)
+    os.environ['GHOSTLINK_BACKEND_URL'] = backend_url
+    os.environ['GHOSTLINK_PROXY_HOST'] = bind_host
+    os.environ['GHOSTLINK_PROXY_PORT'] = str(gateway_port)
+    os.environ['GHOSTLINK_PROXY_URL'] = gateway_url
+    os.environ['VITE_GHOSTLINK_BACKEND_URL'] = gateway_url
 
     chat_backend_mode = os.getenv('GHOSTLINK_STUDIO_CHAT_BACKEND', 'backend').strip().lower()
     if chat_backend_mode not in {'backend', 'ollama'}:
@@ -109,10 +164,11 @@ def main():
 
     log("Starting Ghostlink Studio initialization...")
     log(f"GUI mode requested: {requested_gui_mode}")
-    log(f"GUI mode effective: {effective_gui_mode}")
+    log(f"GUI mode effective: {'headless' if no_gui else effective_gui_mode}")
     log(f"Ollama URL: {ollama_url}")
     log(f"Ollama model: {ollama_model}")
-    log(f"Backend URL: {os.environ.get('GHOSTLINK_BACKEND_URL')}")
+    log(f"Backend URL: {backend_url}")
+    log(f"Gateway URL: {gateway_url}")
 
     for key, value in DEFAULT_PERF_ENV.items():
         os.environ.setdefault(key, value)
@@ -131,10 +187,12 @@ def main():
             else:
                 log("         (Remote Ollama URL configured; launcher will not auto-start remote service)")
 
-        log("  [OK] Backend will run on port 8003")
-        log("  [OK] Model Manager will run on port 8001")
-        log("  [OK] Gateway Proxy will run on port 9999")
-        if requested_gui_mode == 'tauri' and not tauri_ready:
+        log(f"  [OK] Backend will run on port {backend_port}")
+        log(f"  [OK] Model Manager will run on port {model_manager_port}")
+        log(f"  [OK] Gateway Proxy will run on port {gateway_port}")
+        if no_gui:
+            log("  [OK] GUI launch mode: headless (--no-gui)")
+        elif requested_gui_mode == 'tauri' and not tauri_ready:
             log("  [WARN] Tauri GUI prerequisites missing (cargo tauri and/or npm).")
             log("         Install Tauri toolchain or set GHOSTLINK_STUDIO_GUI=tkinter explicitly.")
         else:
@@ -142,7 +200,7 @@ def main():
         log("Preflight completed successfully")
         return 0
 
-    if requested_gui_mode == 'tauri' and not tauri_ready:
+    if not no_gui and requested_gui_mode == 'tauri' and not tauri_ready:
         fail(
             "Tauri GUI prerequisites missing (cargo tauri and/or npm). "
             "Install them or set GHOSTLINK_STUDIO_GUI=tkinter for legacy GUI."
@@ -191,38 +249,43 @@ def main():
     else:
         log(f"[OK] Ollama already reachable at {ollama_url}")
 
-    # Start Model Manager (8001)
+    # Start Model Manager
     start_proc([sys.executable, 'model_manager.py'], "Model Manager")
 
-    # Start Backend (8003)
+    # Start Backend
     backend_path = ROOT_DIR / 'target' / 'release' / 'ghost-link'
     if not backend_path.exists():
         # Fallback for debug build if release build failed/missing somehow
         backend_path = ROOT_DIR / 'target' / 'debug' / 'ghost-link'
 
-    start_proc([str(backend_path), 'serve', '127.0.0.1', '8003'], "Ghostlink Backend")
+    start_proc([str(backend_path), 'serve', bind_host, str(backend_port)], "Ghostlink Backend")
 
-    # Start Gateway Proxy (9999)
+    # Start Gateway Proxy
     start_proc([sys.executable, 'real_llm_proxy.py', chat_backend_mode], "Gateway Proxy")
 
-    # 3. Launch GUI
-    log("Launching Ghostlink Studio GUI...")
+    # 3. Launch GUI (or stay headless)
     try:
-        if effective_gui_mode == 'tauri':
-            ensure_frontend_deps()
-            subprocess.run(
-                ['cargo', 'tauri', 'dev'],
-                cwd=TAURI_GUI_DIR,
-                check=False,
-                env=os.environ.copy(),
-            )
+        if no_gui:
+            log("Headless mode active: services are running without GUI. Press Ctrl+C to stop.")
+            while True:
+                time.sleep(1)
         else:
-            # Pass the Proxy URL as the backend URL
-            subprocess.run([
-                sys.executable,
-                'ghostlink_gui.py',
-                '--backend-url', 'http://127.0.0.1:9999',
-            ], check=False)
+            log("Launching Ghostlink Studio GUI...")
+            if effective_gui_mode == 'tauri':
+                ensure_frontend_deps()
+                subprocess.run(
+                    ['cargo', 'tauri', 'dev'],
+                    cwd=TAURI_GUI_DIR,
+                    check=False,
+                    env=os.environ.copy(),
+                )
+            else:
+                # Pass the Proxy URL as the backend URL
+                subprocess.run([
+                    sys.executable,
+                    'ghostlink_gui.py',
+                    '--backend-url', gateway_url,
+                ], check=False)
     except KeyboardInterrupt:
         pass
     finally:
