@@ -16,6 +16,7 @@ import threading
 import time
 import tkinter as tk
 from tkinter import messagebox, scrolledtext, simpledialog, ttk
+from pathlib import Path
 from urllib.parse import urlparse
 
 import requests
@@ -27,6 +28,7 @@ except ImportError:  # pragma: no cover
 
 
 DEFAULT_API_BASE = "http://127.0.0.1:8003"
+ROOT_DIR = Path(__file__).resolve().parent
 
 
 class ChatResponseStream:
@@ -104,6 +106,13 @@ class GhostlinkGUI:
         self.shell = tk.Frame(self.root, bg="#111318")
         self.shell.pack(fill="both", expand=True)
 
+        # Set a deterministic app icon if available so packaged GUI instances
+        # always render branding assets consistently.
+        app_icon = self.load_icon("assets/icons/chat.png", quiet=True)
+        if app_icon is not None:
+            self.root.iconphoto(True, app_icon)
+            self.app_icon = app_icon
+
     def build_sidebar(self) -> None:
         sidebar = tk.Frame(self.shell, width=230, bg="#0b0d12", highlightthickness=1, highlightbackground="#232733")
         sidebar.pack(side="left", fill="y")
@@ -179,13 +188,37 @@ class GhostlinkGUI:
     def switch_tab(self, index: int) -> None:
         self.notebook.select(index)
 
-    def load_icon(self, path: str) -> tk.PhotoImage | None:
-        """Load an image from a file path."""
-        try:
-            return tk.PhotoImage(file=path)
-        except Exception:
+    def resolve_resource_path(self, path: str) -> Path:
+        candidate = Path(path)
+        if candidate.is_absolute():
+            return candidate
+        return ROOT_DIR / candidate
+
+    def load_icon(self, path: str, quiet: bool = False) -> tk.PhotoImage | None:
+        """Load image assets with resilient absolute-path fallback logic."""
+        requested = self.resolve_resource_path(path)
+        candidates = [requested]
+
+        if requested.suffix.lower() != ".png":
+            candidates.append(requested.with_suffix(".png"))
+
+        if requested.parent.name != "icons":
+            candidates.append(ROOT_DIR / "assets" / "icons" / requested.name)
+
+        if requested.parent.name == "icons":
+            candidates.append(requested.parent / requested.name.lower())
+
+        for candidate in candidates:
+            if not candidate.exists():
+                continue
+            try:
+                return tk.PhotoImage(file=str(candidate))
+            except Exception:
+                continue
+
+        if not quiet:
             print(f"Icon not found at {path}")
-            return None
+        return None
 
     def on_close(self) -> None:
         self.root.destroy()

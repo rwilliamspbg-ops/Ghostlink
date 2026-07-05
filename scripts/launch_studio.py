@@ -13,6 +13,16 @@ from pathlib import Path
 ROOT_DIR = Path(__file__).parent.parent
 os.chdir(ROOT_DIR)
 
+DEFAULT_PERF_ENV = {
+    # Stable chat-oriented defaults for multi-machine layer splitting.
+    'GHOSTLINK_FLOW_DEFAULT_TRANSPORT': 'tcp',
+    'GHOSTLINK_TCP_MAX_INFLIGHT': '256',
+    'GHOSTLINK_TCP_AUTOTUNE': '1',
+    'GHOSTLINK_FLOW_ENABLE_REBALANCE': '1',
+    'GHOSTLINK_CHAT_EXEC_TOKENS': '256',
+    'GHOSTLINK_CHAT_MICRO_BATCH': '8',
+}
+
 def log(msg):
     print(f"\033[1;34m[Ghostlink]\033[0m {msg}")
 
@@ -30,8 +40,14 @@ def check_service(url):
 
 def main():
     check_only = '--check' in sys.argv
+    chat_backend_mode = os.getenv('GHOSTLINK_STUDIO_CHAT_BACKEND', 'backend').strip().lower()
+    if chat_backend_mode not in {'backend', 'ollama'}:
+        chat_backend_mode = 'backend'
 
     log("Starting Ghostlink Studio initialization...")
+
+    for key, value in DEFAULT_PERF_ENV.items():
+        os.environ.setdefault(key, value)
 
     # Preflight Check
     if check_only:
@@ -64,7 +80,7 @@ def main():
 
     def start_proc(args, name, wait_time=1):
         log(f"Starting {name}...")
-        proc = subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        proc = subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=os.environ.copy())
         processes.append((proc, name))
         time.sleep(wait_time)
         return proc
@@ -87,7 +103,7 @@ def main():
     start_proc([str(backend_path), 'serve', '127.0.0.1', '8003'], "Ghostlink Backend")
 
     # Start Gateway Proxy (9999)
-    start_proc([sys.executable, 'real_llm_proxy.py'], "Gateway Proxy")
+    start_proc([sys.executable, 'real_llm_proxy.py', chat_backend_mode], "Gateway Proxy")
 
     # 3. Launch GUI
     log("Launching Ghostlink Studio GUI...")
