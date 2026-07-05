@@ -8,10 +8,13 @@ import sys
 import time
 import os
 import signal
+import shutil
 from pathlib import Path
 
 ROOT_DIR = Path(__file__).parent.parent
 os.chdir(ROOT_DIR)
+TAURI_GUI_DIR = ROOT_DIR / 'crates' / 'ghostlink-gui' / 'src-tauri'
+FRONTEND_DIR = ROOT_DIR / 'crates' / 'ghostlink-gui' / 'frontend'
 
 DEFAULT_PERF_ENV = {
     # Stable chat-oriented defaults for multi-machine layer splitting.
@@ -38,13 +41,49 @@ def check_service(url):
     except:
         return False
 
+def command_exists(name):
+    return shutil.which(name) is not None
+
+def can_launch_tauri():
+    if not command_exists('cargo'):
+        return False
+    if not command_exists('npm'):
+        return False
+    if not TAURI_GUI_DIR.exists() or not FRONTEND_DIR.exists():
+        return False
+    try:
+        result = subprocess.run(
+            ['cargo', 'tauri', '--version'],
+            cwd=TAURI_GUI_DIR,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        return result.returncode == 0
+    except Exception:
+        return False
+
+def ensure_frontend_deps():
+    node_modules = FRONTEND_DIR / 'node_modules'
+    if node_modules.exists():
+        return
+    log("Installing Ghostlink Studio frontend dependencies (npm ci)...")
+    subprocess.run(['npm', 'ci'], cwd=FRONTEND_DIR, check=True)
+
 def main():
     check_only = '--check' in sys.argv
     chat_backend_mode = os.getenv('GHOSTLINK_STUDIO_CHAT_BACKEND', 'backend').strip().lower()
     if chat_backend_mode not in {'backend', 'ollama'}:
         chat_backend_mode = 'backend'
+    requested_gui_mode = os.getenv('GHOSTLINK_STUDIO_GUI', 'tauri').strip().lower()
+    if requested_gui_mode not in {'tauri', 'tkinter'}:
+        requested_gui_mode = 'tauri'
+    tauri_ready = can_launch_tauri()
+    effective_gui_mode = requested_gui_mode if requested_gui_mode == 'tkinter' else ('tauri' if tauri_ready else 'tkinter')
 
     log("Starting Ghostlink Studio initialization...")
+    log(f"GUI mode requested: {requested_gui_mode}")
+    log(f"GUI mode effective: {effective_gui_mode}")
 
     for key, value in DEFAULT_PERF_ENV.items():
         os.environ.setdefault(key, value)
@@ -63,6 +102,10 @@ def main():
         log("  [OK] Backend will run on port 8003")
         log("  [OK] Model Manager will run on port 8001")
         log("  [OK] Gateway Proxy will run on port 9999")
+        if requested_gui_mode == 'tauri' and not tauri_ready:
+            log("  [WARN] Tauri GUI prerequisites missing (cargo tauri and/or npm). Launcher will fallback to Tkinter.")
+        else:
+            log(f"  [OK] GUI launch mode: {effective_gui_mode}")
         log("Preflight completed successfully")
         return 0
 
@@ -108,9 +151,21 @@ def main():
     # 3. Launch GUI
     log("Launching Ghostlink Studio GUI...")
     try:
-        # Pass the Proxy URL as the backend URL
-        subprocess.run([sys.executable, 'ghostlink_gui.py',
-                       '--backend-url', 'http://127.0.0.1:9999'], check=False)
+        if effective_gui_mode == 'tauri':
+            ensure_frontend_deps()
+            subprocess.run(
+                ['cargo', 'tauri', 'dev'],
+                cwd=TAURI_GUI_DIR,
+                check=False,
+                env=os.environ.copy(),
+            )
+        else:
+            # Pass the Proxy URL as the backend URL
+            subprocess.run([
+                sys.executable,
+                'ghostlink_gui.py',
+                '--backend-url', 'http://127.0.0.1:9999',
+            ], check=False)
     except KeyboardInterrupt:
         pass
     finally:

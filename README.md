@@ -1,7 +1,66 @@
 # Ghostlink - Distributed LLM Inference Platform
 
 ## 🎯 Project Overview
-Ghostlink is a distributed computing framework for running large language models (LLMs) with zero-config, low-latency operations across heterogeneous hardware. This repository contains the GUI testing suite to validate its functionality.
+Ghostlink is a distributed computing framework for running large language models (LLMs) with zero-config, low-latency operations across heterogeneous hardware.
+
+## 🖥️ Studio GUI (Default Build + Auto Launch)
+
+The default Studio launch path now targets the polished Tauri/Svelte GUI.
+
+- Launcher script: [scripts/launch_studio.sh](scripts/launch_studio.sh)
+- Cross-platform backend/orchestration entrypoint: [scripts/launch_studio.py](scripts/launch_studio.py)
+- Frontend app: [crates/ghostlink-gui/frontend/src/App.svelte](crates/ghostlink-gui/frontend/src/App.svelte)
+
+### Launch Behavior
+
+1. Default GUI mode is `tauri`.
+2. Launcher auto-installs frontend dependencies when needed.
+3. If Tauri prerequisites are unavailable, launcher safely falls back to Tkinter.
+
+Optional overrides:
+
+- `GHOSTLINK_STUDIO_GUI=tauri` (default)
+- `GHOSTLINK_STUDIO_GUI=tkinter`
+- `GHOSTLINK_STUDIO_CHAT_BACKEND=backend|ollama`
+
+### Quick Start
+
+```bash
+bash scripts/launch_studio.sh --check
+bash scripts/launch_studio.sh
+```
+
+## 📸 UI Screenshots (Focused Polish Sprint)
+
+### Home (Desktop)
+![Ghostlink Studio Home](docs/screenshots/ui-polish/01-home.png)
+
+### Chat (Desktop)
+![Ghostlink Studio Chat](docs/screenshots/ui-polish/02-chat.png)
+
+### Cluster (Desktop)
+![Ghostlink Studio Cluster](docs/screenshots/ui-polish/03-cluster.png)
+
+### Home (Mobile)
+![Ghostlink Studio Mobile](docs/screenshots/ui-polish/04-mobile-home.png)
+
+Detailed polish notes and acceptance checklist:
+
+- [docs/UI_POLISH_SPRINT.md](docs/UI_POLISH_SPRINT.md)
+
+## ⚡ Performance Metrics (Current Baseline)
+
+Deterministic snapshot profile: `exec_tokens=512`, `micro_batch=8`, profile `throughput`.
+
+| Mode | Throughput Avg (tokens/sec) | P95 Avg (ms) |
+|------|------------------------------|--------------|
+| tcp | 256019.95 | 1.97 |
+| inmem | 506809.47 | 1.03 |
+
+Reference artifacts:
+
+- [docs/PERF_BASELINE.json](docs/PERF_BASELINE.json)
+- [docs/FLOW_PERF_TUNING.json](docs/FLOW_PERF_TUNING.json)
 
 ## 🔧 Prerequisites
 - Python 3.9+
