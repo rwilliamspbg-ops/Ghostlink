@@ -1151,6 +1151,7 @@ fn print_flow(opts: FlowOptions) -> Result<()> {
     let pipeline_plan = PipelinePlan::from_assignments(&assignments, &device_map);
     let placement_context = PlacementPlan::new(assignments.clone(), QuantizationMode::None);
     let rebalance_trigger = RebalanceTrigger::default();
+    let enable_inmem_runtime_feedback = is_env_truthy("GHOSTLINK_FLOW_ENABLE_REBALANCE");
 
     let schedule_preview_tokens = opts.execution_tokens.min(8);
     let token_schedule = build_token_schedule(pipeline_plan.stages.len(), schedule_preview_tokens);
@@ -1177,14 +1178,32 @@ fn print_flow(opts: FlowOptions) -> Result<()> {
                 tcp_cfg,
             )
         }
-        FlowTransportMode::InMemory => Ok(execute_pipeline_with_rebalance_and_measured(
-            &pipeline_plan,
-            opts.execution_tokens,
-            opts.micro_batch,
-            Some(&rebalance_trigger),
-            Some(&cluster),
-            Some(&placement_context),
-        )),
+        FlowTransportMode::InMemory => {
+            let rebalance = if enable_inmem_runtime_feedback {
+                Some(&rebalance_trigger)
+            } else {
+                None
+            };
+            let cluster_feedback = if enable_inmem_runtime_feedback {
+                Some(&cluster)
+            } else {
+                None
+            };
+            let placement_feedback = if enable_inmem_runtime_feedback {
+                Some(&placement_context)
+            } else {
+                None
+            };
+
+            Ok(execute_pipeline_with_rebalance_and_measured(
+                &pipeline_plan,
+                opts.execution_tokens,
+                opts.micro_batch,
+                rebalance,
+                cluster_feedback,
+                placement_feedback,
+            ))
+        }
         FlowTransportMode::Xdp => {
             let interface = xdp_interface_from_env();
             match probe_xdp_support(&interface) {
@@ -1318,6 +1337,16 @@ fn print_flow(opts: FlowOptions) -> Result<()> {
         "- Inter-stage transport mode: {} (real runtime wiring)",
         effective_transport_mode.as_str()
     );
+    if matches!(effective_transport_mode, FlowTransportMode::InMemory) {
+        println!(
+            "- In-memory runtime feedback/rebalance: {} (set GHOSTLINK_FLOW_ENABLE_REBALANCE=1 to enable)",
+            if enable_inmem_runtime_feedback {
+                "enabled"
+            } else {
+                "disabled"
+            }
+        );
+    }
     println!("- Use tcp for socket-backed transport, xdp for AF_XDP-first with automatic fallback, or inmem for channel-backed baseline\n");
 
     if matches!(effective_transport_mode, FlowTransportMode::TcpLoopback)

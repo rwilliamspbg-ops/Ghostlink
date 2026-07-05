@@ -250,22 +250,22 @@ Now returns:
 
 ### Backend Features
 
-**Real Model Tracking**
+#### Real Model Tracking
 - Models loaded in memory
 - Status shown as "ready" or "available"
 - Downloads handled asynchronously
 
-**Request Metrics**
+#### Request Metrics
 - Total requests counted
 - Errors tracked separately
 - Visible in /health and /api/metrics
 
-**Session Management**
+#### Session Management
 - Each chat creates session
 - Sessions store message and response
 - Sessions viewable in /api/sessions
 
-**Concurrent Safety**
+#### Concurrent Safety
 - Multiple simultaneous requests handled
 - Model operations thread-safe
 - No race conditions

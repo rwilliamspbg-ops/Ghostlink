@@ -156,6 +156,7 @@ jobs:
 ## 📊 Test Coverage Details  
 
 ### Performance Benchmarks 
+
 | Component | Expected (ms) | Actual (last test) |
 |------------|----------------|------|
 | Model Load | <500ms        | ✅ 312.4 |
