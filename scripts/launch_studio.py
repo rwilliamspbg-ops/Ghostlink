@@ -42,6 +42,14 @@ def check_service(url):
     except:
         return False
 
+def wait_for_service(url, timeout_s=20, interval_s=1):
+    deadline = time.time() + max(1, timeout_s)
+    while time.time() < deadline:
+        if check_service(url):
+            return True
+        time.sleep(max(0.1, interval_s))
+    return False
+
 def is_loopback_url(url):
     try:
         parsed = urlparse(url)
@@ -158,16 +166,28 @@ def main():
         return proc
 
     # Start Ollama if needed
-    if not check_service(f"{ollama_url}/api/tags"):
+    ollama_health_url = f"{ollama_url}/api/tags"
+    if not check_service(ollama_health_url):
         if is_loopback_url(ollama_url):
             if command_exists('ollama'):
                 log("Ollama not running. Attempting to start 'ollama serve'...")
-                subprocess.Popen(['ollama', 'serve'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                time.sleep(3)
+                ollama_proc = subprocess.Popen(
+                    ['ollama', 'serve'],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    env=os.environ.copy(),
+                )
+                processes.append((ollama_proc, 'Ollama'))
+                if wait_for_service(ollama_health_url, timeout_s=25, interval_s=1):
+                    log(f"[OK] Ollama started at {ollama_url}")
+                else:
+                    log(f"[WARN] Ollama process started but health check still failing at {ollama_url}")
             else:
                 log("[WARN] Ollama CLI not found; local Ollama auto-start skipped")
         else:
             log(f"[WARN] Ollama not reachable at configured URL {ollama_url}; skipping auto-start")
+    else:
+        log(f"[OK] Ollama already reachable at {ollama_url}")
 
     # Start Model Manager (8001)
     start_proc([sys.executable, 'model_manager.py'], "Model Manager")
