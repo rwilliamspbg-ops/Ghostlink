@@ -28,7 +28,17 @@ if [[ ! -d "$VENV_PATH" ]]; then
   "$PYTHON_BIN" -m venv "$VENV_PATH"
 fi
 
-VENV_PYTHON="${VENV_PATH}/bin/python"
+if [[ -x "${VENV_PATH}/bin/python" ]]; then
+  VENV_PYTHON="${VENV_PATH}/bin/python"
+elif [[ -x "${VENV_PATH}/Scripts/python.exe" ]]; then
+  VENV_PYTHON="${VENV_PATH}/Scripts/python.exe"
+elif [[ -x "${VENV_PATH}/Scripts/python" ]]; then
+  VENV_PYTHON="${VENV_PATH}/Scripts/python"
+else
+  echo "Python virtual environment executable not found under ${VENV_PATH}" >&2
+  echo "Expected one of: bin/python, Scripts/python.exe, Scripts/python" >&2
+  exit 1
+fi
 
 log "Upgrading pip/setuptools/wheel"
 "$VENV_PYTHON" -m pip install --upgrade pip setuptools wheel

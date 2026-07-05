@@ -1,5 +1,5 @@
 <script>
-  import { onMount } from 'svelte';
+  import { onMount, tick } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
 
   const navItems = [
@@ -48,6 +48,10 @@
   let chatDistributed = true;
   let chatResult = null;
   let chatHistory = [];
+  let chatResponseEl;
+  let chatHistoryScrollEl;
+  let chatAutoFollowResponse = true;
+  let chatAutoFollowHistory = true;
   let clusterNodes = [];
   let clusterSummary = 'No live cluster snapshot loaded.';
   let workerDiscovery = [];
@@ -809,6 +813,31 @@
     return normalized || DEFAULT_MODEL_FILE;
   }
 
+  function isNearBottom(element, threshold = 28) {
+    if (!element) {
+      return true;
+    }
+    const remaining = element.scrollHeight - (element.scrollTop + element.clientHeight);
+    return remaining <= threshold;
+  }
+
+  function handleChatResponseScroll() {
+    chatAutoFollowResponse = isNearBottom(chatResponseEl);
+  }
+
+  function handleChatHistoryScroll() {
+    chatAutoFollowHistory = isNearBottom(chatHistoryScrollEl);
+  }
+
+  function autoScrollChatPanels() {
+    if (chatAutoFollowResponse && chatResponseEl) {
+      chatResponseEl.scrollTop = chatResponseEl.scrollHeight;
+    }
+    if (chatAutoFollowHistory && chatHistoryScrollEl) {
+      chatHistoryScrollEl.scrollTop = chatHistoryScrollEl.scrollHeight;
+    }
+  }
+
   function parseNodeHints(raw) {
     return String(raw)
       .split(',')
@@ -1093,15 +1122,17 @@
       command = 'chat_infer';
       output = result.trace;
       chatHistory = [
+        ...chatHistory,
         {
           prompt: chatPrompt,
           response: result.response,
           model: result.model,
           backend: result.backend,
         },
-        ...chatHistory,
-      ].slice(0, 12);
+      ].slice(-12);
       persistPreferences();
+      await tick();
+      autoScrollChatPanels();
     } catch (err) {
       status = 'Chat generation failed';
       output = String(err);
@@ -1563,24 +1594,26 @@
           {#if chatResult}
             <section class="chat-response card-shell">
               <h3>{chatResult.model} ({chatResult.backend})</h3>
-              <p>{chatResult.response}</p>
+              <p class="chat-response-text" bind:this={chatResponseEl} on:scroll={handleChatResponseScroll}>{chatResult.response}</p>
             </section>
           {:else}
             <section class="chat-response card-shell placeholder-panel">
               <h3>Awaiting Response</h3>
-              <p>Run Generate to populate live inference output and trace context.</p>
+              <p class="chat-response-text" bind:this={chatResponseEl} on:scroll={handleChatResponseScroll}>Run Generate to populate live inference output and trace context.</p>
             </section>
           {/if}
           {#if chatHistory.length > 0}
             <section class="chat-history card-shell">
               <h3>Recent Exchanges</h3>
-              {#each chatHistory as entry}
-                <article class="chat-history-item">
-                  <p class="prompt">Q: {entry.prompt}</p>
-                  <p class="answer">A: {entry.response}</p>
-                  <p class="meta">{entry.model} · {entry.backend}</p>
-                </article>
-              {/each}
+              <div class="chat-history-scroll" bind:this={chatHistoryScrollEl} on:scroll={handleChatHistoryScroll}>
+                {#each chatHistory as entry}
+                  <article class="chat-history-item">
+                    <p class="prompt">Q: {entry.prompt}</p>
+                    <p class="answer">A: {entry.response}</p>
+                    <p class="meta">{entry.model} · {entry.backend}</p>
+                  </article>
+                {/each}
+              </div>
             </section>
           {/if}
         </section>
