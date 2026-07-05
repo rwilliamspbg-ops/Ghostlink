@@ -96,7 +96,7 @@ def main():
     if requested_gui_mode not in {'tauri', 'tkinter'}:
         requested_gui_mode = 'tauri'
     tauri_ready = can_launch_tauri()
-    effective_gui_mode = requested_gui_mode if requested_gui_mode == 'tkinter' else ('tauri' if tauri_ready else 'tkinter')
+    effective_gui_mode = requested_gui_mode
 
     log("Starting Ghostlink Studio initialization...")
     log(f"GUI mode requested: {requested_gui_mode}")
@@ -125,11 +125,18 @@ def main():
         log("  [OK] Model Manager will run on port 8001")
         log("  [OK] Gateway Proxy will run on port 9999")
         if requested_gui_mode == 'tauri' and not tauri_ready:
-            log("  [WARN] Tauri GUI prerequisites missing (cargo tauri and/or npm). Launcher will fallback to Tkinter.")
+            log("  [WARN] Tauri GUI prerequisites missing (cargo tauri and/or npm).")
+            log("         Install Tauri toolchain or set GHOSTLINK_STUDIO_GUI=tkinter explicitly.")
         else:
             log(f"  [OK] GUI launch mode: {effective_gui_mode}")
         log("Preflight completed successfully")
         return 0
+
+    if requested_gui_mode == 'tauri' and not tauri_ready:
+        fail(
+            "Tauri GUI prerequisites missing (cargo tauri and/or npm). "
+            "Install them or set GHOSTLINK_STUDIO_GUI=tkinter for legacy GUI."
+        )
 
     # 1. Build Backend
     log("Building Ghostlink backend (release)...")
