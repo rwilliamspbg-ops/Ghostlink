@@ -4,8 +4,8 @@
   "version": "1.0.0",
   "identifier": "io.ghostlink.studio",
   "build": {
-    "beforeDevCommand": "npm run dev",
-    "beforeBuildCommand": "npm run build",
+    "beforeDevCommand": "npm --prefix frontend run dev || npm --prefix ../frontend run dev",
+    "beforeBuildCommand": "npm --prefix frontend run build || npm --prefix ../frontend run build",
     "devUrl": "http://localhost:5173",
     "frontendDist": "../frontend/dist"
   },
