@@ -297,18 +297,23 @@ button:disabled {
 .chat-panel {
   display: grid;
   gap: 0.8rem;
+  min-height: 0;
 }
 
 .chat-layout {
   display: grid;
-  grid-template-columns: minmax(340px, 1.2fr) minmax(280px, 1fr);
-  gap: 0.75rem;
+  grid-template-columns: minmax(360px, 1.15fr) minmax(360px, 1fr);
+  gap: 0.9rem;
+  min-height: min(70vh, 780px);
+  align-items: stretch;
 }
 
 .chat-side-column {
   display: grid;
-  gap: 0.75rem;
-  align-content: start;
+  gap: 0.9rem;
+  align-content: stretch;
+  min-height: 0;
+  grid-template-rows: minmax(220px, 1fr) minmax(220px, 1fr);
 }
 
 .card-shell {
@@ -343,7 +348,8 @@ button:disabled {
 }
 
 .chat-panel textarea {
-  min-height: 130px;
+  min-height: 180px;
+  max-height: 320px;
   resize: vertical;
 }
 
@@ -365,6 +371,9 @@ button:disabled {
   border-radius: 12px;
   background: rgba(16, 39, 55, 0.72);
   padding: 0.8rem;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  min-height: 0;
 }
 
 .chat-response h3 {
@@ -377,13 +386,31 @@ button:disabled {
   color: #d8e7f5;
 }
 
+.chat-response-text {
+  white-space: pre-wrap;
+  overflow: auto;
+  max-height: 100%;
+  margin-top: 0.7rem;
+  padding-right: 0.2rem;
+}
+
 .chat-history {
   display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
   gap: 0.6rem;
+  min-height: 0;
 }
 
 .chat-history h3 {
   margin: 0;
+}
+
+.chat-history-scroll {
+  overflow: auto;
+  display: grid;
+  gap: 0.6rem;
+  min-height: 0;
+  padding-right: 0.15rem;
 }
 
 .chat-history-item {
@@ -404,6 +431,9 @@ button:disabled {
 
 .chat-history-item .answer {
   color: #e5f8ee;
+  white-space: pre-wrap;
+  max-height: 9.5rem;
+  overflow: auto;
 }
 
 .chat-history-item .meta {
@@ -861,6 +891,11 @@ button:disabled {
 
   .chat-layout {
     grid-template-columns: 1fr;
+    min-height: auto;
+  }
+
+  .chat-side-column {
+    grid-template-rows: none;
   }
 
   .history-grid {

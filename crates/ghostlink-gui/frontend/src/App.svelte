@@ -1563,24 +1563,26 @@
           {#if chatResult}
             <section class="chat-response card-shell">
               <h3>{chatResult.model} ({chatResult.backend})</h3>
-              <p>{chatResult.response}</p>
+              <p class="chat-response-text">{chatResult.response}</p>
             </section>
           {:else}
             <section class="chat-response card-shell placeholder-panel">
               <h3>Awaiting Response</h3>
-              <p>Run Generate to populate live inference output and trace context.</p>
+              <p class="chat-response-text">Run Generate to populate live inference output and trace context.</p>
             </section>
           {/if}
           {#if chatHistory.length > 0}
             <section class="chat-history card-shell">
               <h3>Recent Exchanges</h3>
-              {#each chatHistory as entry}
-                <article class="chat-history-item">
-                  <p class="prompt">Q: {entry.prompt}</p>
-                  <p class="answer">A: {entry.response}</p>
-                  <p class="meta">{entry.model} · {entry.backend}</p>
-                </article>
-              {/each}
+              <div class="chat-history-scroll">
+                {#each chatHistory as entry}
+                  <article class="chat-history-item">
+                    <p class="prompt">Q: {entry.prompt}</p>
+                    <p class="answer">A: {entry.response}</p>
+                    <p class="meta">{entry.model} · {entry.backend}</p>
+                  </article>
+                {/each}
+              </div>
             </section>
           {/if}
         </section>
