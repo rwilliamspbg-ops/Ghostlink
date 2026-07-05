@@ -16,6 +16,7 @@ This directory contains the Ghostlink Studio desktop application.
 - Startup snapshot now reports environment/config readiness cards from backend checks
 - Models tab verifies Hugging Face repository/file accessibility via `scripts/verify_hf_models.py`
 - Chat tab provides prompt/model/parameter controls with live flow-backed runtime responses
+- Studio launcher now defaults chat routing to distributed Rust backend execution for multi-node layer split testing
 - Cluster tab now renders live node cards with health indicators from parsed `probe` output
 - Models tab includes preset catalog shortcuts for common smoke/target repos
 - Chat tab keeps a recent exchange history for iterative testing
@@ -42,6 +43,20 @@ From repository root:
 
 1. Preflight check only: `bash scripts/launch_studio.sh --check`
 2. Launch Studio shell: `bash scripts/launch_studio.sh`
+
+Performance defaults applied by the launcher (override with environment variables when needed):
+
+- `GHOSTLINK_FLOW_DEFAULT_TRANSPORT=tcp`
+- `GHOSTLINK_TCP_MAX_INFLIGHT=256`
+- `GHOSTLINK_TCP_AUTOTUNE=1`
+- `GHOSTLINK_FLOW_ENABLE_REBALANCE=1`
+- `GHOSTLINK_CHAT_EXEC_TOKENS=256`
+- `GHOSTLINK_CHAT_MICRO_BATCH=8`
+
+Chat proxy mode can be selected with:
+
+- `GHOSTLINK_STUDIO_CHAT_BACKEND=backend` (default, recommended for distributed flow)
+- `GHOSTLINK_STUDIO_CHAT_BACKEND=ollama` (compatibility mode for direct Ollama chat)
 
 For real backend wiring verification:
 

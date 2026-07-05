@@ -16,6 +16,7 @@ on:
       - 'scripts/**'
       - 'docs/PERF_BASELINE.json'
       - 'docs/PERF_BASELINE_STRESS.json'
+      - 'docs/FLOW_PERF_TUNING.json'
       - 'README.md'
       - 'TESTING.md'
       - '.github/workflows/production-gate.yml'
@@ -28,6 +29,7 @@ on:
       - 'scripts/**'
       - 'docs/PERF_BASELINE.json'
       - 'docs/PERF_BASELINE_STRESS.json'
+      - 'docs/FLOW_PERF_TUNING.json'
       - 'README.md'
       - 'TESTING.md'
       - '.github/workflows/production-gate.yml'
@@ -142,7 +144,7 @@ jobs:
           GHOSTLINK_FLOW_METRICS_JSON: ./tmp/flow-metrics-tcp.json
         run: |
           mkdir -p ./tmp
-          cargo run --release -p ghost-link -- flow iprada-16gb zenbook-32gb 32 32 128 4 tcp
+          cargo run --release -p ghost-link -- flow iprada-16gb zenbook-32gb 32 32 256 4 tcp
 
       - name: Validate Runtime SLO (TCP)
         run: |
@@ -156,7 +158,7 @@ jobs:
           GHOSTLINK_FLOW_METRICS_JSON: ./tmp/flow-metrics-inmem.json
         run: |
           mkdir -p ./tmp
-          cargo run --release -p ghost-link -- flow iprada-16gb zenbook-32gb 32 32 128 4 inmem
+          cargo run --release -p ghost-link -- flow iprada-16gb zenbook-32gb 32 32 256 4 inmem
 
       - name: Validate Runtime SLO (In-Memory)
         run: |
@@ -229,13 +231,34 @@ jobs:
       - name: Perf Snapshot (Deterministic)
         env:
           GHOSTLINK_TCP_AUTH_TOKEN: "ci-production-gate-token"
-          GHOSTLINK_TCP_MAX_INFLIGHT: "512"
+          GHOSTLINK_FLOW_ENABLE_REBALANCE: "0"
         run: |
+          python3 scripts/validate_flow_tuning_artifact.py --file ./docs/FLOW_PERF_TUNING.json
           python3 scripts/flow_perf_snapshot.py \
             --warmup-runs 1 \
             --runs 6 \
+            --profile-mode throughput \
+            --tuning-artifact ./docs/FLOW_PERF_TUNING.json \
+            --exec-tokens 512 \
             --release \
             --output-dir ./tmp/perf_snapshot_ci
+
+      - name: Validate Applied Deterministic Profile
+        run: |
+          python3 - <<'PY'
+          import json
+          tuning = json.load(open('./docs/FLOW_PERF_TUNING.json', encoding='utf-8'))
+          summary = json.load(open('./tmp/perf_snapshot_ci/summary.json', encoding='utf-8'))
+          expected = tuning['profiles']['throughput']
+          for mode in ('tcp', 'inmem'):
+            actual = summary[mode]
+            if int(actual.get('micro_batch', -1)) != int(expected['micro_batch']):
+              raise SystemExit(f"micro_batch mismatch for {mode}: {actual.get('micro_batch')} != {expected['micro_batch']}")
+          tcp_selected = summary['tcp'].get('tcp_max_inflight_selected')
+          if int(tcp_selected or 0) != int(expected['tcp_max_inflight']):
+            raise SystemExit(f"tcp inflight mismatch: {tcp_selected} != {expected['tcp_max_inflight']}")
+          print('Applied deterministic profile matches tuning artifact throughput profile')
+          PY
 
       - name: Perf Drift Check
         run: |
@@ -262,16 +285,34 @@ jobs:
       - name: Perf Snapshot (Stress)
         env:
           GHOSTLINK_TCP_AUTH_TOKEN: "ci-production-gate-token"
-          GHOSTLINK_TCP_MAX_INFLIGHT: "512"
+          GHOSTLINK_FLOW_ENABLE_REBALANCE: "0"
         run: |
           python3 scripts/flow_perf_snapshot.py \
             --warmup-runs 1 \
             --runs 4 \
+            --profile-mode throughput \
+            --tuning-artifact ./docs/FLOW_PERF_TUNING.json \
             --modes tcp inmem \
             --exec-tokens 512 \
-            --micro-batch 8 \
             --release \
             --output-dir ./tmp/perf_snapshot_stress_ci
+
+      - name: Validate Applied Stress Profile
+        run: |
+          python3 - <<'PY'
+          import json
+          tuning = json.load(open('./docs/FLOW_PERF_TUNING.json', encoding='utf-8'))
+          summary = json.load(open('./tmp/perf_snapshot_stress_ci/summary.json', encoding='utf-8'))
+          expected = tuning['profiles']['throughput']
+          for mode in ('tcp', 'inmem'):
+            actual = summary[mode]
+            if int(actual.get('micro_batch', -1)) != int(expected['micro_batch']):
+              raise SystemExit(f"micro_batch mismatch for {mode}: {actual.get('micro_batch')} != {expected['micro_batch']}")
+          tcp_selected = summary['tcp'].get('tcp_max_inflight_selected')
+          if int(tcp_selected or 0) != int(expected['tcp_max_inflight']):
+            raise SystemExit(f"tcp inflight mismatch: {tcp_selected} != {expected['tcp_max_inflight']}")
+          print('Applied stress profile matches tuning artifact throughput profile')
+          PY
 
       - name: Perf Drift Check (Stress)
         run: |

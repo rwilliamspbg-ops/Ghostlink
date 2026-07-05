@@ -159,6 +159,22 @@ jobs:
     name: Docs
     uses: ./.github/workflows/docs.yml
 
+  gui-frontend-build:
+    name: GUI Frontend Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: crates/ghostlink-gui/frontend/package-lock.json
+      - name: Build Ghostlink Studio frontend
+        working-directory: crates/ghostlink-gui/frontend
+        run: |
+          npm ci
+          npm run build
+
   perf-tooling-smoke:
     name: Perf Tooling Smoke
     runs-on: ubuntu-latest

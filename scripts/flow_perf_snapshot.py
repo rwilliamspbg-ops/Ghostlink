@@ -26,6 +26,35 @@ def quantile_linear(sorted_values: list[float], q: float) -> float:
     return sorted_values[lower] * (1.0 - frac) + sorted_values[upper] * frac
 
 
+def load_tuning_profile(path: str, profile_mode: str) -> dict[str, int]:
+    artifact_path = Path(path)
+    if not artifact_path.exists():
+        raise FileNotFoundError(f"tuning artifact not found: {artifact_path}")
+
+    payload = json.loads(artifact_path.read_text(encoding="utf-8"))
+    profiles = payload.get("profiles")
+    if not isinstance(profiles, dict):
+        raise ValueError("tuning artifact missing 'profiles' object")
+
+    profile = profiles.get(profile_mode)
+    if not isinstance(profile, dict):
+        raise ValueError(f"profile '{profile_mode}' missing in tuning artifact")
+
+    micro_batch = int(profile.get("micro_batch", 0))
+    tcp_max_inflight = int(profile.get("tcp_max_inflight", 0))
+    if micro_batch <= 0:
+        raise ValueError(f"invalid micro_batch for profile '{profile_mode}': {micro_batch}")
+    if tcp_max_inflight <= 0:
+        raise ValueError(
+            f"invalid tcp_max_inflight for profile '{profile_mode}': {tcp_max_inflight}"
+        )
+
+    return {
+        "micro_batch": micro_batch,
+        "tcp_max_inflight": tcp_max_inflight,
+    }
+
+
 def run_once(mode: str, run_index: int, args: argparse.Namespace, output_dir: Path) -> Path:
     out_file = output_dir / f"{mode}-{run_index}.json"
     env = {
@@ -33,9 +62,14 @@ def run_once(mode: str, run_index: int, args: argparse.Namespace, output_dir: Pa
     }
     if mode == "tcp":
         env["GHOSTLINK_TCP_AUTH_TOKEN"] = args.tcp_auth_token
+        if args.applied_tcp_max_inflight is not None:
+            env["GHOSTLINK_TCP_MAX_INFLIGHT"] = str(args.applied_tcp_max_inflight)
     elif mode == "xdp":
         env["GHOSTLINK_XDP_INTERFACE"] = args.xdp_interface
         env["GHOSTLINK_TCP_AUTH_TOKEN"] = args.tcp_auth_token
+
+    # Disable dynamic in-memory rebalance feedback by default for stable perf sampling.
+    env["GHOSTLINK_FLOW_ENABLE_REBALANCE"] = "1" if args.enable_rebalance_feedback else "0"
 
     command = ["cargo", "run"]
     if args.release:
@@ -52,7 +86,7 @@ def run_once(mode: str, run_index: int, args: argparse.Namespace, output_dir: Pa
             str(args.remote_vram_gb),
             str(args.remote_mem_gb),
             str(args.exec_tokens),
-            str(args.micro_batch),
+            str(args.applied_micro_batch),
             mode,
         ]
     )
@@ -73,9 +107,13 @@ def run_warmup(mode: str, _warmup_index: int, args: argparse.Namespace) -> None:
     env = {}
     if mode == "tcp":
         env["GHOSTLINK_TCP_AUTH_TOKEN"] = args.tcp_auth_token
+        if args.applied_tcp_max_inflight is not None:
+            env["GHOSTLINK_TCP_MAX_INFLIGHT"] = str(args.applied_tcp_max_inflight)
     elif mode == "xdp":
         env["GHOSTLINK_XDP_INTERFACE"] = args.xdp_interface
         env["GHOSTLINK_TCP_AUTH_TOKEN"] = args.tcp_auth_token
+
+    env["GHOSTLINK_FLOW_ENABLE_REBALANCE"] = "1" if args.enable_rebalance_feedback else "0"
 
     command = ["cargo", "run"]
     if args.release:
@@ -92,7 +130,7 @@ def run_warmup(mode: str, _warmup_index: int, args: argparse.Namespace) -> None:
             str(args.remote_vram_gb),
             str(args.remote_mem_gb),
             str(args.exec_tokens),
-            str(args.micro_batch),
+            str(args.applied_micro_batch),
             mode,
         ]
     )
@@ -170,12 +208,40 @@ def main() -> int:
     )
     parser.add_argument("--tcp-auth-token", default="local-token")
     parser.add_argument("--xdp-interface", default="eth0")
+    parser.add_argument(
+        "--enable-rebalance-feedback",
+        action="store_true",
+        help="Enable dynamic in-memory runtime feedback/rebalance during snapshots",
+    )
+    parser.add_argument(
+        "--profile-mode",
+        choices=["off", "latency", "balanced", "throughput"],
+        default="off",
+        help="Apply profile-specific micro-batch/TCP inflight from tuning artifact",
+    )
+    parser.add_argument(
+        "--tuning-artifact",
+        default="docs/FLOW_PERF_TUNING.json",
+        help="Path to tuning artifact consumed when --profile-mode is not 'off'",
+    )
     args = parser.parse_args()
 
     if args.runs <= 0:
         parser.error("--runs must be greater than 0")
     if args.warmup_runs < 0:
         parser.error("--warmup-runs must be 0 or greater")
+
+    args.applied_micro_batch = args.micro_batch
+    args.applied_tcp_max_inflight = None
+    if args.profile_mode != "off":
+        selected = load_tuning_profile(args.tuning_artifact, args.profile_mode)
+        args.applied_micro_batch = selected["micro_batch"]
+        args.applied_tcp_max_inflight = selected["tcp_max_inflight"]
+
+    print(
+        f"profile_mode={args.profile_mode} micro_batch={args.applied_micro_batch} "
+        f"tcp_max_inflight={args.applied_tcp_max_inflight if args.applied_tcp_max_inflight is not None else 'env/default'}"
+    )
 
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -190,6 +256,10 @@ def main() -> int:
         all_summary[mode] = summarize(files)
 
     for mode, summary in all_summary.items():
+        summary["rebalance_feedback_enabled"] = bool(args.enable_rebalance_feedback)
+        summary["profile_mode"] = args.profile_mode
+        summary["micro_batch"] = int(args.applied_micro_batch)
+        summary["tcp_max_inflight_selected"] = args.applied_tcp_max_inflight
         print(
             mode,
             int(summary["runs"]),

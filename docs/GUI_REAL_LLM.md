@@ -2,7 +2,9 @@
 
 ## Overview
 
-The Ghostlink Studio GUI now provides **real LLM inference** through Ollama's neural-chat model. All chat, model management, metrics, workers, and session tracking functions are fully operational.
+The Ghostlink Studio GUI now provides **real inference-backed chat** with
+distributed Ghostlink execution as the default path. Ollama neural-chat remains
+available as an optional compatibility mode through the proxy.
 
 ## Architecture
 
@@ -16,7 +18,13 @@ The Ghostlink Studio GUI now provides **real LLM inference** through Ollama's ne
     │ Real LLM Proxy   │
     │ real_llm_proxy.py│
     └────────┬─────────┘
-             │ HTTP port 11434
+             │ default: HTTP port 8003
+             │ optional: HTTP port 11434
+        ┌────────▼────────────┐
+        │ Ghostlink Backend   │
+        │ distributed runtime │
+        └────────┬────────────┘
+             │ compatibility mode only
     ┌────────▼────────────┐
     │  Ollama Server      │
     │  neural-chat (4.1GB)│
@@ -27,11 +35,11 @@ The Ghostlink Studio GUI now provides **real LLM inference** through Ollama's ne
 
 ### 1. Real LLM Proxy (`real_llm_proxy.py`)
 
-HTTP server on port 9999 that proxies GUI requests to Ollama:
+HTTP server on port 9999 that routes GUI requests:
 
 ```python
 # Implements endpoints:
-POST /api/inference/chat          # Real LLM chat
+POST /api/inference/chat          # default: backend distributed chat
 GET  /api/models                  # Model list
 GET  /api/sessions                # Session tracking
 GET  /api/metrics                 # Performance metrics
@@ -39,7 +47,15 @@ GET  /api/workers                 # Worker status
 GET  /health                       # Health check
 ```
 
-All responses come from Ollama's `/api/generate` endpoint.
+Mode selection:
+
+- `backend` (default): chat forwards to Rust backend distributed API
+- `ollama`: chat forwards to Ollama `/api/generate`
+
+Set mode with:
+
+- `GHOSTLINK_STUDIO_CHAT_BACKEND=backend`
+- `GHOSTLINK_STUDIO_CHAT_BACKEND=ollama`
 
 ### 2. GUI Updates (`ghostlink_gui_tkinter.py`)
 
@@ -56,7 +72,6 @@ Orchestrates all services:
 python3 scripts/launch_studio.py --check
 # Output:
 #   [OK] Ollama running on port 11434
-#   [OK] neural-chat model available
 #   [OK] Backend will run on port 8003
 #   [OK] GUI proxy will run on port 9999
 
@@ -64,6 +79,15 @@ python3 scripts/launch_studio.py --check
 python3 scripts/launch_studio.py
 # Starts: Ollama, backend, proxy, GUI (auto-coordinated)
 ```
+
+Launcher performance defaults (can be overridden by env):
+
+- `GHOSTLINK_FLOW_DEFAULT_TRANSPORT=tcp`
+- `GHOSTLINK_TCP_MAX_INFLIGHT=256`
+- `GHOSTLINK_TCP_AUTOTUNE=1`
+- `GHOSTLINK_FLOW_ENABLE_REBALANCE=1`
+- `GHOSTLINK_CHAT_EXEC_TOKENS=256`
+- `GHOSTLINK_CHAT_MICRO_BATCH=8`
 
 ### 4. Backend Integration (`crates/ghost-link/src/main.rs`)
 
@@ -102,7 +126,7 @@ ollama serve
 ./target/release/ghost-link serve
 
 # Terminal 3: Start proxy
-python3 real_llm_proxy.py
+python3 real_llm_proxy.py backend
 
 # Terminal 4: Start GUI
 python3 ghostlink_gui.py --backend-url http://127.0.0.1:9999
@@ -123,7 +147,7 @@ curl -X POST http://127.0.0.1:9999/api/inference/chat \
   }'
 
 # Response:
-# {"response": " 2 added to 2 equals 4...", "request_id": "req-llm", "model": "neural-chat"}
+# {"response": "...", "request_id": "req-1", "exec_tokens": 256, "exec_micro_batch": 8}
 ```
 
 ### Models
@@ -158,7 +182,7 @@ curl http://127.0.0.1:9999/api/workers
 
 ```bash
 curl http://127.0.0.1:9999/health
-# {"status": "ok", "model": "neural-chat"}
+# {"status": "healthy", "backend_url": "http://127.0.0.1:8003", ...}
 ```
 
 ## Performance
@@ -190,10 +214,9 @@ All functions tested:
 
 ### Requirements
 
-- Ollama installed (<https://ollama.com>)
-- neural-chat model (auto-pulled, 4.1GB)
 - Python 3.9+
-- 500MB+ disk space
+- Rust backend build available
+- Ollama installed only when using `GHOSTLINK_STUDIO_CHAT_BACKEND=ollama`
 
 ### Ports
 
@@ -226,7 +249,8 @@ ollama list | grep neural-chat
 
 ### Chat timeout (120s)
 
-LLM inference is slow on first request (model loading). Subsequent requests faster.
+Large execution requests may take longer depending on node count and model setup.
+The GUI timeout is intentionally set for long-running inference.
 
 ### Port conflicts
 
@@ -237,9 +261,9 @@ python3 scripts/launch_studio.py --port 9990
 
 ## Known Limitations
 
-1. **Single model**: Currently neural-chat only (not configurable)
-2. **Ollama requirement**: Must be pre-installed locally
-3. **First inference slow**: Model loading overhead (~5-10s first time)
+1. **Proxy mode split**: Behavior depends on `GHOSTLINK_STUDIO_CHAT_BACKEND`
+2. **Ollama mode dependency**: Ollama must be reachable for compatibility mode
+3. **First inference warmup**: Initial request can be slower
 4. **RAM**: 5-10GB recommended for smooth operation
 
 ## Future Enhancements

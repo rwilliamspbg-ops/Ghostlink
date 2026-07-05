@@ -1,0 +1,57 @@
+version: '3.8'
+
+services:
+  # Test runner for GUI functionality  
+  gui_test_runner:
+    build: 
+      context: .
+      dockerfile: Dockerfile.gui-test
+    container_name: ghostlink_gui_tests
+    volumes:
+      - .:/app/ghostlink
+      - /tmp/test_reports
+    environment:
+      - PYTHONPATH=/app/ghostlink
+      - DISPLAY=:0
+    depends_on:
+      - backend_test_server
+    networks:
+      - test_network
+
+  # Backend service for testing (reusing your existing server)
+  backend_test_server:
+    image: python:3.9-slim
+    container_name: ghostlink_backend_test
+    working_dir: /app/test
+    command: |
+      bash -c "
+        pip install flask requests && 
+        echo 'Backend test server ready'
+      "
+    volumes:
+      - .:/app/test
+    networks:
+      - test_network
+
+  # Headless browser for GUI testing (if needed)
+  gui_headless_test:
+    image: selenium/standalone-debug-hub:latest
+    container_name: ghostlink_gui_selenium_grid
+    privileged: true  
+    ports:
+      - "4444:4444"
+    networks:
+      test_network:
+        aliases:
+          - guitest.local
+
+networks:
+  test_network:
+    driver: bridge
+
+# Docker Compose override for development testing
+---
+version: '3.8' 
+services:
+  gui_test_runner:
+    user: "${RUN_USER:-0}"

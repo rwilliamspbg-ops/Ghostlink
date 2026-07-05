@@ -1151,6 +1151,7 @@ fn print_flow(opts: FlowOptions) -> Result<()> {
     let pipeline_plan = PipelinePlan::from_assignments(&assignments, &device_map);
     let placement_context = PlacementPlan::new(assignments.clone(), QuantizationMode::None);
     let rebalance_trigger = RebalanceTrigger::default();
+    let enable_inmem_runtime_feedback = is_env_truthy("GHOSTLINK_FLOW_ENABLE_REBALANCE");
 
     let schedule_preview_tokens = opts.execution_tokens.min(8);
     let token_schedule = build_token_schedule(pipeline_plan.stages.len(), schedule_preview_tokens);
@@ -1177,14 +1178,32 @@ fn print_flow(opts: FlowOptions) -> Result<()> {
                 tcp_cfg,
             )
         }
-        FlowTransportMode::InMemory => Ok(execute_pipeline_with_rebalance_and_measured(
-            &pipeline_plan,
-            opts.execution_tokens,
-            opts.micro_batch,
-            Some(&rebalance_trigger),
-            Some(&cluster),
-            Some(&placement_context),
-        )),
+        FlowTransportMode::InMemory => {
+            let rebalance = if enable_inmem_runtime_feedback {
+                Some(&rebalance_trigger)
+            } else {
+                None
+            };
+            let cluster_feedback = if enable_inmem_runtime_feedback {
+                Some(&cluster)
+            } else {
+                None
+            };
+            let placement_feedback = if enable_inmem_runtime_feedback {
+                Some(&placement_context)
+            } else {
+                None
+            };
+
+            Ok(execute_pipeline_with_rebalance_and_measured(
+                &pipeline_plan,
+                opts.execution_tokens,
+                opts.micro_batch,
+                rebalance,
+                cluster_feedback,
+                placement_feedback,
+            ))
+        }
         FlowTransportMode::Xdp => {
             let interface = xdp_interface_from_env();
             match probe_xdp_support(&interface) {
@@ -1318,6 +1337,16 @@ fn print_flow(opts: FlowOptions) -> Result<()> {
         "- Inter-stage transport mode: {} (real runtime wiring)",
         effective_transport_mode.as_str()
     );
+    if matches!(effective_transport_mode, FlowTransportMode::InMemory) {
+        println!(
+            "- In-memory runtime feedback/rebalance: {} (set GHOSTLINK_FLOW_ENABLE_REBALANCE=1 to enable)",
+            if enable_inmem_runtime_feedback {
+                "enabled"
+            } else {
+                "disabled"
+            }
+        );
+    }
     println!("- Use tcp for socket-backed transport, xdp for AF_XDP-first with automatic fallback, or inmem for channel-backed baseline\n");
 
     if matches!(effective_transport_mode, FlowTransportMode::TcpLoopback)
@@ -1456,6 +1485,18 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         state.lock().unwrap_or_else(|poison| poison.into_inner())
     }
 
+    fn chat_exec_micro_batch() -> usize {
+        env_default_usize(
+            "GHOSTLINK_CHAT_MICRO_BATCH",
+            env_default_usize("GHOSTLINK_FLOW_DEFAULT_MICRO_BATCH", 4),
+        )
+        .clamp(1, 128)
+    }
+
+    fn chat_exec_token_budget(default_tokens: usize) -> usize {
+        env_default_usize("GHOSTLINK_CHAT_EXEC_TOKENS", default_tokens).clamp(16, 4096)
+    }
+
     async fn handle_chat_completions(
         State(state): State<Arc<Mutex<BackendState>>>,
         Json(req): Json<ChatCompletionRequest>,
@@ -1485,6 +1526,8 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             .collect();
 
         let profile = detect_runtime_profile("studio-api");
+        let exec_tokens = chat_exec_token_budget(32);
+        let exec_micro_batch = chat_exec_micro_batch();
         let mut execution_info = String::new();
         let result = match assign_layers_with_runtime_profile(&nodes, &layers, &profile) {
             Ok(assignments) => {
@@ -1501,8 +1544,8 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                 let exec_result = if nodes.len() > 1 {
                     ghostlink_core::runtime::execute_pipeline_distributed(
                         &pipeline_plan,
-                        32,
-                        4,
+                        exec_tokens,
+                        exec_micro_batch,
                         tcp_transport_config_from_env(),
                         &cluster,
                         None,
@@ -1510,7 +1553,8 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                     )
                     .ok()
                 } else {
-                    execute_pipeline_tcp_loopback(&pipeline_plan, 32, 4).ok()
+                    execute_pipeline_tcp_loopback(&pipeline_plan, exec_tokens, exec_micro_batch)
+                        .ok()
                 };
 
                 if let Some(ref exec) = exec_result {
@@ -1554,9 +1598,11 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                 message: serde_json::json!({
                     "role": "assistant",
                     "content": format!(
-                        "Ghostlink backend is online. Model '{}' handled request #{}.{}{}",
+                        "Ghostlink backend is online. Model '{}' handled request #{} (exec_tokens={}, micro_batch={}).{}{}",
                         model,
                         chat_req_id,
+                        exec_tokens,
+                        exec_micro_batch,
                         execution_info,
                         if nodes.len() > 1 { format!(" Distributed across {} nodes.", nodes.len()) } else { "".to_string() }
                     )
@@ -1918,6 +1964,9 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         };
 
         let token_estimate = req.message.split_whitespace().count().clamp(1, 1024);
+        let requested_exec_tokens = req.max_tokens.unwrap_or(token_estimate).clamp(16, 4096);
+        let exec_tokens = chat_exec_token_budget(requested_exec_tokens);
+        let exec_micro_batch = chat_exec_micro_batch();
 
         // Run real inference pipeline execution (simulated compute on real transport)
         let nodes = cluster.nodes();
@@ -1954,8 +2003,8 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                 let exec_result = if nodes.len() > 1 {
                     ghostlink_core::runtime::execute_pipeline_distributed(
                         &pipeline_plan,
-                        token_estimate,
-                        4,
+                        exec_tokens,
+                        exec_micro_batch,
                         tcp_transport_config_from_env(),
                         &cluster,
                         None,
@@ -1967,7 +2016,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                     })
                     .ok()
                 } else {
-                    execute_pipeline_tcp_loopback(&pipeline_plan, token_estimate, 4)
+                    execute_pipeline_tcp_loopback(&pipeline_plan, exec_tokens, exec_micro_batch)
                         .map_err(|e| {
                             println!("API: Loopback execution failed: {}", e);
                             e
@@ -2037,6 +2086,8 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             "response": response_text,
             "request_id": format!("req-{}", backend.chat_requests),
             "tokens_estimated": token_estimate,
+            "exec_tokens": exec_tokens,
+            "exec_micro_batch": exec_micro_batch,
             "metrics": result.map(|r| serde_json::json!({
                 "throughput": r.throughput_tokens_per_sec,
                 "p95_ms": r.p95_token_latency_ms

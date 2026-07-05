@@ -6,13 +6,15 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "screenshots:ui": "node scripts/capture_ui_screenshots.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.0.0",
     "svelte": "^4.2.18"
   },
   "devDependencies": {
+    "playwright": "^1.54.2",
     "@sveltejs/vite-plugin-svelte": "^3.1.2",
     "vite": "^5.4.8"
   }

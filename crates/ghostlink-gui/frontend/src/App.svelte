@@ -2,7 +2,14 @@
   import { onMount } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
 
-  const navItems = ['Home', 'Models', 'Chat', 'Cluster', 'Settings', 'Doctor'];
+  const navItems = [
+    { id: 'Home', icon: '⌂', subtitle: 'Overview' },
+    { id: 'Models', icon: '◈', subtitle: 'Catalog' },
+    { id: 'Chat', icon: '✦', subtitle: 'Inference' },
+    { id: 'Cluster', icon: '⎈', subtitle: 'Workers' },
+    { id: 'Settings', icon: '⚙', subtitle: 'Config' },
+    { id: 'Doctor', icon: '✚', subtitle: 'Diagnostics' },
+  ];
   let activeTab = 'Home';
   let cards = [
     { label: 'Toolchain', value: 'Checking...' },
@@ -61,6 +68,145 @@
   let reducedMotion = false;
   let highContrast = false;
   let busy = false;
+  let initializing = true;
+
+  const forceMockBridge = typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('mock');
+  const tauriRuntimeAvailable = typeof window !== 'undefined' && ('__TAURI_INTERNALS__' in window || '__TAURI_METADATA__' in window);
+  const useMockBridge = forceMockBridge || !tauriRuntimeAvailable;
+
+  async function mockInvoke(commandName, args = {}) {
+    await new Promise((resolve) => setTimeout(resolve, 120));
+
+    const defaultRun = {
+      ok: true,
+      command: commandName,
+      stdout: 'Mock bridge command completed successfully.',
+      stderr: '',
+      exitCode: 0,
+    };
+
+    switch (commandName) {
+      case 'studio_status':
+        return {
+          app: 'Ghostlink Studio',
+          status: 'mock-preview-ready',
+          repo_root: '/workspaces/Ghostlink',
+        };
+      case 'studio_snapshot':
+        return {
+          metrics: [
+            { label: 'Toolchain', value: 'Rust 1.80 (stable)' },
+            { label: 'Python', value: '3.12.2 + venv' },
+            { label: 'Local Config', value: 'ghostlink.toml loaded' },
+            { label: 'Doctor Artifact', value: 'report fresh (2m ago)' },
+          ],
+          summary: 'Snapshot complete: runtime + config surfaces healthy.',
+          checksPassed: 9,
+          checksWarn: 1,
+        };
+      case 'load_ghostlink_config':
+        return {
+          path: './ghostlink.toml',
+          exists: true,
+          content: '[flow]\ntransport = "tcp"\nexecution_tokens = 256\nmicro_batch = 8\n',
+        };
+      case 'save_ghostlink_config':
+        return {
+          path: './ghostlink.toml',
+        };
+      case 'run_doctor_with_json':
+        return {
+          path: './tmp/doctor-report.json',
+          pass: 6,
+          warn: 1,
+          fail: 0,
+          checks: [
+            { status: 'PASS', area: 'runtime', name: 'toolchain', detail: 'Rust and Python runtimes detected.' },
+            { status: 'PASS', area: 'network', name: 'backend', detail: 'Backend health endpoint reachable.' },
+            { status: 'WARN', area: 'security', name: 'secrets', detail: 'Using local development token.', fix: 'Rotate token for production deploy.' },
+          ],
+        };
+      case 'verify_hf_repo':
+        return {
+          ok: true,
+          repo: args.repo,
+          file: args.file,
+          stdout: 'Repository and target file are accessible.',
+          stderr: '',
+        };
+      case 'list_model_presets':
+        return [
+          { name: 'Fast Smoke', repo: 'sshleifer/tiny-gpt2', quant: 'int8', defaultFile: 'config.json' },
+          { name: 'Balanced OSS', repo: 'mistralai/Mistral-7B-Instruct-v0.2', quant: 'q4', defaultFile: 'config.json' },
+          { name: 'High Quality', repo: 'meta-llama/Meta-Llama-3-8B-Instruct', quant: 'q6', defaultFile: 'config.json' },
+        ];
+      case 'load_flow_defaults':
+        return {
+          localId: 'studio-local',
+          remoteId: 'studio-remote',
+          executionTokens: 256,
+          microBatch: 8,
+          transport: 'tcp',
+        };
+      case 'discover_workers':
+        return {
+          summary: '3 workers discovered (2 reachable).',
+          workers: [
+            { id: 'studio-local', available: true, acceleration: 'gpu', workers: 4, probeMode: args.full ? 'full' : 'fast', systemMemoryGb: 32, gpuVramGb: 24 },
+            { id: 'studio-remote', available: true, acceleration: 'gpu', workers: 3, probeMode: args.full ? 'full' : 'fast', systemMemoryGb: 64, gpuVramGb: 48 },
+            { id: 'studio-edge', available: false, acceleration: 'cpu', workers: 2, probeMode: args.full ? 'full' : 'fast', systemMemoryGb: 16, gpuVramGb: 0, error: 'Connection timeout' },
+          ],
+        };
+      case 'run_flow_between':
+        return {
+          ...defaultRun,
+          command: `ghost-link flow ${args.localId} ${args.remoteId} 32 32 ${args.executionTokens} ${args.microBatch} ${args.transport}`,
+          stdout: `Connected ${args.localId} -> ${args.remoteId} (${args.transport}, mb=${args.microBatch}).`,
+        };
+      case 'quick_tcp_probe':
+        return {
+          reachable: true,
+          latencyMs: 2.7,
+          error: null,
+        };
+      case 'cluster_preview':
+        return {
+          summary: args.full ? 'Deep cluster snapshot refreshed.' : 'Cluster snapshot refreshed.',
+          nodes: [
+            { id: 'studio-local', health: 'healthy', acceleration: 'gpu', workers: 4, systemMemoryGb: 32, gpuVramGb: 24 },
+            { id: 'studio-remote', health: 'healthy', acceleration: 'gpu', workers: 3, systemMemoryGb: 64, gpuVramGb: 48 },
+            { id: 'studio-edge', health: 'degraded', acceleration: 'cpu', workers: 2, systemMemoryGb: 16, gpuVramGb: 0 },
+          ],
+        };
+      case 'chat_infer':
+        return {
+          backend: args.distributed ? 'distributed-backend' : 'local-loopback',
+          model: args.model,
+          response: 'Polished chat preview response from Ghostlink runtime (mock bridge).',
+          trace: `tokens=${args.maxTokens} temp=${args.temperature}`,
+        };
+      case 'run_validation_tier':
+        return {
+          ok: true,
+          tier: args.tier,
+          summary: `${String(args.tier).toUpperCase()} validation completed with no regressions.`,
+          steps: [
+            { name: 'Doctor preflight', ok: true, durationMs: 420 },
+            { name: 'Flow canary', ok: true, durationMs: 680 },
+            { name: 'Docs consistency', ok: true, durationMs: 250 },
+          ],
+        };
+      default:
+        return defaultRun;
+    }
+  }
+
+  async function bridgeInvoke(commandName, args = {}) {
+    if (useMockBridge) {
+      return mockInvoke(commandName, args);
+    }
+    return invoke(commandName, args);
+  }
 
   function applyVisualPreferences() {
     document.body.dataset.theme = uiTheme;
@@ -138,7 +284,7 @@
   async function exportProfile() {
     busy = true;
     try {
-      const result = await invoke('export_studio_profile', {
+      const result = await bridgeInvoke('export_studio_profile', {
         profileName,
         uiTheme,
         fontScale: Number(fontScale),
@@ -174,7 +320,7 @@
   async function importProfile() {
     busy = true;
     try {
-      const profile = await invoke('import_studio_profile', { profilePath });
+      const profile = await bridgeInvoke('import_studio_profile', { profilePath });
       profileName = profile.profileName;
       uiTheme = profile.uiTheme;
       fontScale = Number(profile.fontScale);
@@ -209,7 +355,7 @@
   }
 
   async function loadSnapshot() {
-    const snapshot = await invoke('studio_snapshot');
+    const snapshot = await bridgeInvoke('studio_snapshot');
     cards = snapshot.metrics.map((metric) => ({ label: metric.label, value: metric.value }));
     summary = snapshot.summary;
 
@@ -231,7 +377,7 @@
   async function run(action, args = {}) {
     busy = true;
     try {
-      const result = await invoke(action, args);
+      const result = await bridgeInvoke(action, args);
       status = result.ok ? 'Command succeeded' : 'Command failed';
       command = result.command;
       output = [result.stdout?.trim(), result.stderr?.trim()].filter(Boolean).join('\n\n');
@@ -258,7 +404,7 @@
   async function loadConfig() {
     busy = true;
     try {
-      const cfg = await invoke('load_ghostlink_config');
+      const cfg = await bridgeInvoke('load_ghostlink_config');
       configPath = cfg.path;
       configContent = cfg.content;
       configLoaded = true;
@@ -274,7 +420,7 @@
   async function saveConfig() {
     busy = true;
     try {
-      const cfg = await invoke('save_ghostlink_config', { content: configContent });
+      const cfg = await bridgeInvoke('save_ghostlink_config', { content: configContent });
       configPath = cfg.path;
       status = 'Config saved';
       output = `Saved ${cfg.path}`;
@@ -291,7 +437,7 @@
     busy = true;
     doctorSummary = null;
     try {
-      const report = await invoke('run_doctor_with_json', { strict });
+      const report = await bridgeInvoke('run_doctor_with_json', { strict });
       doctorSummary = report;
       status = strict ? 'Doctor strict report generated' : 'Doctor report generated';
       output = `Doctor JSON: ${report.path}`;
@@ -308,7 +454,7 @@
     busy = true;
     modelCheck = null;
     try {
-      const result = await invoke('verify_hf_repo', {
+      const result = await bridgeInvoke('verify_hf_repo', {
         repo: modelRepo,
         file: modelFile,
       });
@@ -324,7 +470,7 @@
   }
 
   async function loadModelPresets() {
-    const presets = await invoke('list_model_presets');
+    const presets = await bridgeInvoke('list_model_presets');
     modelPresets = presets;
   }
 
@@ -358,7 +504,7 @@
 
   async function loadFlowDefaults() {
     try {
-      const defaults = await invoke('load_flow_defaults');
+      const defaults = await bridgeInvoke('load_flow_defaults');
       localNodeId = String(flowArg(localNodeId, defaults.localId, defaults.local_id));
       remoteNodeId = String(flowArg(remoteNodeId, defaults.remoteId, defaults.remote_id));
       flowExecutionTokens = Number(flowArg(flowExecutionTokens, defaults.executionTokens, defaults.execution_tokens));
@@ -374,7 +520,7 @@
     busy = true;
     try {
       const nodeIds = parseNodeHints(workerProbeHints);
-      const result = await invoke('discover_workers', { nodeIds, full: workerProbeFull });
+      const result = await bridgeInvoke('discover_workers', { nodeIds, full: workerProbeFull });
       workerDiscovery = Array.isArray(result.workers) ? result.workers : [];
       workerDiscoverySummary = result.summary ?? 'Worker discovery completed.';
 
@@ -416,7 +562,7 @@
   async function connectFlow() {
     busy = true;
     try {
-      const result = await invoke('run_flow_between', {
+      const result = await bridgeInvoke('run_flow_between', {
         localId: localNodeId,
         remoteId: remoteNodeId,
         executionTokens: Number(flowExecutionTokens),
@@ -498,7 +644,7 @@
     const target = ensureTcpTarget(workerId);
     busy = true;
     try {
-      const result = await invoke('quick_tcp_probe', {
+      const result = await bridgeInvoke('quick_tcp_probe', {
         host: target.host,
         port: Number(target.port),
         timeoutMs: Number(tcpProbeTimeoutMs),
@@ -543,7 +689,7 @@
       for (const worker of targets) {
         const started = Date.now();
         try {
-          const result = await invoke('run_flow_between', {
+          const result = await bridgeInvoke('run_flow_between', {
             localId: localNodeId,
             remoteId: worker.id,
             executionTokens: Number(flowExecutionTokens),
@@ -586,7 +732,7 @@
   async function refreshCluster(full = false) {
     busy = true;
     try {
-      const snapshot = await invoke('cluster_preview', { nodeId: 'studio-local', full });
+      const snapshot = await bridgeInvoke('cluster_preview', { nodeId: 'studio-local', full });
       clusterNodes = snapshot.nodes;
       clusterSummary = snapshot.summary;
       status = 'Cluster snapshot refreshed';
@@ -602,7 +748,7 @@
     busy = true;
     chatResult = null;
     try {
-      const result = await invoke('chat_infer', {
+      const result = await bridgeInvoke('chat_infer', {
         prompt: chatPrompt,
         model: chatModel,
         temperature: Number(chatTemperature),
@@ -635,7 +781,7 @@
     busy = true;
     validationReport = null;
     try {
-      const report = await invoke('run_validation_tier', { tier: validationTier });
+      const report = await bridgeInvoke('run_validation_tier', { tier: validationTier });
       validationReport = report;
       status = report.ok ? 'Validation completed successfully' : 'Validation found failures';
       output = report.summary;
@@ -666,7 +812,7 @@
     loadPreferences();
     applyVisualPreferences();
     try {
-      const studio = await invoke('studio_status');
+      const studio = await bridgeInvoke('studio_status');
       status = `${studio.app}: ${studio.status}`;
       output = `Repo root: ${studio.repo_root}`;
       await loadSnapshot();
@@ -678,8 +824,14 @@
     } catch (err) {
       status = 'Studio bridge unavailable';
       output = String(err);
+    } finally {
+      initializing = false;
     }
   });
+
+  $: reachableWorkerCount = workerDiscovery.filter((item) => item.available).length;
+  $: selectedWorkerCount = selectedWorkerIds.length;
+  $: selectedReachableWorkerCount = workerDiscovery.filter((item) => item.available && selectedWorkerIds.includes(item.id)).length;
 
   $: applyVisualPreferences();
   $: persistPreferences();
@@ -687,37 +839,65 @@
 
 <div class="studio-shell">
   <aside class="sidebar">
-    <div class="brand">Ghostlink Studio</div>
+    <div class="brand">
+      <span class="brand-mark">GL</span>
+      <div>
+        <strong>Ghostlink Studio</strong>
+        <small>Fabric Control Plane</small>
+      </div>
+    </div>
+    {#if useMockBridge}
+      <div class="preview-banner">Preview mode (mock bridge)</div>
+    {/if}
     {#each navItems as item}
-      <button class="nav-item" class:active={item === activeTab} on:click={() => (activeTab = item)}>{item}</button>
+      <button class="nav-item" class:active={item.id === activeTab} on:click={() => (activeTab = item.id)}>
+        <span class="nav-icon">{item.icon}</span>
+        <span>
+          <strong>{item.id}</strong>
+          <small>{item.subtitle}</small>
+        </span>
+      </button>
     {/each}
   </aside>
 
   <main class="dashboard">
+    {#if busy}
+      <div class="busy-banner"><span class="busy-dot"></span>Working... {status}</div>
+    {/if}
+
     {#if activeTab === 'Home'}
       <header class="hero">
         <h1>Distributed Inference, Simplified</h1>
         <p>{summary}</p>
         <div class="actions">
-          <button class="primary" on:click={() => run('run_cluster_start', { nodeCount: 2, basePort: 46000 })} disabled={busy}>Start Cluster</button>
+          <button class="primary" on:click={() => run('run_cluster_start', { nodeCount: 2, basePort: 46000 })} disabled={busy}>{busy ? 'Starting...' : 'Start Cluster'}</button>
           <button on:click={() => run('run_flow_quick')} disabled={busy}>Run Flow</button>
           <button on:click={() => run('run_probe', { nodeId: 'studio-local', full: false })} disabled={busy}>Probe Host</button>
           <select bind:value={validationTier}>
             <option value="fast">Validation: Fast</option>
             <option value="full">Validation: Full</option>
           </select>
-          <button on:click={runValidation} disabled={busy}>Run Validation</button>
+          <button on:click={runValidation} disabled={busy}>{busy ? 'Validating...' : 'Run Validation'}</button>
           <button on:click={loadSnapshot} disabled={busy}>Refresh Snapshot</button>
         </div>
       </header>
 
-      <section class="metrics-grid">
-        {#each cards as card}
-          <article class="metric-card">
-            <span>{card.label}</span>
-            <strong>{card.value}</strong>
-          </article>
-        {/each}
+      <section class="metrics-grid" aria-busy={initializing}>
+        {#if initializing}
+          {#each [1, 2, 3, 4] as _}
+            <article class="metric-card loading-card">
+              <span>Loading</span>
+              <strong>...</strong>
+            </article>
+          {/each}
+        {:else}
+          {#each cards as card}
+            <article class="metric-card">
+              <span>{card.label}</span>
+              <strong>{card.value}</strong>
+            </article>
+          {/each}
+        {/if}
       </section>
       {#if validationReport}
         <section class="validation-report">
@@ -775,9 +955,9 @@
         <h1>Cluster Operations</h1>
         <p>{clusterSummary} · {workerDiscoverySummary}</p>
         <div class="actions">
-          <button class="primary" on:click={discoverWorkers} disabled={busy}>Discover Workers</button>
-          <button class="primary" on:click={connectFlow} disabled={busy}>Connect Local -> Remote</button>
-          <button class="primary" on:click={connectAllReachableWorkers} disabled={busy || workerDiscovery.length === 0}>Connect Selected/Reachable</button>
+          <button class="primary" on:click={discoverWorkers} disabled={busy}>{busy ? 'Discovering...' : 'Discover Workers'}</button>
+          <button class="primary" on:click={connectFlow} disabled={busy}>{busy ? 'Connecting...' : 'Connect Local -> Remote'}</button>
+          <button class="primary" on:click={connectAllReachableWorkers} disabled={busy || workerDiscovery.length === 0}>{busy ? 'Batch Connecting...' : 'Connect Selected/Reachable'}</button>
           <button on:click={selectAllReachableWorkers} disabled={busy || workerDiscovery.length === 0}>Select Reachable</button>
           <button on:click={clearWorkerSelection} disabled={busy || selectedWorkerIds.length === 0}>Clear Selection</button>
           <button on:click={() => refreshCluster(false)} disabled={busy}>Refresh Cluster</button>
@@ -792,6 +972,25 @@
           {/if}
         </div>
       </header>
+
+      <section class="worker-kpis">
+        <article class="metric-card">
+          <span>Discovered</span>
+          <strong>{workerDiscovery.length}</strong>
+        </article>
+        <article class="metric-card">
+          <span>Reachable</span>
+          <strong>{reachableWorkerCount}</strong>
+        </article>
+        <article class="metric-card">
+          <span>Selected</span>
+          <strong>{selectedWorkerCount}</strong>
+        </article>
+        <article class="metric-card">
+          <span>Selected + Reachable</span>
+          <strong>{selectedReachableWorkerCount}</strong>
+        </article>
+      </section>
 
       <section class="cluster-controls">
         <article class="cluster-card">
@@ -967,45 +1166,56 @@
         <h1>Chat / Inference</h1>
         <p>Run live flow-backed inference checks and review runtime metrics.</p>
       </header>
-      <section class="chat-panel">
-        <label>Model
-          <input bind:value={chatModel} placeholder="model name" />
-        </label>
-        <label>Prompt
-          <textarea bind:value={chatPrompt} placeholder="Ask something..." spellcheck="false" />
-        </label>
-        <div class="chat-controls">
-          <label>Temperature
-            <input type="range" min="0" max="1" step="0.1" bind:value={chatTemperature} />
-            <span>{chatTemperature}</span>
+      <div class="chat-layout">
+        <section class="chat-panel card-shell">
+          <h3>Prompt Builder</h3>
+          <label>Model
+            <input bind:value={chatModel} placeholder="model name" />
           </label>
-          <label>Max Tokens
-            <input type="number" min="32" max="2048" step="32" bind:value={chatMaxTokens} />
+          <label>Prompt
+            <textarea bind:value={chatPrompt} placeholder="Ask something..." spellcheck="false" />
           </label>
-          <label class="checkbox">
-            <input type="checkbox" bind:checked={chatDistributed} /> Distributed backend
-          </label>
-          <button class="primary" on:click={runChat} disabled={busy}>Generate</button>
-        </div>
-      </section>
-      {#if chatResult}
-        <section class="chat-response">
-          <h3>{chatResult.model} ({chatResult.backend})</h3>
-          <p>{chatResult.response}</p>
+          <div class="chat-controls">
+            <label>Temperature
+              <input type="range" min="0" max="1" step="0.1" bind:value={chatTemperature} />
+              <span>{chatTemperature}</span>
+            </label>
+            <label>Max Tokens
+              <input type="number" min="32" max="2048" step="32" bind:value={chatMaxTokens} />
+            </label>
+            <label class="checkbox">
+              <input type="checkbox" bind:checked={chatDistributed} /> Distributed backend
+            </label>
+            <button class="primary" on:click={runChat} disabled={busy}>{busy ? 'Generating...' : 'Generate'}</button>
+          </div>
         </section>
-      {/if}
-      {#if chatHistory.length > 0}
-        <section class="chat-history">
-          <h3>Recent Exchanges</h3>
-          {#each chatHistory as entry}
-            <article class="chat-history-item">
-              <p class="prompt">Q: {entry.prompt}</p>
-              <p class="answer">A: {entry.response}</p>
-              <p class="meta">{entry.model} · {entry.backend}</p>
-            </article>
-          {/each}
+
+        <section class="chat-side-column">
+          {#if chatResult}
+            <section class="chat-response card-shell">
+              <h3>{chatResult.model} ({chatResult.backend})</h3>
+              <p>{chatResult.response}</p>
+            </section>
+          {:else}
+            <section class="chat-response card-shell placeholder-panel">
+              <h3>Awaiting Response</h3>
+              <p>Run Generate to populate live inference output and trace context.</p>
+            </section>
+          {/if}
+          {#if chatHistory.length > 0}
+            <section class="chat-history card-shell">
+              <h3>Recent Exchanges</h3>
+              {#each chatHistory as entry}
+                <article class="chat-history-item">
+                  <p class="prompt">Q: {entry.prompt}</p>
+                  <p class="answer">A: {entry.response}</p>
+                  <p class="meta">{entry.model} · {entry.backend}</p>
+                </article>
+              {/each}
+            </section>
+          {/if}
         </section>
-      {/if}
+      </div>
     {:else if activeTab === 'Settings'}
       <header class="hero">
         <h1>Settings</h1>
@@ -1053,7 +1263,10 @@
   </main>
 
   <aside class="details">
-    <h2>Details</h2>
+    <div class="details-header">
+      <h2>Details</h2>
+      <span class="state-chip" class:busy={busy}>{busy ? 'RUNNING' : 'READY'}</span>
+    </div>
     <p>{status}</p>
     <p class="cmd">{command}</p>
     <pre>{output}</pre>

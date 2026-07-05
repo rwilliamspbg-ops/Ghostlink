@@ -7,12 +7,15 @@ import json
 import requests
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import sys
+import os
 from urllib.parse import urlparse
 
 OLLAMA_URL = "http://127.0.0.1:11434"
 MODEL_MANAGER_URL = "http://127.0.0.1:8001"
 BACKEND_URL = "http://127.0.0.1:8003"
 MODEL = "neural-chat"
+CHAT_BACKEND = "backend"
+REQUEST_TIMEOUT_SECONDS = 180
 
 class GatewayHandler(BaseHTTPRequestHandler):
     def handle_proxy(self, target_url):
@@ -70,7 +73,14 @@ class GatewayHandler(BaseHTTPRequestHandler):
             self.handle_proxy(BACKEND_URL)
 
     def handle_chat(self):
-        """Special handling for chat to use Ollama neural-chat."""
+        """Handle chat via distributed backend by default, with Ollama fallback mode."""
+        if CHAT_BACKEND == 'ollama':
+            self.handle_chat_via_ollama()
+            return
+        self.handle_proxy(BACKEND_URL)
+
+    def handle_chat_via_ollama(self):
+        """Compatibility path for deployments that explicitly want Ollama chat."""
         content_length = int(self.headers.get('Content-Length', 0))
         body = self.rfile.read(content_length)
 
@@ -91,7 +101,11 @@ class GatewayHandler(BaseHTTPRequestHandler):
                 }
             }
 
-            resp = requests.post(f'{OLLAMA_URL}/api/generate', json=payload, timeout=120)
+            resp = requests.post(
+                f'{OLLAMA_URL}/api/generate',
+                json=payload,
+                timeout=REQUEST_TIMEOUT_SECONDS,
+            )
             resp.raise_for_status()
 
             ollama_response = resp.json()
@@ -121,10 +135,22 @@ class GatewayHandler(BaseHTTPRequestHandler):
             print(f'[Gateway] {format % args}')
 
 if __name__ == '__main__':
+    CHAT_BACKEND = (sys.argv[1] if len(sys.argv) > 1 else 'backend').strip().lower()
+    if CHAT_BACKEND not in {'backend', 'ollama'}:
+        CHAT_BACKEND = 'backend'
+
+    REQUEST_TIMEOUT_SECONDS = int(
+        os.getenv('GHOSTLINK_PROXY_TIMEOUT_S', str(REQUEST_TIMEOUT_SECONDS))
+    )
+    MODEL = os.getenv('GHOSTLINK_PROXY_MODEL', MODEL)
+
     port = 9999
     server = HTTPServer(('127.0.0.1', port), GatewayHandler)
     print(f'[Gateway] Ghostlink Studio Gateway running on http://127.0.0.1:{port}')
-    print(f'  -> /api/inference/chat  => Ollama ({OLLAMA_URL})')
+    if CHAT_BACKEND == 'ollama':
+        print(f'  -> /api/inference/chat  => Ollama ({OLLAMA_URL}, model={MODEL})')
+    else:
+        print(f'  -> /api/inference/chat  => Rust Backend distributed chat ({BACKEND_URL})')
     print(f'  -> /api/models/*        => Model Manager ({MODEL_MANAGER_URL})')
     print(f'  -> *                    => Rust Backend ({BACKEND_URL})')
     try:

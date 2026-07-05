@@ -7,6 +7,8 @@
 .venv/
 __pycache__/
 *.pyc
+crates/ghostlink-gui/frontend/node_modules/
+crates/ghostlink-gui/frontend/dist/
 
 # Vendored GUI local runtime artifacts
 third_party/mohawk_gui/__pycache__/
@@ -14,6 +16,7 @@ third_party/mohawk_gui/certs/
 
 # Local runtime output and diagnostics artifacts
 tmp/
+artifacts/release/
 
 # Local quickstart config bootstrap artifact
 ghostlink.toml
