@@ -495,7 +495,7 @@ mod tests {
             50,
             100,
             vec![NodeMetrics {
-                name: "NODE-02".into(),
+                name: "node-a".into(),
                 gpu_name: None,
                 used_vram_gb: 12.0,
                 total_vram_gb: 24.0,

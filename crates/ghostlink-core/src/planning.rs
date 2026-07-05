@@ -658,8 +658,7 @@ mod tests {
 
     #[test]
     fn avg_vram_per_layer_returns_zero_for_empty() {
-        let mut assignment = LayerAssignment::new("node-a".into(), 0, 0, 0.0);
-        assignment.num_layers = 0;
+        let assignment = LayerAssignment::new("node-a".into(), 0, 0, 0.0);
         assert_eq!(assignment.avg_vram_per_layer(), 0.0);
     }
 
