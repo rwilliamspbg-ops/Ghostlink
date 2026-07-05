@@ -36,6 +36,7 @@ fn main() {
             load_flow_defaults,
             list_model_presets,
             list_backend_models,
+            ollama_health,
             download_backend_model,
             load_backend_model,
             run_validation_tier,
@@ -852,22 +853,28 @@ fn run_cluster_start(node_count: usize, base_port: u16) -> Result<CommandResult,
 }
 
 #[tauri::command]
-fn verify_hf_repo(repo: String, file: String) -> Result<ModelVerifyResult, String> {
+fn verify_hf_repo(repo: String, file: Option<String>) -> Result<ModelVerifyResult, String> {
     let root = repo_root();
     let python = preferred_python();
+    let resolved_file = file
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("config.json")
+        .to_string();
     let output = Command::new(&python)
         .arg("scripts/verify_hf_models.py")
         .arg("--repo")
         .arg(repo.as_str())
         .arg("--file")
-        .arg(file.as_str())
+        .arg(resolved_file.as_str())
         .current_dir(&root)
         .output()
         .map_err(|err| format!("failed to execute verify_hf_models.py: {}", err))?;
 
     Ok(ModelVerifyResult {
         repo,
-        file,
+        file: resolved_file,
         ok: output.status.success(),
         stdout: String::from_utf8_lossy(&output.stdout).to_string(),
         stderr: String::from_utf8_lossy(&output.stderr).to_string(),
@@ -952,6 +959,11 @@ fn list_backend_models() -> Result<Value, String> {
 }
 
 #[tauri::command]
+fn ollama_health() -> Result<Value, String> {
+    backend_get_json("/api/ollama/health")
+}
+
+#[tauri::command]
 fn download_backend_model(model_id: String) -> Result<Value, String> {
     let normalized = model_id.trim().to_string();
     if normalized.is_empty() {
@@ -994,17 +1006,23 @@ fn chat_infer(
         return Err("prompt cannot be empty".to_string());
     }
 
+    let requested_model = model.trim();
+    if requested_model.is_empty() {
+        return Err("model cannot be empty".to_string());
+    }
+
     let resolved_ollama_url = ollama_url.unwrap_or_else(|| {
         std::env::var("GHOSTLINK_OLLAMA_URL")
             .unwrap_or_else(|_| "http://127.0.0.1:11434".to_string())
     });
     let resolved_ollama_model = ollama_model
         .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| model.clone());
+        .unwrap_or_else(|| requested_model.to_string());
 
     let payload = serde_json::json!({
         "message": concise_prompt,
-        "model": resolved_ollama_model,
+        "model": requested_model,
+        "ollama_model": resolved_ollama_model,
         "temperature": temperature,
         "max_tokens": max_tokens,
         "ollama_url": resolved_ollama_url,
@@ -1037,7 +1055,7 @@ fn chat_infer(
         model: response
             .get("model")
             .and_then(|value| value.as_str())
-            .unwrap_or(model.as_str())
+            .unwrap_or(requested_model)
             .to_string(),
         response: response_text,
         trace,
