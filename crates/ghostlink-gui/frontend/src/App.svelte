@@ -37,6 +37,10 @@
   let selectedBackendModel = '';
   let modelActionMessage = '';
   let modelCatalogFilter = '';
+  let hfQuery = 'text-generation';
+  let hfModels = [];
+  let hfLoading = false;
+  let hfError = '';
   const modelDownloadCatalog = [
     { id: 'neural-chat', family: 'General', sizeHint: '~4-7GB', source: 'ollama' },
     { id: 'llama3.2:3b', family: 'General', sizeHint: '~2GB', source: 'ollama' },
@@ -186,6 +190,16 @@
           { name: 'Balanced OSS', repo: 'mistralai/Mistral-7B-Instruct-v0.2', quant: 'q4', defaultFile: 'config.json' },
           { name: 'High Quality', repo: 'meta-llama/Meta-Llama-3-8B-Instruct', quant: 'q6', defaultFile: 'config.json' },
         ];
+      case 'list_hf_models':
+        return {
+          query: String(args.query ?? ''),
+          limit: Number(args.limit ?? 12),
+          models: [
+            { id: 'mistralai/Mistral-7B-Instruct-v0.2', pipeline_tag: 'text-generation', downloads: 1800000, likes: 4200, last_modified: '2026-06-18T00:00:00.000Z', private: false, gated: 'false', has_config: true, has_tokenizer: true },
+            { id: 'meta-llama/Meta-Llama-3-8B-Instruct', pipeline_tag: 'text-generation', downloads: 2500000, likes: 9300, last_modified: '2026-05-28T00:00:00.000Z', private: false, gated: 'manual', has_config: true, has_tokenizer: true },
+            { id: 'Qwen/Qwen2.5-7B-Instruct', pipeline_tag: 'text-generation', downloads: 1200000, likes: 3700, last_modified: '2026-06-07T00:00:00.000Z', private: false, gated: 'false', has_config: true, has_tokenizer: true },
+          ],
+        };
       case 'list_backend_models':
         return {
           models: [
@@ -320,6 +334,44 @@
           { name: 'Mistral 7B', repo: 'mistralai/Mistral-7B-v0.1', quant: 'q4', defaultFile: 'config.json' },
           { name: 'Llama 3 8B', repo: 'meta-llama/Meta-Llama-3-8B-Instruct', quant: 'q4', defaultFile: 'config.json' },
         ];
+      case 'list_hf_models': {
+        const q = String(args.query ?? '').trim();
+        const l = Number(args.limit ?? 12);
+        const url = new URL('https://huggingface.co/api/models');
+        if (q) {
+          url.searchParams.set('search', q);
+        }
+        url.searchParams.set('limit', String(Number.isFinite(l) ? Math.max(1, Math.min(50, l)) : 12));
+        url.searchParams.set('sort', 'downloads');
+        url.searchParams.set('direction', '-1');
+        url.searchParams.set('full', 'true');
+
+        const response = await fetch(url.toString());
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status} while requesting Hugging Face models`);
+        }
+        const data = await response.json();
+        const models = Array.isArray(data)
+          ? data.map((entry) => {
+              const siblings = Array.isArray(entry?.siblings) ? entry.siblings : [];
+              const hasConfig = siblings.some((item) => item?.rfilename === 'config.json');
+              const hasTokenizer = siblings.some((item) => item?.rfilename === 'tokenizer.json' || item?.rfilename === 'tokenizer_config.json');
+              return {
+                id: String(entry?.id ?? ''),
+                pipeline_tag: String(entry?.pipeline_tag ?? 'unknown'),
+                downloads: Number(entry?.downloads ?? 0),
+                likes: Number(entry?.likes ?? 0),
+                last_modified: String(entry?.lastModified ?? ''),
+                private: Boolean(entry?.private),
+                gated: String(entry?.gated ?? 'false'),
+                has_config: hasConfig,
+                has_tokenizer: hasTokenizer,
+              };
+            })
+          : [];
+
+        return { query: q, limit: l, models };
+      }
       case 'list_backend_models':
         return fetchJson('/api/models');
       case 'download_backend_model':
@@ -711,6 +763,23 @@
     modelPresets = presets;
   }
 
+  async function loadHfModels() {
+    hfLoading = true;
+    hfError = '';
+    try {
+      const result = await bridgeInvoke('list_hf_models', {
+        query: hfQuery,
+        limit: 12,
+      });
+      hfModels = Array.isArray(result?.models) ? result.models : [];
+    } catch (err) {
+      hfError = String(err);
+      hfModels = [];
+    } finally {
+      hfLoading = false;
+    }
+  }
+
   async function refreshConnectivity() {
     if (useMockBridge) {
       backendReachable = true;
@@ -765,6 +834,21 @@
       ollamaModel = selectedBackendModel;
       modelActionMessage = `Selected catalog model ${selectedBackendModel}`;
     }
+  }
+
+  function useHfModel(modelId) {
+    const repo = String(modelId ?? '').trim();
+    if (!repo) {
+      return;
+    }
+    modelRepo = repo;
+    modelFile = DEFAULT_MODEL_FILE;
+    modelActionMessage = `Selected Hugging Face repo ${repo}`;
+  }
+
+  async function verifyHfCandidate(modelId) {
+    useHfModel(modelId);
+    await verifyModel();
   }
 
   async function loadBackendModels() {
@@ -1270,6 +1354,7 @@
       await loadConfig();
       await loadFlowDefaults();
       await loadModelPresets();
+      await loadHfModels();
       await refreshConnectivity();
       await loadBackendModels();
       await refreshCluster(false);
@@ -1600,6 +1685,7 @@
         <div class="actions">
           <button on:click={refreshConnectivity} disabled={busy}>Refresh Connectivity</button>
           <button on:click={loadBackendModels} disabled={busy || !backendReachable}>Refresh Installed Models</button>
+          <button on:click={loadHfModels} disabled={busy || hfLoading}>{hfLoading ? 'Refreshing HF...' : 'Refresh HF Catalog'}</button>
           <button class="primary" on:click={verifyModel} disabled={busy}>Verify Hugging Face Repo</button>
         </div>
       </header>
@@ -1620,6 +1706,10 @@
         <article class="metric-card">
           <span>Installed Models</span>
           <strong>{backendModels.length}</strong>
+        </article>
+        <article class="metric-card">
+          <span>HF Candidates</span>
+          <strong>{hfModels.length}</strong>
         </article>
         <article class="metric-card">
           <span>Last Model Action</span>
@@ -1683,6 +1773,34 @@
             {/each}
           </div>
         </article>
+      </section>
+
+      <section class="card-shell hf-catalog">
+        <div class="actions">
+          <h3>Hugging Face Hub</h3>
+          <input bind:value={hfQuery} placeholder="Search Hugging Face models" />
+          <button on:click={loadHfModels} disabled={busy || hfLoading}>{hfLoading ? 'Loading...' : 'Search'}</button>
+        </div>
+        {#if hfError}
+          <p class="model-warning">Hugging Face query failed: {hfError}</p>
+        {:else if hfModels.length === 0}
+          <p class="model-connection-detail">No Hugging Face models returned for this query.</p>
+        {:else}
+          <div class="hf-model-grid">
+            {#each hfModels as model}
+              <article class="hf-model-item">
+                <p class="catalog-title">{model.id}</p>
+                <p class="catalog-meta">task: {model.pipeline_tag} · downloads: {Number(model.downloads ?? 0).toLocaleString()} · likes: {Number(model.likes ?? 0).toLocaleString()}</p>
+                <p class="catalog-meta">gated: {model.gated} · config: {model.has_config ? 'yes' : 'no'} · tokenizer: {model.has_tokenizer ? 'yes' : 'no'}</p>
+                <p class="catalog-meta">updated: {model.last_modified || 'unknown'}</p>
+                <div class="actions compact">
+                  <button on:click={() => useHfModel(model.id)} disabled={busy}>Use Repo</button>
+                  <button class="primary" on:click={() => verifyHfCandidate(model.id)} disabled={busy}>Verify Download</button>
+                </div>
+              </article>
+            {/each}
+          </div>
+        {/if}
       </section>
 
       <section class="card-shell installed-models">

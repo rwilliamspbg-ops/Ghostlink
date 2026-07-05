@@ -301,7 +301,7 @@ button:disabled {
 }
 
 .model-health-grid {
-  grid-template-columns: repeat(5, minmax(140px, 1fr));
+  grid-template-columns: repeat(6, minmax(130px, 1fr));
 }
 
 .model-layout {
@@ -419,6 +419,34 @@ button:disabled {
   margin: 0.2rem 0 0;
   color: var(--muted);
   font-size: 0.82rem;
+}
+
+.hf-catalog {
+  display: grid;
+  gap: 0.7rem;
+}
+
+.hf-catalog .actions h3 {
+  margin: 0;
+  min-width: 180px;
+}
+
+.hf-model-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(280px, 1fr));
+  gap: 0.65rem;
+  max-height: 34vh;
+  overflow: auto;
+  padding-right: 0.15rem;
+}
+
+.hf-model-item {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: rgba(16, 39, 55, 0.64);
+  padding: 0.7rem;
+  display: grid;
+  gap: 0.45rem;
 }
 
 .chat-panel {
@@ -1023,7 +1051,8 @@ button:disabled {
 
   .model-layout,
   .model-health-grid,
-  .model-catalog-grid {
+  .model-catalog-grid,
+  .hf-model-grid {
     grid-template-columns: 1fr;
   }
 
