@@ -138,3 +138,10 @@ For more information on the underlying architecture and testing patterns, see:
 - 🧪 Comprehensive API contract verification
 
 This system provides everything needed to validate Ghostlink's distributed LLM platform functionality while maintaining the zero-config, low-latency requirements for production-grade performance.
+## 🛠 Development & CI
+
+The following commands are used for local development and CI validation:
+
+- **Run tests**: `cargo test --workspace`
+- **Lint check**: `cargo clippy --workspace --all-targets -- -D warnings`
+- **Model verification**: `python scripts/verify_hf_models.py`

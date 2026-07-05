@@ -190,7 +190,7 @@ All functions tested:
 
 ### Requirements
 
-- Ollama installed (https://ollama.com)
+- Ollama installed (<https://ollama.com>)
 - neural-chat model (auto-pulled, 4.1GB)
 - Python 3.9+
 - 500MB+ disk space
