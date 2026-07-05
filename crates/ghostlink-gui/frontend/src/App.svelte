@@ -36,6 +36,19 @@
   let currentBackendModel = '';
   let selectedBackendModel = '';
   let modelActionMessage = '';
+  let modelCatalogFilter = '';
+  let hfQuery = 'text-generation';
+  let hfModels = [];
+  let hfLoading = false;
+  let hfError = '';
+  const modelDownloadCatalog = [
+    { id: 'neural-chat', family: 'General', sizeHint: '~4-7GB', source: 'ollama' },
+    { id: 'llama3.2:3b', family: 'General', sizeHint: '~2GB', source: 'ollama' },
+    { id: 'mistral:7b', family: 'General', sizeHint: '~4GB', source: 'ollama' },
+    { id: 'qwen2.5:7b', family: 'General', sizeHint: '~4GB', source: 'ollama' },
+    { id: 'phi3:mini', family: 'Lightweight', sizeHint: '~2GB', source: 'ollama' },
+    { id: 'nomic-embed-text', family: 'Embeddings', sizeHint: '~300MB', source: 'ollama' },
+  ];
   let backendReachable = null;
   let ollamaReachable = null;
   let connectivityDetail = '';
@@ -177,6 +190,16 @@
           { name: 'Balanced OSS', repo: 'mistralai/Mistral-7B-Instruct-v0.2', quant: 'q4', defaultFile: 'config.json' },
           { name: 'High Quality', repo: 'meta-llama/Meta-Llama-3-8B-Instruct', quant: 'q6', defaultFile: 'config.json' },
         ];
+      case 'list_hf_models':
+        return {
+          query: String(args.query ?? ''),
+          limit: Number(args.limit ?? 12),
+          models: [
+            { id: 'mistralai/Mistral-7B-Instruct-v0.2', pipeline_tag: 'text-generation', downloads: 1800000, likes: 4200, last_modified: '2026-06-18T00:00:00.000Z', private: false, gated: 'false', has_config: true, has_tokenizer: true },
+            { id: 'meta-llama/Meta-Llama-3-8B-Instruct', pipeline_tag: 'text-generation', downloads: 2500000, likes: 9300, last_modified: '2026-05-28T00:00:00.000Z', private: false, gated: 'manual', has_config: true, has_tokenizer: true },
+            { id: 'Qwen/Qwen2.5-7B-Instruct', pipeline_tag: 'text-generation', downloads: 1200000, likes: 3700, last_modified: '2026-06-07T00:00:00.000Z', private: false, gated: 'false', has_config: true, has_tokenizer: true },
+          ],
+        };
       case 'list_backend_models':
         return {
           models: [
@@ -191,6 +214,14 @@
           model_id: String(args.modelId ?? args.model_id ?? ''),
           downloaded: true,
           detail: 'mock download completed',
+        };
+      case 'delete_backend_model':
+        return {
+          status: 'ok',
+          model: String(args.model ?? ''),
+          deleted: true,
+          detail: 'mock delete completed',
+          current_model: 'neural-chat',
         };
       case 'load_backend_model':
         return {
@@ -303,11 +334,53 @@
           { name: 'Mistral 7B', repo: 'mistralai/Mistral-7B-v0.1', quant: 'q4', defaultFile: 'config.json' },
           { name: 'Llama 3 8B', repo: 'meta-llama/Meta-Llama-3-8B-Instruct', quant: 'q4', defaultFile: 'config.json' },
         ];
+      case 'list_hf_models': {
+        const q = String(args.query ?? '').trim();
+        const l = Number(args.limit ?? 12);
+        const url = new URL('https://huggingface.co/api/models');
+        if (q) {
+          url.searchParams.set('search', q);
+        }
+        url.searchParams.set('limit', String(Number.isFinite(l) ? Math.max(1, Math.min(50, l)) : 12));
+        url.searchParams.set('sort', 'downloads');
+        url.searchParams.set('direction', '-1');
+        url.searchParams.set('full', 'true');
+
+        const response = await fetch(url.toString());
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status} while requesting Hugging Face models`);
+        }
+        const data = await response.json();
+        const models = Array.isArray(data)
+          ? data.map((entry) => {
+              const siblings = Array.isArray(entry?.siblings) ? entry.siblings : [];
+              const hasConfig = siblings.some((item) => item?.rfilename === 'config.json');
+              const hasTokenizer = siblings.some((item) => item?.rfilename === 'tokenizer.json' || item?.rfilename === 'tokenizer_config.json');
+              return {
+                id: String(entry?.id ?? ''),
+                pipeline_tag: String(entry?.pipeline_tag ?? 'unknown'),
+                downloads: Number(entry?.downloads ?? 0),
+                likes: Number(entry?.likes ?? 0),
+                last_modified: String(entry?.lastModified ?? ''),
+                private: Boolean(entry?.private),
+                gated: String(entry?.gated ?? 'false'),
+                has_config: hasConfig,
+                has_tokenizer: hasTokenizer,
+              };
+            })
+          : [];
+
+        return { query: q, limit: l, models };
+      }
       case 'list_backend_models':
         return fetchJson('/api/models');
       case 'download_backend_model':
         return postJson('/api/models/download', {
           model_id: String(args.modelId ?? args.model_id ?? ''),
+        });
+      case 'delete_backend_model':
+        return postJson('/api/models/delete', {
+          model: String(args.model ?? ''),
         });
       case 'load_backend_model':
         return postJson('/api/models/load', {
@@ -690,6 +763,23 @@
     modelPresets = presets;
   }
 
+  async function loadHfModels() {
+    hfLoading = true;
+    hfError = '';
+    try {
+      const result = await bridgeInvoke('list_hf_models', {
+        query: hfQuery,
+        limit: 12,
+      });
+      hfModels = Array.isArray(result?.models) ? result.models : [];
+    } catch (err) {
+      hfError = String(err);
+      hfModels = [];
+    } finally {
+      hfLoading = false;
+    }
+  }
+
   async function refreshConnectivity() {
     if (useMockBridge) {
       backendReachable = true;
@@ -725,6 +815,40 @@
     if (!selectedBackendModel || !models.some((entry) => entry?.name === selectedBackendModel)) {
       selectedBackendModel = String(models[0]?.name ?? currentBackendModel ?? '');
     }
+  }
+
+  function filteredModelCatalog() {
+    const needle = modelCatalogFilter.trim().toLowerCase();
+    if (!needle) {
+      return modelDownloadCatalog;
+    }
+    return modelDownloadCatalog.filter((entry) => {
+      const haystack = `${entry.id} ${entry.family} ${entry.sizeHint} ${entry.source}`.toLowerCase();
+      return haystack.includes(needle);
+    });
+  }
+
+  function chooseCatalogModel(modelId) {
+    selectedBackendModel = String(modelId ?? '').trim();
+    if (selectedBackendModel) {
+      ollamaModel = selectedBackendModel;
+      modelActionMessage = `Selected catalog model ${selectedBackendModel}`;
+    }
+  }
+
+  function useHfModel(modelId) {
+    const repo = String(modelId ?? '').trim();
+    if (!repo) {
+      return;
+    }
+    modelRepo = repo;
+    modelFile = DEFAULT_MODEL_FILE;
+    modelActionMessage = `Selected Hugging Face repo ${repo}`;
+  }
+
+  async function verifyHfCandidate(modelId) {
+    useHfModel(modelId);
+    await verifyModel();
   }
 
   async function loadBackendModels() {
@@ -766,6 +890,11 @@
     }
   }
 
+  async function downloadCatalogModel(modelId) {
+    selectedBackendModel = String(modelId ?? '').trim();
+    await downloadSelectedModel();
+  }
+
   async function loadSelectedModel() {
     if (!selectedBackendModel.trim()) {
       modelActionMessage = 'Select a model first.';
@@ -795,6 +924,48 @@
     } finally {
       busy = false;
     }
+  }
+
+  async function setActiveModel(modelName) {
+    selectedBackendModel = String(modelName ?? '').trim();
+    await loadSelectedModel();
+  }
+
+  async function deleteSelectedModel() {
+    if (!selectedBackendModel.trim()) {
+      modelActionMessage = 'Select a model first.';
+      return;
+    }
+
+    busy = true;
+    try {
+      await refreshConnectivity();
+      if (!backendReachable) {
+        throw new Error(`Backend unavailable at ${backendBaseUrl}`);
+      }
+      if (!ollamaReachable) {
+        throw new Error(`Ollama unavailable at ${ollamaUrl}`);
+      }
+
+      const target = selectedBackendModel.trim();
+      const result = await bridgeInvoke('delete_backend_model', {
+        model: target,
+      });
+      modelActionMessage = String(result.detail ?? `Deleted ${target}`);
+      status = result.deleted ? 'Model deleted' : 'Model delete failed';
+      await loadBackendModels();
+    } catch (err) {
+      status = 'Model delete failed';
+      modelActionMessage = String(err);
+      output = String(err);
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function deleteModel(modelName) {
+    selectedBackendModel = String(modelName ?? '').trim();
+    await deleteSelectedModel();
   }
 
   function applyPreset(indexValue) {
@@ -1183,6 +1354,7 @@
       await loadConfig();
       await loadFlowDefaults();
       await loadModelPresets();
+      await loadHfModels();
       await refreshConnectivity();
       await loadBackendModels();
       await refreshCluster(false);
@@ -1509,42 +1681,150 @@
     {:else if activeTab === 'Models'}
       <header class="hero">
         <h1>Model Management</h1>
-        <p>Manage backend models and verify Hugging Face repository readiness.</p>
+        <p>Discover, pull, activate, delete, and verify models with live backend + Ollama status.</p>
         <div class="actions">
-          <select on:change={(e) => applyPreset(e.currentTarget.value)}>
-            <option value="">Select preset</option>
-            {#each modelPresets as preset, index}
-              <option value={index}>{preset.name} ({preset.quant})</option>
-            {/each}
-          </select>
-          <input bind:value={modelRepo} placeholder="repo id (owner/model)" />
-          <input bind:value={modelFile} placeholder="file" />
-          <button on:click={loadBackendModels} disabled={busy || !backendReachable}>Refresh Backend Models</button>
-          <select bind:value={selectedBackendModel}>
-            <option value="">Select backend model</option>
-            {#each backendModels as model}
-              <option value={model.name}>{model.name}</option>
-            {/each}
-          </select>
-          <button on:click={downloadSelectedModel} disabled={busy || !selectedBackendModel || !backendReachable || !ollamaReachable}>Download/Pull</button>
-          <button on:click={loadSelectedModel} disabled={busy || !selectedBackendModel || !backendReachable || !ollamaReachable}>Set Active</button>
-          <button class="primary" on:click={verifyModel} disabled={busy}>Verify Model</button>
+          <button on:click={refreshConnectivity} disabled={busy}>Refresh Connectivity</button>
+          <button on:click={loadBackendModels} disabled={busy || !backendReachable}>Refresh Installed Models</button>
+          <button on:click={loadHfModels} disabled={busy || hfLoading}>{hfLoading ? 'Refreshing HF...' : 'Refresh HF Catalog'}</button>
+          <button class="primary" on:click={verifyModel} disabled={busy}>Verify Hugging Face Repo</button>
         </div>
       </header>
-      <section class="model-check">
+
+      <section class="model-check model-health-grid">
+        <article class="metric-card">
+          <span>Backend</span>
+          <strong>{backendReachable ? 'Online' : 'Offline'}</strong>
+        </article>
+        <article class="metric-card">
+          <span>Ollama</span>
+          <strong>{ollamaReachable ? 'Connected' : 'Unavailable'}</strong>
+        </article>
         <article class="metric-card">
           <span>Current Backend Model</span>
           <strong>{currentBackendModel || 'unknown'}</strong>
         </article>
         <article class="metric-card">
-          <span>Known Models</span>
+          <span>Installed Models</span>
           <strong>{backendModels.length}</strong>
+        </article>
+        <article class="metric-card">
+          <span>HF Candidates</span>
+          <strong>{hfModels.length}</strong>
         </article>
         <article class="metric-card">
           <span>Last Model Action</span>
           <strong>{modelActionMessage || 'none'}</strong>
         </article>
       </section>
+
+      <section class="model-layout">
+        <article class="card-shell model-control-panel">
+          <h3>Model Controls</h3>
+          <label>Preset
+            <select on:change={(e) => applyPreset(e.currentTarget.value)}>
+              <option value="">Select preset</option>
+              {#each modelPresets as preset, index}
+                <option value={index}>{preset.name} ({preset.quant})</option>
+              {/each}
+            </select>
+          </label>
+          <label>Hugging Face Repo
+            <input bind:value={modelRepo} placeholder="repo id (owner/model)" />
+          </label>
+          <label>Verification File
+            <input bind:value={modelFile} placeholder="config.json" />
+          </label>
+          <label>Selected Backend/Ollama Model
+            <select bind:value={selectedBackendModel}>
+              <option value="">Select backend model</option>
+              {#each backendModels as model}
+                <option value={model.name}>{model.name}</option>
+              {/each}
+            </select>
+          </label>
+          <div class="actions model-actions">
+            <button on:click={downloadSelectedModel} disabled={busy || !selectedBackendModel || !backendReachable || !ollamaReachable}>Download/Pull</button>
+            <button on:click={loadSelectedModel} disabled={busy || !selectedBackendModel || !backendReachable || !ollamaReachable}>Set Active</button>
+            <button class="danger" on:click={deleteSelectedModel} disabled={busy || !selectedBackendModel || !backendReachable || !ollamaReachable}>Delete</button>
+          </div>
+          {#if !ollamaReachable}
+            <p class="model-warning">Ollama is unavailable at {ollamaUrl}. Connect Ollama to enable pull/load/delete actions.</p>
+          {/if}
+          {#if connectivityDetail}
+            <p class="model-connection-detail">{connectivityDetail}</p>
+          {/if}
+        </article>
+
+        <article class="card-shell model-catalog-panel">
+          <h3>Available Models To Download</h3>
+          <label>Filter Catalog
+            <input bind:value={modelCatalogFilter} placeholder="Search model id or family" />
+          </label>
+          <div class="model-catalog-grid">
+            {#each filteredModelCatalog() as entry}
+              <article class="model-catalog-item">
+                <p class="catalog-title">{entry.id}</p>
+                <p class="catalog-meta">{entry.family} · {entry.sizeHint} · {entry.source}</p>
+                <div class="actions compact">
+                  <button on:click={() => chooseCatalogModel(entry.id)} disabled={busy}>Use</button>
+                  <button class="primary" on:click={() => downloadCatalogModel(entry.id)} disabled={busy || !backendReachable || !ollamaReachable}>Pull</button>
+                </div>
+              </article>
+            {/each}
+          </div>
+        </article>
+      </section>
+
+      <section class="card-shell hf-catalog">
+        <div class="actions">
+          <h3>Hugging Face Hub</h3>
+          <input bind:value={hfQuery} placeholder="Search Hugging Face models" />
+          <button on:click={loadHfModels} disabled={busy || hfLoading}>{hfLoading ? 'Loading...' : 'Search'}</button>
+        </div>
+        {#if hfError}
+          <p class="model-warning">Hugging Face query failed: {hfError}</p>
+        {:else if hfModels.length === 0}
+          <p class="model-connection-detail">No Hugging Face models returned for this query.</p>
+        {:else}
+          <div class="hf-model-grid">
+            {#each hfModels as model}
+              <article class="hf-model-item">
+                <p class="catalog-title">{model.id}</p>
+                <p class="catalog-meta">task: {model.pipeline_tag} · downloads: {Number(model.downloads ?? 0).toLocaleString()} · likes: {Number(model.likes ?? 0).toLocaleString()}</p>
+                <p class="catalog-meta">gated: {model.gated} · config: {model.has_config ? 'yes' : 'no'} · tokenizer: {model.has_tokenizer ? 'yes' : 'no'}</p>
+                <p class="catalog-meta">updated: {model.last_modified || 'unknown'}</p>
+                <div class="actions compact">
+                  <button on:click={() => useHfModel(model.id)} disabled={busy}>Use Repo</button>
+                  <button class="primary" on:click={() => verifyHfCandidate(model.id)} disabled={busy}>Verify Download</button>
+                </div>
+              </article>
+            {/each}
+          </div>
+        {/if}
+      </section>
+
+      <section class="card-shell installed-models">
+        <h3>Installed Models</h3>
+        {#if backendModels.length === 0}
+          <p class="model-warning">No installed models detected from backend inventory.</p>
+        {:else}
+          <div class="installed-models-grid">
+            {#each backendModels as model}
+              <article class="installed-model-row" class:is-active={model.name === currentBackendModel}>
+                <div>
+                  <p class="installed-model-title">{model.name}</p>
+                  <p class="installed-model-meta">{model.type} · {model.quantization} · {Number(model.size_gb ?? 0).toFixed(1)} GB · {model.status}</p>
+                </div>
+                <div class="actions compact">
+                  <button on:click={() => setActiveModel(model.name)} disabled={busy || !backendReachable || !ollamaReachable}>Set Active</button>
+                  <button class="danger" on:click={() => deleteModel(model.name)} disabled={busy || !backendReachable || !ollamaReachable}>Delete</button>
+                </div>
+              </article>
+            {/each}
+          </div>
+        {/if}
+      </section>
+
       {#if modelCheck}
         <section class="model-check">
           <article class="metric-card">

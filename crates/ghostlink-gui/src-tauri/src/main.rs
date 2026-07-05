@@ -35,9 +35,11 @@ fn main() {
             discover_workers,
             load_flow_defaults,
             list_model_presets,
+            list_hf_models,
             list_backend_models,
             ollama_health,
             download_backend_model,
+            delete_backend_model,
             load_backend_model,
             run_validation_tier,
             load_ghostlink_config,
@@ -467,6 +469,96 @@ fn list_model_presets() -> Vec<ModelPreset> {
             quant: "Int4".to_string(),
         },
     ]
+}
+
+#[tauri::command]
+fn list_hf_models(query: Option<String>, limit: Option<usize>) -> Result<Value, String> {
+    let mut url = reqwest::Url::parse("https://huggingface.co/api/models")
+        .map_err(|err| format!("failed to build Hugging Face URL: {}", err))?;
+    let normalized_query = query.unwrap_or_default().trim().to_string();
+    let capped_limit = limit.unwrap_or(12).clamp(1, 50);
+
+    {
+        let mut params = url.query_pairs_mut();
+        if !normalized_query.is_empty() {
+            params.append_pair("search", normalized_query.as_str());
+        }
+        params.append_pair("limit", capped_limit.to_string().as_str());
+        params.append_pair("sort", "downloads");
+        params.append_pair("direction", "-1");
+        params.append_pair("full", "true");
+    }
+
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(20))
+        .build()
+        .map_err(|err| format!("failed to build Hugging Face HTTP client: {}", err))?;
+
+    let response = client
+        .get(url)
+        .send()
+        .map_err(|err| format!("failed to query Hugging Face model API: {}", err))?;
+    let status = response.status();
+    let body = response
+        .text()
+        .map_err(|err| format!("failed to read Hugging Face model API response: {}", err))?;
+
+    if !status.is_success() {
+        return Err(format!(
+            "Hugging Face model API returned {}: {}",
+            status,
+            body.trim()
+        ));
+    }
+
+    let parsed: Value = serde_json::from_str(&body)
+        .map_err(|err| format!("invalid Hugging Face model API JSON: {}", err))?;
+    let models = parsed
+        .as_array()
+        .ok_or_else(|| "unexpected Hugging Face model API response shape".to_string())?;
+
+    let summarized = models
+        .iter()
+        .map(|entry| {
+            let siblings = entry
+                .get("siblings")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+
+            let has_config = siblings.iter().any(|item| {
+                item.get("rfilename")
+                    .and_then(Value::as_str)
+                    .map(|name| name == "config.json")
+                    .unwrap_or(false)
+            });
+
+            let has_tokenizer = siblings.iter().any(|item| {
+                item.get("rfilename")
+                    .and_then(Value::as_str)
+                    .map(|name| name == "tokenizer.json" || name == "tokenizer_config.json")
+                    .unwrap_or(false)
+            });
+
+            serde_json::json!({
+                "id": entry.get("id").and_then(Value::as_str).unwrap_or(""),
+                "pipeline_tag": entry.get("pipeline_tag").and_then(Value::as_str).unwrap_or("unknown"),
+                "downloads": entry.get("downloads").and_then(Value::as_u64).unwrap_or(0),
+                "likes": entry.get("likes").and_then(Value::as_u64).unwrap_or(0),
+                "last_modified": entry.get("lastModified").and_then(Value::as_str).unwrap_or(""),
+                "private": entry.get("private").and_then(Value::as_bool).unwrap_or(false),
+                "gated": entry.get("gated").and_then(Value::as_str).unwrap_or("false"),
+                "has_config": has_config,
+                "has_tokenizer": has_tokenizer,
+            })
+        })
+        .collect::<Vec<_>>();
+
+    Ok(serde_json::json!({
+        "models": summarized,
+        "query": normalized_query,
+        "limit": capped_limit,
+    }))
 }
 
 #[tauri::command]
@@ -973,6 +1065,20 @@ fn download_backend_model(model_id: String) -> Result<Value, String> {
         "/api/models/download",
         &serde_json::json!({
             "model_id": normalized
+        }),
+    )
+}
+
+#[tauri::command]
+fn delete_backend_model(model: String) -> Result<Value, String> {
+    let normalized = model.trim().to_string();
+    if normalized.is_empty() {
+        return Err("model cannot be empty".to_string());
+    }
+    backend_post_json(
+        "/api/models/delete",
+        &serde_json::json!({
+            "model": normalized
         }),
     )
 }
