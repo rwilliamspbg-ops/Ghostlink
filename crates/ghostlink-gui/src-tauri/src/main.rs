@@ -1111,18 +1111,24 @@ fn run_ghostlink_command(args: Vec<&str>) -> Result<CommandResult, String> {
     }
 
     let rendered = format!("cargo run -p ghost-link -- {}", args.join(" "));
+    let isolated_target_dir = root.join("target").join("gui-command-run");
+    let isolated_target_dir_display = isolated_target_dir.display().to_string();
     let output = Command::new("cargo")
         .arg("run")
         .arg("-p")
         .arg("ghost-link")
         .arg("--")
         .args(args)
+        .env("CARGO_TARGET_DIR", &isolated_target_dir)
         .current_dir(&root)
         .output()
         .map_err(|err| format!("failed to execute ghost-link command: {}", err))?;
 
     Ok(CommandResult {
-        command: rendered,
+        command: format!(
+            "CARGO_TARGET_DIR={} {}",
+            isolated_target_dir_display, rendered
+        ),
         ok: output.status.success(),
         exit_code: output.status.code(),
         stdout: String::from_utf8_lossy(&output.stdout).to_string(),

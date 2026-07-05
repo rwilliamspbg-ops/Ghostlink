@@ -1,11 +1,16 @@
 #!/usr/bin/env bash
-set -euo pipefail
+
+# Keep strict mode portable for environments where `pipefail` is unsupported.
+set -eu
+if (set -o pipefail) >/dev/null 2>&1; then
+  set -o pipefail
+fi
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 VENV_PATH="${ROOT_DIR}/.venv"
 VENV_PYTHON="${VENV_PATH}/bin/python"
 
-if [[ ! -x "$VENV_PYTHON" ]]; then
+if [ ! -x "$VENV_PYTHON" ]; then
   echo "Python virtual environment not found at ${VENV_PATH}" >&2
   echo "Run scripts/setup_full_test_env.sh first." >&2
   exit 1

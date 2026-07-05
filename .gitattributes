@@ -1,0 +1,12 @@
+* text=auto
+
+# Keep shell scripts Unix-normalized so Git Bash/CI parse options correctly.
+*.sh text eol=lf
+
+# Keep cross-platform source/config files stable.
+*.yml text eol=lf
+*.yaml text eol=lf
+*.toml text eol=lf
+*.rs text eol=lf
+*.py text eol=lf
+*.md text eol=lf

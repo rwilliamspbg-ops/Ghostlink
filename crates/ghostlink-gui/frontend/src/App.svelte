@@ -29,6 +29,7 @@
   let doctorSummary = null;
   let modelRepo = 'sshleifer/tiny-gpt2';
   let modelFile = 'config.json';
+  const DEFAULT_MODEL_FILE = 'config.json';
   let modelPresets = [];
   let modelCheck = null;
   let backendModels = [];
@@ -534,7 +535,7 @@
       reducedMotion = Boolean(profile.reducedMotion);
       highContrast = Boolean(profile.highContrast);
       modelRepo = profile.modelRepo;
-      modelFile = profile.modelFile;
+      modelFile = normalizeModelFile(profile.modelFile);
       chatModel = profile.chatModel;
       chatDistributed = Boolean(profile.chatDistributed);
       ollamaUrl = String(flowArg(ollamaUrl, profile.ollamaUrl, profile.ollama_url));
@@ -663,9 +664,11 @@
     busy = true;
     modelCheck = null;
     try {
+      const requestedFile = normalizeModelFile(modelFile);
+      modelFile = requestedFile;
       const result = await bridgeInvoke('verify_hf_repo', {
         repo: modelRepo,
-        file: modelFile,
+        file: requestedFile,
       });
       modelCheck = result;
       status = result.ok ? 'Model verification passed' : 'Model verification failed';
@@ -798,7 +801,12 @@
 
     const preset = modelPresets[index];
     modelRepo = preset.repo;
-    modelFile = preset.defaultFile;
+    modelFile = normalizeModelFile(preset.defaultFile);
+  }
+
+  function normalizeModelFile(value) {
+    const normalized = String(value ?? '').trim();
+    return normalized || DEFAULT_MODEL_FILE;
   }
 
   function parseNodeHints(raw) {
