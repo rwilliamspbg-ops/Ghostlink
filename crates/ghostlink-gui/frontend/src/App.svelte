@@ -34,6 +34,7 @@
   let modelCheck = null;
   let backendModels = [];
   let currentBackendModel = '';
+  let backendModelStatus = { loadedModels: [], downloadingModels: {}, currentModel: '' };
   let selectedBackendModel = '';
   let modelActionMessage = '';
   let modelCatalogFilter = '';
@@ -208,6 +209,12 @@
           ],
           current_model: 'neural-chat',
         };
+      case 'list_backend_model_status':
+        return {
+          loaded_models: ['neural-chat', 'mistral:7b'],
+          downloading_models: {},
+          current_model: 'neural-chat',
+        };
       case 'download_backend_model':
         return {
           status: 'ok',
@@ -374,6 +381,8 @@
       }
       case 'list_backend_models':
         return fetchJson('/api/models');
+      case 'list_backend_model_status':
+        return fetchJson('/api/models/status');
       case 'download_backend_model':
         return postJson('/api/models/download', {
           model_id: String(args.modelId ?? args.model_id ?? ''),
@@ -763,6 +772,19 @@
     modelPresets = presets;
   }
 
+  async function refreshModelStatus() {
+    try {
+      const result = await bridgeInvoke('list_backend_model_status');
+      backendModelStatus = {
+        loadedModels: Array.isArray(result?.loaded_models) ? result.loaded_models : [],
+        downloadingModels: result?.downloading_models ?? {},
+        currentModel: String(result?.current_model ?? ''),
+      };
+    } catch {
+      backendModelStatus = { loadedModels: [], downloadingModels: {}, currentModel: '' };
+    }
+  }
+
   async function loadHfModels() {
     hfLoading = true;
     hfError = '';
@@ -858,6 +880,7 @@
     }
     const result = await bridgeInvoke('list_backend_models');
     applyBackendModels(result);
+    await refreshModelStatus();
   }
 
   async function downloadSelectedModel() {
@@ -1357,6 +1380,7 @@
       await loadHfModels();
       await refreshConnectivity();
       await loadBackendModels();
+      await refreshModelStatus();
       await refreshCluster(false);
       await discoverWorkers();
     } catch (err) {
@@ -1706,6 +1730,14 @@
         <article class="metric-card">
           <span>Installed Models</span>
           <strong>{backendModels.length}</strong>
+        </article>
+        <article class="metric-card">
+          <span>Loaded Models</span>
+          <strong>{backendModelStatus.loadedModels.length}</strong>
+        </article>
+        <article class="metric-card">
+          <span>Downloads In Progress</span>
+          <strong>{Object.keys(backendModelStatus.downloadingModels ?? {}).length}</strong>
         </article>
         <article class="metric-card">
           <span>HF Candidates</span>

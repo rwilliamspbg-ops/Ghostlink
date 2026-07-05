@@ -96,6 +96,7 @@ def main():
     os.environ.setdefault('GHOSTLINK_OLLAMA_URL', ollama_url)
     os.environ.setdefault('GHOSTLINK_OLLAMA_MODEL', ollama_model)
     os.environ.setdefault('GHOSTLINK_PROXY_MODEL', ollama_model)
+    os.environ.setdefault('GHOSTLINK_BACKEND_URL', 'http://127.0.0.1:8003')
 
     chat_backend_mode = os.getenv('GHOSTLINK_STUDIO_CHAT_BACKEND', 'backend').strip().lower()
     if chat_backend_mode not in {'backend', 'ollama'}:
@@ -111,6 +112,7 @@ def main():
     log(f"GUI mode effective: {effective_gui_mode}")
     log(f"Ollama URL: {ollama_url}")
     log(f"Ollama model: {ollama_model}")
+    log(f"Backend URL: {os.environ.get('GHOSTLINK_BACKEND_URL')}")
 
     for key, value in DEFAULT_PERF_ENV.items():
         os.environ.setdefault(key, value)

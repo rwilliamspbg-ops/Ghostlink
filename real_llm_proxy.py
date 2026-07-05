@@ -66,8 +66,12 @@ class GatewayHandler(BaseHTTPRequestHandler):
     def route_request(self):
         if self.path == '/api/inference/chat':
             self.handle_chat()
-        elif self.path.startswith('/api/models'):
+        elif self.path.startswith('/api/models/download/progress'):
+            # Keep optional progress endpoint backed by dedicated model manager.
             self.handle_proxy(MODEL_MANAGER_URL)
+        elif self.path.startswith('/api/models'):
+            # Use Rust backend model API contract for list/load/download/delete.
+            self.handle_proxy(BACKEND_URL)
         else:
             # Default to Rust Backend
             self.handle_proxy(BACKEND_URL)
@@ -151,7 +155,8 @@ if __name__ == '__main__':
         print(f'  -> /api/inference/chat  => Ollama ({OLLAMA_URL}, model={MODEL})')
     else:
         print(f'  -> /api/inference/chat  => Rust Backend distributed chat ({BACKEND_URL})')
-    print(f'  -> /api/models/*        => Model Manager ({MODEL_MANAGER_URL})')
+    print(f'  -> /api/models/*        => Rust Backend ({BACKEND_URL})')
+    print(f'  -> /api/models/download/progress => Model Manager ({MODEL_MANAGER_URL})')
     print(f'  -> *                    => Rust Backend ({BACKEND_URL})')
     try:
         server.serve_forever()
