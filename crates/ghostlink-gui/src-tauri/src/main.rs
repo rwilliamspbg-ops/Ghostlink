@@ -994,8 +994,10 @@ fn chat_infer(
         return Err("prompt cannot be empty".to_string());
     }
 
-    let resolved_ollama_url = ollama_url
-        .unwrap_or_else(|| std::env::var("GHOSTLINK_OLLAMA_URL").unwrap_or_else(|_| "http://127.0.0.1:11434".to_string()));
+    let resolved_ollama_url = ollama_url.unwrap_or_else(|| {
+        std::env::var("GHOSTLINK_OLLAMA_URL")
+            .unwrap_or_else(|_| "http://127.0.0.1:11434".to_string())
+    });
     let resolved_ollama_model = ollama_model
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| model.clone());
@@ -1135,9 +1137,9 @@ fn parse_probe_to_node(output: &str) -> Option<ClusterNodeCard> {
         } else if let Some(value) = trimmed.strip_prefix("Recommended workers:") {
             workers = value.trim().parse::<usize>().ok();
         } else if let Some(value) = trimmed.strip_prefix("System memory:") {
-            system_memory_gb = value.trim().split_whitespace().next()?.parse::<f32>().ok();
+            system_memory_gb = value.split_whitespace().next()?.parse::<f32>().ok();
         } else if let Some(value) = trimmed.strip_prefix("GPU VRAM:") {
-            gpu_vram_gb = value.trim().split_whitespace().next()?.parse::<f32>().ok();
+            gpu_vram_gb = value.split_whitespace().next()?.parse::<f32>().ok();
         } else if let Some(value) = trimmed.strip_prefix("Acceleration:") {
             acceleration = Some(value.trim().to_string());
         }

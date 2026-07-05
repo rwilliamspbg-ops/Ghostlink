@@ -56,7 +56,7 @@ jobs:
 
       - name: Rust Source Parse Check
         run: |
-          find crates -name '*.rs' -print0 | xargs -0 -n1 rustfmt --check --edition 2021
+          find crates -path '*/target/*' -prune -o -name '*.rs' -print0 | xargs -0 -n1 rustfmt --check --edition 2021
 
       - name: Format
         run: cargo fmt --all --check
