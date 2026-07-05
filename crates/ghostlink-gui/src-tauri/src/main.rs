@@ -1053,6 +1053,45 @@ fn repo_root() -> PathBuf {
 
 fn run_ghostlink_command(args: Vec<&str>) -> Result<CommandResult, String> {
     let root = repo_root();
+    let executable_name = if cfg!(windows) {
+        "ghost-link.exe"
+    } else {
+        "ghost-link"
+    };
+
+    // Prefer direct binary execution to avoid `cargo run` rebuilds that can
+    // fail on Windows when another ghost-link process already has the exe open.
+    let binary_candidates = [
+        root.join("target").join("release").join(executable_name),
+        root.join("target").join("debug").join(executable_name),
+    ];
+
+    for binary in binary_candidates {
+        if !binary.exists() {
+            continue;
+        }
+
+        let output = Command::new(&binary)
+            .args(&args)
+            .current_dir(&root)
+            .output()
+            .map_err(|err| {
+                format!(
+                    "failed to execute ghost-link binary {}: {}",
+                    binary.display(),
+                    err
+                )
+            })?;
+
+        return Ok(CommandResult {
+            command: format!("{} {}", binary.display(), args.join(" ")),
+            ok: output.status.success(),
+            exit_code: output.status.code(),
+            stdout: String::from_utf8_lossy(&output.stdout).to_string(),
+            stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+        });
+    }
+
     let rendered = format!("cargo run -p ghost-link -- {}", args.join(" "));
     let output = Command::new("cargo")
         .arg("run")
