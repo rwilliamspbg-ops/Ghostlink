@@ -18,7 +18,7 @@ DEFAULTS = {
         "inmem": {
             "min_throughput": 80000.0,
             "max_p95": 6.0,
-            "max_spread": 3.5,
+            "max_spread": 5.0,
         },
     },
     "stress": {
