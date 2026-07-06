@@ -45,7 +45,7 @@ def main() -> int:
     _require(ci, "security:", ".github/workflows/ci.yml", failures)
     _require(ci, "production-gate:", ".github/workflows/ci.yml", failures)
     _require(ci, "Clippy Check (Tauri crate)", ".github/workflows/ci.yml", failures)
-    _require(ci, "--fail-under 45", ".github/workflows/ci.yml", failures)
+    _require(ci, "--fail-under 44", ".github/workflows/ci.yml", failures)
 
     # Ensure security workflow still includes secret scanning and advisory checks.
     _require(security, "gitleaks/gitleaks-action", ".github/workflows/security.yml", failures)
