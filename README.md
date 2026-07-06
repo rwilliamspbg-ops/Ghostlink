@@ -53,7 +53,7 @@ Detailed polish notes and acceptance checklist:
 Deterministic snapshot profile: `exec_tokens=512`, `micro_batch=8`, profile `throughput`.
 
 | Mode | Throughput Avg (tokens/sec) | P95 Avg (ms) |
-|------|------------------------------|--------------|
+| ------ | ------------------------------ | -------------- |
 | tcp | 256019.95 | 1.97 |
 | inmem | 506809.47 | 1.03 |
 
@@ -139,11 +139,11 @@ docker build -f Dockerfile.gui-test -t ghostlink-gui-tests .
 ## 📊 Test Coverage Report
 
 | Component | Status |
-|-----------|--------|
+| ----------- | -------- |
 | Model Management | ✅ Complete |
-| Chat Interface  | ✅ Basic to Advanced |
+| Chat Interface | ✅ Basic to Advanced |
 | Session Handling | ✅ Core Features |
-| Error Paths     | ⚠️ Extended Testing |
+| Error Paths | ⚠️ Extended Testing |
 
 The framework is designed for zero-config, low-latency operation as specified in your requirements.
 

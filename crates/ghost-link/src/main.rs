@@ -2040,7 +2040,12 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             }
         };
 
-        let (deleted, detail) = match client.delete(delete_url.as_str()).json(&payload).send().await {
+        let (deleted, detail) = match client
+            .delete(delete_url.as_str())
+            .json(&payload)
+            .send()
+            .await
+        {
             Ok(response) => {
                 let status = response.status();
                 let body = response.text().await.unwrap_or_default();
