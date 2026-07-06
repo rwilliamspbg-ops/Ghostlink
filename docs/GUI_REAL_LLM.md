@@ -188,7 +188,7 @@ curl http://127.0.0.1:9999/health
 ## Performance
 
 | Metric | Value |
-|--------|-------|
+| -------- | ------- |
 | Chat latency | 1-5 seconds |
 | Proxy overhead | <100ms |
 | Model memory | ~400MB |

@@ -1,0 +1,51 @@
+version: '3.8'
+
+services:
+  # Ghostlink Backend
+  ghostlink-backend:
+    image: ghostlink:latest
+    container_name: ghostlink-backend
+    ports:
+      - "8003:8003"
+    environment:
+      - LOG_LEVEL=info
+      - WORKERS=4
+    volumes:
+      - ghostlink-models:/home/ghostlink/.cache/models
+      - ghostlink-data:/home/ghostlink/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8003/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    networks:
+      - ghostlink
+    restart: unless-stopped
+
+  # Ghostlink Studio GUI
+  ghostlink-gui:
+    build:
+      context: ./ghostlink_gui_modern
+      dockerfile: Dockerfile
+    container_name: ghostlink-gui
+    ports:
+      - "3000:3000"
+    environment:
+      - VITE_API_BASE=http://ghostlink-backend:8003
+    depends_on:
+      ghostlink-backend:
+        condition: service_healthy
+    networks:
+      - ghostlink
+    restart: unless-stopped
+
+volumes:
+  ghostlink-models:
+    driver: local
+  ghostlink-data:
+    driver: local
+
+networks:
+  ghostlink:
+    driver: bridge

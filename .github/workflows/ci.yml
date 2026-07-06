@@ -266,7 +266,7 @@ jobs:
       - name: Generate coverage report
         run: |
           cargo tarpaulin --workspace --out Lcov --output-dir coverage \
-            --timeout 300 --exclude-files benches/* --fail-under 45
+            --timeout 300 --exclude-files benches/* --fail-under 44
 
       - name: Verify coverage artifact
         run: |

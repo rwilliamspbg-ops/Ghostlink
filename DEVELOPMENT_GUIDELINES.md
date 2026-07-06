@@ -158,9 +158,9 @@ jobs:
 ### Performance Benchmarks 
 
 | Component | Expected (ms) | Actual (last test) |
-|------------|----------------|------|
-| Model Load | <500ms        | ✅ 312.4 |
-| Chat Response | <750ms      | ✅ 689.2 |
+| ------------ | ---------------- | ------ |
+| Model Load | <500ms | ✅ 312.4 |
+| Chat Response | <750ms | ✅ 689.2 |
 | Concurrent Ops | <2s per operation | ⚠️ 1.8-2.4s |
 
 ### Key Test Results  

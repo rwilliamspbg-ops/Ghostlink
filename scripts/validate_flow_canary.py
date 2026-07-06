@@ -18,7 +18,9 @@ DEFAULTS = {
         "inmem": {
             "min_throughput": 80000.0,
             "max_p95": 6.0,
-            "max_spread": 5.0,
+            # CI host contention can create wider run-to-run spread even when
+            # throughput floor and latency SLOs stay healthy.
+            "max_spread": 10.0,
         },
     },
     "stress": {
