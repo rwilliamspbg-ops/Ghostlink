@@ -4130,7 +4130,7 @@ fn launch_mohawk_gui(args: &[String]) -> Result<()> {
 }
 
 fn parse_gui_backend_target(args: &[String]) -> (String, u16) {
-    let mut host = "localhost".to_string();
+    let mut host = "127.0.0.1".to_string();
     let mut port = 8003_u16;
     let mut i = 0_usize;
 
@@ -4305,9 +4305,8 @@ fn print_gui_diagnostics(strict: bool) -> Result<()> {
     let requirements = crate_root
         .join("..")
         .join("..")
-        .join("third_party")
-        .join("mohawk_gui")
-        .join("requirements-runtime.txt");
+        .join("requirements-gui.txt");
+
     let repo_root = crate_root.join("..").join("..");
     let python_resolution =
         resolve_python_for_root(&repo_root, std::env::var("GHOSTLINK_PYTHON").ok());
@@ -4360,16 +4359,16 @@ fn print_gui_diagnostics(strict: bool) -> Result<()> {
     #[cfg(target_os = "linux")]
     {
         if !has_libgl {
-            categories.push((
-                "system_libs".to_string(),
-                "Missing libGL.so.1 (install libgl1)".to_string(),
-            ));
+            // categories.push((
+            // "system_libs".to_string(),
+            // "Missing libGL.so.1 (install libgl1)".to_string(),
+            // ));
         }
         if !has_libxkb {
-            categories.push((
-                "system_libs".to_string(),
-                "Missing libxkbcommon.so.0 (install libxkbcommon0)".to_string(),
-            ));
+            // categories.push((
+            // "system_libs".to_string(),
+            // "Missing libxkbcommon.so.0 (install libxkbcommon0)".to_string(),
+            // ));
         }
     }
 
@@ -4425,11 +4424,11 @@ fn print_gui_diagnostics(strict: bool) -> Result<()> {
             .collect::<Vec<_>>()
             .join(",");
         #[cfg(target_os = "linux")]
-        let linux_libgl_json = if has_libgl { "true" } else { "false" };
+        let linux_libgl_json = if has_linux_libgl() { "true" } else { "false" };
         #[cfg(not(target_os = "linux"))]
         let linux_libgl_json = "null";
         #[cfg(target_os = "linux")]
-        let linux_libxkb_json = if has_libxkb { "true" } else { "false" };
+        let linux_libxkb_json = if has_linux_libxkbcommon() { "true" } else { "false" };
         #[cfg(not(target_os = "linux"))]
         let linux_libxkb_json = "null";
         let payload = format!(
@@ -4476,9 +4475,8 @@ fn print_gui_readiness(strict: bool) -> Result<()> {
     let requirements = crate_root
         .join("..")
         .join("..")
-        .join("third_party")
-        .join("mohawk_gui")
-        .join("requirements-runtime.txt");
+        .join("requirements-gui.txt");
+
     let repo_root = crate_root.join("..").join("..");
     let python =
         resolve_python_executable_for_root(&repo_root, std::env::var("GHOSTLINK_PYTHON").ok());
@@ -4519,7 +4517,7 @@ fn print_gui_readiness(strict: bool) -> Result<()> {
     match detect_missing_gui_python_modules(&python) {
         Ok(missing) if missing.is_empty() => {
             println!(
-                "Python modules: OK (tkinter, requests, huggingface_hub, transformers, torch)"
+                "Python modules: OK (tkinter, requests)"
             );
         }
         Ok(missing) => {
@@ -4528,6 +4526,19 @@ fn print_gui_readiness(strict: bool) -> Result<()> {
         Err(err) => {
             issues.push(format!("Unable to validate Python modules: {}", err));
         }
+    }
+
+    match detect_missing_optional_gui_python_modules(&python) {
+        Ok(missing) if missing.is_empty() => {
+            println!("Optional Python modules: OK (huggingface_hub)");
+        }
+        Ok(missing) => {
+            println!(
+                "Note: optional Python modules missing ({}); related features will be unavailable but the GUI will still run.",
+                missing.join(", ")
+            );
+        }
+        Err(_) => {}
     }
 
     #[cfg(target_os = "linux")]
@@ -4542,14 +4553,14 @@ fn print_gui_readiness(strict: bool) -> Result<()> {
             "Linux XKB runtime (libxkbcommon.so.0): {}",
             if has_libxkb { "present" } else { "missing" }
         );
-        if !has_libgl {
-            issues.push("Missing libGL.so.1 system dependency (install `libgl1`)".to_string());
-        }
-        if !has_libxkb {
-            issues.push(
-                "Missing libxkbcommon.so.0 system dependency (install `libxkbcommon0`)".to_string(),
-            );
-        }
+        // if !has_libgl {
+        // issues.push("Missing libGL.so.1 system dependency (install `libgl1`)".to_string());
+        // }
+        // if !has_libxkb {
+        //     issues.push(
+        //         "Missing libxkbcommon.so.0 system dependency (install `libxkbcommon0`)".to_string(),
+        //     );
+        // }
     }
 
     let has_display = std::env::var("DISPLAY")
@@ -4598,12 +4609,22 @@ fn print_gui_readiness(strict: bool) -> Result<()> {
     Ok(())
 }
 
-fn detect_missing_gui_python_modules(python: &str) -> Result<Vec<String>> {
+fn detect_missing_optional_gui_python_modules(python: &str) -> Result<Vec<String>> {
+    detect_missing_python_modules(python, &["huggingface_hub"])
+}
+
+fn detect_missing_python_modules(python: &str, modules: &[&str]) -> Result<Vec<String>> {
+    let module_list = modules
+        .iter()
+        .map(|m| format!("'{}'", m))
+        .collect::<Vec<_>>()
+        .join(",");
+    let script = format!(
+        "import importlib.util as u;mods=[{}];missing=[m for m in mods if u.find_spec(m) is None];print(','.join(missing))",
+        module_list
+    );
     let output = Command::new(python)
-        .args([
-            "-c",
-            "import importlib.util as u;mods=['tkinter','requests','huggingface_hub','transformers','torch'];missing=[m for m in mods if u.find_spec(m) is None];print(','.join(missing))",
-        ])
+        .args(["-c", &script])
         .output()
         .map_err(|err| anyhow::anyhow!("unable to execute Python '{}': {}", python, err))?;
 
@@ -4622,6 +4643,10 @@ fn detect_missing_gui_python_modules(python: &str) -> Result<Vec<String>> {
         .map(ToString::to_string)
         .collect::<Vec<_>>();
     Ok(missing)
+}
+
+fn detect_missing_gui_python_modules(python: &str) -> Result<Vec<String>> {
+    detect_missing_python_modules(python, &["tkinter", "requests"])
 }
 
 #[cfg(target_os = "linux")]
@@ -4969,7 +4994,7 @@ mod tests {
     #[test]
     fn parse_gui_backend_target_uses_defaults_and_parses_equals_form() {
         let (default_host, default_port) = parse_gui_backend_target(&[]);
-        assert_eq!(default_host, "localhost");
+        assert_eq!(default_host, "127.0.0.1");
         assert_eq!(default_port, 8003);
 
         let (host, port) =

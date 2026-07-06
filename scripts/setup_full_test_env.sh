@@ -43,6 +43,9 @@ fi
 log "Upgrading pip/setuptools/wheel"
 "$VENV_PYTHON" -m pip install --upgrade pip setuptools wheel
 
+log "Installing Ghostlink Studio (Tkinter GUI) Python dependencies"
+"$VENV_PYTHON" -m pip install -r "${ROOT_DIR}/requirements-gui.txt"
+
 log "Installing Mohawk GUI Python dependencies"
 "$VENV_PYTHON" -m pip install -r "${ROOT_DIR}/third_party/mohawk_gui/requirements-runtime.txt"
 
