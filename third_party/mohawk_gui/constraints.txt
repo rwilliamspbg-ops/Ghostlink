@@ -13,5 +13,5 @@ pytest-asyncio==0.24.0
 pytest==8.3.3
 python-dotenv==1.0.1
 requests==2.33.0
-safety==3.2.9
+safety==3.8.1
 uvicorn==0.50.0
