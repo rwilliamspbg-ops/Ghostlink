@@ -283,7 +283,7 @@ pub fn execute_pipeline(
     plan: &PipelinePlan,
     token_count: usize,
     micro_batch: usize,
-) -> ExecutionResult {
+) -> Result<ExecutionResult, String> {
     execute_pipeline_with_rebalance(plan, token_count, micro_batch, None)
 }
 
@@ -292,7 +292,7 @@ pub fn execute_pipeline_with_rebalance(
     token_count: usize,
     micro_batch: usize,
     rebalance: Option<&crate::planning::RebalanceTrigger>,
-) -> ExecutionResult {
+) -> Result<ExecutionResult, String> {
     execute_pipeline_with_rebalance_and_measured(
         plan,
         token_count,
@@ -310,12 +310,12 @@ pub fn execute_pipeline_with_rebalance_and_measured(
     rebalance: Option<&crate::planning::RebalanceTrigger>,
     cluster: Option<&crate::cluster::ClusterState>,
     placement_context: Option<&crate::planning::PlacementPlan>,
-) -> ExecutionResult {
+) -> Result<ExecutionResult, String> {
     let stage_count = plan.stages.len();
     let micro_batch = micro_batch.max(1);
     let batch_count = token_count.div_ceil(micro_batch);
     if stage_count == 0 || token_count == 0 {
-        return ExecutionResult {
+        return Ok(ExecutionResult {
             token_count,
             micro_batch,
             batch_count,
@@ -325,7 +325,7 @@ pub fn execute_pipeline_with_rebalance_and_measured(
             avg_token_latency_ms: 0.0,
             p95_token_latency_ms: 0.0,
             stage_stats: Vec::new(),
-        };
+        });
     }
 
     #[derive(Debug)]
@@ -522,7 +522,7 @@ pub fn execute_pipeline_with_rebalance_and_measured(
     let p95_idx = ((sorted.len() - 1) as f32 * 0.95).round() as usize;
     let p95_token_latency_ms = sorted.get(p95_idx).copied().unwrap_or(0.0);
 
-    ExecutionResult {
+    Ok(ExecutionResult {
         token_count,
         micro_batch,
         batch_count,
@@ -532,7 +532,7 @@ pub fn execute_pipeline_with_rebalance_and_measured(
         avg_token_latency_ms,
         p95_token_latency_ms,
         stage_stats,
-    }
+    })
 }
 
 #[derive(Debug, Clone)]
@@ -1423,7 +1423,7 @@ mod tests {
             ],
         };
 
-        let result = execute_pipeline(&plan, 8, 1);
+        let result = execute_pipeline(&plan, 8, 1).expect("failed");
         assert_eq!(result.stage_count, 2);
         assert_eq!(result.token_count, 8);
         assert_eq!(result.micro_batch, 1);
@@ -1455,8 +1455,8 @@ mod tests {
             ],
         };
 
-        let mb1 = execute_pipeline(&plan, 32, 1);
-        let mb4 = execute_pipeline(&plan, 32, 4);
+        let mb1 = execute_pipeline(&plan, 32, 1).expect("failed");
+        let mb4 = execute_pipeline(&plan, 32, 4).expect("failed");
 
         assert_eq!(mb1.batch_count, 32);
         assert_eq!(mb4.batch_count, 8);
@@ -1484,7 +1484,7 @@ mod tests {
             ],
         };
 
-        let result = execute_pipeline(&plan, 12, 3);
+        let result = execute_pipeline(&plan, 12, 3).expect("failed");
         assert_eq!(result.stage_count, 2);
         assert_eq!(result.batch_count, 4);
         assert_eq!(result.stage_stats.len(), 2);
@@ -1514,7 +1514,7 @@ mod tests {
             ],
         };
 
-        let result = execute_pipeline_tcp_loopback(&plan, 16, 2).expect("loopback failed");
+        let result = execute_pipeline_tcp_loopback(&plan, 16, 2).expect("failed");
         assert_eq!(result.token_count, 16);
         assert_eq!(result.batch_count, 8);
         assert_eq!(result.stage_stats.len(), 2);

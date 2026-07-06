@@ -1092,14 +1092,14 @@ fn print_flow(opts: FlowOptions) -> Result<()> {
                 tcp_cfg,
             )
         }
-        FlowTransportMode::InMemory => Ok(execute_pipeline_with_rebalance_and_measured(
+        FlowTransportMode::InMemory => execute_pipeline_with_rebalance_and_measured(
             &pipeline_plan,
             opts.execution_tokens,
             opts.micro_batch,
             Some(&rebalance_trigger),
             Some(&cluster),
             Some(&placement_context),
-        )),
+        ),
     };
 
     let load_balancer =
@@ -1163,7 +1163,7 @@ fn print_flow(opts: FlowOptions) -> Result<()> {
         "Inference Parameters: top_k={} penalty={:.1}",
         opts.top_k, opts.penalty
     );
-    let execution = execution.map_err(|e| anyhow::anyhow!(e))?;
+    let execution = execution.map_err(|e: String| anyhow::anyhow!(e))?;
     println!("{}", execution.summary());
     maybe_write_flow_metrics_json(&execution, opts.transport_mode)?;
 
