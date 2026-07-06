@@ -5186,7 +5186,7 @@ mod tests {
         }
 
         assert_eq!(
-            parse_cli(args(&["serve", "--port", "1234", "--host", "0.0.0.0"])).unwrap(),
+            parse_cli(args(&["serve", "0.0.0.0", "1234"])).unwrap(),
             CliCommand::Serve {
                 port: 1234,
                 host: "0.0.0.0".to_string()
@@ -5223,17 +5223,22 @@ mod tests {
     #[test]
     fn test_apply_file_config_to_env() {
         let mut config = FileConfig::default();
-        let mut flow = FlowDefaults::default();
-        flow.local_id = Some("test-local".to_string());
-        flow.remote_vram_gb = Some(24.0);
+        let flow = FlowDefaults {
+            local_id: Some("test-local".to_string()),
+            remote_vram_gb: Some(24.0),
+            ..Default::default()
+        };
         config.flow = Some(flow);
 
-        let mut cluster = ClusterStartDefaults::default();
-        cluster.node_count = Some(10);
+        let cluster = ClusterStartDefaults {
+            node_count: Some(10),
+            ..Default::default()
+        };
         config.cluster_start = Some(cluster);
 
-        let mut gui = GuiDefaults::default();
-        gui.python = Some("/usr/bin/python3.11".to_string());
+        let gui = GuiDefaults {
+            python: Some("/usr/bin/python3.11".to_string()),
+        };
         config.gui = Some(gui);
 
         std::env::remove_var("GHOSTLINK_FLOW_DEFAULT_LOCAL_ID");
