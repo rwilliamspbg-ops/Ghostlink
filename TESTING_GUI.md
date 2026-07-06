@@ -156,7 +156,7 @@ The testing framework generates detailed reports:
 ## 🧪 Test Matrix
 
 | Component | Status |
-|--------|----------|
+| -------- | ---------- |
 | Model Loading | ✅ Complete |
 | Chat Interface | ✅ Basic functionality |
 | Session Management | ✅ Core features |  

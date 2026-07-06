@@ -71,7 +71,7 @@ Expanded the Ghostlink GUI test suite from basic checks to **comprehensive 25-te
 ## Test Coverage Matrix
 
 | Feature | Test ID | Coverage |
-|---------|---------|----------|
+| --------- | --------- | ---------- |
 | Basic chat | 01 | Input/output |
 | System prompts | 02 | Custom instructions |
 | Temperature | 03 | Parameter effects |
@@ -183,7 +183,7 @@ All 10 model tests confirm **real Ollama model data**.
 ## Performance Benchmarks
 
 | Operation | Time |
-|-----------|------|
+| ----------- | ------ |
 | Basic chat | 1-5s |
 | Model list | <100ms |
 | Model load | <50ms |

@@ -275,7 +275,7 @@ Now returns:
 ### Coverage Breakdown
 
 | Category | Tests | Status |
-|----------|-------|--------|
+| ---------- | ------- | -------- |
 | Chat Responses | 10 | All pass |
 | Model Management | 10 | All pass |
 | Integration | 5 | All pass |

@@ -97,7 +97,6 @@ Access at:
 - **Backend**: http://127.0.0.1:8003
 
 ### Option 3: Manual Start
-
 ```bash
 # Terminal 1: Start backend
 ./ghostlink serve
@@ -313,6 +312,16 @@ npm run build
 | Safari | 14+ | ✅ Full Support |
 | Edge | 90+ | ✅ Full Support |
 | Mobile | iOS 14+, Android | ✅ Responsive |
+
+---
+
+## 🛠 Development & CI
+
+The following commands are used for local validation and CI parity checks:
+
+- Run tests: `cargo test --workspace`
+- Lint check: `cargo clippy --workspace --all-targets -- -D warnings`
+- Model verification: `python scripts/verify_hf_models.py`
 
 ---
 
