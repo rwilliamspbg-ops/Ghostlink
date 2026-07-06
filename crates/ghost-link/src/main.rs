@@ -5096,6 +5096,49 @@ mod tests {
     }
 
     #[test]
+    fn test_env_default_helpers() {
+        std::env::set_var("GHOSTLINK_STR_TEST", "val");
+        assert_eq!(env_default_string("GHOSTLINK_STR_TEST", "fallback"), "val");
+        std::env::remove_var("GHOSTLINK_STR_TEST");
+        assert_eq!(
+            env_default_string("GHOSTLINK_STR_TEST", "fallback"),
+            "fallback"
+        );
+
+        std::env::set_var("GHOSTLINK_USIZE_TEST", "42");
+        assert_eq!(env_default_usize("GHOSTLINK_USIZE_TEST", 10), 42);
+        std::env::remove_var("GHOSTLINK_USIZE_TEST");
+        assert_eq!(env_default_usize("GHOSTLINK_USIZE_TEST", 10), 10);
+
+        std::env::set_var("GHOSTLINK_U16_TEST", "8000");
+        assert_eq!(env_default_u16("GHOSTLINK_U16_TEST", 8003), 8000);
+        std::env::remove_var("GHOSTLINK_U16_TEST");
+        assert_eq!(env_default_u16("GHOSTLINK_U16_TEST", 8003), 8003);
+
+        std::env::set_var("GHOSTLINK_BOOL_TEST", "true");
+        assert!(env_default_bool("GHOSTLINK_BOOL_TEST", false));
+        std::env::set_var("GHOSTLINK_BOOL_TEST", "1");
+        assert!(env_default_bool("GHOSTLINK_BOOL_TEST", false));
+        std::env::set_var("GHOSTLINK_BOOL_TEST", "yes");
+        assert!(env_default_bool("GHOSTLINK_BOOL_TEST", false));
+        std::env::set_var("GHOSTLINK_BOOL_TEST", "on");
+        assert!(env_default_bool("GHOSTLINK_BOOL_TEST", false));
+        std::env::set_var("GHOSTLINK_BOOL_TEST", "false");
+        assert!(!env_default_bool("GHOSTLINK_BOOL_TEST", true));
+        std::env::remove_var("GHOSTLINK_BOOL_TEST");
+        assert!(env_default_bool("GHOSTLINK_BOOL_TEST", true));
+    }
+
+    #[test]
+    fn test_vram_and_memory_env_defaults() {
+        // Test f32 environment variable resolution
+        std::env::set_var("GHOSTLINK_VRAM_TEST", "16.5");
+        assert_eq!(env_default_f32("GHOSTLINK_VRAM_TEST", 8.0), 16.5);
+        std::env::remove_var("GHOSTLINK_VRAM_TEST");
+        assert_eq!(env_default_f32("GHOSTLINK_VRAM_TEST", 8.0), 8.0);
+    }
+
+    #[test]
     fn test_detect_missing_optional_gui_python_modules() {
         let python = "python3";
         // This should pass regardless of whether huggingface_hub is installed,
