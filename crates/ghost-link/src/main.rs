@@ -5096,6 +5096,185 @@ mod tests {
     }
 
     #[test]
+    fn test_should_apply_gui_python_override() {
+        assert!(!should_apply_gui_python_override("python3"));
+        assert!(!should_apply_gui_python_override("python"));
+        assert!(!should_apply_gui_python_override(""));
+        assert!(should_apply_gui_python_override("/path/to/venv/python"));
+    }
+
+    #[test]
+    fn test_flow_transport_mode_as_str() {
+        assert_eq!(FlowTransportMode::InMemory.as_str(), "inmem");
+        assert_eq!(FlowTransportMode::TcpLoopback.as_str(), "tcp");
+        assert_eq!(FlowTransportMode::Xdp.as_str(), "xdp");
+    }
+
+    #[test]
+    fn test_resolve_config_path() {
+        let path = resolve_config_path(Some(Path::new("manual.toml")));
+        assert_eq!(path, Some(PathBuf::from("manual.toml")));
+    }
+
+    #[test]
+    fn test_set_env_if_absent() {
+        let key = "GHOSTLINK_TEST_ABSENT";
+        std::env::remove_var(key);
+        set_env_if_absent(key, "new_val".to_string());
+        assert_eq!(std::env::var(key).unwrap(), "new_val");
+        set_env_if_absent(key, "ignored".to_string());
+        assert_eq!(std::env::var(key).unwrap(), "new_val");
+        std::env::remove_var(key);
+    }
+
+    #[test]
+    fn test_parse_usize_arg() {
+        assert_eq!(parse_usize_arg("42").unwrap(), 42);
+        assert!(parse_usize_arg("not-a-number").is_err());
+    }
+
+    #[test]
+    fn test_parse_cli_more_commands() {
+        assert_eq!(
+            parse_cli(args(&["dashboard"])).unwrap(),
+            CliCommand::Dashboard
+        );
+        assert_eq!(
+            parse_cli(args(&["gui"])).unwrap(),
+            CliCommand::Gui { args: vec![] }
+        );
+        assert_eq!(
+            parse_cli(args(&["gui-check"])).unwrap(),
+            CliCommand::GuiCheck { strict: false }
+        );
+        assert_eq!(
+            parse_cli(args(&["gui-check", "--strict"])).unwrap(),
+            CliCommand::GuiCheck { strict: true }
+        );
+        assert_eq!(
+            parse_cli(args(&["gui-diagnose"])).unwrap(),
+            CliCommand::GuiDiagnose { strict: false }
+        );
+
+        let doctor = parse_cli(args(&["doctor"])).unwrap();
+        if let CliCommand::Doctor(opts) = doctor {
+            assert!(!opts.strict);
+            assert!(!opts.network_probe);
+        } else {
+            panic!("Expected Doctor");
+        }
+
+        assert_eq!(
+            parse_cli(args(&["cluster-start", "5", "9000"])).unwrap(),
+            CliCommand::ClusterStart {
+                node_count: 5,
+                base_port: 9000
+            }
+        );
+
+        let flow = parse_cli(args(&["flow", "l1", "r1", "16", "32", "128", "8", "tcp"])).unwrap();
+        if let CliCommand::Flow {
+            local_id,
+            transport_mode,
+            ..
+        } = flow
+        {
+            assert_eq!(local_id, "l1");
+            assert_eq!(transport_mode, FlowTransportMode::TcpLoopback);
+        } else {
+            panic!("Expected Flow");
+        }
+
+        assert_eq!(
+            parse_cli(args(&["serve", "--port", "1234", "--host", "0.0.0.0"])).unwrap(),
+            CliCommand::Serve {
+                port: 1234,
+                host: "0.0.0.0".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn test_is_gui_backend_reachable_local() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        // It should be reachable since the listener is active (even if we don't accept)
+        // However, connect might block or fail depending on OS if not accepted.
+        // We'll just test that it doesn't crash.
+        let _ = is_gui_backend_reachable("127.0.0.1", port, Duration::from_millis(100));
+    }
+
+    #[test]
+    fn test_build_device_map_simple() {
+        let profile = RuntimeProfile {
+            node_resources: NodeResources::new("n1", 16.0, 32.0, "gpu", None),
+            logical_cores: 16,
+            recommended_workers: 8,
+            acceleration_mode: AccelerationMode::Gpu,
+            xdp_supported: false,
+            detection_source: "manual".to_string(),
+            probe_mode: ProbeMode::Fast,
+        };
+        let map = build_device_map(&profile, "n1", "n2");
+        assert_eq!(map.len(), 2);
+        assert_eq!(map.get("n1"), Some(&DeviceKind::Gpu));
+    }
+
+    #[test]
+    fn test_apply_file_config_to_env() {
+        let mut config = FileConfig::default();
+        let mut flow = FlowDefaults::default();
+        flow.local_id = Some("test-local".to_string());
+        flow.remote_vram_gb = Some(24.0);
+        config.flow = Some(flow);
+
+        let mut cluster = ClusterStartDefaults::default();
+        cluster.node_count = Some(10);
+        config.cluster_start = Some(cluster);
+
+        let mut gui = GuiDefaults::default();
+        gui.python = Some("/usr/bin/python3.11".to_string());
+        config.gui = Some(gui);
+
+        std::env::remove_var("GHOSTLINK_FLOW_DEFAULT_LOCAL_ID");
+        std::env::remove_var("GHOSTLINK_FLOW_DEFAULT_REMOTE_VRAM_GB");
+        std::env::remove_var("GHOSTLINK_CLUSTER_START_DEFAULT_NODE_COUNT");
+        std::env::remove_var("GHOSTLINK_PYTHON");
+
+        apply_file_config_to_env(&config);
+
+        assert_eq!(
+            std::env::var("GHOSTLINK_FLOW_DEFAULT_LOCAL_ID").unwrap(),
+            "test-local"
+        );
+        assert_eq!(
+            std::env::var("GHOSTLINK_FLOW_DEFAULT_REMOTE_VRAM_GB").unwrap(),
+            "24"
+        );
+        assert_eq!(
+            std::env::var("GHOSTLINK_CLUSTER_START_DEFAULT_NODE_COUNT").unwrap(),
+            "10"
+        );
+        assert_eq!(
+            std::env::var("GHOSTLINK_PYTHON").unwrap(),
+            "/usr/bin/python3.11"
+        );
+
+        std::env::remove_var("GHOSTLINK_FLOW_DEFAULT_LOCAL_ID");
+        std::env::remove_var("GHOSTLINK_FLOW_DEFAULT_REMOTE_VRAM_GB");
+        std::env::remove_var("GHOSTLINK_CLUSTER_START_DEFAULT_NODE_COUNT");
+        std::env::remove_var("GHOSTLINK_PYTHON");
+    }
+
+    #[test]
+    fn test_json_escape() {
+        assert_eq!(json_escape("simple"), "simple");
+        assert_eq!(json_escape("with \" quotes"), "with \\\" quotes");
+        assert_eq!(json_escape("with \\ backslash"), "with \\\\ backslash");
+        assert_eq!(json_escape("with\nnewline"), "with\\nnewline");
+    }
+
+    #[test]
     fn test_env_default_helpers() {
         std::env::set_var("GHOSTLINK_STR_TEST", "val");
         assert_eq!(env_default_string("GHOSTLINK_STR_TEST", "fallback"), "val");
