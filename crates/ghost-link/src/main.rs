@@ -5096,8 +5096,32 @@ mod tests {
     }
 
     #[test]
+    fn test_detect_missing_optional_gui_python_modules() {
+        let python = "python3";
+        // This should pass regardless of whether huggingface_hub is installed,
+        // as the function itself returns a Result<Vec<String>>.
+        let result = detect_missing_optional_gui_python_modules(python);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_detect_missing_python_modules() {
+        let python = "python3";
+        // Test with modules that should exist
+        let missing = detect_missing_python_modules(python, &["sys", "os"]).unwrap();
+        assert!(missing.is_empty());
+
+        // Test with a module that definitely doesn't exist
+        let missing =
+            detect_missing_python_modules(python, &["non_existent_module_ghostlink_test"]).unwrap();
+        assert_eq!(missing.len(), 1);
+        assert_eq!(missing[0], "non_existent_module_ghostlink_test");
+    }
+
+    #[test]
     fn rejects_invalid_input() {
         assert!(parse_cli(args(&[])).is_err());
+
         assert!(parse_cli(args(&["unknown"])).is_err());
         assert!(parse_cli(args(&["probe", "n1", "nonsense"])).is_err());
         assert!(parse_cli(args(&["flow", "a", "b", "32", "64", "bad"])).is_err());
