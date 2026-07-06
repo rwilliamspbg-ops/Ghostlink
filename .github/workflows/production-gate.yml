@@ -211,7 +211,7 @@ jobs:
             --output ./tmp/doctor-probe-summary.md
 
       - name: Upload Runtime Metrics Artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: flow-runtime-metrics
           path: |
@@ -373,7 +373,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload Perf Snapshot Artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: flow-perf-snapshot
           path: |
