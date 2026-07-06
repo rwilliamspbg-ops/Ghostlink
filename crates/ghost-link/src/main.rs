@@ -2040,7 +2040,12 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             }
         };
 
-        let (deleted, detail) = match client.delete(delete_url.as_str()).json(&payload).send().await {
+        let (deleted, detail) = match client
+            .delete(delete_url.as_str())
+            .json(&payload)
+            .send()
+            .await
+        {
             Ok(response) => {
                 let status = response.status();
                 let body = response.text().await.unwrap_or_default();
@@ -4428,7 +4433,11 @@ fn print_gui_diagnostics(strict: bool) -> Result<()> {
         #[cfg(not(target_os = "linux"))]
         let linux_libgl_json = "null";
         #[cfg(target_os = "linux")]
-        let linux_libxkb_json = if has_linux_libxkbcommon() { "true" } else { "false" };
+        let linux_libxkb_json = if has_linux_libxkbcommon() {
+            "true"
+        } else {
+            "false"
+        };
         #[cfg(not(target_os = "linux"))]
         let linux_libxkb_json = "null";
         let payload = format!(
@@ -4516,9 +4525,7 @@ fn print_gui_readiness(strict: bool) -> Result<()> {
 
     match detect_missing_gui_python_modules(&python) {
         Ok(missing) if missing.is_empty() => {
-            println!(
-                "Python modules: OK (tkinter, requests)"
-            );
+            println!("Python modules: OK (tkinter, requests)");
         }
         Ok(missing) => {
             issues.push(format!("Missing Python modules: {}", missing.join(", ")));

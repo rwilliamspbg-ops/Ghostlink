@@ -978,7 +978,7 @@ fn verify_hf_repo(repo: String, file: Option<String>) -> Result<ModelVerifyResul
 
 fn studio_backend_url() -> String {
     std::env::var("GHOSTLINK_BACKEND_URL")
-    .unwrap_or_else(|_| "http://127.0.0.1:9999".to_string())
+        .unwrap_or_else(|_| "http://127.0.0.1:9999".to_string())
         .trim_end_matches('/')
         .to_string()
 }
