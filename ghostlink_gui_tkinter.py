@@ -28,6 +28,9 @@ except ImportError:  # pragma: no cover
 
 
 DEFAULT_API_BASE = "http://127.0.0.1:8003"
+
+# Assets are shipped next to this script
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT_DIR = Path(__file__).resolve().parent
 
 
@@ -136,7 +139,7 @@ class GhostlinkGUI:
         self.sidebar_buttons: list[tk.Button] = []
         self.sidebar_icons = {}
         for index, text in enumerate(["Chat", "Models", "Metrics", "Sessions", "Workers", "Security"]):
-            icon = self.load_icon(f"assets/icons/{text.lower()}.png")
+            icon = self.load_icon(os.path.join(SCRIPT_DIR, "assets", "icons", f"{text.lower()}.png"))
             button = tk.Button(sidebar, text=text, command=lambda idx=index: self.switch_tab(idx), relief="flat", bg="#151922", fg="#e5e7eb", activebackground="#2b3442", activeforeground="#ffffff", padx=14, pady=10)
             if icon:
                 button.configure(image=icon, compound="left", padx=10)
@@ -343,7 +346,7 @@ class GhostlinkGUI:
 
         button_row = tk.Frame(left, bg="#111318")
         button_row.pack(fill="x")
-        self.send_icon = self.load_icon("assets/icons/send.png")
+        self.send_icon = self.load_icon(os.path.join(SCRIPT_DIR, "assets", "icons", "send.png"))
         self.send_btn = tk.Button(button_row, text="Send", command=self.send_message, bg="#3b82f6", fg="#ffffff", relief="flat", padx=16, pady=8)
         if self.send_icon:
             self.send_btn.configure(image=self.send_icon, compound="left")

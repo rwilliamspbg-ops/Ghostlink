@@ -2040,7 +2040,12 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             }
         };
 
-        let (deleted, detail) = match client.delete(delete_url.as_str()).json(&payload).send().await {
+        let (deleted, detail) = match client
+            .delete(delete_url.as_str())
+            .json(&payload)
+            .send()
+            .await
+        {
             Ok(response) => {
                 let status = response.status();
                 let body = response.text().await.unwrap_or_default();
@@ -4130,7 +4135,7 @@ fn launch_mohawk_gui(args: &[String]) -> Result<()> {
 }
 
 fn parse_gui_backend_target(args: &[String]) -> (String, u16) {
-    let mut host = "localhost".to_string();
+    let mut host = "127.0.0.1".to_string();
     let mut port = 8003_u16;
     let mut i = 0_usize;
 
@@ -4305,9 +4310,8 @@ fn print_gui_diagnostics(strict: bool) -> Result<()> {
     let requirements = crate_root
         .join("..")
         .join("..")
-        .join("third_party")
-        .join("mohawk_gui")
-        .join("requirements-runtime.txt");
+        .join("requirements-gui.txt");
+
     let repo_root = crate_root.join("..").join("..");
     let python_resolution =
         resolve_python_for_root(&repo_root, std::env::var("GHOSTLINK_PYTHON").ok());
@@ -4360,16 +4364,16 @@ fn print_gui_diagnostics(strict: bool) -> Result<()> {
     #[cfg(target_os = "linux")]
     {
         if !has_libgl {
-            categories.push((
-                "system_libs".to_string(),
-                "Missing libGL.so.1 (install libgl1)".to_string(),
-            ));
+            // categories.push((
+            // "system_libs".to_string(),
+            // "Missing libGL.so.1 (install libgl1)".to_string(),
+            // ));
         }
         if !has_libxkb {
-            categories.push((
-                "system_libs".to_string(),
-                "Missing libxkbcommon.so.0 (install libxkbcommon0)".to_string(),
-            ));
+            // categories.push((
+            // "system_libs".to_string(),
+            // "Missing libxkbcommon.so.0 (install libxkbcommon0)".to_string(),
+            // ));
         }
     }
 
@@ -4425,11 +4429,15 @@ fn print_gui_diagnostics(strict: bool) -> Result<()> {
             .collect::<Vec<_>>()
             .join(",");
         #[cfg(target_os = "linux")]
-        let linux_libgl_json = if has_libgl { "true" } else { "false" };
+        let linux_libgl_json = if has_linux_libgl() { "true" } else { "false" };
         #[cfg(not(target_os = "linux"))]
         let linux_libgl_json = "null";
         #[cfg(target_os = "linux")]
-        let linux_libxkb_json = if has_libxkb { "true" } else { "false" };
+        let linux_libxkb_json = if has_linux_libxkbcommon() {
+            "true"
+        } else {
+            "false"
+        };
         #[cfg(not(target_os = "linux"))]
         let linux_libxkb_json = "null";
         let payload = format!(
@@ -4476,9 +4484,8 @@ fn print_gui_readiness(strict: bool) -> Result<()> {
     let requirements = crate_root
         .join("..")
         .join("..")
-        .join("third_party")
-        .join("mohawk_gui")
-        .join("requirements-runtime.txt");
+        .join("requirements-gui.txt");
+
     let repo_root = crate_root.join("..").join("..");
     let python =
         resolve_python_executable_for_root(&repo_root, std::env::var("GHOSTLINK_PYTHON").ok());
@@ -4518,9 +4525,7 @@ fn print_gui_readiness(strict: bool) -> Result<()> {
 
     match detect_missing_gui_python_modules(&python) {
         Ok(missing) if missing.is_empty() => {
-            println!(
-                "Python modules: OK (tkinter, requests, huggingface_hub, transformers, torch)"
-            );
+            println!("Python modules: OK (tkinter, requests)");
         }
         Ok(missing) => {
             issues.push(format!("Missing Python modules: {}", missing.join(", ")));
@@ -4528,6 +4533,19 @@ fn print_gui_readiness(strict: bool) -> Result<()> {
         Err(err) => {
             issues.push(format!("Unable to validate Python modules: {}", err));
         }
+    }
+
+    match detect_missing_optional_gui_python_modules(&python) {
+        Ok(missing) if missing.is_empty() => {
+            println!("Optional Python modules: OK (huggingface_hub)");
+        }
+        Ok(missing) => {
+            println!(
+                "Note: optional Python modules missing ({}); related features will be unavailable but the GUI will still run.",
+                missing.join(", ")
+            );
+        }
+        Err(_) => {}
     }
 
     #[cfg(target_os = "linux")]
@@ -4542,14 +4560,14 @@ fn print_gui_readiness(strict: bool) -> Result<()> {
             "Linux XKB runtime (libxkbcommon.so.0): {}",
             if has_libxkb { "present" } else { "missing" }
         );
-        if !has_libgl {
-            issues.push("Missing libGL.so.1 system dependency (install `libgl1`)".to_string());
-        }
-        if !has_libxkb {
-            issues.push(
-                "Missing libxkbcommon.so.0 system dependency (install `libxkbcommon0`)".to_string(),
-            );
-        }
+        // if !has_libgl {
+        // issues.push("Missing libGL.so.1 system dependency (install `libgl1`)".to_string());
+        // }
+        // if !has_libxkb {
+        //     issues.push(
+        //         "Missing libxkbcommon.so.0 system dependency (install `libxkbcommon0`)".to_string(),
+        //     );
+        // }
     }
 
     let has_display = std::env::var("DISPLAY")
@@ -4598,12 +4616,22 @@ fn print_gui_readiness(strict: bool) -> Result<()> {
     Ok(())
 }
 
-fn detect_missing_gui_python_modules(python: &str) -> Result<Vec<String>> {
+fn detect_missing_optional_gui_python_modules(python: &str) -> Result<Vec<String>> {
+    detect_missing_python_modules(python, &["huggingface_hub"])
+}
+
+fn detect_missing_python_modules(python: &str, modules: &[&str]) -> Result<Vec<String>> {
+    let module_list = modules
+        .iter()
+        .map(|m| format!("'{}'", m))
+        .collect::<Vec<_>>()
+        .join(",");
+    let script = format!(
+        "import importlib.util as u;mods=[{}];missing=[m for m in mods if u.find_spec(m) is None];print(','.join(missing))",
+        module_list
+    );
     let output = Command::new(python)
-        .args([
-            "-c",
-            "import importlib.util as u;mods=['tkinter','requests','huggingface_hub','transformers','torch'];missing=[m for m in mods if u.find_spec(m) is None];print(','.join(missing))",
-        ])
+        .args(["-c", &script])
         .output()
         .map_err(|err| anyhow::anyhow!("unable to execute Python '{}': {}", python, err))?;
 
@@ -4622,6 +4650,10 @@ fn detect_missing_gui_python_modules(python: &str) -> Result<Vec<String>> {
         .map(ToString::to_string)
         .collect::<Vec<_>>();
     Ok(missing)
+}
+
+fn detect_missing_gui_python_modules(python: &str) -> Result<Vec<String>> {
+    detect_missing_python_modules(python, &["tkinter", "requests"])
 }
 
 #[cfg(target_os = "linux")]
@@ -4969,7 +5001,7 @@ mod tests {
     #[test]
     fn parse_gui_backend_target_uses_defaults_and_parses_equals_form() {
         let (default_host, default_port) = parse_gui_backend_target(&[]);
-        assert_eq!(default_host, "localhost");
+        assert_eq!(default_host, "127.0.0.1");
         assert_eq!(default_port, 8003);
 
         let (host, port) =
@@ -5064,8 +5096,259 @@ mod tests {
     }
 
     #[test]
+    fn test_should_apply_gui_python_override() {
+        assert!(!should_apply_gui_python_override("python3"));
+        assert!(!should_apply_gui_python_override("python"));
+        assert!(!should_apply_gui_python_override(""));
+        assert!(should_apply_gui_python_override("/path/to/venv/python"));
+    }
+
+    #[test]
+    fn test_flow_transport_mode_as_str() {
+        assert_eq!(FlowTransportMode::InMemory.as_str(), "inmem");
+        assert_eq!(FlowTransportMode::TcpLoopback.as_str(), "tcp");
+        assert_eq!(FlowTransportMode::Xdp.as_str(), "xdp");
+    }
+
+    #[test]
+    fn test_resolve_config_path() {
+        let path = resolve_config_path(Some(Path::new("manual.toml")));
+        assert_eq!(path, Some(PathBuf::from("manual.toml")));
+    }
+
+    #[test]
+    fn test_set_env_if_absent() {
+        let key = "GHOSTLINK_TEST_ABSENT";
+        std::env::remove_var(key);
+        set_env_if_absent(key, "new_val".to_string());
+        assert_eq!(std::env::var(key).unwrap(), "new_val");
+        set_env_if_absent(key, "ignored".to_string());
+        assert_eq!(std::env::var(key).unwrap(), "new_val");
+        std::env::remove_var(key);
+    }
+
+    #[test]
+    fn test_parse_usize_arg() {
+        assert_eq!(parse_usize_arg("42").unwrap(), 42);
+        assert!(parse_usize_arg("not-a-number").is_err());
+    }
+
+    #[test]
+    fn test_parse_cli_more_commands() {
+        assert_eq!(
+            parse_cli(args(&["dashboard"])).unwrap(),
+            CliCommand::Dashboard
+        );
+        assert_eq!(
+            parse_cli(args(&["gui"])).unwrap(),
+            CliCommand::Gui { args: vec![] }
+        );
+        assert_eq!(
+            parse_cli(args(&["gui-check"])).unwrap(),
+            CliCommand::GuiCheck { strict: false }
+        );
+        assert_eq!(
+            parse_cli(args(&["gui-check", "--strict"])).unwrap(),
+            CliCommand::GuiCheck { strict: true }
+        );
+        assert_eq!(
+            parse_cli(args(&["gui-diagnose"])).unwrap(),
+            CliCommand::GuiDiagnose { strict: false }
+        );
+
+        let doctor = parse_cli(args(&["doctor"])).unwrap();
+        if let CliCommand::Doctor(opts) = doctor {
+            assert!(!opts.strict);
+            assert!(!opts.network_probe);
+        } else {
+            panic!("Expected Doctor");
+        }
+
+        assert_eq!(
+            parse_cli(args(&["cluster-start", "5", "9000"])).unwrap(),
+            CliCommand::ClusterStart {
+                node_count: 5,
+                base_port: 9000
+            }
+        );
+
+        let flow = parse_cli(args(&["flow", "l1", "r1", "16", "32", "128", "8", "tcp"])).unwrap();
+        if let CliCommand::Flow {
+            local_id,
+            transport_mode,
+            ..
+        } = flow
+        {
+            assert_eq!(local_id, "l1");
+            assert_eq!(transport_mode, FlowTransportMode::TcpLoopback);
+        } else {
+            panic!("Expected Flow");
+        }
+
+        assert_eq!(
+            parse_cli(args(&["serve", "0.0.0.0", "1234"])).unwrap(),
+            CliCommand::Serve {
+                port: 1234,
+                host: "0.0.0.0".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn test_is_gui_backend_reachable_local() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        // It should be reachable since the listener is active (even if we don't accept)
+        // However, connect might block or fail depending on OS if not accepted.
+        // We'll just test that it doesn't crash.
+        let _ = is_gui_backend_reachable("127.0.0.1", port, Duration::from_millis(100));
+    }
+
+    #[test]
+    fn test_build_device_map_simple() {
+        let profile = RuntimeProfile {
+            node_resources: NodeResources::new("n1", 16.0, 32.0, "gpu", None),
+            logical_cores: 16,
+            recommended_workers: 8,
+            acceleration_mode: AccelerationMode::Gpu,
+            xdp_supported: false,
+            detection_source: "manual".to_string(),
+            probe_mode: ProbeMode::Fast,
+        };
+        let map = build_device_map(&profile, "n1", "n2");
+        assert_eq!(map.len(), 2);
+        assert_eq!(map.get("n1"), Some(&DeviceKind::Gpu));
+    }
+
+    #[test]
+    fn test_apply_file_config_to_env() {
+        let mut config = FileConfig::default();
+        let flow = FlowDefaults {
+            local_id: Some("test-local".to_string()),
+            remote_vram_gb: Some(24.0),
+            ..Default::default()
+        };
+        config.flow = Some(flow);
+
+        let cluster = ClusterStartDefaults {
+            node_count: Some(10),
+            ..Default::default()
+        };
+        config.cluster_start = Some(cluster);
+
+        let gui = GuiDefaults {
+            python: Some("/usr/bin/python3.11".to_string()),
+        };
+        config.gui = Some(gui);
+
+        std::env::remove_var("GHOSTLINK_FLOW_DEFAULT_LOCAL_ID");
+        std::env::remove_var("GHOSTLINK_FLOW_DEFAULT_REMOTE_VRAM_GB");
+        std::env::remove_var("GHOSTLINK_CLUSTER_START_DEFAULT_NODE_COUNT");
+        std::env::remove_var("GHOSTLINK_PYTHON");
+
+        apply_file_config_to_env(&config);
+
+        assert_eq!(
+            std::env::var("GHOSTLINK_FLOW_DEFAULT_LOCAL_ID").unwrap(),
+            "test-local"
+        );
+        assert_eq!(
+            std::env::var("GHOSTLINK_FLOW_DEFAULT_REMOTE_VRAM_GB").unwrap(),
+            "24"
+        );
+        assert_eq!(
+            std::env::var("GHOSTLINK_CLUSTER_START_DEFAULT_NODE_COUNT").unwrap(),
+            "10"
+        );
+        assert_eq!(
+            std::env::var("GHOSTLINK_PYTHON").unwrap(),
+            "/usr/bin/python3.11"
+        );
+
+        std::env::remove_var("GHOSTLINK_FLOW_DEFAULT_LOCAL_ID");
+        std::env::remove_var("GHOSTLINK_FLOW_DEFAULT_REMOTE_VRAM_GB");
+        std::env::remove_var("GHOSTLINK_CLUSTER_START_DEFAULT_NODE_COUNT");
+        std::env::remove_var("GHOSTLINK_PYTHON");
+    }
+
+    #[test]
+    fn test_json_escape() {
+        assert_eq!(json_escape("simple"), "simple");
+        assert_eq!(json_escape("with \" quotes"), "with \\\" quotes");
+        assert_eq!(json_escape("with \\ backslash"), "with \\\\ backslash");
+        assert_eq!(json_escape("with\nnewline"), "with\\nnewline");
+    }
+
+    #[test]
+    fn test_env_default_helpers() {
+        std::env::set_var("GHOSTLINK_STR_TEST", "val");
+        assert_eq!(env_default_string("GHOSTLINK_STR_TEST", "fallback"), "val");
+        std::env::remove_var("GHOSTLINK_STR_TEST");
+        assert_eq!(
+            env_default_string("GHOSTLINK_STR_TEST", "fallback"),
+            "fallback"
+        );
+
+        std::env::set_var("GHOSTLINK_USIZE_TEST", "42");
+        assert_eq!(env_default_usize("GHOSTLINK_USIZE_TEST", 10), 42);
+        std::env::remove_var("GHOSTLINK_USIZE_TEST");
+        assert_eq!(env_default_usize("GHOSTLINK_USIZE_TEST", 10), 10);
+
+        std::env::set_var("GHOSTLINK_U16_TEST", "8000");
+        assert_eq!(env_default_u16("GHOSTLINK_U16_TEST", 8003), 8000);
+        std::env::remove_var("GHOSTLINK_U16_TEST");
+        assert_eq!(env_default_u16("GHOSTLINK_U16_TEST", 8003), 8003);
+
+        std::env::set_var("GHOSTLINK_BOOL_TEST", "true");
+        assert!(env_default_bool("GHOSTLINK_BOOL_TEST", false));
+        std::env::set_var("GHOSTLINK_BOOL_TEST", "1");
+        assert!(env_default_bool("GHOSTLINK_BOOL_TEST", false));
+        std::env::set_var("GHOSTLINK_BOOL_TEST", "yes");
+        assert!(env_default_bool("GHOSTLINK_BOOL_TEST", false));
+        std::env::set_var("GHOSTLINK_BOOL_TEST", "on");
+        assert!(env_default_bool("GHOSTLINK_BOOL_TEST", false));
+        std::env::set_var("GHOSTLINK_BOOL_TEST", "false");
+        assert!(!env_default_bool("GHOSTLINK_BOOL_TEST", true));
+        std::env::remove_var("GHOSTLINK_BOOL_TEST");
+        assert!(env_default_bool("GHOSTLINK_BOOL_TEST", true));
+    }
+
+    #[test]
+    fn test_vram_and_memory_env_defaults() {
+        // Test f32 environment variable resolution
+        std::env::set_var("GHOSTLINK_VRAM_TEST", "16.5");
+        assert_eq!(env_default_f32("GHOSTLINK_VRAM_TEST", 8.0), 16.5);
+        std::env::remove_var("GHOSTLINK_VRAM_TEST");
+        assert_eq!(env_default_f32("GHOSTLINK_VRAM_TEST", 8.0), 8.0);
+    }
+
+    #[test]
+    fn test_detect_missing_optional_gui_python_modules() {
+        let python = "python3";
+        // This should pass regardless of whether huggingface_hub is installed,
+        // as the function itself returns a Result<Vec<String>>.
+        let result = detect_missing_optional_gui_python_modules(python);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_detect_missing_python_modules() {
+        let python = "python3";
+        // Test with modules that should exist
+        let missing = detect_missing_python_modules(python, &["sys", "os"]).unwrap();
+        assert!(missing.is_empty());
+
+        // Test with a module that definitely doesn't exist
+        let missing =
+            detect_missing_python_modules(python, &["non_existent_module_ghostlink_test"]).unwrap();
+        assert_eq!(missing.len(), 1);
+        assert_eq!(missing[0], "non_existent_module_ghostlink_test");
+    }
+
+    #[test]
     fn rejects_invalid_input() {
         assert!(parse_cli(args(&[])).is_err());
+
         assert!(parse_cli(args(&["unknown"])).is_err());
         assert!(parse_cli(args(&["probe", "n1", "nonsense"])).is_err());
         assert!(parse_cli(args(&["flow", "a", "b", "32", "64", "bad"])).is_err());
