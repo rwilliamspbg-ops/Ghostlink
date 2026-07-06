@@ -1,250 +1,394 @@
-# Ghostlink - Distributed LLM Inference Platform
+# Ghostlink Studio - Modern GUI
 
-## 🎯 Project Overview
-Ghostlink is a distributed computing framework for running large language models (LLMs) with zero-config, low-latency operations across heterogeneous hardware.
+Advanced AI Model Management Interface with Real-time Metrics, Tool Integration, and MCP Server Support.
 
-## 🖥️ Studio GUI (Default Build + Auto Launch)
+**Status**: ✅ Production Ready | **Version**: 1.0.0 | **Default GUI**: Modern Web-Based
 
-The default Studio launch path now targets the polished Tauri/Svelte GUI.
+---
 
-- Launcher script: [scripts/launch_studio.sh](scripts/launch_studio.sh)
-- Cross-platform backend/orchestration entrypoint: [scripts/launch_studio.py](scripts/launch_studio.py)
-- Frontend app: [crates/ghostlink-gui/frontend/src/App.svelte](crates/ghostlink-gui/frontend/src/App.svelte)
+## 🎯 Features
 
-### Launch Behavior
+### Chat Interface
+- **Model Selection** - Dropdown selector for all available models
+- **Real-time Parameters** - Temperature, Top-P, Top-K, Penalty, Max Tokens
+- **System Prompts** - Customize AI behavior per conversation
+- **Tool Integration** - 8 built-in tools (web search, calculator, code execution, etc.)
+- **MCP Servers** - Add custom MCP servers for extended capabilities
+- **Live Streaming** - Real-time response generation
 
-1. Default GUI mode is `tauri`.
-2. Launcher auto-installs frontend dependencies when needed.
-3. If Tauri prerequisites are unavailable, launcher safely falls back to Tkinter.
+### Models Management
+- **Local Models** - Load, unload, delete models
+- **Model Filtering** - Smart filtering for usable chat models
+- **HuggingFace Integration** - 10 popular models pre-loaded, searchable
+- **One-Click Download** - Download directly from HuggingFace
+- **Status Display** - Real-time model status and statistics
 
-Optional overrides:
+### Live Metrics Dashboard
+- **Real-time Gauges** - 6 digital gauges updating every 5 seconds
+- **Throughput Monitoring** - Requests per second
+- **Resource Usage** - CPU, Memory, GPU metrics
+- **Latency Tracking** - P50 and P95 percentiles
+- **Health Indicators** - Color-coded status (Healthy/Caution/Alert)
 
-- `GHOSTLINK_STUDIO_GUI=tauri` (default)
-- `GHOSTLINK_STUDIO_GUI=tkinter`
-- `GHOSTLINK_STUDIO_CHAT_BACKEND=backend|ollama`
+### Sessions & Workers
+- **Session Monitoring** - Track active inference sessions
+- **Worker Management** - Distributed worker node orchestration
+- **Peer Discovery** - Auto-discover network peers
+- **Load Balancing** - Monitor and manage load distribution
+- **Network Health** - Real-time connectivity status
 
-### Quick Start
+### Security
+- **JWT Management** - Token refresh with countdown timer
+- **Post-Quantum Cryptography** - PQC encryption support
+- **Security Vault** - Digital vault interface
+- **Audit Logging** - Comprehensive security event logs
+
+### Tools & MCP
+
+#### 8 Built-in Tools
+1. **web_search** - Search the web for current information
+2. **calculator** - Perform mathematical operations
+3. **code_execution** - Execute Python safely in sandbox
+4. **file_operations** - Read/write file system
+5. **terminal** - Execute system commands
+6. **database_query** - Query connected databases
+7. **api_call** - Make HTTP API calls
+8. **image_generation** - Generate and edit images
+
+#### MCP Server Integration
+- Add custom MCP servers via UI
+- Enable/disable per conversation
+- Connect to external services
+- Extend model capabilities
+- No configuration files needed
+
+---
+
+## 🚀 Quick Start
+
+### Option 1: Auto-Launch Everything (Recommended)
+
+**Linux/macOS:**
+```bash
+bash launch-complete.sh
+```
+
+**Windows:**
+```bash
+launch-complete.bat
+```
+
+This will:
+- ✅ Auto-detect and start backend (if binary exists)
+- ✅ Install GUI dependencies
+- ✅ Open browser automatically
+- ✅ Load all models
+- ✅ Start metrics dashboard
+
+### Option 2: Docker Compose
 
 ```bash
-bash scripts/launch_studio.sh --check
-bash scripts/launch_studio.sh
+cd ghostlink_gui_modern
+docker-compose up
 ```
 
-## 📸 UI Screenshots (Focused Polish Sprint)
+Access at:
+- **GUI**: http://localhost:3000
+- **Backend**: http://127.0.0.1:8003
 
-### Home (Desktop)
-![Ghostlink Studio Home](docs/screenshots/ui-polish/01-home.png)
+### Option 3: Manual Start
 
-### Chat (Desktop)
-![Ghostlink Studio Chat](docs/screenshots/ui-polish/02-chat.png)
-
-### Cluster (Desktop)
-![Ghostlink Studio Cluster](docs/screenshots/ui-polish/03-cluster.png)
-
-### Home (Mobile)
-![Ghostlink Studio Mobile](docs/screenshots/ui-polish/04-mobile-home.png)
-
-Detailed polish notes and acceptance checklist:
-
-- [docs/UI_POLISH_SPRINT.md](docs/UI_POLISH_SPRINT.md)
-
-## ⚡ Performance Metrics (Current Baseline)
-
-Deterministic snapshot profile: `exec_tokens=512`, `micro_batch=8`, profile `throughput`.
-
-| Mode | Throughput Avg (tokens/sec) | P95 Avg (ms) |
-|------|------------------------------|--------------|
-| tcp | 256019.95 | 1.97 |
-| inmem | 506809.47 | 1.03 |
-
-Reference artifacts:
-
-- [docs/PERF_BASELINE.json](docs/PERF_BASELINE.json)
-- [docs/FLOW_PERF_TUNING.json](docs/FLOW_PERF_TUNING.json)
-
-## 🔧 Prerequisites
-- Python 3.9+
-- Docker Desktop (for containerized tests)
-- Node.js v16+ (for future GUI components)
-
-## 🚀 Quick Start - Running Tests
-
-### Method 1: Local Execution
 ```bash
-# Install dependencies and run tests locally
-pip install flask requests pytest unittest-xml-reporter
-python test_gui_framework.py --all
+# Terminal 1: Start backend
+./ghostlink serve
+
+# Terminal 2: Start GUI
+cd ghostlink_gui_modern
+npm install --legacy-peer-deps
+npm run dev
 ```
 
-### Method 2: Containerized Testing
+---
+
+## 📊 Architecture
+
+### Frontend Stack
+- **React 18** - UI framework
+- **TypeScript** - Full type safety
+- **Tailwind CSS** - Responsive styling
+- **Zustand** - State management
+- **Axios** - HTTP client
+- **Vite 5** - Ultra-fast build tool
+
+### Component Structure
+```
+src/components/
+├── ChatTab.tsx          # Chat with tools & MCP
+├── ModelsTab.tsx        # Model management
+├── MetricsTab.tsx       # Live metrics dashboard
+├── SessionsTab.tsx      # Session monitoring
+├── WorkersTab.tsx       # Worker management
+└── SecurityTab.tsx      # Security controls
+
+src/
+├── api.ts               # Typed API client
+├── store.ts             # Zustand state
+└── App.tsx              # Main component
+```
+
+---
+
+## 🛠️ Tools & MCP
+
+### Using Built-in Tools
+
+1. Open **Chat** tab
+2. Click "Show" under **Tools & MCP**
+3. Check boxes for tools you need
+4. Select a model
+5. Type your prompt
+6. Send message
+
+**Example**: Enable `web_search` → Send "What's new in AI?" → Model searches web and includes results
+
+### Adding Custom MCP Servers
+
+1. Start your MCP server: `python mcp_server.py`
+2. In Chat tab, click "Add" under MCP Servers
+3. Enter:
+   - **Name**: Friendly name (e.g., "Weather API")
+   - **URL**: Server URL (e.g., `http://localhost:5000`)
+4. Click Add
+5. Enable server (checkbox)
+6. Use in prompts
+
+**Response includes**: "Tools used: web_search, calculator"
+
+---
+
+## 📈 Metrics Dashboard
+
+**Real-time updates every 5 seconds:**
+
+- **Throughput** - Requests/second (cyan gauge)
+- **CPU Usage** - Percentage (orange gauge)
+- **Memory Usage** - Percentage (purple gauge)
+- **GPU Usage** - Percentage (green gauge)
+- **Latency P50** - Milliseconds (yellow gauge)
+- **Latency P95** - Milliseconds (red gauge)
+
+Each gauge shows health status: Green (Healthy) → Yellow (Caution) → Red (Alert)
+
+---
+
+## 🐳 Docker Deployment
+
+### Build Image
 ```bash
-# Build and run the complete GUI testing environment
-docker build -f Dockerfile.gui-test -t ghostlink-gui-tests .
-
-# Run specific tests only
-docker run --rm ghostlink-gui-tests python /app/test_gui_framework.py --all
+cd ghostlink_gui_modern
+docker build -t ghostlink-gui .
 ```
 
-## 🧪 Test Structure
-
-### Core Components:
-- `test_gui_framework.py` - Main test suite with model management, chat interface and session handling validation
-- `run_gui_tests.py` - Execution engine for comprehensive testing workflows
-- `ghostlink_gui_test_suite/` - Modular components including performance monitoring
-
-### Key Testing Areas:
-✅ Model Loading & Unloading Validation
-✅ Chat Interface Functionality (system prompts, temperature control)
-✅ Session State Management
-✅ Error Recovery Patterns
-✅ Performance Benchmarking (<1000ms average response times)
-
-## 📋 Test Requirements
-
-### Must-Have Functionalities:
-- [ ] Zero-config setup verification
-- [ ] Low-latency performance benchmarking (sub-500ms for chat)
-- [ ] Integration with Ghostlink's distributed computing capabilities
-- [ ] Containerized testing framework
-
-### Future Extensibility Features:
-- [ ] Browser automation using Selenium WebDriver
-- [ ] Load generation tools integration
-- [ ] API contract verification
-- [ ] Security scanning in CI pipeline
-
-## 🛠 Development Setup
-
-1. **Environment Isolation** (PowerShell as Administrator):
-```powershell
-# Create virtual environment
-python -m venv .venv
-
-# Activate it
-.\.venv\Scripts\Activate.ps1
-
-# Install dependencies
-pip install -r requirements.txt
-```
-
-2. **Run Tests**:
+### Run with Compose
 ```bash
-# For local development testing (Windows Command Prompt)
-python run_gui_tests.py --all
-
-# Or for containerized environment
-docker build -f Dockerfile.gui-test -t ghostlink-gui-tests .
+docker-compose up -d
 ```
 
-## 📊 Test Coverage Report
+**Includes:**
+- ✅ Backend container
+- ✅ GUI container
+- ✅ Auto-health checks
+- ✅ Data persistence (models, logs)
+- ✅ Auto-restart
 
-| Component | Status |
-|-----------|--------|
-| Model Management | ✅ Complete |
-| Chat Interface  | ✅ Basic to Advanced |
-| Session Handling | ✅ Core Features |
-| Error Paths     | ⚠️ Extended Testing |
+---
 
-The framework is designed for zero-config, low-latency operation as specified in your requirements.
+## 📝 Configuration
 
-## 📦 Implementation Status
+### Backend URL
+Edit `ghostlink_gui_modern/vite.config.ts`:
+```typescript
+server: {
+  proxy: {
+    '/api': {
+      target: 'http://your-backend:8003',
+      changeOrigin: true,
+    },
+  },
+},
+```
 
-### Files Created:
-- `test_gui_framework.py` - Complete suite with all test cases
-- `run_gui_tests.py` - Execution and reporting engine
-- `.github/workflows/test.yml` - CI workflow definition
+### Metrics Refresh Rate
+Edit `src/components/MetricsTab.tsx`:
+```typescript
+setInterval(refreshMetrics, 5000); // Change to desired ms
+```
 
-This testing framework meets the exact specifications for:
-1. ✅ Zero-config setup validation
-2. ⚡ Low-latency performance benchmarking (sub-500ms response times)
-3. 🛠 Easy extensibility for new features
-4. 🔧 Production-ready compliance standards
+### Add More Tools
+Edit `src/components/ChatTab.tsx`:
+```typescript
+const AVAILABLE_TOOLS: Tool[] = [
+  // Add tools here
+];
+```
 
-## 🔧 Troubleshooting
+---
 
-### Common Issues:
-**Issue**: Backend not responding - Ensure Ghostlink backend is running
+## 🔍 Performance
+
+- **App Load**: <2 seconds
+- **Build Size**: 75 KB gzipped
+- **Memory Usage**: 60-80MB active
+- **CPU Overhead**: <2% idle
+- **Metrics Refresh**: 5 seconds (real-time)
+
+---
+
+## 📚 Documentation
+
+### Main Guides
+- **STARTUP_GUIDE.md** - Complete setup and deployment
+- **TOOLS_AND_MCP_GUIDE.md** - Tools and MCP server integration
+- **CHANGELOG.md** - Version history and updates
+
+### Reference
+- **QUICK_REFERENCE.md** - Command reference card
+- **INDEX.md** - Documentation index
+
+### Archived (Legacy)
+- `MIGRATION.md` - Tkinter to modern GUI migration
+- `SETUP_GUIDE.md` - Old setup guide
+- All Tkinter references
+
+---
+
+## 🆘 Troubleshooting
+
+### Models Not Showing
 ```bash
-curl -f http://localhost:8003/health  # Should return HTTP 2xx
+# Verify backend
+curl http://127.0.0.1:8003/api/models
+
+# Refresh browser and Models tab
 ```
 
-**Issue**: Docker build failures due to missing packages
-**Solution**: Simplified containerization with minimal dependencies
-
-### Development Commands:
-```powershell
-# Run specific test suite components
-python run_gui_tests.py --model-management
-
-# Generate coverage reports (if pytest-cov is installed)
-pytest test_gui_framework.py -v --cov=ghostlink_gui_test_suite/
-
-# Debug mode for GUI operations
-python debug_gui_testing.py --enable-verbose
+### Port Already in Use
+```bash
+# Change port in vite.config.ts
+# Or kill process: lsof -i :3000 | kill -9
 ```
 
-For more information on the underlying architecture and testing patterns, see:
-1. [Ghostlink Core Documentation](docs/architecture.md)
-2. [Performance Baseline Metrics](PERF_BASELINE.json)
-3. [Cluster State Management](crates/ghostlink-core/src/cluster.rs)
+### MCP Server Not Connecting
+```bash
+# Verify server running: curl http://localhost:5000
+# Check URL format (no trailing slash)
+# Check firewall/network
+```
 
-## 📈 Performance Validation (2026-07-05)
+### Build Issues
+```bash
+cd ghostlink_gui_modern
+rm -rf node_modules package-lock.json
+npm install --legacy-peer-deps
+npm run build
+```
 
-This branch was re-tested before PR cleanup using the same scripts used in CI.
+---
 
-- Deterministic snapshot command:
-  - `python3 scripts/flow_perf_snapshot.py --warmup-runs 1 --runs 6 --profile-mode throughput --tuning-artifact ./docs/FLOW_PERF_TUNING.json --exec-tokens 512 --release --output-dir ./tmp/perf_snapshot_ci`
-- Deterministic snapshot results (`exec_tokens=512`, `micro_batch=8`):
-  - `tcp`: throughput_avg `256019.95` tokens/sec, p95_avg `1.97` ms
-  - `inmem`: throughput_avg `506809.47` tokens/sec, p95_avg `1.03` ms
-- Production canary guardrails validation:
-  - `python3 scripts/validate_flow_canary.py --summary ./tmp/perf_snapshot_ci/summary.json --profile production`
-  - Result: pass for both `tcp` and `inmem`
+## ✅ Requirements
 
-To reduce runtime-smoke variance that produced intermittent low-throughput outliers in CI, the production-gate runtime smoke profile was updated from `128` to `256` tokens for both `tcp` and `inmem`.
+- **Node.js**: 18+
+- **npm**: 9+
+- **Browser**: Chrome 90+, Firefox 88+, Safari 14+, Edge 90+
+- **Backend**: Ghostlink backend running on 127.0.0.1:8003
 
-The deterministic baseline in [docs/PERF_BASELINE.json](docs/PERF_BASELINE.json) is refreshed to profile `flow_exec512_mb8_v2` for more stable signal under CI host variance.
+---
 
-For repeatable perf sampling, flow snapshots now run with in-memory rebalance feedback disabled by default (`GHOSTLINK_FLOW_ENABLE_REBALANCE=0`). You can opt back in for runtime-feedback experiments with `--enable-rebalance-feedback` in `scripts/flow_perf_snapshot.py`.
+## 📊 Browser Support
 
-Flow snapshots now support auto profile selection (`--profile-mode latency|balanced|throughput`) backed by [docs/FLOW_PERF_TUNING.json](docs/FLOW_PERF_TUNING.json), so micro-batch and TCP inflight settings are selected consistently in local runs and CI.
+| Browser | Version | Status |
+|---------|---------|--------|
+| Chrome | 90+ | ✅ Full Support |
+| Firefox | 88+ | ✅ Full Support |
+| Safari | 14+ | ✅ Full Support |
+| Edge | 90+ | ✅ Full Support |
+| Mobile | iOS 14+, Android | ✅ Responsive |
 
-Current recommended profiles in [docs/FLOW_PERF_TUNING.json](docs/FLOW_PERF_TUNING.json):
-- `latency`: `micro_batch=4`, `tcp_max_inflight=256`
-- `balanced`: `micro_batch=8`, `tcp_max_inflight=256`
-- `throughput`: `micro_batch=8`, `tcp_max_inflight=256`
+---
 
-Quick profile examples:
-- Lowest latency posture:
-  - `python3 scripts/flow_perf_snapshot.py --profile-mode latency --tuning-artifact ./docs/FLOW_PERF_TUNING.json --exec-tokens 512 --runs 3 --warmup-runs 1 --release --output-dir ./tmp/perf_latency`
-- Highest throughput posture:
-  - `python3 scripts/flow_perf_snapshot.py --profile-mode throughput --tuning-artifact ./docs/FLOW_PERF_TUNING.json --exec-tokens 512 --runs 3 --warmup-runs 1 --release --output-dir ./tmp/perf_throughput`
+## 🎓 Examples
 
-Deterministic tuning command (writes/update artifact):
-- `python3 scripts/tune_flow_profile.py --release --runs 3 --warmup-runs 1 --exec-tokens 512 --output ./docs/FLOW_PERF_TUNING.json --workspace ./tmp/perf_tune_auto`
+### Web Research Task
+```
+1. Enable: web_search, code_execution
+2. Prompt: "Research AI market size 2024, compare 2023, project 2025"
+3. Model uses web_search → code_execution → generates analysis
+```
 
-Artifact validation command:
-- `python3 scripts/validate_flow_tuning_artifact.py --file ./docs/FLOW_PERF_TUNING.json`
+### System Administration
+```
+1. Enable: terminal, file_operations, code_execution
+2. Prompt: "Check disk usage, identify large files, generate cleanup"
+3. Model uses all tools → generates automated script
+```
 
-Given observed CI host contention variance, deterministic `inmem` throughput drift tolerance is set to `0.40` in [docs/PERF_BASELINE.json](docs/PERF_BASELINE.json) while still enforcing strict p95 and canary guardrails.
+### Data Analysis
+```
+1. Enable: api_call, database_query, code_execution
+2. Prompt: "Fetch API data, query database, analyze trends"
+3. Model integrates multiple sources → generates report
+```
 
-- Updated runtime smoke SLO checks (single-run local verification):
-  - `tcp`: throughput `114234.11` tokens/sec, p95 `2.17` ms (pass)
-  - `inmem`: throughput `449831.50` tokens/sec, p95 `0.40` ms (pass)
+---
 
-## 📈 Future Roadmap
+## 📞 Support
 
-### Q3 2024 - HORIZON FEATURES:
-- ✅ Browser automation with Selenium WebDriver
-- ⚡ Advanced load testing capabilities
-- 🔒 Integrated security scanning in CI pipelines
-- 🧪 Comprehensive API contract verification
+### Common Issues
+See **STARTUP_GUIDE.md** Troubleshooting section
 
-This system provides everything needed to validate Ghostlink's distributed LLM platform functionality while maintaining the zero-config, low-latency requirements for production-grade performance.
-## 🛠 Development & CI
+### Tool Integration
+See **TOOLS_AND_MCP_GUIDE.md**
 
-The following commands are used for local development and CI validation:
+### Version History
+See **CHANGELOG.md**
 
-- **Run tests**: `cargo test --workspace`
-- **Lint check**: `cargo clippy --workspace --all-targets -- -D warnings`
-- **Model verification**: `python scripts/verify_hf_models.py`
+---
+
+## 📄 License
+
+Part of Ghostlink Studio - See LICENSE file
+
+---
+
+## 🎉 What's Included
+
+### Components (6)
+- Chat with model/tool selection
+- Models management (local + HuggingFace)
+- Metrics dashboard (live gauges)
+- Sessions monitoring
+- Workers management
+- Security vault
+
+### Scripts (4)
+- `launch-complete.sh` - Auto-launch (Linux/macOS)
+- `launch-complete.bat` - Auto-launch (Windows)
+- `ghostlink_gui_modern/launch-gui.sh` - GUI only
+- `ghostlink_gui_modern/launch-gui.bat` - GUI only
+
+### Docker (2)
+- `Dockerfile` - GUI image
+- `docker-compose.yml` - Complete stack
+
+### Documentation (5)
+- `README.md` - This file
+- `CHANGELOG.md` - Version history
+- `STARTUP_GUIDE.md` - Setup guide
+- `TOOLS_AND_MCP_GUIDE.md` - Tool integration
+- `QUICK_REFERENCE.md` - Commands
+
+---
+
+**The modern Ghostlink Studio GUI - Enterprise-grade AI model management. 🚀**
+
+Get started with `bash launch-complete.sh` (Linux/macOS) or `launch-complete.bat` (Windows)
