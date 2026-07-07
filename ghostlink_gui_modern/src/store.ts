@@ -62,7 +62,7 @@ interface AppState {
 }
 
 export const useAppStore = create<AppState>((set) => ({
-  apiBase: 'http://127.0.0.1:8003',
+  apiBase: '',
   backendOnline: false,
   currentModel: 'none',
   uptime: 0,

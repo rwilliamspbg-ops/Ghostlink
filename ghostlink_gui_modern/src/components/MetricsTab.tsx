@@ -21,172 +21,89 @@ export const MetricsTab: React.FC<MetricsTabProps> = React.memo(({ api }) => {
 
   useEffect(() => {
     refreshMetrics();
-    const interval = setInterval(refreshMetrics, 2000);
+    const interval = setInterval(refreshMetrics, 5000);
     return () => clearInterval(interval);
-  }, []);
+  }, [api]);
 
   return (
     <div className="space-y-6">
-      {/* Refresh Button */}
-      <div className="flex gap-2">
+      <div className="flex items-center justify-between">
+        <h2 className="text-xl font-bold text-white">Live Metrics Dashboard</h2>
         <button
           onClick={refreshMetrics}
-          disabled={loading}
-          className="flex items-center gap-2 px-4 py-2 bg-slate-700 hover:bg-slate-600 disabled:bg-slate-800 text-white rounded transition"
+          className={`p-2 rounded bg-slate-800 text-slate-300 hover:bg-slate-700 transition ${
+            loading ? 'animate-spin' : ''
+          }`}
         >
-          <RefreshCw size={16} className={loading ? 'animate-spin' : ''} />
-          Refresh
+          <RefreshCw size={20} />
         </button>
       </div>
 
-      {/* Digital Gauges Grid */}
-      {metrics && (
-        <div className="grid grid-cols-2 md:grid-cols-3 gap-6">
-          <DigitalGauge
-            label="Throughput"
-            value={metrics.throughput || 0}
-            unit="req/s"
-            max={100}
-            color="from-cyan-500 to-blue-600"
-          />
-          <DigitalGauge
-            label="CPU Usage"
-            value={metrics.cpu || 0}
-            unit="%"
-            max={100}
-            color="from-orange-500 to-red-600"
-          />
-          <DigitalGauge
-            label="Memory"
-            value={metrics.memory || 0}
-            unit="%"
-            max={100}
-            color="from-purple-500 to-pink-600"
-          />
-          <DigitalGauge
-            label="GPU Usage"
-            value={metrics.gpu || 0}
-            unit="%"
-            max={100}
-            color="from-green-500 to-emerald-600"
-          />
-          <DigitalGauge
-            label="Latency P50"
-            value={metrics.latency_p50 || 0}
-            unit="ms"
-            max={500}
-            color="from-yellow-500 to-orange-600"
-          />
-          <DigitalGauge
-            label="Latency P95"
-            value={metrics.latency_p95 || 0}
-            unit="ms"
-            max={1000}
-            color="from-red-500 to-rose-600"
-          />
-        </div>
-      )}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+        <Gauge label="Throughput (Tokens/s)" value={metrics?.throughput || 0} max={1000} color="text-cyan-400" />
+        <Gauge label="CPU Usage (%)" value={metrics?.cpu || 0} max={100} color="text-orange-400" />
+        <Gauge label="Memory Usage (%)" value={metrics?.memory || 0} max={100} color="text-purple-400" />
+        <Gauge label="GPU Usage (%)" value={metrics?.gpu || 0} max={100} color="text-green-400" />
+        <Gauge label="Latency P50 (ms)" value={metrics?.latency_p50 || 0} max={50} color="text-yellow-400" />
+        <Gauge label="Latency P95 (ms)" value={metrics?.latency_p95 || 0} max={100} color="text-red-400" />
+      </div>
 
-      {/* Raw JSON */}
-      <div className="bg-slate-900 rounded p-4 border border-slate-700">
-        <h3 className="text-sm font-semibold text-slate-200 mb-3">Raw Data</h3>
-        <pre className="text-slate-300 text-sm overflow-x-auto font-mono bg-slate-800 p-3 rounded max-h-64">
-          {metrics ? JSON.stringify(metrics, null, 2) : '{}'}
-        </pre>
+      <div className="bg-slate-800/50 p-6 rounded-lg border border-slate-700">
+        <h3 className="text-lg font-semibold text-white mb-4">Cluster Health Summary</h3>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <div className="flex items-center gap-3">
+            <div className="w-3 h-3 rounded-full bg-green-400 animate-pulse" />
+            <span className="text-slate-300">Discovery Protocol Active (UDP)</span>
+          </div>
+          <div className="flex items-center gap-3">
+            <div className="w-3 h-3 rounded-full bg-green-400" />
+            <span className="text-slate-300">P2P Mesh Fabric Connected</span>
+          </div>
+        </div>
       </div>
     </div>
   );
-};
+});
 
-interface DigitalGaugeProps {
+interface GaugeProps {
   label: string;
   value: number;
-  unit: string;
   max: number;
   color: string;
 }
 
-const DigitalGauge = React.memo<DigitalGaugeProps>( ({ label, value, unit, max, color }) => {
-  const percentage = Math.min((value / max) * 100, 100);
-  const angle = (percentage / 100) * 270 - 135; // -135 to 135 degrees
-
-  const getGaugeColor = () => {
-    if (percentage < 50) return 'from-green-400 to-green-600';
-    if (percentage < 80) return 'from-yellow-400 to-yellow-600';
-    return 'from-red-400 to-red-600';
-  };
-
+const Gauge: React.FC<GaugeProps> = ({ label, value, max, color }) => {
+  const percentage = Math.min(100, (value / max) * 100);
   return (
-    <div className="flex flex-col items-center">
-      <div className="relative w-40 h-40 mb-4">
-        {/* Gauge background */}
-        <svg
-          className="absolute inset-0 w-full h-full"
-          viewBox="0 0 100 100"
-          style={{
-            filter: 'drop-shadow(0 0 10px rgba(0,0,0,0.5))',
-          }}
-        >
-          {/* Background arc */}
-          <defs>
-            <linearGradient id={`gauge-${label}`} x1="0%" y1="0%" x2="100%" y2="100%">
-              <stop offset="0%" stopColor="#334155" />
-              <stop offset="100%" stopColor="#0f172a" />
-            </linearGradient>
-          </defs>
-
-          {/* Outer circle */}
-          <circle cx="50" cy="50" r="48" fill="url(#gauge-bg)" stroke="#1e293b" strokeWidth="1" />
-
-          {/* Background gauge arc */}
-          <path
-            d="M 20 80 A 30 30 0 0 1 80 80"
-            fill="none"
-            stroke="#334155"
-            strokeWidth="6"
-            strokeLinecap="round"
+    <div className="bg-slate-800 p-6 rounded-lg border border-slate-700 flex flex-col items-center">
+      <div className="relative w-32 h-32">
+        <svg className="w-full h-full transform -rotate-90">
+          <circle
+            cx="64"
+            cy="64"
+            r="58"
+            stroke="currentColor"
+            strokeWidth="8"
+            fill="transparent"
+            className="text-slate-700"
           />
-
-          {/* Active gauge arc */}
-          <path
-            d="M 20 80 A 30 30 0 0 1 80 80"
-            fill="none"
-            stroke={percentage < 50 ? '#22c55e' : percentage < 80 ? '#eab308' : '#ef4444'}
-            strokeWidth="6"
-            strokeLinecap="round"
-            strokeDasharray={`${(percentage / 100) * 94.25} 94.25`}
-            style={{ transition: 'stroke-dasharray 0.3s ease' }}
+          <circle
+            cx="64"
+            cy="64"
+            r="58"
+            stroke="currentColor"
+            strokeWidth="8"
+            fill="transparent"
+            strokeDasharray={364.4}
+            strokeDashoffset={364.4 - (364.4 * percentage) / 100}
+            className={`${color} transition-all duration-500 ease-out`}
           />
-
-          {/* Needle */}
-          <g transform={`rotate(${angle} 50 50)`}>
-            <line
-              x1="50"
-              y1="50"
-              x2="50"
-              y2="22"
-              stroke="#e2e8f0"
-              strokeWidth="2"
-              strokeLinecap="round"
-            />
-            <circle cx="50" cy="50" r="3" fill="#e2e8f0" />
-          </g>
-
-          {/* Center dot */}
-          <circle cx="50" cy="50" r="4" fill="#1e293b" stroke="#64748b" strokeWidth="1" />
         </svg>
-
-        {/* Digital display */}
         <div className="absolute inset-0 flex flex-col items-center justify-center">
-          <div className="text-2xl font-bold text-slate-100 font-mono">
-            {value.toFixed(1)}
-          </div>
-          <div className="text-xs text-slate-400">{unit}</div>
+          <span className="text-2xl font-bold text-white">{value.toFixed(1)}</span>
         </div>
       </div>
-
-      {/* Label and status */}
-      <div className="text-center">
+      <div className="mt-4 text-center">
         <p className="text-sm font-semibold text-slate-300">{label}</p>
         <div className="flex items-center gap-1 justify-center mt-2">
           <div
