@@ -69,7 +69,7 @@ if [ $HAS_BACKEND -eq 1 ]; then
     cd "$SCRIPT_DIR"
     echo -e "${BLUE}[1]${NC} Starting backend..."
     if [ -f "./ghostlink" ]; then
-        ./ghostlink serve > /tmp/ghostlink-backend.log 2>&1 &
+        ./ghostlink serve 0.0.0.0 8003 > /tmp/ghostlink-backend.log 2>&1 &
     else
         ./ghostlink-backend > /tmp/ghostlink-backend.log 2>&1 &
     fi
@@ -85,11 +85,15 @@ echo -e "${BLUE}[2]${NC} Starting GUI..."
 echo -e "${GREEN}[✓]${NC} Dev server starting"
 
 # Open browser
-if command -v xdg-open &> /dev/null; then
-    xdg-open "http://localhost:3000" 2>/dev/null &
-elif command -v open &> /dev/null; then
-    open "http://localhost:3000" 2>/dev/null &
-fi
+# Open browser (with delay)
+(
+    sleep 5
+    if command -v xdg-open &> /dev/null; then
+        xdg-open "http://localhost:3000" 2>/dev/null || true
+    elif command -v open &> /dev/null; then
+        open "http://localhost:3000" 2>/dev/null || true
+    fi
+) &
 
 echo ""
 echo "================================================================================"
@@ -105,7 +109,7 @@ echo "==========================================================================
 echo ""
 
 # Start GUI (foreground)
-npm run dev
+npm run dev -- --host 0.0.0.0
 
 # Cleanup on exit
 trap "kill $BACKEND_PID 2>/dev/null; exit" SIGINT SIGTERM

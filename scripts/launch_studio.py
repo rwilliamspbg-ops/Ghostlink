@@ -225,30 +225,6 @@ def main():
         time.sleep(wait_time)
         return proc
 
-    # Start Ollama if needed
-    ollama_health_url = f"{ollama_url}/api/tags"
-    if not check_service(ollama_health_url):
-        if is_loopback_url(ollama_url):
-            if command_exists('ollama'):
-                log("Ollama not running. Attempting to start 'ollama serve'...")
-                ollama_proc = subprocess.Popen(
-                    ['ollama', 'serve'],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    env=os.environ.copy(),
-                )
-                processes.append((ollama_proc, 'Ollama'))
-                if wait_for_service(ollama_health_url, timeout_s=25, interval_s=1):
-                    log(f"[OK] Ollama started at {ollama_url}")
-                else:
-                    log(f"[WARN] Ollama process started but health check still failing at {ollama_url}")
-            else:
-                log("[WARN] Ollama CLI not found; local Ollama auto-start skipped")
-        else:
-            log(f"[WARN] Ollama not reachable at configured URL {ollama_url}; skipping auto-start")
-    else:
-        log(f"[OK] Ollama already reachable at {ollama_url}")
-
     # Start Model Manager
     start_proc([sys.executable, 'model_manager.py'], "Model Manager")
 

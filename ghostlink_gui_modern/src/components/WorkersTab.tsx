@@ -25,222 +25,171 @@ export const WorkersTab: React.FC<WorkersTabProps> = React.memo(({ api }) => {
 
   useEffect(() => {
     refreshWorkers();
-    const interval = setInterval(refreshWorkers, 2000);
-    return () => clearInterval(interval);
   }, [refreshWorkers]);
 
-  const handleAddWorker = useCallback(async () => {
-    if (!host || !port) {
-      setMessage('Enter host and port');
-      return;
-    }
-
+  const handleAddWorker = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLoading(true);
     const result = await api.addWorker(host, parseInt(port));
     if (result.success) {
-      setMessage(`Added worker: ${host}:${port}`);
-      setHost('127.0.0.1');
-      setPort('8004');
-      setTimeout(() => refreshWorkers(), 500);
-      setTimeout(() => setMessage(''), 3000);
+      setMessage('Worker added successfully');
+      refreshWorkers();
     } else {
       setMessage(`Error: ${result.error}`);
     }
-  }, [host, port, api, refreshWorkers]);
+    setLoading(false);
+  };
 
-  const handleDiscoverPeers = useCallback(async () => {
+  const handleDiscover = async () => {
     setDiscovering(true);
-    const result = await api.discoverPeers?.();
-    if (result?.success) {
-      setMessage(`Found ${result.count || 0} peers`);
-      setTimeout(() => refreshWorkers(), 500);
+    const result = await api.discoverPeers();
+    if (result.success) {
+      setMessage(`Discovery started. Found ${result.count} peers.`);
+      setTimeout(refreshWorkers, 2000);
+    } else {
+      setMessage(`Discovery failed: ${result.error}`);
     }
     setDiscovering(false);
-  }, [api, refreshWorkers]);
+  };
 
-  const handleConnectWorkers = useCallback(async () => {
-    const result = await api.connectWorkers();
+  const handleDisconnect = async (id: string) => {
+    const result = await api.disconnectWorker(id);
     if (result.success) {
-      setMessage('Workers connected');
-      setTimeout(() => refreshWorkers(), 500);
-      setTimeout(() => setMessage(''), 3000);
-    } else {
-      setMessage(`Error: ${result.error}`);
+      refreshWorkers();
     }
-  }, [api, refreshWorkers]);
-
-  const handleDisconnectWorker = useCallback(async (workerId: string) => {
-    const result = await api.disconnectWorker?.(workerId);
-    if (result?.success) {
-      setMessage('Worker disconnected');
-      setTimeout(() => refreshWorkers(), 500);
-    } else {
-      setMessage(`Error: ${result?.error || 'Failed to disconnect'}`);
-    }
-  }, [api, refreshWorkers]);
-
-  const onlineCount = useMemo(() => workers.filter((w) => w.status?.toLowerCase() === 'online' || w.status === 'Connected').length, [workers]);
-  const averageLoad = useMemo(() => {
-    if (workers.length === 0) return 0;
-    return workers.reduce((sum, w) => sum + (w.load || 0), 0) / workers.length;
-  }, [workers]);
+  };
 
   return (
-    <div className="space-y-4">
-      {/* Status Summary */}
-      <div className="grid grid-cols-3 gap-3">
-        <div className="bg-slate-900 border border-slate-700 rounded p-4">
-          <p className="text-slate-400 text-xs mb-1">Total Workers</p>
-          <p className="text-2xl font-bold text-slate-100">{workers.length}</p>
-        </div>
-        <div className="bg-slate-900 border border-slate-700 rounded p-4">
-          <p className="text-slate-400 text-xs mb-1">Online</p>
-          <p className="text-2xl font-bold text-emerald-400">{onlineCount}</p>
-        </div>
-        <div className="bg-slate-900 border border-slate-700 rounded p-4">
-          <p className="text-slate-400 text-xs mb-1">Avg Cluster Load</p>
-          <p className="text-2xl font-bold text-blue-400">{averageLoad.toFixed(1)}%</p>
-        </div>
-      </div>
-
-      {/* Add Worker */}
-      <div className="bg-slate-900 rounded p-4 border border-slate-700 space-y-3">
-        <h3 className="text-sm font-semibold text-slate-200">Add Worker</h3>
-        <div className="grid grid-cols-3 gap-2">
-          <input
-            type="text"
-            placeholder="Host (e.g., 192.168.1.100)"
-            value={host}
-            onChange={(e) => setHost(e.target.value)}
-            className="px-3 py-2 bg-slate-800 border border-slate-700 rounded text-slate-100 placeholder-slate-500 focus:outline-none focus:border-blue-500 text-sm"
-          />
-          <input
-            type="number"
-            placeholder="Port"
-            value={port}
-            onChange={(e) => setPort(e.target.value)}
-            className="px-3 py-2 bg-slate-800 border border-slate-700 rounded text-slate-100 placeholder-slate-500 focus:outline-none focus:border-blue-500 text-sm"
-          />
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <h2 className="text-xl font-bold text-white">Worker Orchestration</h2>
+        <div className="flex gap-2">
           <button
-            onClick={handleAddWorker}
-            className="flex items-center justify-center gap-2 bg-green-600 hover:bg-green-700 text-white rounded transition text-sm"
+            onClick={handleDiscover}
+            disabled={discovering}
+            className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-500 transition disabled:opacity-50"
           >
-            <Plus size={16} />
-            Add
+            <Radio size={18} className={discovering ? 'animate-pulse' : ''} />
+            {discovering ? 'Discovering...' : 'Auto-Discover'}
+          </button>
+          <button
+            onClick={refreshWorkers}
+            className={`p-2 rounded bg-slate-800 text-slate-300 hover:bg-slate-700 transition ${
+              loading ? 'animate-spin' : ''
+            }`}
+          >
+            <RefreshCw size={20} />
           </button>
         </div>
       </div>
 
-      {/* Controls */}
-      <div className="flex gap-2 flex-wrap">
-        <button
-          onClick={refreshWorkers}
-          disabled={loading}
-          className="flex items-center gap-2 px-4 py-2 bg-slate-700 hover:bg-slate-600 disabled:bg-slate-800 text-white rounded transition text-sm"
-        >
-          <RefreshCw size={16} className={loading ? 'animate-spin' : ''} />
-          Refresh
-        </button>
-        <button
-          onClick={handleConnectWorkers}
-          className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded transition text-sm"
-        >
-          <Plug size={16} />
-          Connect Network
-        </button>
-        <button
-          onClick={handleDiscoverPeers}
-          disabled={discovering}
-          className="flex items-center gap-2 px-4 py-2 bg-purple-600 hover:bg-purple-700 disabled:bg-slate-800 text-white rounded transition text-sm"
-        >
-          <Radio size={16} className={discovering ? 'animate-spin' : ''} />
-          Discover Peers
-        </button>
+      {message && (
+        <div className="bg-blue-900/30 border border-blue-500 text-blue-200 p-4 rounded-lg flex items-center justify-between">
+          <span>{message}</span>
+          <button onClick={() => setMessage('')}>
+            <X size={18} />
+          </button>
+        </div>
+      )}
+
+      <div className="bg-slate-800/50 p-6 rounded-lg border border-slate-700">
+        <h3 className="text-lg font-semibold text-white mb-4">Manual Node Addition</h3>
+        <form onSubmit={handleAddWorker} className="flex flex-wrap gap-4 items-end">
+          <div className="space-y-2">
+            <label className="text-xs text-slate-400 uppercase font-bold">Node Host/IP</label>
+            <input
+              type="text"
+              value={host}
+              onChange={(e) => setHost(e.target.value)}
+              className="bg-slate-900 border border-slate-700 text-white rounded px-4 py-2 focus:border-blue-500 outline-none"
+              placeholder="127.0.0.1"
+            />
+          </div>
+          <div className="space-y-2">
+            <label className="text-xs text-slate-400 uppercase font-bold">Control Port</label>
+            <input
+              type="text"
+              value={port}
+              onChange={(e) => setPort(e.target.value)}
+              className="bg-slate-900 border border-slate-700 text-white rounded px-4 py-2 focus:border-blue-500 outline-none w-24"
+              placeholder="8004"
+            />
+          </div>
+          <button
+            type="submit"
+            disabled={loading}
+            className="flex items-center gap-2 px-6 py-2 bg-slate-700 text-white rounded hover:bg-slate-600 transition"
+          >
+            <Plus size={18} />
+            Add Worker
+          </button>
+        </form>
       </div>
 
-      {message && <div className="p-3 rounded bg-blue-900 text-blue-200 text-sm">{message}</div>}
-
-      {/* Workers Table */}
-      <div className="overflow-x-auto rounded border border-slate-700">
-        <table className="w-full">
-          <thead className="bg-slate-900 border-b border-slate-700">
-            <tr>
-              <th className="px-4 py-3 text-left text-sm font-semibold text-slate-300">ID</th>
-              <th className="px-4 py-3 text-left text-sm font-semibold text-slate-300">Host</th>
-              <th className="px-4 py-3 text-left text-sm font-semibold text-slate-300">Port</th>
-              <th className="px-4 py-3 text-left text-sm font-semibold text-slate-300">Status</th>
-              <th className="px-4 py-3 text-left text-sm font-semibold text-slate-300">Model</th>
-              <th className="px-4 py-3 text-left text-sm font-semibold text-slate-300">Threads</th>
-              <th className="px-4 py-3 text-left text-sm font-semibold text-slate-300">Load</th>
-              <th className="px-4 py-3 text-left text-sm font-semibold text-slate-300">Health</th>
-              <th className="px-4 py-3 text-left text-sm font-semibold text-slate-300">Action</th>
+      <div className="overflow-x-auto">
+        <table className="w-full text-left border-collapse">
+          <thead>
+            <tr className="border-b border-slate-700">
+              <th className="py-4 px-4 text-xs font-bold text-slate-400 uppercase">Node ID / Host</th>
+              <th className="py-4 px-4 text-xs font-bold text-slate-400 uppercase">Status</th>
+              <th className="py-4 px-4 text-xs font-bold text-slate-400 uppercase">Active Model</th>
+              <th className="py-4 px-4 text-xs font-bold text-slate-400 uppercase">Compute Load</th>
+              <th className="py-4 px-4 text-xs font-bold text-slate-400 uppercase">Actions</th>
             </tr>
           </thead>
           <tbody>
             {workers.length === 0 ? (
               <tr>
-                <td colSpan={9} className="px-4 py-4 text-center text-slate-500">
-                  No workers connected. Add or discover workers to get started.
+                <td colSpan={5} className="py-8 text-center text-slate-500 italic">
+                  No workers connected to the fabric.
                 </td>
               </tr>
             ) : (
               workers.map((worker) => {
-                const isOnline = worker.status?.toLowerCase() === 'online' || worker.status === 'Connected';
-                const loadPercent = worker.load || 0;
-
                 return (
-                  <tr key={worker.id} className="border-b border-slate-700 hover:bg-slate-800">
-                    <td className="px-4 py-3 text-sm text-slate-200 font-mono">{worker.id.slice(0, 8)}...</td>
-                    <td className="px-4 py-3 text-sm text-slate-400">{worker.host}</td>
-                    <td className="px-4 py-3 text-sm text-slate-400">{worker.port}</td>
-                    <td className="px-4 py-3 text-sm">
-                      <div className="flex items-center gap-2">
-                        <div
-                          className={`w-2.5 h-2.5 rounded-full ${
-                            isOnline ? 'bg-emerald-400' : 'bg-red-400'
-                          }`}
-                        />
-                        <span className={isOnline ? 'text-emerald-400' : 'text-red-400'}>
-                          {worker.status}
-                        </span>
+                  <tr key={worker.id} className="border-b border-slate-800 hover:bg-slate-800/30">
+                    <td className="py-4 px-4">
+                      <div className="flex items-center gap-3">
+                        <div className="p-2 bg-slate-800 rounded">
+                          <Plug className="text-blue-400" size={16} />
+                        </div>
+                        <div>
+                          <p className="text-sm font-semibold text-white">{worker.id}</p>
+                          <p className="text-xs text-slate-500">
+                            {worker.host}:{worker.port}
+                          </p>
+                        </div>
                       </div>
                     </td>
-                    <td className="px-4 py-3 text-sm text-slate-200">{worker.model || '-'}</td>
-                    <td className="px-4 py-3 text-sm text-slate-400">{worker.threads}</td>
-                    <td className="px-4 py-3 text-sm">
-                      <div className="flex items-center gap-2">
-                        <div className="w-12 h-2 bg-slate-700 rounded overflow-hidden">
+                    <td className="py-4 px-4">
+                      <span className="flex items-center gap-2 text-sm text-green-400">
+                        <div className="w-2 h-2 rounded-full bg-green-400 animate-pulse" />
+                        {worker.status}
+                      </span>
+                    </td>
+                    <td className="py-4 px-4">
+                      <span className="text-sm text-slate-300">{worker.model}</span>
+                    </td>
+                    <td className="py-4 px-4">
+                      <div className="w-32">
+                        <div className="flex items-center justify-between mb-1">
+                          <span className="text-xs text-slate-400">{worker.load}%</span>
+                        </div>
+                        <div className="w-full bg-slate-800 rounded-full h-1.5">
                           <div
-                            className={`h-full ${
-                              loadPercent < 50
-                                ? 'bg-green-500'
-                                : loadPercent < 80
-                                ? 'bg-yellow-500'
-                                : 'bg-red-500'
-                            }`}
-                            style={{ width: `${loadPercent}%` }}
+                            className="bg-blue-500 h-1.5 rounded-full"
+                            style={{ width: `${worker.load}%` }}
                           />
                         </div>
-                        <span className="text-xs text-slate-400 w-8">{loadPercent.toFixed(0)}%</span>
                       </div>
                     </td>
-                    <td className="px-4 py-3 text-sm">
-                      <div className="flex items-center gap-1">
-                        <Wifi
-                          size={14}
-                          className={isOnline ? 'text-emerald-400' : 'text-slate-600'}
-                        />
-                        <span className="text-xs text-slate-400">
-                          {isOnline ? 'Good' : 'Poor'}
-                        </span>
-                      </div>
-                    </td>
-                    <td className="px-4 py-3 text-sm">
+                    <td className="py-4 px-4">
                       <button
-                        onClick={() => handleDisconnectWorker(worker.id)}
-                        className="text-red-400 hover:text-red-300 transition"
-                        title="Disconnect"
+                        onClick={() => handleDisconnect(worker.id)}
+                        className="p-2 text-slate-500 hover:text-red-400 transition"
+                        title="Disconnect Worker"
                       >
-                        <X size={16} />
+                        <Wifi size={18} />
                       </button>
                     </td>
                   </tr>
@@ -252,4 +201,4 @@ export const WorkersTab: React.FC<WorkersTabProps> = React.memo(({ api }) => {
       </div>
     </div>
   );
-};
+});
