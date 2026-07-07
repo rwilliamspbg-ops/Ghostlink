@@ -89,6 +89,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({ api }) => {
       penalty,
       max_tokens: maxTokens,
       system_prompt: systemPrompt,
+      stream: true,
     };
 
     // Add tools if any are enabled
@@ -104,11 +105,20 @@ export const ChatTab: React.FC<ChatTabProps> = ({ api }) => {
       }));
     }
 
-    const result = await api.sendMessage(payload);
+    let firstToken = true;
+    const result = await api.sendMessage(payload, (token: string) => {
+      if (firstToken) {
+        setResponse('Assistant: ');
+        firstToken = false;
+      }
+      setResponse((prev) => prev + token);
+    });
     setLoading(false);
 
     if (result.success) {
-      setResponse(`Assistant: ${result.data.response || ''}`);
+      if (!payload.stream) {
+        setResponse(`Assistant: ${result.data.response || ''}`);
+      }
       if (result.data.request_id) {
         setResponse((prev) => `${prev}\n\nRequest: ${result.data.request_id}`);
       }
@@ -419,7 +429,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({ api }) => {
       <div className="flex flex-col gap-4">
         <h3 className="text-sm font-semibold text-slate-200">Response</h3>
         <div className="flex-1 bg-slate-900 border border-slate-700 rounded p-4 overflow-y-auto">
-          {loading ? (
+          {loading && !response ? (
             <div className="flex items-center justify-center h-full text-slate-400">
               <Loader className="animate-spin mr-2" />
               Waiting for response...

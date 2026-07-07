@@ -114,21 +114,70 @@ export class GhostlinkAPI {
     }
   }
 
-  async sendMessage(payload: {
-    message: string;
-    temperature: number;
-    top_p: number;
-    top_k: number;
-    penalty: number;
-    max_tokens: number;
-    system_prompt: string;
-    tools?: string[];
-    mcp_servers?: Array<{ name: string; url: string }>;
-    mcp?: object;
-  }) {
+  async sendMessage(
+    payload: {
+      message: string;
+      temperature: number;
+      top_p: number;
+      top_k: number;
+      penalty: number;
+      max_tokens: number;
+      system_prompt: string;
+      tools?: string[];
+      mcp_servers?: Array<{ name: string; url: string }>;
+      mcp?: object;
+      stream?: boolean;
+    },
+    onToken?: (token: string) => void
+  ) {
     try {
-      const response = await this.http.post('/api/inference/chat', payload);
-      return { success: true, data: response.data };
+      if (payload.stream) {
+        const response = await fetch(`${this.http.defaults.baseURL}/api/inference/chat`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(payload),
+        });
+
+        if (!response.ok) {
+          const errorData = await response.json().catch(() => ({}));
+          throw new Error(errorData.error || `HTTP error! status: ${response.status}`);
+        }
+
+        const reader = response.body?.getReader();
+        if (!reader) throw new Error('Response body is null');
+
+        const decoder = new TextDecoder();
+        let fullText = '';
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          const chunk = decoder.decode(value, { stream: true });
+          const lines = chunk.split('\n');
+
+          for (const line of lines) {
+            if (line.startsWith('data: ')) {
+              try {
+                const data = JSON.parse(line.slice(6));
+                if (data.token) {
+                  fullText += data.token;
+                  if (onToken) onToken(data.token);
+                }
+              } catch (e) {
+                console.error('Error parsing SSE line', e);
+              }
+            }
+          }
+        }
+
+        return { success: true, data: { response: fullText } };
+      } else {
+        const response = await this.http.post('/api/inference/chat', payload);
+        return { success: true, data: response.data };
+      }
     } catch (error: any) {
       return { success: false, error: error.response?.data?.error || error.message };
     }
