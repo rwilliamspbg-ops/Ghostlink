@@ -1,12 +1,12 @@
-import React, { useState, useEffect } from 'react';
-import { RefreshCw, Plus, Plug, Radio, Wifi, X } from 'lucide-react';
-import { useAppStore } from '../store';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import { RefreshCw, Plus, Plug, Radio, X, Wifi } from 'lucide-react';
+import { useAppStore, Worker } from '../store';
 
 interface WorkersTabProps {
   api: any;
 }
 
-export const WorkersTab: React.FC<WorkersTabProps> = ({ api }) => {
+export const WorkersTab: React.FC<WorkersTabProps> = React.memo(({ api }) => {
   const { workers, setWorkers } = useAppStore();
   const [loading, setLoading] = useState(false);
   const [host, setHost] = useState('127.0.0.1');
@@ -14,22 +14,22 @@ export const WorkersTab: React.FC<WorkersTabProps> = ({ api }) => {
   const [message, setMessage] = useState('');
   const [discovering, setDiscovering] = useState(false);
 
-  const refreshWorkers = async () => {
+  const refreshWorkers = useCallback(async () => {
     setLoading(true);
     const result = await api.getWorkers();
     if (!result.error) {
       setWorkers(result.workers);
     }
     setLoading(false);
-  };
+  }, [api, setWorkers]);
 
   useEffect(() => {
     refreshWorkers();
-    const interval = setInterval(refreshWorkers, 5000);
+    const interval = setInterval(refreshWorkers, 2000);
     return () => clearInterval(interval);
-  }, []);
+  }, [refreshWorkers]);
 
-  const handleAddWorker = async () => {
+  const handleAddWorker = useCallback(async () => {
     if (!host || !port) {
       setMessage('Enter host and port');
       return;
@@ -45,9 +45,9 @@ export const WorkersTab: React.FC<WorkersTabProps> = ({ api }) => {
     } else {
       setMessage(`Error: ${result.error}`);
     }
-  };
+  }, [host, port, api, refreshWorkers]);
 
-  const handleDiscoverPeers = async () => {
+  const handleDiscoverPeers = useCallback(async () => {
     setDiscovering(true);
     const result = await api.discoverPeers?.();
     if (result?.success) {
@@ -55,9 +55,9 @@ export const WorkersTab: React.FC<WorkersTabProps> = ({ api }) => {
       setTimeout(() => refreshWorkers(), 500);
     }
     setDiscovering(false);
-  };
+  }, [api, refreshWorkers]);
 
-  const handleConnectWorkers = async () => {
+  const handleConnectWorkers = useCallback(async () => {
     const result = await api.connectWorkers();
     if (result.success) {
       setMessage('Workers connected');
@@ -66,9 +66,9 @@ export const WorkersTab: React.FC<WorkersTabProps> = ({ api }) => {
     } else {
       setMessage(`Error: ${result.error}`);
     }
-  };
+  }, [api, refreshWorkers]);
 
-  const handleDisconnectWorker = async (workerId: string) => {
+  const handleDisconnectWorker = useCallback(async (workerId: string) => {
     const result = await api.disconnectWorker?.(workerId);
     if (result?.success) {
       setMessage('Worker disconnected');
@@ -76,10 +76,13 @@ export const WorkersTab: React.FC<WorkersTabProps> = ({ api }) => {
     } else {
       setMessage(`Error: ${result?.error || 'Failed to disconnect'}`);
     }
-  };
+  }, [api, refreshWorkers]);
 
-  const onlineCount = workers.filter((w) => w.status === 'online').length;
-  const totalLoad = workers.reduce((sum, w) => sum + (w.load || 0), 0);
+  const onlineCount = useMemo(() => workers.filter((w) => w.status?.toLowerCase() === 'online' || w.status === 'Connected').length, [workers]);
+  const averageLoad = useMemo(() => {
+    if (workers.length === 0) return 0;
+    return workers.reduce((sum, w) => sum + (w.load || 0), 0) / workers.length;
+  }, [workers]);
 
   return (
     <div className="space-y-4">
@@ -94,8 +97,8 @@ export const WorkersTab: React.FC<WorkersTabProps> = ({ api }) => {
           <p className="text-2xl font-bold text-emerald-400">{onlineCount}</p>
         </div>
         <div className="bg-slate-900 border border-slate-700 rounded p-4">
-          <p className="text-slate-400 text-xs mb-1">Total Load</p>
-          <p className="text-2xl font-bold text-blue-400">{(totalLoad * 100).toFixed(0)}%</p>
+          <p className="text-slate-400 text-xs mb-1">Avg Cluster Load</p>
+          <p className="text-2xl font-bold text-blue-400">{averageLoad.toFixed(1)}%</p>
         </div>
       </div>
 
@@ -181,8 +184,8 @@ export const WorkersTab: React.FC<WorkersTabProps> = ({ api }) => {
               </tr>
             ) : (
               workers.map((worker) => {
-                const isOnline = worker.status === 'online';
-                const loadPercent = (worker.load || 0) * 100;
+                const isOnline = worker.status?.toLowerCase() === 'online' || worker.status === 'Connected';
+                const loadPercent = worker.load || 0;
 
                 return (
                   <tr key={worker.id} className="border-b border-slate-700 hover:bg-slate-800">
