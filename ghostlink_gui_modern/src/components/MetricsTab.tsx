@@ -6,7 +6,7 @@ interface MetricsTabProps {
   api: any;
 }
 
-export const MetricsTab: React.FC<MetricsTabProps> = ({ api }) => {
+export const MetricsTab: React.FC<MetricsTabProps> = React.memo(({ api }) => {
   const { metrics, setMetrics } = useAppStore();
   const [loading, setLoading] = useState(false);
 
@@ -21,7 +21,7 @@ export const MetricsTab: React.FC<MetricsTabProps> = ({ api }) => {
 
   useEffect(() => {
     refreshMetrics();
-    const interval = setInterval(refreshMetrics, 5000);
+    const interval = setInterval(refreshMetrics, 2000);
     return () => clearInterval(interval);
   }, []);
 
@@ -106,7 +106,7 @@ interface DigitalGaugeProps {
   color: string;
 }
 
-const DigitalGauge: React.FC<DigitalGaugeProps> = ({ label, value, unit, max, color }) => {
+const DigitalGauge = React.memo<DigitalGaugeProps>( ({ label, value, unit, max, color }) => {
   const percentage = Math.min((value / max) * 100, 100);
   const angle = (percentage / 100) * 270 - 135; // -135 to 135 degrees
 

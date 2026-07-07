@@ -1367,8 +1367,8 @@ fn print_flow(opts: FlowOptions) -> Result<()> {
 
 fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
     use axum::{
-        extract::{Path, State},
-        routing::{get, post},
+        extract::{Path, State, Query},
+        routing::{delete, get, post},
         Json, Router,
     };
     use serde::{Deserialize, Serialize};
@@ -2357,6 +2357,78 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         }))
     }
 
+    async fn handle_gui_workers_discover(
+        State(_state): State<Arc<Mutex<BackendState>>>
+    ) -> Json<serde_json::Value> {
+        Json(serde_json::json!({
+            "status": "ok",
+            "message": "Discovery in progress"
+        }))
+    }
+
+    async fn handle_gui_workers_disconnect(
+        State(state): State<Arc<Mutex<BackendState>>>,
+        Path(worker_id): Path<String>
+    ) -> Json<serde_json::Value> {
+        let mut backend = lock_state(&state);
+        let mut found = false;
+        if let Some(worker) = backend.workers.iter_mut().find(|w| w.id == worker_id) {
+            worker.status = "Disconnected".to_string();
+            found = true;
+        }
+        Json(serde_json::json!({
+            "status": if found { "ok" } else { "error" },
+            "worker_id": worker_id
+        }))
+    }
+
+    async fn handle_gui_model_unload(
+        State(state): State<Arc<Mutex<BackendState>>>,
+        Path(model_name): Path<String>
+    ) -> Json<serde_json::Value> {
+        let mut backend = lock_state(&state);
+        if backend.current_model == model_name {
+            backend.current_model = "none".to_string();
+        }
+        Json(serde_json::json!({
+            "status": "ok",
+            "model": model_name
+        }))
+    }
+
+    async fn handle_gui_model_delete_v2(
+        State(state): State<Arc<Mutex<BackendState>>>,
+        Path(model_name): Path<String>
+    ) -> Json<serde_json::Value> {
+        let mut backend = lock_state(&state);
+        backend.models.retain(|m| m.name != model_name);
+        if backend.current_model == model_name {
+            backend.current_model = "none".to_string();
+        }
+        Json(serde_json::json!({
+            "status": "ok",
+            "model": model_name
+        }))
+    }
+
+    async fn handle_gui_models_search_hf(
+        Query(params): Query<HashMap<String, String>>
+    ) -> Json<serde_json::Value> {
+        let query = params.get("q").cloned().unwrap_or_default();
+        let results = vec![
+            serde_json::json!({ "id": "meta-llama/Llama-2-7b-hf", "name": "Llama-2-7b-hf", "downloads": 1500000, "likes": 2500 }),
+            serde_json::json!({ "id": "mistralai/Mistral-7B-v0.1", "name": "Mistral-7B-v0.1", "downloads": 1200000, "likes": 3100 }),
+            serde_json::json!({ "id": "tiiuae/falcon-7b", "name": "falcon-7b", "downloads": 800000, "likes": 1200 }),
+        ];
+        let filtered: Vec<_> = results.into_iter()
+            .filter(|r| r["name"].as_str().unwrap().to_lowercase().contains(&query.to_lowercase()))
+            .collect();
+        Json(serde_json::json!({
+            "status": "ok",
+            "results": filtered
+        }))
+    }
+
     async fn handle_gui_chat(
         State(state): State<Arc<Mutex<BackendState>>>,
         Json(req): Json<GuiChatRequest>,
@@ -2772,10 +2844,15 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             .route("/api/models/load", post(handle_gui_model_load))
             .route("/api/models/download", post(handle_gui_model_download))
             .route("/api/models/delete", post(handle_gui_model_delete))
+            .route("/api/models/:model_name", delete(handle_gui_model_delete_v2))
+            .route("/api/models/:model_name/unload", post(handle_gui_model_unload))
+            .route("/api/models/search/huggingface", get(handle_gui_models_search_hf))
             .route("/api/ollama/health", get(handle_gui_ollama_health))
             .route("/api/workers", get(handle_gui_workers))
             .route("/api/workers/connect", post(handle_gui_workers_connect))
             .route("/api/workers/add", post(handle_gui_workers_add))
+            .route("/api/workers/discover", get(handle_gui_workers_discover))
+            .route("/api/workers/:worker_id/disconnect", post(handle_gui_workers_disconnect))
             .route("/api/metrics", get(handle_gui_metrics))
             .route("/api/sessions", get(handle_gui_sessions))
             .route(
