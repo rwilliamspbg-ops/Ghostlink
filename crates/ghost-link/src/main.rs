@@ -1506,7 +1506,6 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         env_default_usize("GHOSTLINK_CHAT_EXEC_TOKENS", default_tokens).clamp(16, 4096)
     }
 
-
     async fn handle_chat_completions(
         State(state): State<Arc<Mutex<BackendState>>>,
         Json(req): Json<ChatCompletionRequest>,
@@ -1709,7 +1708,9 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
     }
 
     async fn handle_gui_ollama_health() -> Json<serde_json::Value> {
-        Json(serde_json::json!({ "status": "ok", "message": "Ghostlink Native Backend (No Ollama Required)" }))
+        Json(
+            serde_json::json!({ "status": "ok", "reachable": true, "message": "Ghostlink Native Backend (No Ollama Required)" }),
+        )
     }
 
     async fn handle_gui_model_load(
@@ -1740,7 +1741,9 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                 status: "Ready".to_string(),
             });
         }
-        Json(serde_json::json!({ "status": "ok", "message": format!("model '{}' ready", model_id) }))
+        Json(
+            serde_json::json!({ "status": "ok", "message": format!("model '{}' ready", model_id) }),
+        )
     }
 
     async fn handle_gui_model_delete(
