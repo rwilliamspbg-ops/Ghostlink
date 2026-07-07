@@ -1368,10 +1368,17 @@ fn print_flow(opts: FlowOptions) -> Result<()> {
 fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
     use axum::{
         extract::{Path, Query, State},
+        response::{
+            sse::{Event, Sse},
+            IntoResponse,
+        },
         routing::{delete, get, post},
         Json, Router,
     };
+    use futures::stream;
+    use futures::StreamExt;
     use serde::{Deserialize, Serialize};
+    use std::convert::Infallible;
     use std::net::SocketAddr;
     use std::sync::{Arc, Mutex};
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -1405,6 +1412,8 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         system_prompt: Option<String>,
         #[allow(dead_code)]
         ollama_url: Option<String>,
+        #[allow(dead_code)]
+        stream: Option<bool>,
         #[allow(dead_code)]
         mcp: Option<serde_json::Value>,
     }
@@ -1992,7 +2001,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
     async fn handle_gui_chat(
         State(state): State<Arc<Mutex<BackendState>>>,
         Json(req): Json<GuiChatRequest>,
-    ) -> Json<serde_json::Value> {
+    ) -> axum::response::Response {
         let started = Instant::now();
         let (current_model, cluster) = {
             let backend = lock_state(&state);
@@ -2163,7 +2172,25 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             }
         }
 
-        Json(response)
+        if req.stream.unwrap_or(false) {
+            let tokens: Vec<String> = response_text
+                .split_whitespace()
+                .map(|s| format!("{} ", s))
+                .collect();
+
+            let stream = stream::iter(tokens).map(move |token| {
+                let chunk = serde_json::json!({
+                    "token": token,
+                    "request_id": format!("req-{}", request_id),
+                    "session_id": session_id.clone(),
+                });
+                Ok::<Event, Infallible>(Event::default().data(chunk.to_string()))
+            });
+
+            Sse::new(stream).into_response()
+        } else {
+            Json(response).into_response()
+        }
     }
 
     async fn handle_health(
