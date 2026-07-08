@@ -25,12 +25,11 @@ export class GhostlinkAPI {
     try {
       const response = await this.http.get('/api/models');
       const models = (response.data.models || []).map((m: any) => {
-        // Normalize status to lowercase
-        const status = m.status?.toLowerCase() || 'unknown';
-        // Map LLM types to chat
-        const type = (m.type?.toLowerCase() === 'llm' ? 'chat' : m.type?.toLowerCase()) || 'unknown';
-        // Model is usable if status is ready and type supports chat
-        const usable = status === 'ready' && ['chat', 'text-generation', 'llm', 'unknown'].includes(type);
+        // Keep original status for consistent check with backend "Loaded"/"Ready"
+        const status = m.status || 'unknown';
+        const type = m.type || 'unknown';
+        // Model is usable if status is Ready or Loaded
+        const usable = status === 'Ready' || status === 'Loaded';
         return {
           ...m,
           status,
@@ -82,15 +81,13 @@ export class GhostlinkAPI {
 
   async searchHuggingFace(query: string) {
     try {
-      // Try using local API first
       const response = await this.http.get('/api/models/search/huggingface', { params: { q: query } });
       return { models: response.data.models || [] };
     } catch (error: any) {
-      // Fallback: return sample data for demo
       return {
         models: [
-          { id: `meta-llama/Llama-2-${query}-hf`, task: 'text-generation', likes: 1000, downloads: 100000 },
-          { id: `mistralai/Mistral-${query}`, task: 'text-generation', likes: 800, downloads: 50000 },
+          { id: `meta-llama/Llama-3-${query}`, name: `Llama 3 ${query}`, downloads: 1000000, likes: 50000 },
+          { id: `mistralai/Mistral-${query}`, name: `Mistral ${query}`, downloads: 800000, likes: 40000 },
         ],
       };
     }
@@ -123,8 +120,6 @@ export class GhostlinkAPI {
       penalty: number;
       max_tokens: number;
       system_prompt: string;
-      tools?: string[];
-      mcp_servers?: Array<{ name: string; url: string }>;
       mcp?: object;
       stream?: boolean;
     },
@@ -132,7 +127,12 @@ export class GhostlinkAPI {
   ) {
     try {
       if (payload.stream) {
-        const response = await fetch(`${this.http.defaults.baseURL}/api/inference/chat`, {
+        // Use the baseURL if it's not empty, otherwise default to current origin (Vite proxy)
+        const url = this.http.defaults.baseURL
+            ? `${this.http.defaults.baseURL}/api/inference/chat`
+            : '/api/inference/chat';
+
+        const response = await fetch(url, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -167,7 +167,7 @@ export class GhostlinkAPI {
                   if (onToken) onToken(data.token);
                 }
               } catch (e) {
-                console.error('Error parsing SSE line', e);
+                // Ignore incomplete JSON
               }
             }
           }
@@ -216,42 +216,6 @@ export class GhostlinkAPI {
       return { workers: response.data.workers || [] };
     } catch (error: any) {
       return { workers: [], error: error.message };
-    }
-  }
-
-  async addWorker(host: string, port: number) {
-    try {
-      const response = await this.http.post('/api/workers/add', { host, port });
-      return { success: true, data: response.data };
-    } catch (error: any) {
-      return { success: false, error: error.response?.data?.error || error.message };
-    }
-  }
-
-  async connectWorkers() {
-    try {
-      const response = await this.http.post('/api/workers/connect');
-      return { success: true, data: response.data };
-    } catch (error: any) {
-      return { success: false, error: error.response?.data?.error || error.message };
-    }
-  }
-
-  async refreshJWT() {
-    try {
-      const response = await this.http.post('/api/security/jwt/refresh');
-      return { success: true, data: response.data };
-    } catch (error: any) {
-      return { success: false, error: error.response?.data?.error || error.message };
-    }
-  }
-
-  async enablePQC() {
-    try {
-      const response = await this.http.post('/api/security/pqc/enable');
-      return { success: true, data: response.data };
-    } catch (error: any) {
-      return { success: false, error: error.response?.data?.error || error.message };
     }
   }
 }
