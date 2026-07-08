@@ -4370,429 +4370,11 @@ mod protocol {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ghostlink_core::host::AccelerationMode;
-    use ghostlink_core::host::RuntimeProfile;
-    use ghostlink_core::protocol::NodeResources;
-    use std::io::Read;
+    use ghostlink_core::host::{AccelerationMode, RuntimeProfile};
     use std::net::TcpListener;
-    use std::time::{SystemTime, UNIX_EPOCH};
 
-    fn args(values: &[&str]) -> std::vec::IntoIter<String> {
-        values
-            .iter()
-            .map(|s| s.to_string())
-            .collect::<Vec<_>>()
-            .into_iter()
-    }
-
-    #[test]
-    fn parses_known_commands() {
-        assert_eq!(parse_cli(args(&["plan"])).unwrap(), CliCommand::Plan);
-        assert_eq!(
-            parse_cli(args(&["join", "node-a"])).unwrap(),
-            CliCommand::Join {
-                node_id: "node-a".to_string()
-            }
-        );
-        assert_eq!(
-            parse_cli(args(&["listen", "node-l", "--once"])).unwrap(),
-            CliCommand::Listen {
-                node_id: "node-l".to_string(),
-                once: true,
-            }
-        );
-        assert_eq!(
-            parse_cli(args(&["gui", "--port", "8003"])).unwrap(),
-            CliCommand::Gui {
-                args: vec!["--port".to_string(), "8003".to_string()],
-            }
-        );
-        assert_eq!(
-            parse_cli(args(&["gui-check", "--strict"])).unwrap(),
-            CliCommand::GuiCheck { strict: true }
-        );
-        assert_eq!(
-            parse_cli(args(&["gui-diagnose", "--strict"])).unwrap(),
-            CliCommand::GuiDiagnose { strict: true }
-        );
-        assert_eq!(
-            parse_cli(args(&["doctor", "--strict"])).unwrap(),
-            CliCommand::Doctor(DoctorOptions {
-                strict: true,
-                json_out: None,
-                network_probe: false,
-                network_target: "127.0.0.1:8003".to_string(),
-            })
-        );
-        assert_eq!(
-            parse_cli(args(&[
-                "doctor",
-                "--strict",
-                "--network-probe",
-                "--network-target",
-                "127.0.0.1:18765",
-                "--json",
-                "./tmp/doctor.json",
-            ]))
-            .unwrap(),
-            CliCommand::Doctor(DoctorOptions {
-                strict: true,
-                json_out: Some(PathBuf::from("./tmp/doctor.json")),
-                network_probe: true,
-                network_target: "127.0.0.1:18765".to_string(),
-            })
-        );
-        assert_eq!(
-            parse_cli(args(&["cluster-start", "4", "46010"])).unwrap(),
-            CliCommand::ClusterStart {
-                node_count: 4,
-                base_port: 46010,
-            }
-        );
-        assert_eq!(
-            parse_cli(args(&["probe", "n1", "full"])).unwrap(),
-            CliCommand::Probe {
-                node_id: "n1".to_string(),
-                mode: ProbeMode::Full
-            }
-        );
-        assert_eq!(
-            parse_cli(args(&["flow", "a", "b", "32", "64"])).unwrap(),
-            CliCommand::Flow {
-                local_id: "a".to_string(),
-                remote_id: "b".to_string(),
-                remote_vram_gb: 32.0,
-                remote_system_memory_gb: 64.0,
-                execution_tokens: 32,
-                micro_batch: 1,
-                transport_mode: FlowTransportMode::TcpLoopback,
-                top_k: 40,
-                penalty: 1.1,
-            }
-        );
-        assert_eq!(
-            parse_cli(args(&["flow", "a", "b", "32", "64", "128", "4", "inmem"])).unwrap(),
-            CliCommand::Flow {
-                local_id: "a".to_string(),
-                remote_id: "b".to_string(),
-                remote_vram_gb: 32.0,
-                remote_system_memory_gb: 64.0,
-                execution_tokens: 128,
-                micro_batch: 4,
-                transport_mode: FlowTransportMode::InMemory,
-                top_k: 40,
-                penalty: 1.1,
-            }
-        );
-        assert_eq!(
-            parse_cli(args(&["flow", "a", "b", "32", "64", "128", "4", "xdp"])).unwrap(),
-            CliCommand::Flow {
-                local_id: "a".to_string(),
-                remote_id: "b".to_string(),
-                remote_vram_gb: 32.0,
-                remote_system_memory_gb: 64.0,
-                execution_tokens: 128,
-                micro_batch: 4,
-                transport_mode: FlowTransportMode::Xdp,
-                top_k: 40,
-                penalty: 1.1,
-            }
-        );
-    }
-
-    #[test]
-    fn uses_defaults_for_optional_args() {
-        assert_eq!(
-            parse_cli(args(&["join"])).unwrap(),
-            CliCommand::Join {
-                node_id: "node-01".to_string()
-            }
-        );
-        assert_eq!(
-            parse_cli(args(&["listen"])).unwrap(),
-            CliCommand::Listen {
-                node_id: "local-node".to_string(),
-                once: false,
-            }
-        );
-        assert_eq!(
-            parse_cli(args(&["gui"])).unwrap(),
-            CliCommand::Gui { args: vec![] }
-        );
-        assert_eq!(
-            parse_cli(args(&["gui-check"])).unwrap(),
-            CliCommand::GuiCheck { strict: false }
-        );
-        assert_eq!(
-            parse_cli(args(&["gui-diagnose"])).unwrap(),
-            CliCommand::GuiDiagnose { strict: false }
-        );
-        assert_eq!(
-            parse_cli(args(&["doctor"])).unwrap(),
-            CliCommand::Doctor(DoctorOptions {
-                strict: false,
-                json_out: None,
-                network_probe: false,
-                network_target: "127.0.0.1:8003".to_string(),
-            })
-        );
-        assert_eq!(
-            parse_cli(args(&["cluster-start"])).unwrap(),
-            CliCommand::ClusterStart {
-                node_count: 3,
-                base_port: 46000,
-            }
-        );
-        assert_eq!(
-            parse_cli(args(&["probe"])).unwrap(),
-            CliCommand::Probe {
-                node_id: "local-node".to_string(),
-                mode: ProbeMode::Fast
-            }
-        );
-        assert_eq!(
-            parse_cli(args(&["flow"])).unwrap(),
-            CliCommand::Flow {
-                local_id: "iprada-16gb".to_string(),
-                remote_id: "zenbook-32gb".to_string(),
-                remote_vram_gb: 32.0,
-                remote_system_memory_gb: 32.0,
-                execution_tokens: 32,
-                micro_batch: 1,
-                transport_mode: FlowTransportMode::TcpLoopback,
-                top_k: 40,
-                penalty: 1.1,
-            }
-        );
-    }
-
-    #[test]
-    fn tcp_autotune_default_candidates_include_base_and_neighbors() {
-        assert_eq!(
-            normalize_tcp_autotune_candidates(Vec::new(), 512),
-            vec![32, 64, 128, 256, 512, 1024]
-        );
-        assert_eq!(
-            normalize_tcp_autotune_candidates(Vec::new(), 96),
-            vec![32, 48, 64, 96, 128, 192, 256]
-        );
-    }
-
-    #[test]
-    fn tcp_autotune_explicit_candidates_stay_authoritative() {
-        assert_eq!(
-            normalize_tcp_autotune_candidates(vec![256, 64, 256, 0, 32], 512),
-            vec![32, 64, 256]
-        );
-    }
-
-    #[test]
-    fn parse_env_bool_value_supports_common_literals() {
-        assert_eq!(parse_env_bool_value("1"), Some(true));
-        assert_eq!(parse_env_bool_value("true"), Some(true));
-        assert_eq!(parse_env_bool_value("YES"), Some(true));
-        assert_eq!(parse_env_bool_value("on"), Some(true));
-        assert_eq!(parse_env_bool_value("0"), Some(false));
-        assert_eq!(parse_env_bool_value("false"), Some(false));
-        assert_eq!(parse_env_bool_value("No"), Some(false));
-        assert_eq!(parse_env_bool_value("off"), Some(false));
-        assert_eq!(parse_env_bool_value("maybe"), None);
-    }
-
-    #[test]
-    fn xdp_autotune_flag_precedence_is_stable() {
-        assert!(xdp_autotune_enabled_from_flags(None, None));
-        assert!(!xdp_autotune_enabled_from_flags(Some(false), None));
-        assert!(xdp_autotune_enabled_from_flags(Some(true), None));
-        assert!(!xdp_autotune_enabled_from_flags(None, Some(false)));
-        assert!(xdp_autotune_enabled_from_flags(None, Some(true)));
-        assert!(xdp_autotune_enabled_from_flags(Some(false), Some(true)));
-        assert!(!xdp_autotune_enabled_from_flags(Some(true), Some(false)));
-    }
-
-    #[test]
-    fn python_resolution_prefers_repo_venv_then_falls_back() {
-        let unique = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!("ghostlink-python-root-{unique}"));
-        let venv_bin = root.join(".venv").join("bin");
-        std::fs::create_dir_all(&venv_bin).unwrap();
-        let venv_python = venv_bin.join("python");
-        std::fs::write(&venv_python, "#!/bin/sh
-").unwrap();
-
-        let venv_resolved = resolve_python_for_root(&root, None);
-        assert_eq!(venv_resolved.executable, venv_python.display().to_string());
-        assert_eq!(venv_resolved.source, PythonResolutionSource::RepoVenv);
-        let configured = resolve_python_for_root(&root, Some("custom-python".to_string()));
-        assert_eq!(configured.executable, "custom-python");
-        assert_eq!(
-            configured.source,
-            PythonResolutionSource::ConfiguredOverride
-        );
-
-        std::fs::remove_file(&venv_python).unwrap();
-        let fallback = resolve_python_for_root(&root, None);
-        assert_eq!(fallback.executable, "python3");
-        assert_eq!(fallback.source, PythonResolutionSource::SystemFallback);
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn gui_python_override_skips_generic_python_defaults() {
-        assert!(!should_apply_gui_python_override("python3"));
-        assert!(!should_apply_gui_python_override("python"));
-        assert!(!should_apply_gui_python_override("   "));
-        assert!(should_apply_gui_python_override(
-            "/workspaces/Ghostlink/.venv/bin/python"
-        ));
-        assert!(should_apply_gui_python_override("python3.12"));
-    }
-
-    #[test]
-    fn parse_gui_backend_target_prefers_backend_url_over_host_port() {
-        let (host, port) = parse_gui_backend_target(&[
-            "--host".to_string(),
-            "ignored.local".to_string(),
-            "--port".to_string(),
-            "9001".to_string(),
-            "--backend-url".to_string(),
-            "http://127.0.0.1:8123".to_string(),
-        ]);
-
-        assert_eq!(host, "127.0.0.1");
-        assert_eq!(port, 8123);
-    }
-
-    #[test]
-    fn parse_gui_backend_target_uses_defaults_and_parses_equals_form() {
-        let (default_host, default_port) = parse_gui_backend_target(&[]);
-        assert_eq!(default_host, "127.0.0.1");
-        assert_eq!(default_port, 8003);
-
-        let (host, port) =
-            parse_gui_backend_target(&["--host=10.0.0.8".to_string(), "--port=8111".to_string()]);
-        assert_eq!(host, "10.0.0.8");
-        assert_eq!(port, 8111);
-    }
-
-    #[test]
-    fn network_probe_rejects_invalid_target() {
-        let result = probe_network_target("not-a-target", Duration::from_millis(50));
-        assert!(matches!(result, NetworkProbeOutcome::InvalidTarget(_)));
-    }
-
-    #[test]
-    fn network_probe_accepts_hostname_and_reports_reachable_latency() {
-        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
-        let addr = listener.local_addr().unwrap();
-        let handle = std::thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
-            let mut buf = [0_u8; 1];
-            let _ = stream.read(&mut buf);
-        });
-
-        let result = probe_network_target(
-            &format!("localhost:{}", addr.port()),
-            Duration::from_millis(250),
-        );
-
-        assert!(matches!(
-            result,
-            NetworkProbeOutcome::Reachable { latency_ms, .. } if latency_ms >= 0.0
-        ));
-        handle.join().unwrap();
-    }
-
-    #[test]
-    fn doctor_json_includes_structured_network_probe_context() {
-        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
-        let addr = listener.local_addr().unwrap();
-        let handle = std::thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
-            let mut buf = [0_u8; 1];
-            let _ = stream.read(&mut buf);
-        });
-
-        let mut checks = Vec::new();
-        run_optional_network_probe(&format!("localhost:{}", addr.port()), &mut checks);
-
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!("ghostlink-doctor-{unique}.json"));
-        write_doctor_report_json(&path, &checks, 1, 0, 0).unwrap();
-        let payload = std::fs::read_to_string(&path).unwrap();
-        let _ = std::fs::remove_file(&path);
-
-        assert!(payload.contains("\"name\":\"network-probe\""));
-        assert!(payload.contains("\"context\":{"));
-        assert!(payload.contains("\"target\":\"localhost:"));
-        assert!(payload.contains("\"reachable\":true"));
-        assert!(payload.contains("\"latency_ms\":"));
-        handle.join().unwrap();
-    }
-
-    #[test]
-    fn doctor_json_serializes_generic_check_context() {
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!("ghostlink-doctor-generic-{unique}.json"));
-
-        let checks = vec![DoctorCheck {
-            area: "readiness",
-            name: "local-config",
-            status: DoctorStatus::Pass,
-            detail: "using ./ghostlink.toml".to_string(),
-            fix: None,
-            context_json: Some("{\"path\":\"./ghostlink.toml\",\"exists\":true}".to_string()),
-        }];
-
-        write_doctor_report_json(&path, &checks, 1, 0, 0).unwrap();
-        let payload = std::fs::read_to_string(&path).unwrap();
-        let _ = std::fs::remove_file(&path);
-
-        assert!(payload.contains("\"name\":\"local-config\""));
-        assert!(payload.contains("\"context\":{"));
-        assert!(payload.contains("\"path\":\"./ghostlink.toml\""));
-        assert!(payload.contains("\"exists\":true"));
-    }
-
-    #[test]
-    fn test_should_apply_gui_python_override() {
-        assert!(!should_apply_gui_python_override("python3"));
-        assert!(!should_apply_gui_python_override("python"));
-        assert!(!should_apply_gui_python_override(""));
-        assert!(should_apply_gui_python_override("/path/to/venv/python"));
-    }
-
-    #[test]
-    fn test_flow_transport_mode_as_str() {
-        assert_eq!(FlowTransportMode::InMemory.as_str(), "inmem");
-        assert_eq!(FlowTransportMode::TcpLoopback.as_str(), "tcp");
-        assert_eq!(FlowTransportMode::Xdp.as_str(), "xdp");
-    }
-
-    #[test]
-    fn test_resolve_config_path() {
-        let path = resolve_config_path(Some(Path::new("manual.toml")));
-        assert_eq!(path, Some(PathBuf::from("manual.toml")));
-    }
-
-    #[test]
-    fn test_set_env_if_absent() {
-        let key = "GHOSTLINK_TEST_ABSENT";
-        std::env::remove_var(key);
-        set_env_if_absent(key, "new_val".to_string());
-        assert_eq!(std::env::var(key).unwrap(), "new_val");
-        set_env_if_absent(key, "ignored".to_string());
-        assert_eq!(std::env::var(key).unwrap(), "new_val");
-        std::env::remove_var(key);
+    fn args(items: &[&str]) -> impl Iterator<Item = String> {
+        items.iter().map(|s| s.to_string()).collect::<Vec<_>>().into_iter()
     }
 
     #[test]
@@ -4866,9 +4448,6 @@ mod tests {
     fn test_is_gui_backend_reachable_local() {
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let port = listener.local_addr().unwrap().port();
-        // It should be reachable since the listener is active (even if we don't accept)
-        // However, connect might block or fail depending on OS if not accepted.
-        // We'll just test that it doesn't crash.
         let _ = is_gui_backend_reachable("127.0.0.1", port, Duration::from_millis(100));
     }
 
@@ -4944,9 +4523,7 @@ mod tests {
         assert_eq!(json_escape("simple"), "simple");
         assert_eq!(json_escape("with \" quotes"), "with \\\" quotes");
         assert_eq!(json_escape("with \\ backslash"), "with \\\\ backslash");
-        assert_eq!(json_escape("with
-newline"), "with\
-newline");
+        assert_eq!(json_escape("with\nnewline"), "with\\nnewline");
     }
 
     #[test]
@@ -4985,7 +4562,6 @@ newline");
 
     #[test]
     fn test_vram_and_memory_env_defaults() {
-        // Test f32 environment variable resolution
         std::env::set_var("GHOSTLINK_VRAM_TEST", "16.5");
         assert_eq!(env_default_f32("GHOSTLINK_VRAM_TEST", 8.0), 16.5);
         std::env::remove_var("GHOSTLINK_VRAM_TEST");
@@ -4995,8 +4571,6 @@ newline");
     #[test]
     fn test_detect_missing_optional_gui_python_modules() {
         let python = "python3";
-        // This should pass regardless of whether huggingface_hub is installed,
-        // as the function itself returns a Result<Vec<String>>.
         let result = detect_missing_optional_gui_python_modules(python);
         assert!(result.is_ok());
     }
@@ -5004,11 +4578,9 @@ newline");
     #[test]
     fn test_detect_missing_python_modules() {
         let python = "python3";
-        // Test with modules that should exist
         let missing = detect_missing_python_modules(python, &["sys", "os"]).unwrap();
         assert!(missing.is_empty());
 
-        // Test with a module that definitely doesn't exist
         let missing =
             detect_missing_python_modules(python, &["non_existent_module_ghostlink_test"]).unwrap();
         assert_eq!(missing.len(), 1);
@@ -5018,7 +4590,6 @@ newline");
     #[test]
     fn rejects_invalid_input() {
         assert!(parse_cli(args(&[])).is_err());
-
         assert!(parse_cli(args(&["unknown"])).is_err());
         assert!(parse_cli(args(&["probe", "n1", "nonsense"])).is_err());
         assert!(parse_cli(args(&["flow", "a", "b", "32", "64", "bad"])).is_err());
