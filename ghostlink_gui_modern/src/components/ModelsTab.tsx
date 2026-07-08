@@ -44,24 +44,24 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
   };
 
   const handleLoadModel = async (name: string) => {
-    setMessage(\`Loading \${name}...\`);
+    setMessage(`Loading ${name}...`);
     const result = await api.loadModel(name);
     if (result.success) {
-      setMessage(\`Loaded \${name}\`);
+      setMessage(`Loaded ${name}`);
       refreshModels();
     } else {
-      setMessage(\`Error: \${result.error}\`);
+      setMessage(`Error: ${result.error}`);
     }
   };
 
   const handleDownloadModel = async (id: string) => {
-    setMessage(\`Downloading \${id}...\`);
+    setMessage(`Downloading ${id}...`);
     const result = await api.downloadModel(id);
     if (result.success) {
-        setMessage(\`Downloaded \${id}\`);
+        setMessage(`Downloaded ${id}`);
         refreshModels();
     } else {
-        setMessage(\`Error: \${result.error}\`);
+        setMessage(`Error: ${result.error}`);
     }
   };
 
@@ -71,17 +71,17 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
         <div className="flex items-center gap-4">
           <button
             onClick={() => setActiveTab('local')}
-            className={`px-3 py-1.5 rounded-lg text-sm font-bold transition \${
+            className={`px-3 py-1.5 rounded-lg text-sm font-bold transition ${
               activeTab === 'local' ? 'bg-blue-600 text-white shadow-lg shadow-blue-500/20' : 'text-slate-400 hover:bg-slate-900'
-            }\`}
+            }`}
           >
             Library
           </button>
           <button
             onClick={() => setActiveTab('huggingface')}
-            className={`px-3 py-1.5 rounded-lg text-sm font-bold transition \${
+            className={`px-3 py-1.5 rounded-lg text-sm font-bold transition ${
               activeTab === 'huggingface' ? 'bg-blue-600 text-white shadow-lg shadow-blue-500/20' : 'text-slate-400 hover:bg-slate-900'
-            }\`}
+            }`}
           >
             Hugging Face
           </button>
@@ -106,16 +106,16 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
           {activeTab === 'local' ? (
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               {models.map((model) => (
-                <div key={model.name} className={`p-5 rounded-2xl border transition-all duration-300 \${
+                <div key={model.name} className={`p-5 rounded-2xl border transition-all duration-300 ${
                   model.status === 'Loaded'
                     ? 'bg-blue-600/5 border-blue-500/30 ring-1 ring-blue-500/20'
                     : 'bg-slate-900/50 border-slate-800 hover:border-slate-700'
-                }\`}>
+                }`}>
                   <div className="flex items-start justify-between mb-4">
                     <div className="flex items-center gap-3">
-                      <div className={`p-2.5 rounded-xl \${
+                      <div className={`p-2.5 rounded-xl ${
                         model.status === 'Loaded' ? 'bg-blue-500 text-white' : 'bg-slate-800 text-slate-400'
-                      }\`}>
+                      }`}>
                         <Database size={20} />
                       </div>
                       <div>
@@ -123,9 +123,9 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                         <p className="text-[10px] text-slate-500 font-mono">{model.name}</p>
                       </div>
                     </div>
-                    <div className={`px-2 py-1 rounded-md text-[10px] font-bold uppercase tracking-wider \${
+                    <div className={`px-2 py-1 rounded-md text-[10px] font-bold uppercase tracking-wider ${
                       model.status === 'Loaded' ? 'bg-green-500/20 text-green-400' : 'bg-slate-800 text-slate-500'
-                    }\`}>
+                    }`}>
                       {model.status}
                     </div>
                   </div>
