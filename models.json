@@ -1,0 +1,37 @@
+[
+  {
+    "name": "meta-llama/Llama-3-8B-Instruct",
+    "size_gb": 8.0,
+    "model_type": "LLM",
+    "quantization": "Q4_K_M",
+    "status": "Ready"
+  },
+  {
+    "name": "mistralai/Mistral-7B-Instruct-v0.2",
+    "size_gb": 7.2,
+    "model_type": "LLM",
+    "quantization": "Q8_0",
+    "status": "Loaded"
+  },
+  {
+    "name": "google/gemma-7b-it",
+    "size_gb": 7.0,
+    "model_type": "LLM",
+    "quantization": "BF16",
+    "status": "Ready"
+  },
+  {
+    "name": "ghostlink-30b-v1",
+    "size_gb": 30.0,
+    "model_type": "LLM",
+    "quantization": "Q4_K_M",
+    "status": "Ready"
+  },
+  {
+    "name": "new-test-model",
+    "size_gb": 8.0,
+    "model_type": "LLM",
+    "quantization": "unknown",
+    "status": "Ready"
+  }
+]
