@@ -1,14 +1,15 @@
 # Ghostlink Studio - Modern GUI
 
-Advanced AI Model Management Interface with Real-time Metrics, Tool Integration, and MCP Server Support.
+Advanced AI Model Management Interface with Real-time Metrics, Tool Integration, MCP Server Support, and **Real Model Inference via Ollama**.
 
-**Status**: ✅ Production Ready | **Version**: 1.0.0 | **Default GUI**: Modern Web-Based
+**Status**: ✅ Production Ready | **Version**: 1.0.0 | **Default GUI**: Modern Web-Based | **Inference**: Real Models via Ollama
 
 ---
 
 ## 🎯 Features
 
 ### Chat Interface
+- **Real Model Inference** - Get responses from actual LLMs (Mistral, Llama, etc.) via Ollama
 - **Model Selection** - Dropdown selector for all available models
 - **Real-time Parameters** - Temperature, Top-P, Top-K, Penalty, Max Tokens
 - **System Prompts** - Customize AI behavior per conversation
@@ -17,10 +18,10 @@ Advanced AI Model Management Interface with Real-time Metrics, Tool Integration,
 - **Live Streaming** - Real-time response generation
 
 ### Models Management
-- **Local Models** - Load, unload, delete models
-- **Model Filtering** - Smart filtering for usable chat models
-- **HuggingFace Integration** - 10 popular models pre-loaded, searchable
-- **One-Click Download** - Download directly from HuggingFace
+- **Ollama Integration** - Download and manage models from Ollama registry
+- **Local Models** - Load, unload, delete models from your system
+- **Automatic Model Pull** - First run auto-downloads Mistral model (~2GB)
+- **HuggingFace Support** - Access 10+ popular models
 - **Status Display** - Real-time model status and statistics
 
 ### Live Metrics Dashboard
@@ -66,7 +67,7 @@ Advanced AI Model Management Interface with Real-time Metrics, Tool Integration,
 
 ## 🚀 Quick Start
 
-### Option 1: Auto-Launch Everything (Recommended)
+### Option 1: Auto-Launch Everything with Real Model Inference (Recommended)
 
 **Linux/macOS:**
 ```bash
@@ -78,30 +79,43 @@ bash launch-complete.sh
 launch-complete.bat
 ```
 
-This will:
-- ✅ Auto-detect and start backend (if binary exists)
+This will automatically:
+- ✅ Start Ollama (if installed) with real model inference
+- ✅ Auto-detect and start Ghostlink backend
 - ✅ Install GUI dependencies
-- ✅ Open browser automatically
-- ✅ Load all models
-- ✅ Start metrics dashboard
+- ✅ Open browser to http://localhost:3000
+- ✅ Pull Mistral model on first run (~2GB)
 
-### Option 2: Docker Compose
+**What happens next:**
+1. Browser opens to http://localhost:3000
+2. Go to **Models** tab → all available models load
+3. Go to **Chat** tab → select a model
+4. Type a message → get a real response from the model
+
+### Option 2: Docker Compose (Complete Stack)
 
 ```bash
-cd ghostlink_gui_modern
-docker-compose up
+docker-compose -f docker-compose.production.yml up
 ```
 
-Access at:
-- **GUI**: http://localhost:3000
-- **Backend**: http://127.0.0.1:8003
+Services start automatically:
+- **Ollama** (Model Inference): http://localhost:11434
+- **Backend** (API): http://127.0.0.1:8003
+- **Frontend** (GUI): http://localhost:5174
 
-### Option 3: Manual Start
+### Option 3: Manual Start (One Terminal Per Service)
+
 ```bash
-# Terminal 1: Start backend
-./ghostlink serve
+# Terminal 1: Start Ollama (real model inference)
+ollama serve
 
-# Terminal 2: Start GUI
+# Terminal 2: Download a model
+ollama pull mistral
+
+# Terminal 3: Start Ghostlink backend
+./ghostlink serve 0.0.0.0 8003
+
+# Terminal 4: Start GUI
 cd ghostlink_gui_modern
 npm install --legacy-peer-deps
 npm run dev
@@ -109,30 +123,78 @@ npm run dev
 
 ---
 
+## 🧠 Model Inference
+
+### How It Works
+1. **Frontend** sends your message to **Backend** on port 8003
+2. **Backend** connects to **Ollama** on port 11434
+3. **Ollama** runs the selected model and generates response
+4. **Response** streams back to your browser in real-time
+
+### Supported Models
+Download any model from Ollama registry:
+
+```bash
+ollama pull mistral         # 7B - fast & capable
+ollama pull llama2          # 7B/13B - flexible
+ollama pull neural-chat     # 7B - optimized for chat
+ollama pull orca-mini       # 3B - lightweight
+ollama pull openhermes      # 7B - instruction-tuned
+```
+
+List installed models:
+```bash
+ollama list
+```
+
+### Fallback Mode (No Ollama)
+If Ollama isn't installed or running:
+- Backend automatically falls back to mock responses
+- UI still works, but responses are simulated
+- Perfect for testing without models
+
+---
+
 ## 📊 Architecture
 
-### Frontend Stack
-- **React 18** - UI framework
-- **TypeScript** - Full type safety
-- **Tailwind CSS** - Responsive styling
-- **Zustand** - State management
-- **Axios** - HTTP client
-- **Vite 5** - Ultra-fast build tool
+### Stack
+- **Inference Engine**: Ollama (llama.cpp backend, quantized models)
+- **API Server**: Rust + Axum (http://localhost:8003)
+- **Frontend**: React 18 + TypeScript + Vite (http://localhost:3000)
+- **State**: Zustand (UI state management)
+- **Styling**: Tailwind CSS
+
+### Data Flow
+```
+User Input (React)
+    ↓
+[Chat Component]
+    ↓
+[Axios API call] → http://localhost:8003/api/inference/chat
+    ↓
+[Rust Backend]
+    ↓
+[Ollama Client] → http://localhost:11434/api/generate
+    ↓
+[llama.cpp] → Actual Model Inference
+    ↓
+Response streams back through same chain
+```
 
 ### Component Structure
 ```
 src/components/
-├── ChatTab.tsx          # Chat with tools & MCP
-├── ModelsTab.tsx        # Model management
-├── MetricsTab.tsx       # Live metrics dashboard
+├── ChatTab.tsx          # Chat with real model responses
+├── ModelsTab.tsx        # Manage loaded models
+├── MetricsTab.tsx       # Live performance gauges
 ├── SessionsTab.tsx      # Session monitoring
 ├── WorkersTab.tsx       # Worker management
 └── SecurityTab.tsx      # Security controls
 
 src/
-├── api.ts               # Typed API client
+├── api.ts               # Typed Axios client
 ├── store.ts             # Zustand state
-└── App.tsx              # Main component
+└── App.tsx              # Main container
 ```
 
 ---
@@ -143,12 +205,13 @@ src/
 
 1. Open **Chat** tab
 2. Click "Show" under **Tools & MCP**
-3. Check boxes for tools you need
+3. Check boxes for tools (e.g., web_search, calculator)
 4. Select a model
 5. Type your prompt
 6. Send message
 
-**Example**: Enable `web_search` → Send "What's new in AI?" → Model searches web and includes results
+**Example**: "Search for AI news and summarize"
+- Model uses `web_search` tool → gets latest results → generates summary
 
 ### Adding Custom MCP Servers
 
@@ -157,17 +220,14 @@ src/
 3. Enter:
    - **Name**: Friendly name (e.g., "Weather API")
    - **URL**: Server URL (e.g., `http://localhost:5000`)
-4. Click Add
-5. Enable server (checkbox)
-6. Use in prompts
-
-**Response includes**: "Tools used: web_search, calculator"
+4. Click Add → Server now available
+5. Model uses server tools in responses
 
 ---
 
 ## 📈 Metrics Dashboard
 
-**Real-time updates every 5 seconds:**
+Real-time updates every 5 seconds:
 
 - **Throughput** - Requests/second (cyan gauge)
 - **CPU Usage** - Percentage (orange gauge)
@@ -176,35 +236,41 @@ src/
 - **Latency P50** - Milliseconds (yellow gauge)
 - **Latency P95** - Milliseconds (red gauge)
 
-Each gauge shows health status: Green (Healthy) → Yellow (Caution) → Red (Alert)
+Each gauge shows health status: **Green** (Healthy) → **Yellow** (Caution) → **Red** (Alert)
 
 ---
 
 ## 🐳 Docker Deployment
 
-### Build Image
+### Production Stack (Ollama + Backend + Frontend)
+
 ```bash
+docker-compose -f docker-compose.production.yml up -d
+```
+
+Services:
+- ✅ Ollama container with model caching
+- ✅ Backend container with health checks
+- ✅ Frontend container on port 5174
+- ✅ Auto-restart on failure
+- ✅ Data persistence (models, logs)
+
+### Individual Images
+
+```bash
+# Build Ghostlink GUI image
 cd ghostlink_gui_modern
 docker build -t ghostlink-gui .
-```
 
-### Run with Compose
-```bash
-docker-compose up -d
+# Build Ollama image (or use official: ollama/ollama)
+docker build -t ghostlink-ollama -f Dockerfile.ollama .
 ```
-
-**Includes:**
-- ✅ Backend container
-- ✅ GUI container
-- ✅ Auto-health checks
-- ✅ Data persistence (models, logs)
-- ✅ Auto-restart
 
 ---
 
 ## 📝 Configuration
 
-### Backend URL
+### Backend API URL
 Edit `ghostlink_gui_modern/vite.config.ts`:
 ```typescript
 server: {
@@ -217,18 +283,25 @@ server: {
 },
 ```
 
+### Ollama Base URL
+Automatically detected from `OLLAMA_BASE_URL` environment variable:
+```bash
+export OLLAMA_BASE_URL=http://ollama:11434
+./ghostlink serve
+```
+
 ### Metrics Refresh Rate
 Edit `src/components/MetricsTab.tsx`:
 ```typescript
 setInterval(refreshMetrics, 5000); // Change to desired ms
 ```
 
-### Add More Tools
-Edit `src/components/ChatTab.tsx`:
-```typescript
-const AVAILABLE_TOOLS: Tool[] = [
-  // Add tools here
-];
+### Add More Models
+In CLI:
+```bash
+ollama pull quantum
+ollama pull medllama2
+ollama pull starling-lm
 ```
 
 ---
@@ -236,10 +309,17 @@ const AVAILABLE_TOOLS: Tool[] = [
 ## 🔍 Performance
 
 - **App Load**: <2 seconds
-- **Build Size**: 75 KB gzipped
-- **Memory Usage**: 60-80MB active
+- **Build Size**: 75 KB gzipped (frontend)
+- **Memory Usage**: 60-80MB (frontend) + 2GB+ (model)
 - **CPU Overhead**: <2% idle
 - **Metrics Refresh**: 5 seconds (real-time)
+- **Model Inference**: Depends on model size & CPU/GPU
+
+### Recommended Setup for Smooth Performance
+- **CPU**: 4+ cores (more = faster inference)
+- **RAM**: 8GB+ (16GB+ if running large models)
+- **Storage**: 10GB+ for models (Mistral = 4.1GB)
+- **GPU**: Optional (CUDA/Metal accelerates 2-5x)
 
 ---
 
@@ -257,7 +337,6 @@ const AVAILABLE_TOOLS: Tool[] = [
 ### Archived (Legacy)
 - `MIGRATION.md` - Tkinter to modern GUI migration
 - `SETUP_GUIDE.md` - Old setup guide
-- All Tkinter references
 
 ---
 
@@ -265,31 +344,49 @@ const AVAILABLE_TOOLS: Tool[] = [
 
 ### Models Not Showing
 ```bash
-# Verify backend
-curl http://127.0.0.1:8003/api/models
+# Verify Ollama running
+curl http://localhost:11434/api/tags
 
-# Refresh browser and Models tab
+# Download a model
+ollama pull mistral
+
+# Refresh browser
+```
+
+### Backend Connection Failed
+```bash
+# Verify backend running
+curl http://localhost:8003/health
+
+# Check logs (macOS/Linux)
+tail -f /tmp/ghostlink-backend.log
+```
+
+### Ollama Not Starting
+```bash
+# Install Ollama (macOS/Linux)
+curl -fsSL https://ollama.ai/install.sh | sh
+
+# Or download from https://ollama.ai
+
+# On Windows: Download installer from https://ollama.ai/download
 ```
 
 ### Port Already in Use
 ```bash
-# Change port in vite.config.ts
-# Or kill process: lsof -i :3000 | kill -9
+# Kill process using port 8003
+lsof -i :8003 | grep -v PID | awk '{print $2}' | xargs kill -9
+
+# Or change port in launch script
 ```
 
-### MCP Server Not Connecting
+### Models Taking Too Long
 ```bash
-# Verify server running: curl http://localhost:5000
-# Check URL format (no trailing slash)
-# Check firewall/network
-```
+# Large models need time to download (Mistral = 4.1GB)
+# Check progress: Monitor your internet speed
 
-### Build Issues
-```bash
-cd ghostlink_gui_modern
-rm -rf node_modules package-lock.json
-npm install --legacy-peer-deps
-npm run build
+# Try smaller model
+ollama pull orca-mini  # 1.7GB, faster
 ```
 
 ---
@@ -298,8 +395,14 @@ npm run build
 
 - **Node.js**: 18+
 - **npm**: 9+
-- **Browser**: Chrome 90+, Firefox 88+, Safari 14+, Edge 90+
-- **Backend**: Ghostlink backend running on 127.0.0.1:8003
+- **Ollama**: Latest (auto-installs with launch script suggestion)
+- **Backend**: Ghostlink backend binary or compiled from source
+- **RAM**: 8GB+ (16GB+ recommended for larger models)
+- **Storage**: 10GB+ for models
+
+### Optional
+- **GPU**: CUDA-capable NVIDIA GPU (recommended for 2-5x speedup)
+- **Metal**: Apple Silicon (auto-enabled)
 
 ---
 
@@ -321,7 +424,8 @@ The following commands are used for local validation and CI parity checks:
 
 - Run tests: `cargo test --workspace`
 - Lint check: `cargo clippy --workspace --all-targets -- -D warnings`
-- Model verification: `python scripts/verify_hf_models.py`
+- Build image: `docker build -t ghostlink-gui ./ghostlink_gui_modern`
+- Run compose: `docker-compose -f docker-compose.production.yml up`
 
 ---
 
@@ -352,6 +456,13 @@ The following commands are used for local validation and CI parity checks:
 
 ## 📞 Support
 
+### Getting Started
+1. Run `bash launch-complete.sh` (or `.bat` on Windows)
+2. Wait for browser to open http://localhost:3000
+3. Go to **Models** tab and verify model loaded
+4. Go to **Chat** tab and send a test message
+5. Check for real model response (not mock)
+
 ### Common Issues
 See **STARTUP_GUIDE.md** Troubleshooting section
 
@@ -372,22 +483,19 @@ Part of Ghostlink Studio - See LICENSE file
 ## 🎉 What's Included
 
 ### Components (6)
-- Chat with model/tool selection
-- Models management (local + HuggingFace)
+- Chat with real model inference
+- Models management (Ollama + HuggingFace)
 - Metrics dashboard (live gauges)
 - Sessions monitoring
 - Workers management
 - Security vault
 
-### Scripts (4)
-- `launch-complete.sh` - Auto-launch (Linux/macOS)
-- `launch-complete.bat` - Auto-launch (Windows)
-- `ghostlink_gui_modern/launch-gui.sh` - GUI only
-- `ghostlink_gui_modern/launch-gui.bat` - GUI only
+### Scripts (2)
+- `launch-complete.sh` - Auto-launch all services (Linux/macOS)
+- `launch-complete.bat` - Auto-launch all services (Windows)
 
-### Docker (2)
-- `Dockerfile` - GUI image
-- `docker-compose.yml` - Complete stack
+### Docker (1)
+- `docker-compose.production.yml` - Complete stack with Ollama
 
 ### Documentation (5)
 - `README.md` - This file
@@ -398,6 +506,6 @@ Part of Ghostlink Studio - See LICENSE file
 
 ---
 
-**The modern Ghostlink Studio GUI - Enterprise-grade AI model management. 🚀**
+**The modern Ghostlink Studio GUI - Enterprise-grade AI model management with real model inference. 🚀**
 
-Get started with `bash launch-complete.sh` (Linux/macOS) or `launch-complete.bat` (Windows)
+Get started: `bash launch-complete.sh` (Linux/macOS) or `launch-complete.bat` (Windows)
