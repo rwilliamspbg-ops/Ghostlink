@@ -734,7 +734,22 @@ fn maybe_write_flow_metrics_json(
         .unwrap_or_else(|| "null".to_string());
 
     let payload = format!(
-        "{{\n  \"transport_mode\": \"{}\",\n  \"token_count\": {},\n  \"micro_batch\": {},\n  \"batch_count\": {},\n  \"stage_count\": {},\n  \"total_time_ms\": {:.6},\n  \"throughput_tokens_per_sec\": {:.6},\n  \"avg_token_latency_ms\": {:.6},\n  \"p95_token_latency_ms\": {:.6},\n  \"tcp_max_inflight_batches\": {},\n  \"tcp_reconnect_attempts\": {},\n  \"tcp_reconnect_backoff_ms\": {},\n  \"stage_stats\": [{}]\n}}\n",
+        "{{
+  \"transport_mode\": \"{}\",
+  \"token_count\": {},
+  \"micro_batch\": {},
+  \"batch_count\": {},
+  \"stage_count\": {},
+  \"total_time_ms\": {:.6},
+  \"throughput_tokens_per_sec\": {:.6},
+  \"avg_token_latency_ms\": {:.6},
+  \"p95_token_latency_ms\": {:.6},
+  \"tcp_max_inflight_batches\": {},
+  \"tcp_reconnect_attempts\": {},
+  \"tcp_reconnect_backoff_ms\": {},
+  \"stage_stats\": [{}]
+}}
+",
         transport_mode.as_str(),
         execution.token_count,
         execution.micro_batch,
@@ -928,7 +943,9 @@ fn store_cached_autotune_inflight(cache_key: &str, inflight: usize) -> Result<()
         }
     }
     lines.push(format!("{}\t{}", cache_key, inflight));
-    fs::write(&cache_path, lines.join("\n") + "\n").map_err(|err| {
+    fs::write(&cache_path, lines.join("
+") + "
+").map_err(|err| {
         anyhow::anyhow!(
             "failed to write autotune cache {}: {}",
             cache_path.display(),
@@ -1049,7 +1066,8 @@ fn print_usage() {
 }
 
 fn print_help() {
-    println!("ghost-link CLI Demo\n");
+    println!("ghost-link CLI Demo
+");
     println!("Ghost-Link is an open-source scaffold for a zero-config LAN fabric");
     println!("that turns spare local GPUs into a shared execution surface.");
     println!();
@@ -1268,8 +1286,10 @@ fn print_flow(opts: FlowOptions) -> Result<()> {
         .distribute_layers_with_runtime_profile(&layers, &local_profile)
         .map_err(|e| anyhow::anyhow!(e))?;
 
-    println!("Ghost-Link 30B Multi-Host Runtime Flow\n");
-    println!("====================================\n");
+    println!("Ghost-Link 30B Multi-Host Runtime Flow
+");
+    println!("====================================
+");
     println!("Local node: {}", local_profile.node_resources.id);
     println!("Remote node: {}", opts.remote_id);
     println!(
@@ -1277,9 +1297,11 @@ fn print_flow(opts: FlowOptions) -> Result<()> {
         local_profile.acceleration_mode.as_str()
     );
     println!("Local workers: {}", local_profile.recommended_workers);
-    println!("Total cluster nodes: {}\n", cluster.node_count());
+    println!("Total cluster nodes: {}
+", cluster.node_count());
 
-    println!("Health Summary:\n{}", health_monitor.get_health_summary());
+    println!("Health Summary:
+{}", health_monitor.get_health_summary());
 
     if is_env_truthy("GHOSTLINK_DISTRIBUTED_SMOKE") {
         println!("Running Distributed Runtime Validation...");
@@ -1309,7 +1331,8 @@ fn print_flow(opts: FlowOptions) -> Result<()> {
         );
     }
 
-    println!("\nDistribution Summary:");
+    println!("
+Distribution Summary:");
     println!("{}", distribution.summary());
 
     println!("{}", pipeline_plan.summary());
@@ -1348,17 +1371,20 @@ fn print_flow(opts: FlowOptions) -> Result<()> {
             }
         );
     }
-    println!("- Use tcp for socket-backed transport, xdp for AF_XDP-first with automatic fallback, or inmem for channel-backed baseline\n");
+    println!("- Use tcp for socket-backed transport, xdp for AF_XDP-first with automatic fallback, or inmem for channel-backed baseline
+");
 
     if matches!(effective_transport_mode, FlowTransportMode::TcpLoopback)
         || matches!(opts.transport_mode, FlowTransportMode::Xdp)
     {
         println!(
-            "TCP transport controls: GHOSTLINK_TCP_MAX_INFLIGHT, GHOSTLINK_TCP_RECONNECT_ATTEMPTS, GHOSTLINK_TCP_RECONNECT_BACKOFF_MS, GHOSTLINK_TCP_AUTH_TOKEN, GHOSTLINK_TCP_AUTOTUNE\n"
+            "TCP transport controls: GHOSTLINK_TCP_MAX_INFLIGHT, GHOSTLINK_TCP_RECONNECT_ATTEMPTS, GHOSTLINK_TCP_RECONNECT_BACKOFF_MS, GHOSTLINK_TCP_AUTH_TOKEN, GHOSTLINK_TCP_AUTOTUNE
+"
         );
         if matches!(opts.transport_mode, FlowTransportMode::Xdp) {
             println!(
-                "XDP control: GHOSTLINK_XDP_INTERFACE (default: eth0), GHOSTLINK_XDP_AUTOTUNE (default: true when AF_XDP probe succeeds). If AF_XDP probe fails, runtime falls back to TCP automatically.\n"
+                "XDP control: GHOSTLINK_XDP_INTERFACE (default: eth0), GHOSTLINK_XDP_AUTOTUNE (default: true when AF_XDP probe succeeds). If AF_XDP probe fails, runtime falls back to TCP automatically.
+"
             );
         }
     }
@@ -1366,90 +1392,28 @@ fn print_flow(opts: FlowOptions) -> Result<()> {
     Ok(())
 }
 
-#[derive(Debug, Deserialize)]
-struct ChatCompletionRequest {
-    model: String,
-    #[allow(dead_code)]
-    messages: Vec<serde_json::Value>,
-    #[allow(dead_code)]
-    stream: Option<bool>,
-}
 
-#[derive(Debug, Deserialize)]
-struct GuiChatRequest {
-    message: String,
-    #[allow(dead_code)]
-    model: Option<String>,
-    #[allow(dead_code)]
-    temperature: Option<f32>,
-    #[allow(dead_code)]
-    top_p: Option<f32>,
-    #[allow(dead_code)]
-    top_k: Option<usize>,
-    #[allow(dead_code)]
-    penalty: Option<f32>,
-    #[allow(dead_code)]
-    max_tokens: Option<usize>,
-    #[allow(dead_code)]
-    system_prompt: Option<String>,
-    #[allow(dead_code)]
-    ollama_url: Option<String>,
-    #[allow(dead_code)]
-    stream: Option<bool>,
-    #[allow(dead_code)]
-    mcp: Option<serde_json::Value>,
-}
 
-#[derive(Debug, Deserialize)]
-struct ModelLoadRequest {
-    model: String,
-}
 
-#[derive(Debug, Deserialize)]
-struct ModelDownloadRequest {
-    model_id: String,
-}
 
-#[derive(Debug, Deserialize)]
-struct ModelDeleteRequest {
-    model: String,
-}
 
-#[derive(Debug, Deserialize)]
-struct WorkerAddRequest {
-    host: String,
-    port: u16,
-}
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct ModelRecord {
-    name: String,
-    size_gb: f32,
-    model_type: String,
-    quantization: String,
-    status: String,
-}
 
-#[derive(Debug, Clone, Serialize)]
-struct WorkerRecord {
-    id: String,
-    host: String,
-    port: u16,
-    status: String,
-    model: String,
-    threads: usize,
-    load: u8,
-}
 
-#[derive(Debug, Clone, Serialize)]
-struct SessionRecord {
-    id: String,
-    model: String,
-    status: String,
-    throughput: usize,
-    latency: u32,
-    tokens: usize,
-}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 #[derive(Debug)]
 struct BackendState {
@@ -1457,7 +1421,8 @@ struct BackendState {
     current_model: String,
     workers: Vec<WorkerRecord>,
     sessions: Vec<SessionRecord>,
-    #[allow(dead_code)] queue_depth: usize,
+    #[allow(dead_code)]
+    queue_depth: usize,
     chat_requests: u64,
     last_latency_ms: f32,
     started_at: Instant,
@@ -1465,28 +1430,11 @@ struct BackendState {
     cluster: Arc<ClusterState>,
 }
 
-#[derive(Debug, Serialize)]
-struct ChatCompletionResponse {
-    id: String,
-    object: String,
-    created: u64,
-    model: String,
-    choices: Vec<Choice>,
-}
 
-#[derive(Debug, Serialize)]
-struct Choice {
-    index: usize,
-    message: serde_json::Value,
-    finish_reason: String,
-}
 
-#[derive(Debug, Serialize, Deserialize)]
-struct ToolResult {
-    tool: String,
-    result: String,
-    success: bool,
-}
+
+
+
 
 struct ToolDispatcher;
 
@@ -1568,6 +1516,103 @@ fn save_persistent_models(models: &[ModelRecord]) {
     if let Ok(data) = serde_json::to_string_pretty(models) {
         let _ = fs::write("models.json", data);
     }
+}
+
+#[derive(Debug, Deserialize)]
+struct ChatCompletionRequest {
+    model: String,
+    #[allow(dead_code)]
+    messages: Vec<serde_json::Value>,
+    #[allow(dead_code)]
+    stream: Option<bool>,
+}
+#[derive(Debug, Deserialize)]
+struct GuiChatRequest {
+    message: String,
+    #[allow(dead_code)]
+    model: Option<String>,
+    #[allow(dead_code)]
+    temperature: Option<f32>,
+    #[allow(dead_code)]
+    top_p: Option<f32>,
+    #[allow(dead_code)]
+    top_k: Option<usize>,
+    #[allow(dead_code)]
+    penalty: Option<f32>,
+    #[allow(dead_code)]
+    max_tokens: Option<usize>,
+    #[allow(dead_code)]
+    system_prompt: Option<String>,
+    #[allow(dead_code)]
+    ollama_url: Option<String>,
+    #[allow(dead_code)]
+    stream: Option<bool>,
+    #[allow(dead_code)]
+    mcp: Option<serde_json::Value>,
+}
+#[derive(Debug, Deserialize)]
+struct ModelLoadRequest {
+    model: String,
+}
+#[derive(Debug, Deserialize)]
+struct ModelDownloadRequest {
+    model_id: String,
+}
+#[derive(Debug, Deserialize)]
+struct ModelDeleteRequest {
+    model: String,
+}
+#[derive(Debug, Deserialize)]
+struct WorkerAddRequest {
+    host: String,
+    port: u16,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ModelRecord {
+    name: String,
+    size_gb: f32,
+    model_type: String,
+    quantization: String,
+    status: String,
+}
+#[derive(Debug, Clone, Serialize)]
+struct WorkerRecord {
+    id: String,
+    host: String,
+    port: u16,
+    status: String,
+    model: String,
+    threads: usize,
+    load: u8,
+}
+#[derive(Debug, Clone, Serialize)]
+struct SessionRecord {
+    id: String,
+    model: String,
+    status: String,
+    throughput: usize,
+    latency: u32,
+    tokens: usize,
+}
+#[derive(Debug, Serialize)]
+struct ChatCompletionResponse {
+    id: String,
+    object: String,
+    created: u64,
+    model: String,
+    choices: Vec<Choice>,
+}
+#[derive(Debug, Serialize)]
+struct Choice {
+    index: usize,
+    message: serde_json::Value,
+    finish_reason: String,
+}
+#[derive(Debug, Serialize, Deserialize)]
+struct ToolResult {
+    tool: String,
+    result: String,
+    success: bool,
 }
 
 fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
@@ -2089,13 +2134,13 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             }
         };
 
-
         let response_text = {
             let msg = req.message.to_lowercase();
             let mut text = if msg.contains("2+2") || msg.contains("2 + 2") {
                 "2 + 2 equals 4. Simple arithmetic operation that equals four.".to_string()
             } else if msg.contains("hello") {
-                "Hello! I'm the Ghostlink distributed inference engine. How can I assist you today?".to_string()
+                "Hello! I'm the Ghostlink distributed inference engine. How can I assist you today?"
+                    .to_string()
             } else if msg.contains("define your terminal coding abilities") {
                 "As your Principal Engineer for **Sovereign Mohawk Proto LLC**, my terminal capabilities are not merely \"scripting\"; they are **production-grade, kernel-bypass-aware system orchestration**. I operate as a remote co-pilot capable of executing complex build pipelines, cryptographic audits, and network topology validations directly within the CLI.".to_string()
             } else if msg.contains("how are you") {
@@ -2107,15 +2152,24 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             };
 
             if !tool_results.is_empty() {
-                text.push_str("\n\nI used the following tools to assist with your request:");
+                text.push_str("
+
+I used the following tools to assist with your request:");
                 for res in &tool_results {
-                    text.push_str(&format!("\n- **{}**: {}", res.tool, res.result));
+                    text.push_str(&format!("
+- **{}**: {}", res.tool, res.result));
                 }
             }
 
             if let Some(ref exec) = result {
                 text.push_str(&format!(
-                    "\n\n--- [Ghostlink Fabric Statistics] ---\nLatency: {:.2}ms (p50)\nThroughput: {:.2} tokens/sec\nNodes: {}\nLayers: {}",
+                    "
+
+--- [Ghostlink Fabric Statistics] ---
+Latency: {:.2}ms (p50)
+Throughput: {:.2} tokens/sec
+Nodes: {}
+Layers: {}",
                     exec.avg_token_latency_ms,
                     exec.throughput_tokens_per_sec,
                     nodes.len(),
@@ -2369,7 +2423,8 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         let listener = tokio::net::TcpListener::bind(addr)
             .await
             .map_err(|err| anyhow::anyhow!("failed to bind API server on {}: {}", addr, err))?;
-        println!("\nAPI Server Online. Ready for connections.");
+        println!("
+API Server Online. Ready for connections.");
 
         axum::serve(listener, app)
             .await
@@ -2451,10 +2506,13 @@ fn print_plan() -> Result<()> {
     let assignments = assign_layers_with_runtime_profile(&nodes, &layers, &profile)
         .map_err(|e| anyhow::anyhow!(e))?;
 
-    println!("Ghost-Link Layer Placement Plan\n");
-    println!("================================\n");
+    println!("Ghost-Link Layer Placement Plan
+");
+    println!("================================
+");
     println!(
-        "Local profile: workers={} acceleration={} XDP={}\n",
+        "Local profile: workers={} acceleration={} XDP={}
+",
         profile.recommended_workers,
         profile.acceleration_mode.as_str(),
         if profile.xdp_supported { "on" } else { "off" }
@@ -2471,7 +2529,9 @@ fn print_plan() -> Result<()> {
     }
 
     // Demonstrate adaptive quantization trigger
-    println!("\nAdaptive Quantization Trigger:\n");
+    println!("
+Adaptive Quantization Trigger:
+");
     for ratio in [0.98_f32, 0.90, 0.75] {
         println!(
             "delivery_ratio={ratio:.2} => {:?}",
@@ -2516,12 +2576,15 @@ fn print_join(node_id: &str) -> Result<()> {
     let discovery_replies = broadcast_and_collect(&frame, &discovery_cfg)
         .map_err(|e| anyhow::anyhow!("UDP discovery broadcast failed: {e}"))?;
 
-    println!("Broadcasting Ghost-Link Join Frame\n");
-    println!("====================================\n");
+    println!("Broadcasting Ghost-Link Join Frame
+");
+    println!("====================================
+");
     println!("Frame Size: {} bytes", encoded.len());
     println!("EtherType: 0x{:04X}", crate::protocol::GHOSTLINK_ETHERTYPE);
     println!();
-    println!("Node Information:\n");
+    println!("Node Information:
+");
     println!("  ID: {}", decoded.node.id);
     println!("  VRAM: {:.1} GB", decoded.node.vram_gb);
     println!("  System Memory: {:.1} GB", decoded.node.system_memory_gb);
@@ -2555,7 +2618,9 @@ fn print_join(node_id: &str) -> Result<()> {
     // Show encoded frame (first 50 bytes for brevity)
     if !encoded.is_empty() {
         let preview = &encoded[..std::cmp::min(50, encoded.len())];
-        println!("\nEncoded Frame Preview (hex):\n");
+        println!("
+Encoded Frame Preview (hex):
+");
         for byte in preview.iter() {
             print!("{:02x} ", byte);
         }
@@ -2592,8 +2657,10 @@ fn print_discovery_listener(node_id: &str, once: bool) -> Result<()> {
         ..UdpDiscoveryConfig::default()
     };
 
-    println!("Ghost-Link Discovery Listener\n");
-    println!("===========================\n");
+    println!("Ghost-Link Discovery Listener
+");
+    println!("===========================
+");
     println!("Node ID: {}", profile.node_resources.id);
     println!("Listen Address: {}", config.bind_addr);
     println!("Timeout: {} ms", timeout_ms);
@@ -2607,7 +2674,8 @@ fn print_discovery_listener(node_id: &str, once: bool) -> Result<()> {
     );
 
     if once {
-        println!("Mode: one-shot\n");
+        println!("Mode: one-shot
+");
         match respond_once(&profile.node_resources, &config)
             .map_err(|e| anyhow::anyhow!("UDP discovery listener failed: {e}"))?
         {
@@ -2617,7 +2685,8 @@ fn print_discovery_listener(node_id: &str, once: bool) -> Result<()> {
         return Ok(());
     }
 
-    println!("Mode: service loop\n");
+    println!("Mode: service loop
+");
     if let Some(limit) = max_replies {
         println!("Max Replies: {}", limit);
         let stats = serve_discovery_with_stats(&profile.node_resources, &config, Some(limit))
@@ -2695,7 +2764,8 @@ fn print_dashboard() -> Result<()> {
 
     println!("{}", dashboard.render_ascii());
     println!(
-        "\nAuto-tuned local runtime: {} workers, {} acceleration",
+        "
+Auto-tuned local runtime: {} workers, {} acceleration",
         profile.recommended_workers,
         profile.acceleration_mode.as_str()
     );
@@ -2711,8 +2781,10 @@ fn print_cluster_start(node_count: usize, base_port: u16) -> Result<()> {
     let self_exe = std::env::current_exe()
         .map_err(|err| anyhow::anyhow!("failed to locate current executable: {}", err))?;
 
-    println!("Ghost-Link Local Cluster Start\n");
-    println!("===============================\n");
+    println!("Ghost-Link Local Cluster Start
+");
+    println!("===============================
+");
     println!("Node count: {}", node_count);
     println!("Base port: {}", base_port);
 
@@ -2800,7 +2872,8 @@ fn print_cluster_start(node_count: usize, base_port: u16) -> Result<()> {
     }
 
     println!(
-        "\nCluster-start validation passed: {} replies across {} local nodes",
+        "
+Cluster-start validation passed: {} replies across {} local nodes",
         total_replies, node_count
     );
     Ok(())
@@ -3059,7 +3132,11 @@ fn write_doctor_report_json(
         .join(",");
 
     let payload = format!(
-        "{{\n  \"summary\": {{\"pass\": {}, \"warn\": {}, \"fail\": {}}},\n  \"checks\": [{}]\n}}\n",
+        "{{
+  \"summary\": {{\"pass\": {}, \"warn\": {}, \"fail\": {}}},
+  \"checks\": [{}]
+}}
+",
         pass_count, warn_count, fail_count, checks_json
     );
 
@@ -3586,8 +3663,10 @@ fn print_doctor_report(options: &DoctorOptions) -> Result<()> {
         }
     }
 
-    println!("Ghost-Link Doctor Report\n");
-    println!("========================\n");
+    println!("Ghost-Link Doctor Report
+");
+    println!("========================
+");
 
     for area in ["environment", "readiness", "accessibility", "accuracy"] {
         println!("{}:", area);
@@ -3628,12 +3707,14 @@ fn print_doctor_report(options: &DoctorOptions) -> Result<()> {
         println!("Doctor report JSON written to: {}", path.display());
     }
 
-    println!("\nReview areas for multi-device accessibility:");
+    println!("
+Review areas for multi-device accessibility:");
     println!("- GUI path: desktop display or headless xvfb-run fallback");
     println!("- Deployment path: Docker local demo, systemd service template, staged LAN guide");
     println!("- Discovery path: cluster-start for local multi-node behavior");
 
-    println!("\nReview areas for accuracy:");
+    println!("
+Review areas for accuracy:");
     println!("- Planner layer coverage integrity (no gaps/overlap)");
     println!("- GUI API contract parity checks");
     println!("- Runtime SLO/canary/perf-drift validators and baseline presence");
@@ -3969,8 +4050,10 @@ fn print_gui_diagnostics(strict: bool) -> Result<()> {
         ));
     }
 
-    println!("Ghost-Link GUI Diagnostics\n");
-    println!("==========================\n");
+    println!("Ghost-Link GUI Diagnostics
+");
+    println!("==========================
+");
     println!("GUI entry: {}", gui_entry.display());
     println!("Requirements: {}", requirements.display());
     println!("Python executable: {}", python);
@@ -3981,9 +4064,11 @@ fn print_gui_diagnostics(strict: bool) -> Result<()> {
     );
 
     if categories.is_empty() {
-        println!("\nDiagnostics: PASS");
+        println!("
+Diagnostics: PASS");
     } else {
-        println!("\nDiagnostics: FAIL");
+        println!("
+Diagnostics: FAIL");
         for (kind, message) in &categories {
             println!("- [{}] {}", kind, message);
         }
@@ -4017,7 +4102,8 @@ fn print_gui_diagnostics(strict: bool) -> Result<()> {
         #[cfg(not(target_os = "linux"))]
         let linux_libxkb_json = "null";
         let payload = format!(
-            "{{\"ok\":{},\"python\":\"{}\",\"python_source\":\"{}\",\"gui_entry\":\"{}\",\"requirements\":\"{}\",\"has_display\":{},\"xvfb_available\":{},\"missing_python_modules\":[{}],\"python_module_probe_error\":{},\"linux_libgl_present\":{},\"linux_libxkbcommon_present\":{},\"issues\":[{}]}}\n",
+            "{{\"ok\":{},\"python\":\"{}\",\"python_source\":\"{}\",\"gui_entry\":\"{}\",\"requirements\":\"{}\",\"has_display\":{},\"xvfb_available\":{},\"missing_python_modules\":[{}],\"python_module_probe_error\":{},\"linux_libgl_present\":{},\"linux_libxkbcommon_present\":{},\"issues\":[{}]}}
+",
             if categories.is_empty() { "true" } else { "false" },
             python.replace('"', "\\\""),
             python_resolution.source.as_str(),
@@ -4068,8 +4154,10 @@ fn print_gui_readiness(strict: bool) -> Result<()> {
 
     let mut issues: Vec<String> = Vec::new();
 
-    println!("Ghost-Link GUI Readiness Report\n");
-    println!("===============================\n");
+    println!("Ghost-Link GUI Readiness Report
+");
+    println!("===============================
+");
     println!("GUI entry: {}", gui_entry.display());
     println!("Requirements: {}", requirements.display());
     println!("Python executable: {}", python);
@@ -4164,17 +4252,20 @@ fn print_gui_readiness(strict: bool) -> Result<()> {
     );
 
     if issues.is_empty() {
-        println!("\nReadiness: PASS");
+        println!("
+Readiness: PASS");
         return Ok(());
     }
 
-    println!("\nReadiness: FAIL");
+    println!("
+Readiness: FAIL");
     println!("Issues:");
     for issue in &issues {
         println!("- {}", issue);
     }
 
-    println!("\nSuggested fixes:");
+    println!("
+Suggested fixes:");
     println!(
         "- Install Python deps: {} -m pip install -r {}",
         python,
@@ -4529,7 +4620,8 @@ mod tests {
         let venv_bin = root.join(".venv").join("bin");
         std::fs::create_dir_all(&venv_bin).unwrap();
         let venv_python = venv_bin.join("python");
-        std::fs::write(&venv_python, "#!/bin/sh\n").unwrap();
+        std::fs::write(&venv_python, "#!/bin/sh
+").unwrap();
 
         let venv_resolved = resolve_python_for_root(&root, None);
         assert_eq!(venv_resolved.executable, venv_python.display().to_string());
@@ -4852,7 +4944,9 @@ mod tests {
         assert_eq!(json_escape("simple"), "simple");
         assert_eq!(json_escape("with \" quotes"), "with \\\" quotes");
         assert_eq!(json_escape("with \\ backslash"), "with \\\\ backslash");
-        assert_eq!(json_escape("with\nnewline"), "with\\nnewline");
+        assert_eq!(json_escape("with
+newline"), "with\
+newline");
     }
 
     #[test]
