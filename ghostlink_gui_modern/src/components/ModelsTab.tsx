@@ -1,316 +1,227 @@
-import React, { useState, useEffect } from 'react';
-import { RefreshCw, Download, Trash2, Play, Power, Search, Zap } from 'lucide-react';
-import { useAppStore, Model } from '../store';
+import React, { useState } from 'react';
+import {
+  Play,
+  Trash2,
+  RefreshCw,
+  Download,
+  Search,
+  Database,
+  Cpu,
+  Layers,
+  CheckCircle2,
+  AlertCircle,
+  Loader,
+  Power,
+  ChevronRight,
+} from 'lucide-react';
+import { useAppStore } from '../store';
+import { GhostlinkAPI } from '../api';
 
-interface ModelsTabProps {
-  api: any;
-}
-
-// Popular models to auto-populate HuggingFace search
 const POPULAR_MODELS = [
-  { id: 'meta-llama/Llama-2-7b-chat-hf', name: 'Llama 2 7B Chat', downloads: 500000, likes: 5000 },
-  { id: 'meta-llama/Llama-2-13b-chat-hf', name: 'Llama 2 13B Chat', downloads: 400000, likes: 4000 },
-  { id: 'mistralai/Mistral-7B-Instruct-v0.1', name: 'Mistral 7B Instruct', downloads: 600000, likes: 6000 },
-  { id: 'NousResearch/Nous-Hermes-2-Mixtral-8x7B-DPO', name: 'Nous Hermes 2 Mixtral', downloads: 150000, likes: 1500 },
-  { id: 'openchat/openchat-3.5-1210', name: 'OpenChat 3.5', downloads: 200000, likes: 2000 },
-  { id: 'Qwen/Qwen1.5-7B-Chat', name: 'Qwen 1.5 7B Chat', downloads: 300000, likes: 3000 },
-  { id: 'NousResearch/Nous-Hermes-2-Mixtral-8x7B', name: 'Nous Hermes 2 Mixtral', downloads: 180000, likes: 1800 },
-  { id: 'mistralai/Mistral-7B-v0.1', name: 'Mistral 7B Base', downloads: 400000, likes: 4000 },
-  { id: 'meta-llama/Llama-2-70b-chat-hf', name: 'Llama 2 70B Chat', downloads: 300000, likes: 3000 },
-  { id: 'TheBloke/Mistral-7B-Instruct-v0.1-GGUF', name: 'Mistral 7B Instruct GGUF', downloads: 250000, likes: 2500 },
+  { id: 'meta-llama/Llama-3-8B-Instruct', name: 'Llama 3 8B', downloads: 1200000, likes: 45000 },
+  { id: 'mistralai/Mistral-7B-Instruct-v0.2', name: 'Mistral 7B v0.2', downloads: 950000, likes: 38000 },
+  { id: 'google/gemma-7b-it', name: 'Gemma 7B', downloads: 800000, likes: 25000 },
+  { id: 'microsoft/phi-3-mini-4k-instruct', name: 'Phi-3 Mini', downloads: 600000, likes: 18000 },
+  { id: 'stabilityai/stablelm-zephyr-3b', name: 'StableLM Zephyr', downloads: 300000, likes: 12000 },
 ];
 
-export const ModelsTab: React.FC<ModelsTabProps> = ({ api }) => {
-  const { models, setModels, setCurrentModel } = useAppStore();
+export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
+  const { models, currentModel, setModels, setCurrentModel } = useAppStore();
   const [activeTab, setActiveTab] = useState<'local' | 'huggingface'>('local');
-  const [filter, setFilter] = useState('');
   const [loading, setLoading] = useState(false);
-  const [message, setMessage] = useState('');
   const [hfSearch, setHfSearch] = useState('');
-  const [hfResults, setHfResults] = useState<any[]>(POPULAR_MODELS);
-  const [hfLoading, setHfLoading] = useState(false);
+  const [hfResults, setHfResults] = useState(POPULAR_MODELS);
+  const [message, setMessage] = useState<string | null>(null);
 
   const refreshModels = async () => {
     setLoading(true);
     const result = await api.getModels();
-    if (!result.error) {
-      setModels(result.models);
-      setMessage('Models refreshed');
-      setTimeout(() => setMessage(''), 2000);
-    } else {
-      setMessage(`Error: ${result.error}`);
-    }
     setLoading(false);
+    if (result.models) {
+      setModels(result.models);
+      if (result.current_model) setCurrentModel(result.current_model);
+    }
   };
 
-  useEffect(() => {
-    refreshModels();
-  }, []);
-
-  const filteredModels = models.filter((m) =>
-    m.name.toLowerCase().includes(filter.toLowerCase())
-  );
-
-  const handleLoadModel = async (modelName: string) => {
-    setMessage('Loading...');
-    const result = await api.loadModel(modelName);
+  const handleLoadModel = async (name: string) => {
+    setMessage(\`Loading \${name}...\`);
+    const result = await api.loadModel(name);
     if (result.success) {
-      setMessage(`Loaded: ${modelName}`);
-      setCurrentModel(modelName);
-      setTimeout(() => refreshModels(), 500);
+      setMessage(\`Loaded \${name}\`);
+      refreshModels();
     } else {
-      setMessage(`Error: ${result.error}`);
+      setMessage(\`Error: \${result.error}\`);
     }
   };
 
-  const handleUnloadModel = async (modelName: string) => {
-    setMessage('Unloading...');
-    const result = await api.unloadModel(modelName);
+  const handleDownloadModel = async (id: string) => {
+    setMessage(\`Downloading \${id}...\`);
+    const result = await api.downloadModel(id);
     if (result.success) {
-      setMessage(`Unloaded: ${modelName}`);
-      setTimeout(() => refreshModels(), 500);
+        setMessage(\`Downloaded \${id}\`);
+        refreshModels();
     } else {
-      setMessage(`Error: ${result.error}`);
+        setMessage(\`Error: \${result.error}\`);
     }
-  };
-
-  const handleDeleteModel = async (modelName: string) => {
-    if (!confirm(`Delete ${modelName}? This cannot be undone.`)) return;
-    setMessage('Deleting...');
-    const result = await api.deleteModel(modelName);
-    if (result.success) {
-      setMessage(`Deleted: ${modelName}`);
-      setTimeout(() => refreshModels(), 500);
-    } else {
-      setMessage(`Error: ${result.error}`);
-    }
-  };
-
-  const handleDownloadModel = async (modelId: string) => {
-    setMessage('Downloading...');
-    const result = await api.downloadModel(modelId);
-    if (result.success) {
-      setMessage(`Downloaded: ${modelId}`);
-      setTimeout(() => refreshModels(), 1000);
-    } else {
-      setMessage(`Error: ${result.error}`);
-    }
-  };
-
-  const searchHuggingFace = async () => {
-    if (!hfSearch.trim()) {
-      setHfResults(POPULAR_MODELS);
-      return;
-    }
-
-    setHfLoading(true);
-    const searchTerm = hfSearch.toLowerCase();
-    const filtered = POPULAR_MODELS.filter(
-      (m) =>
-        m.id.toLowerCase().includes(searchTerm) ||
-        m.name.toLowerCase().includes(searchTerm)
-    );
-    setHfResults(filtered.length > 0 ? filtered : POPULAR_MODELS);
-    setHfLoading(false);
   };
 
   return (
-    <div className="space-y-4">
-      {/* Tabs */}
-      <div className="flex gap-2 border-b border-slate-700">
+    <div className="flex flex-col h-full bg-slate-950">
+      <div className="flex items-center justify-between px-6 py-4 border-b border-slate-900 sticky top-0 bg-slate-950/50 backdrop-blur-md z-10">
+        <div className="flex items-center gap-4">
+          <button
+            onClick={() => setActiveTab('local')}
+            className={`px-3 py-1.5 rounded-lg text-sm font-bold transition \${
+              activeTab === 'local' ? 'bg-blue-600 text-white shadow-lg shadow-blue-500/20' : 'text-slate-400 hover:bg-slate-900'
+            }\`}
+          >
+            Library
+          </button>
+          <button
+            onClick={() => setActiveTab('huggingface')}
+            className={`px-3 py-1.5 rounded-lg text-sm font-bold transition \${
+              activeTab === 'huggingface' ? 'bg-blue-600 text-white shadow-lg shadow-blue-500/20' : 'text-slate-400 hover:bg-slate-900'
+            }\`}
+          >
+            Hugging Face
+          </button>
+        </div>
         <button
-          onClick={() => setActiveTab('local')}
-          className={`px-4 py-2 font-semibold transition ${
-            activeTab === 'local'
-              ? 'text-blue-400 border-b-2 border-blue-400'
-              : 'text-slate-400 hover:text-slate-300'
-          }`}
+          onClick={refreshModels}
+          className="p-2 rounded-lg hover:bg-slate-900 text-slate-400 hover:text-white transition"
         >
-          Local Models
-        </button>
-        <button
-          onClick={() => setActiveTab('huggingface')}
-          className={`px-4 py-2 font-semibold transition ${
-            activeTab === 'huggingface'
-              ? 'text-blue-400 border-b-2 border-blue-400'
-              : 'text-slate-400 hover:text-slate-300'
-          }`}
-        >
-          Hugging Face
+          <RefreshCw size={18} className={loading ? 'animate-spin' : ''} />
         </button>
       </div>
 
-      {message && (
-        <div className="p-3 rounded bg-blue-900 text-blue-200 text-sm">{message}</div>
-      )}
-
-      {/* Local Models Tab */}
-      {activeTab === 'local' && (
-        <div className="space-y-4">
-          <div className="flex gap-2 flex-wrap">
-            <div className="flex-1 min-w-60">
-              <input
-                type="text"
-                placeholder="Filter models..."
-                value={filter}
-                onChange={(e) => setFilter(e.target.value)}
-                className="w-full px-4 py-2 bg-slate-800 border border-slate-700 rounded text-slate-100 placeholder-slate-500 focus:outline-none focus:border-blue-500"
-              />
+      <div className="flex-1 overflow-y-auto p-6">
+        <div className="max-w-5xl mx-auto space-y-6">
+          {message && (
+            <div className="flex items-center gap-3 p-4 bg-blue-500/10 border border-blue-500/20 rounded-2xl text-blue-400 text-sm animate-in fade-in slide-in-from-top-2">
+              <Loader size={16} className="animate-spin" />
+              <span>{message}</span>
             </div>
-            <button
-              onClick={refreshModels}
-              disabled={loading}
-              className="flex items-center gap-2 px-4 py-2 bg-slate-700 hover:bg-slate-600 disabled:bg-slate-800 text-white rounded transition"
-            >
-              <RefreshCw size={16} className={loading ? 'animate-spin' : ''} />
-              Refresh
-            </button>
-          </div>
+          )}
 
-          {/* Models Table */}
-          <div className="overflow-x-auto rounded border border-slate-700">
-            <table className="w-full">
-              <thead className="bg-slate-900 border-b border-slate-700">
-                <tr>
-                  <th className="px-4 py-3 text-left text-sm font-semibold text-slate-300">Name</th>
-                  <th className="px-4 py-3 text-left text-sm font-semibold text-slate-300">Size</th>
-                  <th className="px-4 py-3 text-left text-sm font-semibold text-slate-300">Type</th>
-                  <th className="px-4 py-3 text-left text-sm font-semibold text-slate-300">Quant</th>
-                  <th className="px-4 py-3 text-left text-sm font-semibold text-slate-300">Status</th>
-                  <th className="px-4 py-3 text-left text-sm font-semibold text-slate-300">Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {filteredModels.length === 0 ? (
-                  <tr>
-                    <td colSpan={6} className="px-4 py-4 text-center text-slate-500">
-                      No models found
-                    </td>
-                  </tr>
-                ) : (
-                  filteredModels.map((model) => (
-                    <tr key={model.name} className="border-b border-slate-700 hover:bg-slate-800">
-                      <td className="px-4 py-3 text-sm text-slate-200 font-mono">{model.name}</td>
-                      <td className="px-4 py-3 text-sm text-slate-400">{model.size_gb.toFixed(1)} GB</td>
-                      <td className="px-4 py-3 text-sm text-slate-400">{model.type}</td>
-                      <td className="px-4 py-3 text-sm text-slate-400">{model.quantization}</td>
-                      <td className="px-4 py-3 text-sm">
-                        <span
-                          className={`px-2 py-1 rounded text-xs font-semibold ${
-                            model.status?.toLowerCase() === 'ready'
-                              ? 'bg-emerald-900 text-emerald-200'
-                              : 'bg-yellow-900 text-yellow-200'
-                          }`}
-                        >
-                          {model.status}
-                        </span>
-                      </td>
-                      <td className="px-4 py-3 text-sm flex gap-1">
+          {activeTab === 'local' ? (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {models.map((model) => (
+                <div key={model.name} className={`p-5 rounded-2xl border transition-all duration-300 \${
+                  model.status === 'Loaded'
+                    ? 'bg-blue-600/5 border-blue-500/30 ring-1 ring-blue-500/20'
+                    : 'bg-slate-900/50 border-slate-800 hover:border-slate-700'
+                }\`}>
+                  <div className="flex items-start justify-between mb-4">
+                    <div className="flex items-center gap-3">
+                      <div className={`p-2.5 rounded-xl \${
+                        model.status === 'Loaded' ? 'bg-blue-500 text-white' : 'bg-slate-800 text-slate-400'
+                      }\`}>
+                        <Database size={20} />
+                      </div>
+                      <div>
+                        <h3 className="font-bold text-slate-100 truncate max-w-[200px]">{model.name.split('/').pop()}</h3>
+                        <p className="text-[10px] text-slate-500 font-mono">{model.name}</p>
+                      </div>
+                    </div>
+                    <div className={`px-2 py-1 rounded-md text-[10px] font-bold uppercase tracking-wider \${
+                      model.status === 'Loaded' ? 'bg-green-500/20 text-green-400' : 'bg-slate-800 text-slate-500'
+                    }\`}>
+                      {model.status}
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-3 gap-2 mb-5">
+                    <div className="bg-slate-950/50 p-2 rounded-xl border border-slate-800/50">
+                        <p className="text-[10px] text-slate-500 mb-0.5">Size</p>
+                        <p className="text-xs font-bold">{model.size_gb.toFixed(1)} GB</p>
+                    </div>
+                    <div className="bg-slate-950/50 p-2 rounded-xl border border-slate-800/50">
+                        <p className="text-[10px] text-slate-500 mb-0.5">Quant</p>
+                        <p className="text-xs font-bold uppercase">{model.quantization}</p>
+                    </div>
+                    <div className="bg-slate-950/50 p-2 rounded-xl border border-slate-800/50">
+                        <p className="text-[10px] text-slate-500 mb-0.5">Type</p>
+                        <p className="text-xs font-bold uppercase">{model.type}</p>
+                    </div>
+                  </div>
+
+                  <div className="flex gap-2">
+                    {model.status !== 'Loaded' ? (
                         <button
                           onClick={() => handleLoadModel(model.name)}
-                          title="Load model"
-                          className="p-1.5 bg-green-700 hover:bg-green-600 text-white rounded transition"
+                          className="flex-1 flex items-center justify-center gap-2 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-xs font-bold transition shadow-lg shadow-blue-500/20"
                         >
-                          <Play size={14} />
+                          <Play size={14} fill="currentColor" /> Load Model
                         </button>
-                        <button
-                          onClick={() => handleUnloadModel(model.name)}
-                          title="Unload model"
-                          className="p-1.5 bg-yellow-700 hover:bg-yellow-600 text-white rounded transition"
-                        >
-                          <Power size={14} />
+                    ) : (
+                        <button className="flex-1 flex items-center justify-center gap-2 py-2 bg-slate-800 text-slate-400 rounded-xl text-xs font-bold cursor-default">
+                          <CheckCircle2 size={14} /> Currently Active
                         </button>
-                        <button
-                          onClick={() => handleDeleteModel(model.name)}
-                          title="Delete model"
-                          className="p-1.5 bg-red-700 hover:bg-red-600 text-white rounded transition"
-                        >
-                          <Trash2 size={14} />
-                        </button>
-                      </td>
-                    </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
-
-      {/* Hugging Face Tab */}
-      {activeTab === 'huggingface' && (
-        <div className="space-y-4">
-          <div className="flex gap-2">
-            <input
-              type="text"
-              placeholder="Search Hugging Face models..."
-              value={hfSearch}
-              onChange={(e) => setHfSearch(e.target.value)}
-              onKeyPress={(e) => e.key === 'Enter' && searchHuggingFace()}
-              className="flex-1 px-4 py-2 bg-slate-800 border border-slate-700 rounded text-slate-100 placeholder-slate-500 focus:outline-none focus:border-blue-500"
-            />
-            <button
-              onClick={searchHuggingFace}
-              disabled={hfLoading}
-              className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-slate-600 text-white rounded transition"
-            >
-              <Search size={16} className={hfLoading ? 'animate-spin' : ''} />
-              Search
-            </button>
-          </div>
-
-          <div className="text-xs text-slate-400 bg-slate-900 p-2 rounded">
-            💡 Showing {hfSearch ? 'filtered' : 'popular'} models from Hugging Face
-            {hfSearch && ` matching "${hfSearch}"`}
-          </div>
-
-          {/* HF Results Table */}
-          {hfResults.length > 0 && (
-            <div className="overflow-x-auto rounded border border-slate-700">
-              <table className="w-full">
-                <thead className="bg-slate-900 border-b border-slate-700">
-                  <tr>
-                    <th className="px-4 py-3 text-left text-sm font-semibold text-slate-300">Model ID</th>
-                    <th className="px-4 py-3 text-left text-sm font-semibold text-slate-300">Name</th>
-                    <th className="px-4 py-3 text-left text-sm font-semibold text-slate-300">Downloads</th>
-                    <th className="px-4 py-3 text-left text-sm font-semibold text-slate-300">Likes</th>
-                    <th className="px-4 py-3 text-left text-sm font-semibold text-slate-300">Action</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {hfResults.map((model) => (
-                    <tr key={model.id} className="border-b border-slate-700 hover:bg-slate-800">
-                      <td className="px-4 py-3 text-sm text-slate-200 font-mono">{model.id}</td>
-                      <td className="px-4 py-3 text-sm text-slate-300">{model.name}</td>
-                      <td className="px-4 py-3 text-sm text-slate-400">
-                        📥 {(model.downloads / 1000).toFixed(0)}K
-                      </td>
-                      <td className="px-4 py-3 text-sm text-slate-400">
-                        👍 {(model.likes / 1000).toFixed(1)}K
-                      </td>
-                      <td className="px-4 py-3 text-sm">
-                        <button
-                          onClick={() => handleDownloadModel(model.id)}
-                          className="flex items-center gap-1 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded text-xs transition"
-                        >
-                          <Download size={14} />
-                          Download
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+                    )}
+                    <button className="p-2 bg-slate-800 hover:bg-red-500/10 text-slate-500 hover:text-red-400 rounded-xl transition border border-transparent hover:border-red-500/20">
+                      <Trash2 size={16} />
+                    </button>
+                  </div>
+                </div>
+              ))}
             </div>
-          )}
+          ) : (
+            <div className="space-y-4">
+              <div className="relative group">
+                <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500 group-focus-within:text-blue-400 transition" size={18} />
+                <input
+                  type="text"
+                  placeholder="Search Hugging Face..."
+                  value={hfSearch}
+                  onChange={(e) => setHfSearch(e.target.value)}
+                  className="w-full bg-slate-900 border border-slate-800 rounded-2xl py-3 pl-12 pr-4 text-sm focus:outline-none focus:border-slate-700 focus:ring-1 focus:ring-blue-500/20 transition shadow-2xl"
+                />
+              </div>
 
-          {hfResults.length === 0 && hfSearch && !hfLoading && (
-            <div className="text-center text-slate-400 py-8">
-              No models found matching "{hfSearch}"
+              <div className="bg-slate-900/50 border border-slate-800 rounded-3xl overflow-hidden shadow-2xl">
+                <table className="w-full text-left text-sm">
+                  <thead className="bg-slate-900 text-slate-400 font-bold text-[10px] uppercase tracking-wider">
+                    <tr>
+                      <th className="px-6 py-4">Model Repository</th>
+                      <th className="px-6 py-4">Popularity</th>
+                      <th className="px-6 py-4 text-right">Action</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-800/50">
+                    {hfResults.map((m) => (
+                      <tr key={m.id} className="hover:bg-slate-800/30 transition-colors group">
+                        <td className="px-6 py-4">
+                          <div className="flex items-center gap-3">
+                            <div className="w-8 h-8 rounded-lg bg-orange-500/10 flex items-center justify-center text-orange-500">
+                                <ChevronRight size={14} />
+                            </div>
+                            <div>
+                                <div className="font-bold text-slate-200 group-hover:text-white transition">{m.name}</div>
+                                <div className="text-[10px] text-slate-500 font-mono">{m.id}</div>
+                            </div>
+                          </div>
+                        </td>
+                        <td className="px-6 py-4 text-xs text-slate-400">
+                            <span className="mr-3">📥 {(m.downloads / 1000).toFixed(0)}K</span>
+                            <span>👍 {(m.likes / 1000).toFixed(1)}K</span>
+                        </td>
+                        <td className="px-6 py-4 text-right">
+                          <button
+                            onClick={() => handleDownloadModel(m.id)}
+                            className="inline-flex items-center gap-2 px-4 py-2 bg-slate-800 hover:bg-blue-600 text-white rounded-xl text-xs font-bold transition group-hover:shadow-lg group-hover:shadow-blue-500/20"
+                          >
+                            <Download size={14} /> Download
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             </div>
           )}
         </div>
-      )}
+      </div>
     </div>
   );
 };

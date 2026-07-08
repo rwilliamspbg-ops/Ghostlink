@@ -11,7 +11,7 @@
     "size_gb": 7.2,
     "model_type": "LLM",
     "quantization": "Q8_0",
-    "status": "Ready"
+    "status": "Loaded"
   },
   {
     "name": "google/gemma-7b-it",
@@ -25,6 +25,13 @@
     "size_gb": 30.0,
     "model_type": "LLM",
     "quantization": "Q4_K_M",
+    "status": "Ready"
+  },
+  {
+    "name": "new-test-model",
+    "size_gb": 8.0,
+    "model_type": "LLM",
+    "quantization": "unknown",
     "status": "Ready"
   }
 ]
