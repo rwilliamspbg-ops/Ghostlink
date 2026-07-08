@@ -1457,7 +1457,7 @@ struct BackendState {
     current_model: String,
     workers: Vec<WorkerRecord>,
     sessions: Vec<SessionRecord>,
-    queue_depth: usize,
+    #[allow(dead_code)] queue_depth: usize,
     chat_requests: u64,
     last_latency_ms: f32,
     started_at: Instant,
@@ -2090,7 +2090,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         };
 
         let response_text = {
-            let mut text = if let Some(ref exec) = result {
+            let mut text = if let Some(ref _exec) = result {
                 format!(
                     "Hello! This is Ghostlink Studio running {}. I have processed your message using our distributed inference engine.",
                     current_model
