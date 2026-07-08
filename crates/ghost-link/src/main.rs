@@ -943,9 +943,15 @@ fn store_cached_autotune_inflight(cache_key: &str, inflight: usize) -> Result<()
         }
     }
     lines.push(format!("{}\t{}", cache_key, inflight));
-    fs::write(&cache_path, lines.join("
-") + "
-").map_err(|err| {
+    fs::write(
+        &cache_path,
+        lines.join(
+            "
+",
+        ) + "
+",
+    )
+    .map_err(|err| {
         anyhow::anyhow!(
             "failed to write autotune cache {}: {}",
             cache_path.display(),
@@ -1066,8 +1072,10 @@ fn print_usage() {
 }
 
 fn print_help() {
-    println!("ghost-link CLI Demo
-");
+    println!(
+        "ghost-link CLI Demo
+"
+    );
     println!("Ghost-Link is an open-source scaffold for a zero-config LAN fabric");
     println!("that turns spare local GPUs into a shared execution surface.");
     println!();
@@ -1286,10 +1294,14 @@ fn print_flow(opts: FlowOptions) -> Result<()> {
         .distribute_layers_with_runtime_profile(&layers, &local_profile)
         .map_err(|e| anyhow::anyhow!(e))?;
 
-    println!("Ghost-Link 30B Multi-Host Runtime Flow
-");
-    println!("====================================
-");
+    println!(
+        "Ghost-Link 30B Multi-Host Runtime Flow
+"
+    );
+    println!(
+        "====================================
+"
+    );
     println!("Local node: {}", local_profile.node_resources.id);
     println!("Remote node: {}", opts.remote_id);
     println!(
@@ -1297,11 +1309,17 @@ fn print_flow(opts: FlowOptions) -> Result<()> {
         local_profile.acceleration_mode.as_str()
     );
     println!("Local workers: {}", local_profile.recommended_workers);
-    println!("Total cluster nodes: {}
-", cluster.node_count());
+    println!(
+        "Total cluster nodes: {}
+",
+        cluster.node_count()
+    );
 
-    println!("Health Summary:
-{}", health_monitor.get_health_summary());
+    println!(
+        "Health Summary:
+{}",
+        health_monitor.get_health_summary()
+    );
 
     if is_env_truthy("GHOSTLINK_DISTRIBUTED_SMOKE") {
         println!("Running Distributed Runtime Validation...");
@@ -1331,8 +1349,10 @@ fn print_flow(opts: FlowOptions) -> Result<()> {
         );
     }
 
-    println!("
-Distribution Summary:");
+    println!(
+        "
+Distribution Summary:"
+    );
     println!("{}", distribution.summary());
 
     println!("{}", pipeline_plan.summary());
@@ -1392,29 +1412,6 @@ Distribution Summary:");
     Ok(())
 }
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 #[derive(Debug)]
 struct BackendState {
     models: Vec<ModelRecord>,
@@ -1429,12 +1426,6 @@ struct BackendState {
     backend_url: String,
     cluster: Arc<ClusterState>,
 }
-
-
-
-
-
-
 
 struct ToolDispatcher;
 
@@ -2152,12 +2143,17 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             };
 
             if !tool_results.is_empty() {
-                text.push_str("
+                text.push_str(
+                    "
 
-I used the following tools to assist with your request:");
+I used the following tools to assist with your request:",
+                );
                 for res in &tool_results {
-                    text.push_str(&format!("
-- **{}**: {}", res.tool, res.result));
+                    text.push_str(&format!(
+                        "
+- **{}**: {}",
+                        res.tool, res.result
+                    ));
                 }
             }
 
@@ -2423,8 +2419,10 @@ Layers: {}",
         let listener = tokio::net::TcpListener::bind(addr)
             .await
             .map_err(|err| anyhow::anyhow!("failed to bind API server on {}: {}", addr, err))?;
-        println!("
-API Server Online. Ready for connections.");
+        println!(
+            "
+API Server Online. Ready for connections."
+        );
 
         axum::serve(listener, app)
             .await
@@ -2506,10 +2504,14 @@ fn print_plan() -> Result<()> {
     let assignments = assign_layers_with_runtime_profile(&nodes, &layers, &profile)
         .map_err(|e| anyhow::anyhow!(e))?;
 
-    println!("Ghost-Link Layer Placement Plan
-");
-    println!("================================
-");
+    println!(
+        "Ghost-Link Layer Placement Plan
+"
+    );
+    println!(
+        "================================
+"
+    );
     println!(
         "Local profile: workers={} acceleration={} XDP={}
 ",
@@ -2529,9 +2531,11 @@ fn print_plan() -> Result<()> {
     }
 
     // Demonstrate adaptive quantization trigger
-    println!("
+    println!(
+        "
 Adaptive Quantization Trigger:
-");
+"
+    );
     for ratio in [0.98_f32, 0.90, 0.75] {
         println!(
             "delivery_ratio={ratio:.2} => {:?}",
@@ -2576,15 +2580,21 @@ fn print_join(node_id: &str) -> Result<()> {
     let discovery_replies = broadcast_and_collect(&frame, &discovery_cfg)
         .map_err(|e| anyhow::anyhow!("UDP discovery broadcast failed: {e}"))?;
 
-    println!("Broadcasting Ghost-Link Join Frame
-");
-    println!("====================================
-");
+    println!(
+        "Broadcasting Ghost-Link Join Frame
+"
+    );
+    println!(
+        "====================================
+"
+    );
     println!("Frame Size: {} bytes", encoded.len());
     println!("EtherType: 0x{:04X}", crate::protocol::GHOSTLINK_ETHERTYPE);
     println!();
-    println!("Node Information:
-");
+    println!(
+        "Node Information:
+"
+    );
     println!("  ID: {}", decoded.node.id);
     println!("  VRAM: {:.1} GB", decoded.node.vram_gb);
     println!("  System Memory: {:.1} GB", decoded.node.system_memory_gb);
@@ -2618,9 +2628,11 @@ fn print_join(node_id: &str) -> Result<()> {
     // Show encoded frame (first 50 bytes for brevity)
     if !encoded.is_empty() {
         let preview = &encoded[..std::cmp::min(50, encoded.len())];
-        println!("
+        println!(
+            "
 Encoded Frame Preview (hex):
-");
+"
+        );
         for byte in preview.iter() {
             print!("{:02x} ", byte);
         }
@@ -2657,10 +2669,14 @@ fn print_discovery_listener(node_id: &str, once: bool) -> Result<()> {
         ..UdpDiscoveryConfig::default()
     };
 
-    println!("Ghost-Link Discovery Listener
-");
-    println!("===========================
-");
+    println!(
+        "Ghost-Link Discovery Listener
+"
+    );
+    println!(
+        "===========================
+"
+    );
     println!("Node ID: {}", profile.node_resources.id);
     println!("Listen Address: {}", config.bind_addr);
     println!("Timeout: {} ms", timeout_ms);
@@ -2674,8 +2690,10 @@ fn print_discovery_listener(node_id: &str, once: bool) -> Result<()> {
     );
 
     if once {
-        println!("Mode: one-shot
-");
+        println!(
+            "Mode: one-shot
+"
+        );
         match respond_once(&profile.node_resources, &config)
             .map_err(|e| anyhow::anyhow!("UDP discovery listener failed: {e}"))?
         {
@@ -2685,8 +2703,10 @@ fn print_discovery_listener(node_id: &str, once: bool) -> Result<()> {
         return Ok(());
     }
 
-    println!("Mode: service loop
-");
+    println!(
+        "Mode: service loop
+"
+    );
     if let Some(limit) = max_replies {
         println!("Max Replies: {}", limit);
         let stats = serve_discovery_with_stats(&profile.node_resources, &config, Some(limit))
@@ -2781,10 +2801,14 @@ fn print_cluster_start(node_count: usize, base_port: u16) -> Result<()> {
     let self_exe = std::env::current_exe()
         .map_err(|err| anyhow::anyhow!("failed to locate current executable: {}", err))?;
 
-    println!("Ghost-Link Local Cluster Start
-");
-    println!("===============================
-");
+    println!(
+        "Ghost-Link Local Cluster Start
+"
+    );
+    println!(
+        "===============================
+"
+    );
     println!("Node count: {}", node_count);
     println!("Base port: {}", base_port);
 
@@ -3663,10 +3687,14 @@ fn print_doctor_report(options: &DoctorOptions) -> Result<()> {
         }
     }
 
-    println!("Ghost-Link Doctor Report
-");
-    println!("========================
-");
+    println!(
+        "Ghost-Link Doctor Report
+"
+    );
+    println!(
+        "========================
+"
+    );
 
     for area in ["environment", "readiness", "accessibility", "accuracy"] {
         println!("{}:", area);
@@ -3707,14 +3735,18 @@ fn print_doctor_report(options: &DoctorOptions) -> Result<()> {
         println!("Doctor report JSON written to: {}", path.display());
     }
 
-    println!("
-Review areas for multi-device accessibility:");
+    println!(
+        "
+Review areas for multi-device accessibility:"
+    );
     println!("- GUI path: desktop display or headless xvfb-run fallback");
     println!("- Deployment path: Docker local demo, systemd service template, staged LAN guide");
     println!("- Discovery path: cluster-start for local multi-node behavior");
 
-    println!("
-Review areas for accuracy:");
+    println!(
+        "
+Review areas for accuracy:"
+    );
     println!("- Planner layer coverage integrity (no gaps/overlap)");
     println!("- GUI API contract parity checks");
     println!("- Runtime SLO/canary/perf-drift validators and baseline presence");
@@ -4050,10 +4082,14 @@ fn print_gui_diagnostics(strict: bool) -> Result<()> {
         ));
     }
 
-    println!("Ghost-Link GUI Diagnostics
-");
-    println!("==========================
-");
+    println!(
+        "Ghost-Link GUI Diagnostics
+"
+    );
+    println!(
+        "==========================
+"
+    );
     println!("GUI entry: {}", gui_entry.display());
     println!("Requirements: {}", requirements.display());
     println!("Python executable: {}", python);
@@ -4064,11 +4100,15 @@ fn print_gui_diagnostics(strict: bool) -> Result<()> {
     );
 
     if categories.is_empty() {
-        println!("
-Diagnostics: PASS");
+        println!(
+            "
+Diagnostics: PASS"
+        );
     } else {
-        println!("
-Diagnostics: FAIL");
+        println!(
+            "
+Diagnostics: FAIL"
+        );
         for (kind, message) in &categories {
             println!("- [{}] {}", kind, message);
         }
@@ -4154,10 +4194,14 @@ fn print_gui_readiness(strict: bool) -> Result<()> {
 
     let mut issues: Vec<String> = Vec::new();
 
-    println!("Ghost-Link GUI Readiness Report
-");
-    println!("===============================
-");
+    println!(
+        "Ghost-Link GUI Readiness Report
+"
+    );
+    println!(
+        "===============================
+"
+    );
     println!("GUI entry: {}", gui_entry.display());
     println!("Requirements: {}", requirements.display());
     println!("Python executable: {}", python);
@@ -4252,20 +4296,26 @@ fn print_gui_readiness(strict: bool) -> Result<()> {
     );
 
     if issues.is_empty() {
-        println!("
-Readiness: PASS");
+        println!(
+            "
+Readiness: PASS"
+        );
         return Ok(());
     }
 
-    println!("
-Readiness: FAIL");
+    println!(
+        "
+Readiness: FAIL"
+    );
     println!("Issues:");
     for issue in &issues {
         println!("- {}", issue);
     }
 
-    println!("
-Suggested fixes:");
+    println!(
+        "
+Suggested fixes:"
+    );
     println!(
         "- Install Python deps: {} -m pip install -r {}",
         python,
@@ -4374,7 +4424,11 @@ mod tests {
     use std::net::TcpListener;
 
     fn args(items: &[&str]) -> impl Iterator<Item = String> {
-        items.iter().map(|s| s.to_string()).collect::<Vec<_>>().into_iter()
+        items
+            .iter()
+            .map(|s| s.to_string())
+            .collect::<Vec<_>>()
+            .into_iter()
     }
 
     #[test]
