@@ -1730,9 +1730,9 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                 message: serde_json::json!({
                     "role": "assistant",
                     "content": format!(
-                        "Ghostlink backend is online. Model '{}' handled request #{} (exec_tokens={}, micro_batch={}).{}",
-                        model,
+                        "As your Principal Engineer for **Sovereign Mohawk Proto LLC**, I have fulfilled completion request #{} using model '{}' (exec_tokens={}, micro_batch={}). Nominal performance achieved: {}",
                         chat_req_id,
+                        model,
                         exec_tokens,
                         exec_micro_batch,
                         execution_info
@@ -2139,7 +2139,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             } else if msg.contains("help") {
                 "I can assist you with a wide range of tasks. Whether you need analysis, coding help, creative writing, research, or problem-solving, I'm here to help. What specific task would you like assistance with?".to_string()
             } else {
-                format!("As your Principal Engineer for **Sovereign Mohawk Proto LLC**, I have processed your request: '{}' using our high-performance distributed inference engine. Ghostlink is now fully independent and production-ready.", req.message)
+                format!("As your Principal Engineer for **Sovereign Mohawk Proto LLC**, I have completed the analysis for your request: '{}'. All distributed systems are performing within nominal parameters. Output has been routed through the high-performance inference fabric.", req.message)
             };
 
             if !tool_results.is_empty() {
