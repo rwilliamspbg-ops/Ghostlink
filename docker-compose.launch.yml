@@ -28,16 +28,14 @@ services:
       dockerfile: Dockerfile
     container_name: ghostlink-gui
     ports:
-      - "5173:5173"
+      - "5173:3000"
     environment:
-      VITE_API_URL: http://ghostlink-api:8003
-      NODE_ENV: development
+      GHOSTLINK_API_BASE: http://127.0.0.1:8003
     networks:
       - ghostlink-network
     depends_on:
       ghostlink-api:
         condition: service_healthy
-    command: npm run dev -- --host 0.0.0.0
 
 networks:
   ghostlink-network:
