@@ -1997,14 +1997,40 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         Json(serde_json::json!({ "status": "ok", "enabled": true }))
     }
 
-    async fn handle_gui_ollama_health() -> Json<serde_json::Value> {
+    async fn handle_gui_ollama_health(
+        State(state): State<Arc<Mutex<BackendState>>>,
+    ) -> Json<serde_json::Value> {
+        let (ollama_client, ollama_available) = {
+            let backend = lock_state(&state);
+            (
+                backend.ollama_client.clone(),
+                Arc::clone(&backend.ollama_available),
+            )
+        };
+
+        let reachable = ollama_client.health().await.unwrap_or(false);
+        {
+            let mut available_flag = ollama_available.lock().await;
+            *available_flag = reachable;
+        }
+
+        let model_count = if reachable {
+            ollama_client
+                .list_models()
+                .await
+                .map(|models| models.len())
+                .unwrap_or(0)
+        } else {
+            0
+        };
+
         Json(serde_json::json!({
-            "status": "ok",
-            "reachable": true,
+            "status": if reachable { "ok" } else { "degraded" },
+            "reachable": reachable,
             "ollama_url": "native",
-            "model_count": 4,
-            "detail": "Ghostlink Native Backend",
-            "message": "Ghostlink Native Backend"
+            "model_count": model_count,
+            "detail": if reachable { "Ollama reachable" } else { "Ollama not reachable" },
+            "message": if reachable { "Ollama backend connected" } else { "Ollama backend unavailable" }
         }))
     }
 
@@ -2045,36 +2071,31 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         let exec_tokens = chat_exec_token_budget(requested_exec_tokens);
         let exec_micro_batch = chat_exec_micro_batch();
 
-        // Capture availability once to avoid repeated async lock acquisition.
-        let ollama_is_available = *ollama_available.lock().await;
-
-        // Try real Ollama inference first
-        let response_text = if ollama_is_available {
-            match ollama_client
-                .generate(
-                    &current_model,
-                    &req.message,
-                    req.temperature.unwrap_or(0.7),
-                    exec_tokens,
-                )
-                .await
-            {
-                Ok(text) => text.trim().to_string(),
-                Err(_) => {
-                    // Fallback to mock if Ollama fails
-                    format!(
-                        "Failed to reach Ollama. Message was: '{}'. Fallback mode.",
-                        req.message
-                    )
-                }
-            }
-        } else {
-            // Mock fallback if Ollama not available
-            format!(
-                "Ollama unavailable. Simulated response to: '{}'",
-                req.message
+        // Always attempt real inference first. Keep the availability flag as
+        // an observed health signal instead of a hard gate.
+        let (response_text, ollama_is_available) = match ollama_client
+            .generate(
+                &current_model,
+                &req.message,
+                req.temperature.unwrap_or(0.7),
+                exec_tokens,
             )
+            .await
+        {
+            Ok(text) => (text.trim().to_string(), true),
+            Err(_) => {
+                let fallback = format!(
+                    "Ollama unavailable. Simulated response to: '{}'",
+                    req.message
+                );
+                (fallback, false)
+            }
         };
+
+        {
+            let mut available_flag = ollama_available.lock().await;
+            *available_flag = ollama_is_available;
+        }
 
         let nodes = cluster.nodes();
         let total_vram = cluster.total_vram_gb();
