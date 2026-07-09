@@ -3,13 +3,14 @@
 
 use serde::{Deserialize, Serialize};
 
+#[allow(clippy::upper_case_acronyms)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Runtime {
-    CUDA,      // NVIDIA GPUs
-    Metal,     // Apple Silicon / Apple GPUs
-    ROCm,      // AMD GPUs
-    NPU,       // Neural Processing Units (Qualcomm, MediaTek)
-    CPU,       // CPU fallback
+    CUDA,  // NVIDIA GPUs
+    Metal, // Apple Silicon / Apple GPUs
+    ROCm,  // AMD GPUs
+    NPU,   // Neural Processing Units (Qualcomm, MediaTek)
+    CPU,   // CPU fallback
 }
 
 impl std::fmt::Display for Runtime {
@@ -54,10 +55,10 @@ pub enum ModelSpeed {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum QualityTier {
-    Lightweight,  // 3B-7B models, fast inference
-    Standard,     // 7B-13B models, good quality/speed
-    Premium,      // 13B-70B models, high quality
-    Specialized,  // Domain-specific models
+    Lightweight, // 3B-7B models, fast inference
+    Standard,    // 7B-13B models, good quality/speed
+    Premium,     // 13B-70B models, high quality
+    Specialized, // Domain-specific models
 }
 
 /// Runtime detection system
@@ -127,9 +128,7 @@ impl RuntimeDetector {
     fn detect_rocm() -> Option<RuntimeInfo> {
         #[cfg(feature = "rocm")]
         {
-            if std::path::Path::new("/opt/rocm").exists()
-                || std::env::var("ROCM_HOME").is_ok()
-            {
+            if std::path::Path::new("/opt/rocm").exists() || std::env::var("ROCM_HOME").is_ok() {
                 return Some(RuntimeInfo {
                     detected_runtime: Runtime::ROCm,
                     is_available: true,
@@ -148,19 +147,21 @@ impl RuntimeDetector {
         let has_npu_env = std::env::var("NPU_DEVICE").is_ok()
             || std::env::var("QUALCOMM_NPU").is_ok()
             || std::env::var("MEDIATEK_NPU").is_ok();
-        
-        let npu_indicators = vec![
-            "/sys/devices/platform/soc/*/npu",           // Qualcomm NPUs
-            "/sys/devices/virtual/npu",                  // Generic NPU
+
+        let npu_indicators = [
+            "/sys/devices/platform/soc/*/npu", // Qualcomm NPUs
+            "/sys/devices/virtual/npu",        // Generic NPU
         ];
 
-        if has_npu_env || npu_indicators.iter().any(|indicator| {
-            if let Some(path) = indicator.strip_prefix("/") {
-                std::path::Path::new(path).exists()
-            } else {
-                false
-            }
-        }) {
+        if has_npu_env
+            || npu_indicators.iter().any(|indicator| {
+                if let Some(path) = indicator.strip_prefix("/") {
+                    std::path::Path::new(path).exists()
+                } else {
+                    false
+                }
+            })
+        {
             return Some(RuntimeInfo {
                 detected_runtime: Runtime::NPU,
                 is_available: true,
@@ -179,7 +180,11 @@ impl RuntimeDetector {
             is_available: true,
             compute_capability: None,
             memory_gb: Self::detect_system_memory(),
-            device_count: Some(std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1)),
+            device_count: Some(
+                std::thread::available_parallelism()
+                    .map(|n| n.get())
+                    .unwrap_or(1),
+            ),
         })
     }
 
@@ -188,13 +193,12 @@ impl RuntimeDetector {
         std::process::Command::new("sysctl")
             .arg("hw.optional.arm64")
             .output()
-            .map(|output| {
-                String::from_utf8_lossy(&output.stdout).contains("1")
-            })
+            .map(|output| String::from_utf8_lossy(&output.stdout).contains("1"))
             .unwrap_or(false)
     }
 
     #[cfg(not(target_os = "macos"))]
+    #[allow(dead_code)]
     fn is_apple_silicon() -> bool {
         false
     }
@@ -216,10 +220,7 @@ impl RuntimeDetector {
         // Get total system RAM in GB
         #[cfg(target_os = "linux")]
         {
-            if let Ok(output) = std::process::Command::new("free")
-                .arg("-g")
-                .output()
-            {
+            if let Ok(output) = std::process::Command::new("free").arg("-g").output() {
                 if let Ok(text) = String::from_utf8(output.stdout) {
                     if let Some(line) = text.lines().next() {
                         if let Some(mem_str) = line.split_whitespace().nth(1) {
@@ -339,7 +340,6 @@ impl ModelRegistry {
                     "Instruction following".to_string(),
                 ],
             },
-
             // STANDARD MODELS (7B-13B) - Good quality/speed balance
             ModelInfo {
                 name: "llama2".to_string(),
@@ -388,7 +388,6 @@ impl ModelRegistry {
                     "Long context".to_string(),
                 ],
             },
-
             // PREMIUM MODELS (13B-70B) - High quality, requires GPU
             ModelInfo {
                 name: "mistral-medium".to_string(),
@@ -418,7 +417,6 @@ impl ModelRegistry {
                     "Research applications".to_string(),
                 ],
             },
-
             // SPECIALIZED MODELS
             ModelInfo {
                 name: "codeup".to_string(),
@@ -466,19 +464,16 @@ impl ModelRegistry {
         // Prefer standard quality tier, then premium, then lightweight
         models
             .iter()
-            .filter(|m| m.quality_tier == QualityTier::Standard)
-            .next()
+            .find(|m| m.quality_tier == QualityTier::Standard)
             .or_else(|| {
                 models
                     .iter()
-                    .filter(|m| m.quality_tier == QualityTier::Premium)
-                    .next()
+                    .find(|m| m.quality_tier == QualityTier::Premium)
             })
             .or_else(|| {
                 models
                     .iter()
-                    .filter(|m| m.quality_tier == QualityTier::Lightweight)
-                    .next()
+                    .find(|m| m.quality_tier == QualityTier::Lightweight)
             })
             .cloned()
     }

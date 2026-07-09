@@ -24,18 +24,25 @@ impl OllamaClient {
     }
 
     /// Check if Ollama is reachable
+    #[allow(dead_code)]
     pub async fn health(&self) -> Result<bool, Box<dyn Error>> {
-        match self.client.get(&format!("{}/api/tags", self.base_url)).send().await {
+        match self
+            .client
+            .get(format!("{}/api/tags", self.base_url))
+            .send()
+            .await
+        {
             Ok(resp) => Ok(resp.status().is_success()),
             Err(_) => Ok(false),
         }
     }
 
     /// List available models in Ollama
+    #[allow(dead_code)]
     pub async fn list_models(&self) -> Result<Vec<String>, Box<dyn Error>> {
         let resp = self
             .client
-            .get(&format!("{}/api/tags", self.base_url))
+            .get(format!("{}/api/tags", self.base_url))
             .send()
             .await?;
 
@@ -62,13 +69,13 @@ impl OllamaClient {
             "model": model,
             "prompt": prompt,
             "stream": false,
-            "temperature": temperature.max(0.0).min(2.0),
+            "temperature": temperature.clamp(0.0, 2.0),
             "num_predict": max_tokens,
         });
 
         let resp = self
             .client
-            .post(&format!("{}/api/generate", self.base_url))
+            .post(format!("{}/api/generate", self.base_url))
             .json(&payload)
             .send()
             .await?;
@@ -78,6 +85,7 @@ impl OllamaClient {
     }
 
     /// Pull a model from Ollama registry
+    #[allow(dead_code)]
     pub async fn pull_model(&self, model_name: &str) -> Result<String, Box<dyn Error>> {
         let payload = json!({
             "name": model_name,
@@ -86,7 +94,7 @@ impl OllamaClient {
 
         let resp = self
             .client
-            .post(&format!("{}/api/pull", self.base_url))
+            .post(format!("{}/api/pull", self.base_url))
             .json(&payload)
             .send()
             .await?;

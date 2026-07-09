@@ -14,6 +14,11 @@ categories = ["asynchronous", "network-programming"]
 # This project requires Rust 1.75.0 or higher
 msrv = "1.75.0"
 
+[features]
+default = []
+cuda = []
+rocm = []
+
 [dependencies]
 ghostlink-core = { path = "../ghostlink-core", version = "0.1.0-alpha.0" }
 
