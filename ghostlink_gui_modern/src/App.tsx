@@ -32,27 +32,59 @@ const tabs = [
 ];
 
 function App() {
-  const { apiBase, currentModel, uptime, activeTab, setActiveTab, setModels, setUptime } = useAppStore();
-  const [api] = useState(() => new GhostlinkAPI(apiBase));
+  const { currentModel, uptime, activeTab, setActiveTab, setModels, setUptime, setApiBase } = useAppStore();
+  const [api, setApi] = useState<GhostlinkAPI | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
 
-  // Fetch models on app load
+  // CRITICAL FIX: Initialize API base on app load
   useEffect(() => {
+    const detectedApiBase = import.meta.env.VITE_API_URL || 'http://localhost:8003';
+    setApiBase(detectedApiBase);
+    setApi(new GhostlinkAPI(detectedApiBase));
+  }, [setApiBase]);
+
+  // Fetch models on app load and setup periodic refresh
+  useEffect(() => {
+    if (!api) return;
+
     const fetchModels = async () => {
       const result = await api.getModels();
       if (!result.error) {
         setModels(result.models);
       }
     };
+    
     fetchModels();
+    
+    // Poll for health check every 30s
+    const healthInterval = setInterval(() => {
+      api.getHealth().catch(() => {
+        // Silent fail - we're just checking connectivity
+      });
+    }, 30000);
 
-    const interval = setInterval(() => {
+    const uptimeInterval = setInterval(() => {
         setUptime(uptime + 1);
     }, 1000);
-    return () => clearInterval(interval);
+    
+    return () => {
+      clearInterval(healthInterval);
+      clearInterval(uptimeInterval);
+    };
   }, [api, setModels, setUptime, uptime]);
 
   const renderTab = () => {
+    if (!api) {
+      return (
+        <div className="flex items-center justify-center h-full text-slate-400">
+          <div className="text-center">
+            <div className="mb-4 text-sm">Initializing backend connection...</div>
+            <div className="w-8 h-8 border-2 border-slate-700 border-t-blue-600 rounded-full animate-spin mx-auto"></div>
+          </div>
+        </div>
+      );
+    }
+
     switch (activeTab) {
       case 0:
         return <ChatTab api={api} />;

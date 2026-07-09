@@ -15,9 +15,24 @@ export const WorkersTab: React.FC<{ api: any }> = ({ api }) => {
     setLoading(false);
   };
 
+  // CRITICAL FIX #2: Auto-refresh polling every 5 seconds
   useEffect(() => {
     refreshWorkers();
-  }, [api]);
+    
+    const interval = setInterval(() => {
+      refreshWorkers();
+    }, 5000);
+
+    return () => clearInterval(interval);
+  }, [api, setWorkers]);
+
+  // CRITICAL FIX #3: Add disconnect handler
+  const handleDisconnectWorker = async (workerId: string) => {
+    const result = await api.disconnectWorker(workerId);
+    if (result.success) {
+      refreshWorkers();
+    }
+  };
 
   return (
     <div className="flex flex-col h-full bg-slate-950">
@@ -95,7 +110,11 @@ export const WorkersTab: React.FC<{ api: any }> = ({ api }) => {
                                 <p className="text-sm font-bold text-slate-200 truncate">{worker.model}</p>
                             </div>
                             <div className="flex items-end justify-end">
-                                <button className="p-2 text-slate-500 hover:text-red-400 transition">
+                                <button 
+                                  onClick={() => handleDisconnectWorker(worker.id)}
+                                  className="p-2 text-slate-500 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition"
+                                  title="Disconnect worker"
+                                >
                                     <Power size={20} />
                                 </button>
                             </div>

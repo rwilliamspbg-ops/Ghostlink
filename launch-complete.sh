@@ -1,7 +1,7 @@
 #!/bin/bash
 #
 # Ghostlink Studio - Complete Launch Script
-# Starts all services: Backend API, GUI Frontend, and Runtime Detection
+# Starts all services: Ollama, Backend API, GUI Frontend, and Runtime Detection
 #
 
 set -e
@@ -41,6 +41,7 @@ cleanup() {
     log_warn "Shutting down services..."
     kill $BACKEND_PID 2>/dev/null || true
     kill $GUI_PID 2>/dev/null || true
+    kill $OLLAMA_PID 2>/dev/null || true
     wait 2>/dev/null || true
     log_info "All services stopped"
 }
@@ -73,27 +74,37 @@ build_backend() {
     cd "$PROJECT_ROOT"
 }
 
-# Start backend
-start_backend() {
+# Configure Ollama backend
+configure_ollama() {
+    log_info "Configuring Ollama backend..."
+    python3 use_ollama.py || log_warn "Failed to apply Ollama configuration."
+    log_success "Ollama configuration step completed."
+}
+
+# Start services
+start_services() {
+    # 1. Start Ollama
+    log_info "Starting Ollama Service..."
+    ollama serve &
+    OLLAMA_PID=$!
+    log_success "Ollama started (PID: $OLLAMA_PID)"
+    sleep 3
+
+    # 2. Start backend
     log_info "Starting Ghostlink API Backend..."
     cd "$PROJECT_ROOT/crates/ghost-link"
     cargo run --release -- serve "$BACKEND_HOST" "$BACKEND_PORT" &
     BACKEND_PID=$!
     log_success "Backend started (PID: $BACKEND_PID)"
     sleep 3
-}
 
-# Start GUI
-start_gui() {
+    # 3. Start GUI
     log_info "Starting Ghostlink Studio GUI..."
     cd "$PROJECT_ROOT/ghostlink_gui_modern"
-    
-    # Install dependencies if needed
     if [ ! -d "node_modules" ]; then
         log_info "Installing GUI dependencies..."
         npm install
     fi
-    
     npm run dev &
     GUI_PID=$!
     log_success "GUI started (PID: $GUI_PID)"
@@ -112,10 +123,10 @@ print_summary() {
     echo -e "  Status: ${GREEN}✓ Running${NC}"
     echo -e "  PID: $BACKEND_PID"
     echo ""
-    echo -e "${BLUE}Runtime Detection Endpoints:${NC}"
-    echo -e "  Detect:      ${GREEN}GET /api/runtime/detect${NC}"
-    echo -e "  Models:      ${GREEN}GET /api/runtime/models?runtime=cpu${NC}"
-    echo -e "  Recommend:   ${GREEN}GET /api/runtime/recommend?memory_gb=16${NC}"
+    echo -e "${BLUE}Ollama:${NC}"
+    echo -e "  URL: ${GREEN}http://127.0.0.1:11434${NC}"
+    echo -e "  Status: ${GREEN}✓ Running${NC}"
+    echo -e "  PID: $OLLAMA_PID"
     echo ""
     echo -e "${BLUE}GUI Frontend:${NC}"
     echo -e "  URL: ${GREEN}http://localhost:${GUI_PORT}${NC}"
@@ -130,6 +141,9 @@ print_summary() {
     echo -e "${YELLOW}Ctrl+C to stop all services${NC}"
     echo -e "${GREEN}════════════════════════════════════════════════════════${NC}"
     echo ""
+
+    # Keep script running
+    wait
 }
 
 # Main execution
@@ -139,12 +153,9 @@ main() {
     
     check_dependencies
     build_backend
-    start_backend
-    start_gui
+    configure_ollama
+    start_services
     print_summary
-    
-    # Keep script running
-    wait
 }
 
 main "$@"

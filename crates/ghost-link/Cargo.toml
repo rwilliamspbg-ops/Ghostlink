@@ -3,12 +3,16 @@ name = "ghost-link"
 version = "0.1.0-alpha.0"
 edition = "2021"
 authors = ["Ryan K Williams"]
-description = "High-performance, low-level network fabric utilizing zero-copy SPSC buffers and AF_XDP kernel bypass."
+description = "High-performance, low-level network fabric utilizing optimized in-memory transport and zero-copy SPSC buffers for distributed AI model inference."
 repository = "https://github.com/rwilliamspbg-ops/Ghostlink"
 readme = "../../README.md"
 license = "MIT"
-keywords = ["networking", "xdp", "zero-copy", "async"]
+keywords = ["networking", "spsc", "zero-copy", "async", "distributed-inference"]
 categories = ["asynchronous", "network-programming"]
+
+# Minimum Supported Rust Version (MSRV)
+# This project requires Rust 1.75.0 or higher
+msrv = "1.75.0"
 
 [dependencies]
 ghostlink-core = { path = "../ghostlink-core", version = "0.1.0-alpha.0" }
@@ -19,6 +23,7 @@ anyhow = "1"
 # Logging
 tracing = "0.1"
 tracing-subscriber = "0.3"
+
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.8"
@@ -31,3 +36,6 @@ tower-http = { version = "0.5", features = ["cors"] }
 rand = "0.8"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 tokio-util = "0.7"
+
+# UUID for chat completions
+uuid = { version = "1", features = ["v4"] }

@@ -87,24 +87,26 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
   const usableModels = models.filter((m) => m.status === 'Loaded' || m.status === 'Ready');
 
   const handleSend = async () => {
-    if (!input.trim() || loading) return;
+    // CRITICAL FIX #1: Capture input BEFORE clearing
+    const messageText = input.trim();
+    if (!messageText || loading) return;
 
     const userMessage: Message = {
       role: 'user',
-      content: input,
+      content: messageText,
       id: Date.now().toString(),
       timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
     };
 
     setMessages((prev) => [...prev, userMessage]);
-    setInput('');
+    setInput('');  // Clear AFTER capturing
     setLoading(true);
     setError(null);
 
     const enabledTools = tools.filter((t) => t.enabled).map((t) => t.name);
 
     const result = await api.sendMessage({
-      message: input,
+      message: messageText,  // Use captured message
       temperature,
       top_p: 0.9,
       top_k: 40,
