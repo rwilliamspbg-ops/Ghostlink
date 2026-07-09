@@ -20,6 +20,7 @@ This index is the source of truth for active documentation in Ghost-Link.
 - [PRODUCTION_ISSUE_SEEDS.md](PRODUCTION_ISSUE_SEEDS.md): copy/paste issue drafts for production backlog seeding.
 - [GHOSTLINK_STUDIO_PRODUCT_VISION.md](GHOSTLINK_STUDIO_PRODUCT_VISION.md): Ghostlink Studio UX and product scope.
 - [GHOSTLINK_STUDIO_EXECUTION_PLAN.md](GHOSTLINK_STUDIO_EXECUTION_PLAN.md): sprint-by-sprint implementation roadmap.
+- [TODO_STUB_RESOLUTION_PLAN.md](TODO_STUB_RESOLUTION_PLAN.md): end-to-end plan and completion criteria for removing unresolved implementation stubs.
 
 ## Baselines and Perf Policy
 

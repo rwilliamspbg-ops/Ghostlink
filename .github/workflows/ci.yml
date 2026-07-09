@@ -11,10 +11,13 @@ jobs:
     runs-on: ubuntu-latest
     
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Verify no unresolved stub TODO markers
+        run: ./scripts/verify_no_stub_todos.sh
       
       - name: Check code
         run: cargo check --workspace

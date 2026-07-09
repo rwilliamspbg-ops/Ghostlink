@@ -1432,7 +1432,7 @@ struct BackendState {
 struct ToolDispatcher;
 
 impl ToolDispatcher {
-    async fn dispatch(tool_name: &str, _args: &serde_json::Value) -> ToolResult {
+    fn dispatch(tool_name: &str, _args: &serde_json::Value) -> ToolResult {
         match tool_name {
             "calculator" => ToolResult {
                 tool: tool_name.to_string(),
@@ -2015,13 +2015,16 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         let started = Instant::now();
 
         let mut tool_results = Vec::new();
-        if let Some(mcp) = req.mcp.clone() {
+        // Performance optimization: avoid cloning potentially large MCP payloads
+        // and dispatch tools without async-await state machine overhead.
+        // Expected impact: lower per-request CPU and latency for tool-heavy chat calls.
+        let empty_tool_args = serde_json::Value::Null;
+        if let Some(mcp) = req.mcp.as_ref() {
             if let Some(tools) = mcp.get("tools").and_then(|t| t.as_array()) {
+                tool_results = Vec::with_capacity(tools.len());
                 for tool_val in tools {
                     if let Some(tool_name) = tool_val.as_str() {
-                        tool_results.push(
-                            ToolDispatcher::dispatch(tool_name, &serde_json::json!({})).await,
-                        );
+                        tool_results.push(ToolDispatcher::dispatch(tool_name, &empty_tool_args));
                     }
                 }
             }
@@ -2042,8 +2045,11 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         let exec_tokens = chat_exec_token_budget(requested_exec_tokens);
         let exec_micro_batch = chat_exec_micro_batch();
 
+        // Capture availability once to avoid repeated async lock acquisition.
+        let ollama_is_available = *ollama_available.lock().await;
+
         // Try real Ollama inference first
-        let response_text = if *ollama_available.lock().await {
+        let response_text = if ollama_is_available {
             match ollama_client
                 .generate(
                     &current_model,
@@ -2160,16 +2166,16 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             }
         };
 
-        let final_response = if !tool_results.is_empty() {
-            let mut text = response_text.clone();
-            text.push_str("\n\nTools used:");
+        let mut final_response = response_text;
+        if !tool_results.is_empty() {
+            final_response.push_str("\n\nTools used:");
             for res in &tool_results {
-                text.push_str(&format!("\n- **{}**: {}", res.tool, res.result));
+                final_response.push_str("\n- **");
+                final_response.push_str(&res.tool);
+                final_response.push_str("**: ");
+                final_response.push_str(&res.result);
             }
-            text
-        } else {
-            response_text
-        };
+        }
 
         let mut response = serde_json::json!({
             "response": final_response,
@@ -2180,7 +2186,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             "tokens_estimated": token_estimate,
             "exec_tokens": exec_tokens,
             "exec_micro_batch": exec_micro_batch,
-            "real_inference": *ollama_available.lock().await,
+            "real_inference": ollama_is_available,
             "metrics": result.map(|r| serde_json::json!({
                 "throughput": r.throughput_tokens_per_sec,
                 "p95_ms": r.p95_token_latency_ms
