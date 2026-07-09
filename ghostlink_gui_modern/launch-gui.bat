@@ -1,8 +1,8 @@
 @echo off
 setlocal enabledelayedexpansion
 
-:: Ghostlink Studio - Auto-Launch with Modern GUI (Windows)
-:: This script starts the backend and automatically opens the modern web GUI
+:: Ghostlink Studio - GUI launcher (Windows)
+:: Starts the frontend only; backend must already be running.
 
 title Ghostlink Studio
 
@@ -29,7 +29,7 @@ cd /d "%SCRIPT_DIR%"
 set BACKEND_HOST=127.0.0.1
 set BACKEND_PORT=8003
 set BACKEND_URL=http://%BACKEND_HOST%:%BACKEND_PORT%
-set GUI_PORT=3000
+if "%GUI_PORT%"=="" set GUI_PORT=5173
 set GUI_URL=http://localhost:%GUI_PORT%
 
 :: Parse command line arguments
@@ -40,16 +40,7 @@ echo [INFO] Backend URL: %BACKEND_URL%
 echo [INFO] GUI URL: %GUI_URL%
 echo.
 
-:: Check if GUI directory exists
-if not exist "ghostlink_gui_modern" (
-    echo ERROR: ghostlink_gui_modern directory not found
-    echo Please ensure the GUI is set up correctly
-    pause
-    exit /b 1
-)
-
 echo [INFO] Checking GUI dependencies...
-cd ghostlink_gui_modern
 if not exist "node_modules" (
     echo [INFO] Installing GUI dependencies...
     call npm install --legacy-peer-deps
@@ -70,8 +61,7 @@ echo   Press Ctrl+C to stop
 echo ================================================================================
 echo.
 
-:: Start the development server
 start http://localhost:%GUI_PORT%
-call npm run dev
+call npm run dev -- --host 127.0.0.1 --port %GUI_PORT%
 
 pause

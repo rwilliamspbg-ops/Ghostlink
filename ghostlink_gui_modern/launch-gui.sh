@@ -1,7 +1,7 @@
 #!/bin/bash
 
-# Ghostlink Studio - Auto-Launch with Modern GUI (Linux/macOS)
-# This script starts the backend and automatically opens the modern web GUI
+# Ghostlink Studio - GUI launcher (Linux/macOS)
+# Starts the frontend only; backend must already be running.
 
 set -e
 
@@ -41,22 +41,13 @@ cd "$SCRIPT_DIR"
 BACKEND_HOST="${1:-127.0.0.1}"
 BACKEND_PORT="${2:-8003}"
 BACKEND_URL="http://$BACKEND_HOST:$BACKEND_PORT"
-GUI_PORT=3000
+GUI_PORT="${GUI_PORT:-5173}"
 GUI_URL="http://localhost:$GUI_PORT"
 
 echo -e "${BLUE}[INFO]${NC} Starting Ghostlink Studio components..."
 echo -e "${BLUE}[INFO]${NC} Backend URL: $BACKEND_URL"
 echo -e "${BLUE}[INFO]${NC} GUI URL: $GUI_URL"
 echo ""
-
-# Check if GUI directory exists
-if [ ! -d "ghostlink_gui_modern" ]; then
-    echo -e "${RED}ERROR: ghostlink_gui_modern directory not found${NC}"
-    exit 1
-fi
-
-# Navigate to GUI directory
-cd ghostlink_gui_modern
 
 # Check and install dependencies
 if [ ! -d "node_modules" ]; then
@@ -84,4 +75,4 @@ elif command -v open &> /dev/null; then
 fi
 
 # Start the dev server
-npm run dev
+npm run dev -- --host 127.0.0.1 --port "$GUI_PORT"

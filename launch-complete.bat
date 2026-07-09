@@ -1,103 +1,101 @@
 @echo off
-REM Ghostlink - Complete Auto-Launch Script (Windows)
-REM Starts backend and modern GUI automatically
+REM
+REM Ghostlink Studio - Complete Launch Script (Windows)
+REM Starts all services: Ollama, Backend API, GUI Frontend, and Runtime Detection
+REM
 
 setlocal enabledelayedexpansion
 
-title Ghostlink Studio - Auto-Launch (Backend + GUI)
+set "BACKEND_HOST=127.0.0.1"
+set "BACKEND_PORT=8003"
+set "GUI_PORT=5173"
+set "PROJECT_ROOT=%~dp0"
 
-cls
 echo.
-echo ================================================================================
-echo   GHOSTLINK STUDIO - Auto-Launch
-echo   Backend + Modern GUI
-echo ================================================================================
-echo.
+echo ════════════════════════════════════════════════════
+echo   Ghostlink Studio - Complete Launch
+echo ════════════════════════════════════════════════════
 
-REM Check Node.js
-where node >nul 2>nul
-if %errorlevel% neq 0 (
-    echo ERROR: Node.js not found
-    echo Please install Node.js 18+ from https://nodejs.org/
-    pause
-    goto :eof
+REM Check for Cargo
+cargo --version >nul 2>&1
+if errorlevel 1 (
+    echo [ERROR] Rust/Cargo not found. Install from https://rustup.rs/
+    exit /b 1
+)
+echo [✓] Cargo verified
+
+REM Check for Node
+node --version >nul 2>&1
+if errorlevel 1 (
+    echo [ERROR] Node.js not found. Install from https://nodejs.org/
+    exit /b 1
+)
+echo [✓] Node.js verified
+
+echo.
+echo Building backend...
+cd "%PROJECT_ROOT%crates\ghost-link"
+call cargo build --release
+if errorlevel 1 (
+    echo [ERROR] Backend build failed
+    exit /b 1
+)
+echo [✓] Backend built
+cd "%PROJECT_ROOT%"
+
+echo.
+echo Configuring Ollama backend...
+python use_ollama.py
+if errorlevel 1 (
+    echo [WARN] Failed to apply Ollama configuration. Continuing with default backend.
+) else (
+    echo [✓] Ollama configuration applied.
 )
 
-set SCRIPT_DIR=%~dp0
-cd /d "%SCRIPT_DIR%"
-
-echo [INFO] Script directory: %SCRIPT_DIR%
-
-REM Check if backend exists, if not build it
-if not exist "ghostlink.exe" (
-    echo [INFO] Backend executable not found. Building...
-    cargo build --release -p ghost-link
-    copy target\release\ghost-link.exe .\ghostlink.exe
-)
-echo [✓] Backend executable ready
-
-REM Check GUI
-if not exist "ghostlink_gui_modern" (
-    echo ERROR: ghostlink_gui_modern directory not found
-    pause
-    goto :eof
-)
-
-cd /d "%SCRIPT_DIR%ghostlink_gui_modern"
-
-REM Install dependencies if needed
-if not exist "node_modules" (
-    echo [INFO] Installing GUI dependencies...
-    call npm install --legacy-peer-deps >nul 2>&1
-)
-
 echo.
-echo ================================================================================
-echo   Starting Services:
+echo Starting services...
 echo.
 
-REM Start backend
-cd /d "%SCRIPT_DIR%"
-echo [1] Starting backend...
-start /B ghostlink.exe serve > ghostlink.log 2>&1
-echo [✓] Backend started
+REM Start Ollama service in a new window
+echo [INFO] Starting Ollama Service...
+start "Ollama" cmd /k "ollama serve"
+timeout /t 3 /nobreak >nul
+echo [✓] Ollama startup command issued.
 
-REM Wait for backend health
-echo [INFO] Waiting for backend to be ready...
-:health_loop
-set /a retry_count+=1
-curl -s http://127.0.0.1:8003/health > nul
-if %errorlevel% equ 0 (
-    echo [✓] Backend ready!
-    goto start_gui
-)
-if %retry_count% gtr 10 (
-    echo [!] Timed out waiting for backend
-    goto start_gui
-)
-timeout /t 1 /nobreak > nul
-goto health_loop
+REM Start backend in new window
+echo [INFO] Starting Backend API on http://%BACKEND_HOST%:%BACKEND_PORT%
+start "Ghostlink Backend API" cmd /k "cd /d \"%PROJECT_ROOT%crates\\ghost-link\" && cargo run --release -- serve %BACKEND_HOST% %BACKEND_PORT%"
+timeout /t 3 /nobreak >nul
 
-:start_gui
-REM Start GUI
-cd /d "%SCRIPT_DIR%ghostlink_gui_modern"
-echo [2] Starting GUI...
-
-REM Open browser
-start http://localhost:3000
+REM Start GUI in new window
+echo [INFO] Starting GUI Frontend on http://127.0.0.1:%GUI_PORT%
+start "Ghostlink Studio GUI" cmd /k "cd /d \"%PROJECT_ROOT%ghostlink_gui_modern\" && (if not exist node_modules npm install --legacy-peer-deps) && npm run dev -- --host 127.0.0.1 --port %GUI_PORT%"
+timeout /t 3 /nobreak >nul
 
 echo.
-echo ================================================================================
-echo   Services Ready:
+echo ════════════════════════════════════════════════════
+echo   Services Starting
+echo ════════════════════════════════════════════════════
 echo.
-echo   Backend:  http://127.0.0.1:8003
-echo   GUI:      http://localhost:3000
+echo Backend API:
+echo   URL: http://%BACKEND_HOST%:%BACKEND_PORT%
+echo   Status: ✓ Running in new window
 echo.
-echo   Press Ctrl+C to stop all services
-echo ================================================================================
+echo Runtime Detection Endpoints:
+echo   Detect:    GET /api/runtime/detect
+echo   Models:    GET /api/runtime/models?runtime=cpu
+echo   Recommend: GET /api/runtime/recommend?memory_gb=16
 echo.
-
-REM Start dev server (foreground)
-call npm run dev
+echo GUI Frontend:
+echo   URL: http://127.0.0.1:%GUI_PORT%
+echo   Status: ✓ Running in new window
+echo.
+echo Test Commands:
+echo   Runtime:   curl http://%BACKEND_HOST%:%BACKEND_PORT%/api/runtime/detect
+echo   Models:    curl "http://%BACKEND_HOST%:%BACKEND_PORT%/api/runtime/models?runtime=cpu"
+echo   Recommend: curl "http://%BACKEND_HOST%:%BACKEND_PORT%/api/runtime/recommend?memory_gb=8"
+echo Open http://127.0.0.1:%GUI_PORT% in your browser
+echo ════════════════════════════════════════════════════
+echo.
 
 pause

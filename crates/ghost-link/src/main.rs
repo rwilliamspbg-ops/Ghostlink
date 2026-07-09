@@ -1425,12 +1425,14 @@ struct BackendState {
     started_at: Instant,
     backend_url: String,
     cluster: Arc<ClusterState>,
+    ollama_client: ollama::OllamaClient,
+    ollama_available: Arc<tokio::sync::Mutex<bool>>,
 }
 
 struct ToolDispatcher;
 
 impl ToolDispatcher {
-    async fn dispatch(tool_name: &str, _args: &serde_json::Value) -> ToolResult {
+    fn dispatch(tool_name: &str, _args: &serde_json::Value) -> ToolResult {
         match tool_name {
             "calculator" => ToolResult {
                 tool: tool_name.to_string(),
@@ -2013,27 +2015,66 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         let started = Instant::now();
 
         let mut tool_results = Vec::new();
-        if let Some(mcp) = req.mcp.clone() {
+        // Performance optimization: avoid cloning potentially large MCP payloads
+        // and dispatch tools without async-await state machine overhead.
+        // Expected impact: lower per-request CPU and latency for tool-heavy chat calls.
+        let empty_tool_args = serde_json::Value::Null;
+        if let Some(mcp) = req.mcp.as_ref() {
             if let Some(tools) = mcp.get("tools").and_then(|t| t.as_array()) {
+                tool_results = Vec::with_capacity(tools.len());
                 for tool_val in tools {
                     if let Some(tool_name) = tool_val.as_str() {
-                        tool_results.push(
-                            ToolDispatcher::dispatch(tool_name, &serde_json::json!({})).await,
-                        );
+                        tool_results.push(ToolDispatcher::dispatch(tool_name, &empty_tool_args));
                     }
                 }
             }
         }
 
-        let (current_model, cluster) = {
+        let (current_model, cluster, ollama_client, ollama_available) = {
             let backend = lock_state(&state);
-            (backend.current_model.clone(), Arc::clone(&backend.cluster))
+            (
+                backend.current_model.clone(),
+                Arc::clone(&backend.cluster),
+                backend.ollama_client.clone(),
+                Arc::clone(&backend.ollama_available),
+            )
         };
 
         let token_estimate = req.message.split_whitespace().count().clamp(1, 1024);
         let requested_exec_tokens = req.max_tokens.unwrap_or(token_estimate).clamp(16, 4096);
         let exec_tokens = chat_exec_token_budget(requested_exec_tokens);
         let exec_micro_batch = chat_exec_micro_batch();
+
+        // Capture availability once to avoid repeated async lock acquisition.
+        let ollama_is_available = *ollama_available.lock().await;
+
+        // Try real Ollama inference first
+        let response_text = if ollama_is_available {
+            match ollama_client
+                .generate(
+                    &current_model,
+                    &req.message,
+                    req.temperature.unwrap_or(0.7),
+                    exec_tokens,
+                )
+                .await
+            {
+                Ok(text) => text.trim().to_string(),
+                Err(_) => {
+                    // Fallback to mock if Ollama fails
+                    format!(
+                        "Failed to reach Ollama. Message was: '{}'. Fallback mode.",
+                        req.message
+                    )
+                }
+            }
+        } else {
+            // Mock fallback if Ollama not available
+            format!(
+                "Ollama unavailable. Simulated response to: '{}'",
+                req.message
+            )
+        };
 
         let nodes = cluster.nodes();
         let total_vram = cluster.total_vram_gb();
@@ -2125,65 +2166,27 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             }
         };
 
-        let response_text = {
-            let msg = req.message.to_lowercase();
-            let mut text = if msg.contains("2+2") || msg.contains("2 + 2") {
-                "2 + 2 equals 4. Simple arithmetic operation that equals four.".to_string()
-            } else if msg.contains("hello") {
-                "Hello! I'm the Ghostlink distributed inference engine. How can I assist you today?"
-                    .to_string()
-            } else if msg.contains("define your terminal coding abilities") {
-                "As your Principal Engineer for **Sovereign Mohawk Proto LLC**, my terminal capabilities are not merely \"scripting\"; they are **production-grade, kernel-bypass-aware system orchestration**. I operate as a remote co-pilot capable of executing complex build pipelines, cryptographic audits, and network topology validations directly within the CLI.".to_string()
-            } else if msg.contains("how are you") {
-                "I'm running optimally across the distributed cluster nodes with excellent throughput and low latency. Everything is functioning normally. How can I help?".to_string()
-            } else if msg.contains("help") {
-                "I can assist you with a wide range of tasks. Whether you need analysis, coding help, creative writing, research, or problem-solving, I'm here to help. What specific task would you like assistance with?".to_string()
-            } else {
-                format!("As your Principal Engineer for **Sovereign Mohawk Proto LLC**, I have completed the analysis for your request: '{}'. All distributed systems are performing within nominal parameters. Output has been routed through the high-performance inference fabric.", req.message)
-            };
-
-            if !tool_results.is_empty() {
-                text.push_str(
-                    "
-
-I used the following tools to assist with your request:",
-                );
-                for res in &tool_results {
-                    text.push_str(&format!(
-                        "
-- **{}**: {}",
-                        res.tool, res.result
-                    ));
-                }
+        let mut final_response = response_text;
+        if !tool_results.is_empty() {
+            final_response.push_str("\n\nTools used:");
+            for res in &tool_results {
+                final_response.push_str("\n- **");
+                final_response.push_str(&res.tool);
+                final_response.push_str("**: ");
+                final_response.push_str(&res.result);
             }
+        }
 
-            if let Some(ref exec) = result {
-                text.push_str(&format!(
-                    "
-
---- [Ghostlink Fabric Statistics] ---
-Latency: {:.2}ms (p50)
-Throughput: {:.2} tokens/sec
-Nodes: {}
-Layers: {}",
-                    exec.avg_token_latency_ms,
-                    exec.throughput_tokens_per_sec,
-                    nodes.len(),
-                    layer_count
-                ));
-            }
-
-            text
-        };
         let mut response = serde_json::json!({
-            "response": response_text,
+            "response": final_response,
             "request_id": format!("req-{}", request_id),
             "session_id": session_id,
             "model": current_model,
-            "ollama_url": "native",
+            "ollama_url": "local",
             "tokens_estimated": token_estimate,
             "exec_tokens": exec_tokens,
             "exec_micro_batch": exec_micro_batch,
+            "real_inference": ollama_is_available,
             "metrics": result.map(|r| serde_json::json!({
                 "throughput": r.throughput_tokens_per_sec,
                 "p95_ms": r.p95_token_latency_ms
@@ -2206,7 +2209,7 @@ Layers: {}",
         }
 
         if req.stream.unwrap_or(false) {
-            let tokens: Vec<String> = response_text
+            let tokens: Vec<String> = final_response
                 .split_whitespace()
                 .map(|s| format!("{} ", s))
                 .collect();
@@ -2224,6 +2227,116 @@ Layers: {}",
         } else {
             Json(response).into_response()
         }
+    }
+
+    async fn handle_runtime_detection(
+        State(_state): State<Arc<Mutex<BackendState>>>,
+    ) -> Json<serde_json::Value> {
+        use crate::runtime::RuntimeDetector;
+
+        let runtimes = RuntimeDetector::detect();
+        let primary = RuntimeDetector::detect_primary();
+
+        let runtime_data: Vec<_> = runtimes
+            .iter()
+            .map(|rt| {
+                serde_json::json!({
+                    "runtime": rt.detected_runtime.to_string(),
+                    "available": rt.is_available,
+                    "compute_capability": rt.compute_capability,
+                    "memory_gb": rt.memory_gb,
+                    "device_count": rt.device_count,
+                })
+            })
+            .collect();
+
+        Json(serde_json::json!({
+            "available_runtimes": runtime_data,
+            "primary_runtime": primary.to_string(),
+            "auto_detected": true,
+        }))
+    }
+
+    async fn handle_models_by_runtime(
+        Query(params): Query<HashMap<String, String>>,
+    ) -> Json<serde_json::Value> {
+        use crate::runtime::{ModelRegistry, Runtime};
+
+        let runtime_str = params.get("runtime").map(|s| s.as_str()).unwrap_or("CPU");
+
+        let runtime = match runtime_str {
+            "cuda" | "CUDA" => Runtime::CUDA,
+            "metal" | "Metal" => Runtime::Metal,
+            "rocm" | "ROCm" => Runtime::ROCm,
+            "npu" | "NPU" => Runtime::NPU,
+            _ => Runtime::CPU,
+        };
+
+        let models = ModelRegistry::models_for_runtime(runtime);
+
+        let model_data: Vec<_> = models
+            .iter()
+            .map(|m| {
+                serde_json::json!({
+                    "name": m.name,
+                    "parameters": m.parameters,
+                    "size_gb": m.size_gb,
+                    "memory_required_gb": m.memory_required_gb,
+                    "quality_tier": format!("{:?}", m.quality_tier),
+                    "inference_speed": format!("{:?}", m.inference_speed),
+                    "use_cases": m.use_cases,
+                })
+            })
+            .collect();
+
+        let best = ModelRegistry::best_for_runtime(runtime);
+
+        Json(serde_json::json!({
+            "runtime": runtime.to_string(),
+            "model_count": model_data.len(),
+            "models": model_data,
+            "best_model": best.map(|m| serde_json::json!({
+                "name": m.name,
+                "parameters": m.parameters,
+                "recommended_reason": "Best balance of quality and performance for this runtime",
+            })),
+        }))
+    }
+
+    async fn handle_model_recommendations(
+        Query(params): Query<HashMap<String, String>>,
+    ) -> Json<serde_json::Value> {
+        use crate::runtime::{ModelRegistry, RuntimeDetector};
+
+        let memory_gb = params
+            .get("memory_gb")
+            .and_then(|s| s.parse::<f32>().ok())
+            .unwrap_or(8.0);
+
+        let runtime = RuntimeDetector::detect_primary();
+        let recommended = ModelRegistry::recommend_models(runtime, memory_gb);
+
+        let model_data: Vec<_> = recommended
+            .iter()
+            .map(|m| {
+                serde_json::json!({
+                    "name": m.name,
+                    "parameters": m.parameters,
+                    "size_gb": m.size_gb,
+                    "memory_required_gb": m.memory_required_gb,
+                    "quality_tier": format!("{:?}", m.quality_tier),
+                    "inference_speed": format!("{:?}", m.inference_speed),
+                    "reason": format!("Fits in {:.1}GB available memory", memory_gb),
+                })
+            })
+            .collect();
+
+        Json(serde_json::json!({
+            "detected_runtime": runtime.to_string(),
+            "available_memory_gb": memory_gb,
+            "recommended_models": model_data,
+            "count": model_data.len(),
+        }))
     }
 
     async fn handle_health(
@@ -2350,6 +2463,19 @@ Layers: {}",
 
     let models = load_persistent_models();
     save_persistent_models(&models);
+
+    let ollama_url = std::env::var("OLLAMA_BASE_URL")
+        .ok()
+        .unwrap_or_else(|| "http://localhost:11434".to_string());
+    let ollama_client = ollama::OllamaClient::new(ollama_url);
+    let ollama_available = Arc::new(tokio::sync::Mutex::new(false));
+
+    if false {
+        println!("Ollama backend connected and available.");
+    } else {
+        println!("Ollama backend NOT available - using mock responses.");
+    }
+
     let state = Arc::new(Mutex::new(BackendState {
         models,
         current_model: "ghostlink-30b-v1".to_string(),
@@ -2369,6 +2495,8 @@ Layers: {}",
         started_at: Instant::now(),
         backend_url,
         cluster,
+        ollama_client,
+        ollama_available,
     }));
 
     rt.block_on(async {
@@ -2412,6 +2540,9 @@ Layers: {}",
             .route("/api/security/jwt/refresh", post(handle_gui_jwt_refresh))
             .route("/api/security/pqc/enable", post(handle_gui_pqc_enable))
             .route("/api/inference/chat", post(handle_gui_chat))
+            .route("/api/runtime/detect", get(handle_runtime_detection))
+            .route("/api/runtime/models", get(handle_models_by_runtime))
+            .route("/api/runtime/recommend", get(handle_model_recommendations))
             .with_state(state)
             .layer(CorsLayer::permissive());
 
@@ -4411,6 +4542,9 @@ fn run_gui_preflight_checks() -> Result<()> {
 
     Ok(())
 }
+
+mod ollama;
+mod runtime;
 
 // Re-export protocol module for use in main.rs
 mod protocol {

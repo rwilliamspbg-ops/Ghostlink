@@ -4,6 +4,23 @@ All notable changes to Ghostlink Studio Modern GUI are documented here.
 
 ---
 
+## [Unreleased]
+
+### Changed
+
+- Retired duplicate, unused command and API stub modules under `crates/ghost-link/src/cli/` and `crates/ghost-link/src/api/`.
+- Standardized CLI command source of truth on `crates/ghost-link/src/main.rs` to prevent behavioral drift.
+
+### CI/Quality
+
+- Added `scripts/verify_no_stub_todos.sh` and integrated it into CI workflows to fail builds when `TODO: Implement actual` markers are reintroduced in `crates/ghost-link/src`.
+
+### Performance
+
+- Re-validated tool-heavy chat endpoint performance after stub-surface cleanup and hot-path optimizations.
+
+---
+
 ## [1.0.0] - 2024 (Current Release)
 
 ### ✨ Features

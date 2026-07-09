@@ -1,0 +1,26 @@
+name: MSRV Verification
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  msrv-check:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install Rust 1.89.0 (MSRV)
+        uses: dtolnay/rust-toolchain@1.89.0
+      
+      - name: Verify MSRV compatibility
+        run: cargo check --workspace
+      
+      - name: Run tests with MSRV
+        run: cargo test --workspace --lib
