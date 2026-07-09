@@ -19,7 +19,7 @@ Your system's GPU/NPU is automatically detected on startup:
 - **Mistral (7B)** - Best all-around (4.1GB)
 - **Llama2 (7B/13B)** - Versatile (3.8-7.3GB)
 - **Llama2-70B** - Maximum quality (39GB, GPU only)
-- + 5 more specialized models
+- 5 more specialized models
 
 ### Real-Time Performance
 - CUDA: 2-10ms per token

@@ -68,8 +68,8 @@ start "Ghostlink Backend API" cmd /k "cd /d \"%PROJECT_ROOT%crates\\ghost-link\"
 timeout /t 3 /nobreak >nul
 
 REM Start GUI in new window
-echo [INFO] Starting GUI Frontend on http://localhost:%GUI_PORT%
-start "Ghostlink Studio GUI" cmd /k "cd /d \"%PROJECT_ROOT%ghostlink_gui_modern\" && (if not exist node_modules npm install) && npm run dev"
+echo [INFO] Starting GUI Frontend on http://127.0.0.1:%GUI_PORT%
+start "Ghostlink Studio GUI" cmd /k "cd /d \"%PROJECT_ROOT%ghostlink_gui_modern\" && (if not exist node_modules npm install --legacy-peer-deps) && npm run dev -- --host 127.0.0.1 --port %GUI_PORT%"
 timeout /t 3 /nobreak >nul
 
 echo.
@@ -87,14 +87,14 @@ echo   Models:    GET /api/runtime/models?runtime=cpu
 echo   Recommend: GET /api/runtime/recommend?memory_gb=16
 echo.
 echo GUI Frontend:
-echo   URL: http://localhost:%GUI_PORT%
+echo   URL: http://127.0.0.1:%GUI_PORT%
 echo   Status: ✓ Running in new window
 echo.
 echo Test Commands:
 echo   Runtime:   curl http://%BACKEND_HOST%:%BACKEND_PORT%/api/runtime/detect
 echo   Models:    curl "http://%BACKEND_HOST%:%BACKEND_PORT%/api/runtime/models?runtime=cpu"
 echo   Recommend: curl "http://%BACKEND_HOST%:%BACKEND_PORT%/api/runtime/recommend?memory_gb=8"
-echo Open http://localhost:%GUI_PORT% in your browser
+echo Open http://127.0.0.1:%GUI_PORT% in your browser
 echo ════════════════════════════════════════════════════
 echo.
 

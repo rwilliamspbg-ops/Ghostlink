@@ -124,7 +124,7 @@ if !BACKEND_FOUND! equ 1 (
     echo   Backend            ^> http://127.0.0.1:8003
 )
 if !GUI_FOUND! equ 1 (
-    echo   Frontend           ^> http://localhost:3000
+    echo   Frontend           ^> http://127.0.0.1:5173
 )
 
 echo.
@@ -153,7 +153,7 @@ echo ║    2. Switch to the Chat tab                                           
 echo ║    3. Type a message and send                                                 ║
 echo ║    4. Watch real model inference in action!                                   ║
 echo ║                                                                                ║
-echo ║  Browser is now opening at http://localhost:3000                              ║
+echo ║  Browser is now opening at http://127.0.0.1:5173                              ║
 echo ║                                                                                ║
 echo ║  Tip: Press Ctrl+C to stop all services                                       ║
 echo ║                                                                                ║
@@ -161,8 +161,8 @@ echo ╚════════════════════════
 echo.
 
 REM Open browser
-start http://localhost:3000
+start http://127.0.0.1:5173
 
-pause
-
-exit /b 0
+echo Launching full stack now...
+call "%~dp0launch-complete.bat" %*
+exit /b %errorlevel%

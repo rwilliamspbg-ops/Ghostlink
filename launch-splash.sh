@@ -159,7 +159,7 @@ if [ $BACKEND_FOUND -eq 1 ]; then
     echo -e "  ${CYAN}Backend${NC}          → ${WHITE}http://127.0.0.1:8003${NC}"
 fi
 if [ $GUI_FOUND -eq 1 ]; then
-    echo -e "  ${CYAN}Frontend${NC}         → ${WHITE}http://localhost:3000${NC}"
+    echo -e "  ${CYAN}Frontend${NC}         → ${WHITE}http://127.0.0.1:5173${NC}"
 fi
 
 echo ""
@@ -195,5 +195,6 @@ echo ""
 echo -e "${GRAY}────────────────────────────────────────────────────────────────────────────────${NC}"
 echo ""
 
-# Return success
-exit 0
+# Execute the full launcher after splash
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+exec bash "$SCRIPT_DIR/launch-complete.sh" "$@"

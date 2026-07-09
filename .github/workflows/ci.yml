@@ -29,10 +29,10 @@ jobs:
     runs-on: ubuntu-latest
     
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       
-      - name: Install Rust 1.75.0
-        uses: dtolnay/rust-toolchain@1.75.0
+      - name: Install Rust 1.89.0
+        uses: dtolnay/rust-toolchain@1.89.0
       
       - name: Verify MSRV
         run: cargo check --workspace
