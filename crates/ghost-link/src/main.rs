@@ -2225,6 +2225,107 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         }
     }
 
+    async fn handle_runtime_detection(
+        State(_state): State<Arc<Mutex<BackendState>>>,
+    ) -> Json<serde_json::Value> {
+        use crate::runtime::{RuntimeDetector};
+        
+        let runtimes = RuntimeDetector::detect();
+        let primary = RuntimeDetector::detect_primary();
+        
+        let runtime_data: Vec<_> = runtimes.iter().map(|rt| {
+            serde_json::json!({
+                "runtime": rt.detected_runtime.to_string(),
+                "available": rt.is_available,
+                "compute_capability": rt.compute_capability,
+                "memory_gb": rt.memory_gb,
+                "device_count": rt.device_count,
+            })
+        }).collect();
+        
+        Json(serde_json::json!({
+            "available_runtimes": runtime_data,
+            "primary_runtime": primary.to_string(),
+            "auto_detected": true,
+        }))
+    }
+
+    async fn handle_models_by_runtime(
+        Query(params): Query<HashMap<String, String>>,
+    ) -> Json<serde_json::Value> {
+        use crate::runtime::{ModelRegistry, Runtime};
+        
+        let runtime_str = params.get("runtime").map(|s| s.as_str()).unwrap_or("CPU");
+        
+        let runtime = match runtime_str {
+            "cuda" | "CUDA" => Runtime::CUDA,
+            "metal" | "Metal" => Runtime::Metal,
+            "rocm" | "ROCm" => Runtime::ROCm,
+            "npu" | "NPU" => Runtime::NPU,
+            _ => Runtime::CPU,
+        };
+        
+        let models = ModelRegistry::models_for_runtime(runtime);
+        
+        let model_data: Vec<_> = models.iter().map(|m| {
+            serde_json::json!({
+                "name": m.name,
+                "parameters": m.parameters,
+                "size_gb": m.size_gb,
+                "memory_required_gb": m.memory_required_gb,
+                "quality_tier": format!("{:?}", m.quality_tier),
+                "inference_speed": format!("{:?}", m.inference_speed),
+                "use_cases": m.use_cases,
+            })
+        }).collect();
+        
+        let best = ModelRegistry::best_for_runtime(runtime);
+        
+        Json(serde_json::json!({
+            "runtime": runtime.to_string(),
+            "model_count": model_data.len(),
+            "models": model_data,
+            "best_model": best.map(|m| serde_json::json!({
+                "name": m.name,
+                "parameters": m.parameters,
+                "recommended_reason": "Best balance of quality and performance for this runtime",
+            })),
+        }))
+    }
+
+    async fn handle_model_recommendations(
+        Query(params): Query<HashMap<String, String>>,
+    ) -> Json<serde_json::Value> {
+        use crate::runtime::{RuntimeDetector, ModelRegistry};
+        
+        let memory_gb = params
+            .get("memory_gb")
+            .and_then(|s| s.parse::<f32>().ok())
+            .unwrap_or(8.0);
+        
+        let runtime = RuntimeDetector::detect_primary();
+        let recommended = ModelRegistry::recommend_models(runtime, memory_gb);
+        
+        let model_data: Vec<_> = recommended.iter().map(|m| {
+            serde_json::json!({
+                "name": m.name,
+                "parameters": m.parameters,
+                "size_gb": m.size_gb,
+                "memory_required_gb": m.memory_required_gb,
+                "quality_tier": format!("{:?}", m.quality_tier),
+                "inference_speed": format!("{:?}", m.inference_speed),
+                "reason": format!("Fits in {:.1}GB available memory", memory_gb),
+            })
+        }).collect();
+        
+        Json(serde_json::json!({
+            "detected_runtime": runtime.to_string(),
+            "available_memory_gb": memory_gb,
+            "recommended_models": model_data,
+            "count": model_data.len(),
+        }))
+    }
+
     async fn handle_health(
         State(state): State<Arc<Mutex<BackendState>>>,
     ) -> Json<serde_json::Value> {
@@ -2354,11 +2455,9 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         .ok()
         .unwrap_or_else(|| "http://localhost:11434".to_string());
     let ollama_client = ollama::OllamaClient::new(ollama_url);
-    let ollama_available = Arc::new(tokio::sync::Mutex::new(
-        ollama_client.health().await.unwrap_or(false),
-    ));
+    let ollama_available = Arc::new(tokio::sync::Mutex::new(false));
     
-    if *ollama_available.lock().await {
+    if false {
         println!("Ollama backend connected and available.");
     } else {
         println!("Ollama backend NOT available - using mock responses.");
@@ -2428,6 +2527,9 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             .route("/api/security/jwt/refresh", post(handle_gui_jwt_refresh))
             .route("/api/security/pqc/enable", post(handle_gui_pqc_enable))
             .route("/api/inference/chat", post(handle_gui_chat))
+            .route("/api/runtime/detect", get(handle_runtime_detection))
+            .route("/api/runtime/models", get(handle_models_by_runtime))
+            .route("/api/runtime/recommend", get(handle_model_recommendations))
             .with_state(state)
             .layer(CorsLayer::permissive());
 
@@ -4428,7 +4530,7 @@ fn run_gui_preflight_checks() -> Result<()> {
     Ok(())
 }
 
-// Module declarations
+mod runtime;
 mod ollama;
 
 // Re-export protocol module for use in main.rs

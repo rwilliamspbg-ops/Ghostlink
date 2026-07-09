@@ -1,0 +1,44 @@
+version: '3.8'
+
+services:
+  ghostlink-api:
+    build:
+      context: .
+      dockerfile: Dockerfile.ghostlink
+    container_name: ghostlink-api
+    ports:
+      - "8003:8003"
+    environment:
+      RUST_LOG: info
+      GHOSTLINK_HOST: 0.0.0.0
+      GHOSTLINK_PORT: 8003
+    networks:
+      - ghostlink-network
+    command: serve 0.0.0.0 8003
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8003/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  ghostlink-gui:
+    build:
+      context: ./ghostlink_gui_modern
+      dockerfile: Dockerfile
+    container_name: ghostlink-gui
+    ports:
+      - "5173:5173"
+    environment:
+      VITE_API_URL: http://ghostlink-api:8003
+      NODE_ENV: development
+    networks:
+      - ghostlink-network
+    depends_on:
+      ghostlink-api:
+        condition: service_healthy
+    command: npm run dev -- --host 0.0.0.0
+
+networks:
+  ghostlink-network:
+    driver: bridge
