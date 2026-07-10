@@ -34,10 +34,10 @@ pub mod discovery;
 pub mod health;
 pub mod host;
 pub mod load_balance;
+pub mod models;
 pub mod planning;
 pub mod protocol;
 pub mod ring;
-pub mod models;
 pub mod runtime;
 #[doc(hidden)]
 pub mod xdp;
