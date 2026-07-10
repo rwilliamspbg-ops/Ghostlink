@@ -11,8 +11,7 @@ keywords = ["networking", "spsc", "zero-copy", "async", "distributed-inference"]
 categories = ["asynchronous", "network-programming"]
 
 # Minimum Supported Rust Version (MSRV)
-# This project requires Rust 1.75.0 or higher
-msrv = "1.75.0"
+  rust-version = "1.85.0"
 
 [features]
 default = []
