@@ -37,6 +37,7 @@ pub mod load_balance;
 pub mod planning;
 pub mod protocol;
 pub mod ring;
+pub mod models;
 pub mod runtime;
 pub mod xdp;
 
