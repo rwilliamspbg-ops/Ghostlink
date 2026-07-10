@@ -1,92 +1,163 @@
 # Ghostlink Studio
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Rust](https://img.shields.io/badge/Rust-stable-orange.svg)](https://www.rust-lang.org)
-[![Python](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org)
+Ghostlink Studio is a full-stack local AI workspace with:
+- a Rust backend API
+- a modern React GUI
+- optional Ollama inference integration
+- model/session/worker management surfaces
 
-Ghostlink is a high-performance LAN fabric designed to turn spare local GPUs and CPU hosts into a unified execution surface for large-model inference. By leveraging zero-copy SPSC primitives and host-aware autotuning, Ghostlink provides a professional-grade environment for running and testing massive models on heterogeneous hardware.
+## At A Glance
 
-## 🚀 One-Click Launch
+- Backend API: http://127.0.0.1:8003
+- GUI: http://127.0.0.1:5173
+- Ollama (optional): http://127.0.0.1:11434
 
-Get Ghostlink Studio up and running in seconds:
+## Unified Launch Paths
+
+All launch scripts are now aligned to the same default ports and full-stack behavior.
+
+| Script | Platform | Starts Backend | Starts GUI | Starts Ollama | Notes |
+|---|---|---:|---:|---:|---|
+| `launch-complete.sh` | Linux/macOS | Yes | Yes | If needed | Canonical full-stack launcher |
+| `launch-splash.sh` | Linux/macOS | Yes | Yes | If needed | Splash + delegates to `launch-complete.sh` |
+| `launch.sh` | Linux/macOS | Yes | Yes | Launcher-managed | Delegates to `scripts/launch_studio.sh` |
+| `launch-complete.bat` | Windows | Yes | Yes | Yes | Full-stack launcher in separate consoles |
+| `launch-splash.bat` | Windows | Yes | Yes | Yes | Splash + delegates to `launch-complete.bat` |
+| `launch.bat` | Windows | Yes | Yes | Launcher-managed | Delegates to `scripts/launch_studio.bat` |
+| `ghostlink_gui_modern/launch-gui.sh` | Linux/macOS | No | Yes | No | Frontend-only launcher |
+| `ghostlink_gui_modern/launch-gui.bat` | Windows | No | Yes | No | Frontend-only launcher |
+
+## Quick Start
+
+### Linux/macOS
 
 ```bash
-bash scripts/launch_studio.sh
+bash launch-complete.sh
 ```
 
-This script automates environment setup, builds the high-performance core, and launches the Ghostlink Studio GUI.
+### Windows
 
-## 💎 Professional Features
+```bat
+launch-complete.bat
+```
 
-- **Professional Studio GUI**: A modern, dark-themed interface for model management, chat, and cluster analytics.
-- **OpenAI-Compatible API**: Standard `/v1/chat/completions` endpoint for easy integration with existing LLM tools.
-- **Ultra-Low Overhead**: Zero-copy SPSC ring buffers with backpressure handling for maximum throughput.
-- **Heterogeneous Scaling**: Seamlessly combine NPU, GPU, and CPU resources across your local network.
-- **Enterprise Security**: HMAC-SHA256 authenticated discovery and transport for secure inter-node communication.
-- **Adaptive Quantization**: Runtime-aware planning that adjusts to network quality and hardware capability.
+The launcher will:
+1. Build and start backend on `127.0.0.1:8003`.
+2. Start GUI on `127.0.0.1:5173`.
+3. Start or reuse Ollama when available.
+4. Keep services running until `Ctrl+C`.
 
-## 📊 Performance Benchmarks
+## Manual Start (Alternative)
 
-Measured in a standard development environment:
+### Terminal 1: backend
 
-| Transport Mode | Avg Throughput (tokens/s) | Avg P95 Latency (ms) |
-| :--- | :---: | :---: |
-| **In-Memory (Zero-Copy)** | **118,840.29** | **1.83** |
-| **TCP Loopback (Optimized)** | **67,794.12** | **3.65** |
+```bash
+cargo run -p ghost-link -- serve 127.0.0.1 8003
+```
 
-*Benchmarks conducted on 2024-11-20 using Mistral-7B baseline.*
+### Terminal 2: GUI
 
-## 🛠 Command Line Interface
+```bash
+cd ghostlink_gui_modern
+npm install --legacy-peer-deps
+npm run dev -- --host 127.0.0.1 --port 5173
+```
 
-The `ghost-link` CLI provides powerful primitives for cluster management and performance profiling.
+### Terminal 3 (optional): Ollama
 
-### Core Commands
-- `gui` - Launch the Ghostlink Studio desktop interface.
-- `serve` - Start the OpenAI-compatible API server.
-- `join [id]` - Broadcast discovery frames to join a local cluster.
-- `listen [id]` - Listen for and respond to discovery requests from peers.
-- `flow` - Run a full 30B model planning and execution flow (simulated transport).
-- `doctor` - Run unified troubleshooting checks for environment and network.
-- `dashboard` - Display the live ASCII cluster status dashboard.
-- `cluster-start` - Spin up a multi-node local cluster for validation.
+```bash
+ollama serve
+```
 
-### Profiling & Discovery
-- `probe [id]` - Detect local compute capabilities and recommended worker counts.
-- `plan` - Generate a greedy layer placement plan across the current cluster.
+## Docker
 
-## ⚙️ Configuration
+### Production compose
 
-Ghostlink can be configured via a `ghostlink.toml` file or environment variables.
+```bash
+docker compose -f docker-compose.production.yml up --build
+```
 
+### Launch compose
 
+```bash
+docker compose -f docker-compose.launch.yml up --build
+```
 
-### Environment Variables
+## Core Endpoints
 
-| Variable | Description | Default |
-| :--- | :--- | :--- |
-| `GHOSTLINK_CONFIG` | Path to TOML configuration file | `./ghostlink.toml` |
-| `GHOSTLINK_TCP_AUTH_TOKEN` | Shared secret for transport authentication | - |
-| `GHOSTLINK_DISCOVERY_AUTH_TOKEN` | Shared secret for UDP discovery authentication | - |
-| `GHOSTLINK_TCP_MAX_INFLIGHT` | Max concurrent batches in TCP bridge | `512` |
-| `GHOSTLINK_PYTHON` | Path to Python executable for GUI | `python3` |
-| `GHOSTLINK_DISTRIBUTED_SMOKE` | Enable distributed runtime validation in `flow` | `false` |
+- Health: `GET /health`
+- Models: `GET /api/models`
+- Model status: `GET /api/models/status`
+- Metrics: `GET /api/metrics`
+- Sessions: `GET /api/sessions`
+- Workers: `GET /api/workers`
+- Chat: `POST /api/inference/chat`
 
-## 📚 Documentation
+Example:
 
-- [Quickstart Guide](docs/QUICKSTART.md) - Fastest path to a running system.
-- [Architecture Overview](docs/ARCHITECTURE.md) - Deep dive into zero-copy primitives.
-- [Deployment Guide](docs/DEPLOYMENT.md) - Strategies for multi-node LAN setups.
-- [Security Model](docs/SECURITY_MODEL.md) - Details on HMAC and authentication.
+```bash
+curl -s http://127.0.0.1:8003/health
+curl -s http://127.0.0.1:8003/api/models
+curl -s -X POST http://127.0.0.1:8003/api/inference/chat \
+  -H 'Content-Type: application/json' \
+  -d '{"message":"hello","max_tokens":32}'
+```
 
-## ⚖️ License
+## Capability Notes
 
-Ghost-Link is released under the MIT License.
+- When Ollama is available and reachable, backend can route chat to real model inference.
+- When Ollama is unavailable, backend returns deterministic fallback responses so the GUI and API remain usable.
+- Tool/MCP payload fields are accepted by backend and reflected in response metadata; external MCP execution capability depends on configured servers and runtime integration.
 
-## 🧪 Development & Validation
+## Validation Commands
 
-Ghostlink maintains high quality through automated testing and validation gates:
+Run these before opening a PR:
 
-- **Workspace Tests**: `cargo test --workspace`
-- **Full Validation**: `bash scripts/run_full_validation.sh`
-- **Linting**: `cargo clippy --workspace --all-targets -- -D warnings`
-- **Model Verification**: `python3 scripts/verify_hf_models.py`
+```bash
+cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
+python3 scripts/verify_hf_models.py
+```
+
+Additional checks:
+
+```bash
+python3 scripts/test_api_contract.py
+python3 scripts/test_gui_backend_integration.py
+```
+
+## Troubleshooting
+
+### Port already in use
+
+- Backend port: set `GHOSTLINK_HOST` / `GHOSTLINK_PORT`.
+- GUI port: set `GUI_PORT`.
+
+Example:
+
+```bash
+GHOSTLINK_PORT=8010 GUI_PORT=5178 bash launch-complete.sh
+```
+
+### GUI starts but backend not reachable
+
+1. Check backend health:
+   ```bash
+   curl -s http://127.0.0.1:8003/health
+   ```
+2. Re-run backend manually:
+   ```bash
+   cargo run -p ghost-link -- serve 127.0.0.1 8003
+   ```
+
+### Ollama not installed
+
+The stack still launches. Chat remains available with fallback behavior until Ollama is installed.
+
+## Repository Pointers
+
+- Backend crate: `crates/ghost-link`
+- Core runtime/fabric: `crates/ghostlink-core`
+- Modern GUI: `ghostlink_gui_modern`
+- Launch orchestrator: `scripts/launch_studio.py`
+

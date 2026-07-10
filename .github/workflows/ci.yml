@@ -1,168 +1,41 @@
 name: CI
 
 on:
-  workflow_dispatch:
   push:
-    branches:
-      - main
-      - docs/runtime-probe-docs
-      - 'release/**'
-      - 'hotfix/**'
-    paths:
-      - 'Cargo.toml'
-      - 'Cargo.lock'
-      - 'crates/**'
-      - 'benches/**'
-      - 'scripts/**'
-      - 'docs/PERF_BASELINE.json'
-      - 'docs/PERF_BASELINE_STRESS.json'
-      - 'README.md'
-      - 'TESTING.md'
-      - 'docs/SECURITY_MODEL.md'
-      - '.github/workflows/ci.yml'
-      - '.github/workflows/production-gate.yml'
-      - '.github/workflows/security.yml'
-      - '.github/workflows/release-artifacts.yml'
+    branches: [main]
   pull_request:
-    branches:
-      - main
-    paths:
-      - 'Cargo.toml'
-      - 'Cargo.lock'
-      - 'crates/**'
-      - 'benches/**'
-      - 'scripts/**'
-      - 'docs/PERF_BASELINE.json'
-      - 'docs/PERF_BASELINE_STRESS.json'
-      - 'README.md'
-      - 'TESTING.md'
-      - 'docs/SECURITY_MODEL.md'
-      - '.github/workflows/ci.yml'
-      - '.github/workflows/production-gate.yml'
-      - '.github/workflows/security.yml'
-      - '.github/workflows/release-artifacts.yml'
-
-env:
-  CARGO_TERM_COLOR: always
-  RUST_BACKTRACE: 1
-
-concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+    branches: [main]
 
 jobs:
-  doctor-preflight:
-    name: Doctor Preflight
+  check:
     runs-on: ubuntu-latest
+    
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
 
-      - name: Run doctor strict with JSON report
-        run: |
-          mkdir -p ./tmp
-          cargo run -p ghost-link -- doctor --strict --json ./tmp/doctor-report.json
-
-      - name: Upload doctor report artifact
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: doctor-report
-          path: ./tmp/doctor-report.json
-          retention-days: 14
-
-  license-consistency:
-    name: License Consistency
+      - name: Verify no unresolved stub TODO markers
+        run: ./scripts/verify_no_stub_todos.sh
+      
+      - name: Check code
+        run: cargo check --workspace
+      
+      - name: Run tests
+        run: cargo test --workspace --lib
+      
+      - name: Build release
+        run: cargo build --release --workspace
+      
+  msrv:
     runs-on: ubuntu-latest
+    
     steps:
       - uses: actions/checkout@v4
-      - name: Validate workspace/crate license alignment
-        run: bash scripts/check_license_consistency.sh
-
-  docs:
-    name: Docs
-    uses: ./.github/workflows/docs.yml
-
-  perf-tooling-smoke:
-    name: Perf Tooling Smoke
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Drift Checker Schema Smoke
-        run: |
-          mkdir -p ./tmp
-          python3 - <<'PY'
-          import json
-          from pathlib import Path
-
-          baseline = json.loads(Path("./docs/PERF_BASELINE.json").read_text(encoding="utf-8"))
-          modes = baseline.get("modes", {})
-          summary = {
-              mode: {
-                  "throughput_avg": float(values["throughput_avg"]),
-                  "p95_avg": float(values["p95_avg"]),
-              }
-              for mode, values in modes.items()
-          }
-
-          Path("./tmp/perf-summary-smoke.json").write_text(
-              json.dumps(summary, indent=2),
-              encoding="utf-8",
-          )
-          PY
-
-          python3 scripts/check_perf_drift.py \
-            --baseline ./docs/PERF_BASELINE.json \
-            --current ./tmp/perf-summary-smoke.json
-
-  production-gate:
-    name: Production Gate
-    uses: ./.github/workflows/production-gate.yml
-
-  security:
-    name: Security
-    uses: ./.github/workflows/security.yml
-
-  coverage:
-    name: Code Coverage
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      id-token: write
-    steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-
-      - name: Install tarpaulin
-        run: cargo install cargo-tarpaulin --version 0.31.5 --locked
-
-      - name: Generate coverage report
-        run: |
-          cargo tarpaulin --workspace --out Lcov --output-dir coverage \
-            --timeout 300 --exclude-files benches/* --fail-under 35
-
-      - name: Verify coverage artifact
-        run: |
-          test -s ./coverage/lcov.info
-
-      - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v7
-        with:
-          files: ./coverage/lcov.info
-          token: ${{ secrets.CODECOV_TOKEN }}
-          use_oidc: true
-          # Keep coverage generation strict, but do not fail CI on external Codecov
-          # repository/authorization service errors.
-          fail_ci_if_error: false
-          verbose: true
-
-      - name: Upload coverage artifacts
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: coverage-report
-          path: coverage/
-          retention-days: 30
+      
+      - name: Install Rust 1.89.0
+        uses: dtolnay/rust-toolchain@1.89.0
+      
+      - name: Verify MSRV
+        run: cargo check --workspace

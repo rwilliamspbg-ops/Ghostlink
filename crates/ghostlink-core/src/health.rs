@@ -150,7 +150,7 @@ impl NetworkHealthMonitor {
     pub fn register_tcp_probe_target(&self, node_id: impl Into<String>, target: SocketAddr) {
         self.tcp_probe_targets
             .lock()
-            .unwrap()
+            .unwrap_or_else(|poison| poison.into_inner())
             .insert(node_id.into(), target);
     }
 
@@ -158,13 +158,18 @@ impl NetworkHealthMonitor {
     pub fn clear_tcp_probe_target(&self, node_id: &str) -> bool {
         self.tcp_probe_targets
             .lock()
-            .unwrap()
+            .unwrap_or_else(|poison| poison.into_inner())
             .remove(node_id)
             .is_some()
     }
 
     fn run_active_tcp_probe(&self, node_id: &str) -> Option<bool> {
-        let target = self.tcp_probe_targets.lock().unwrap().get(node_id).copied();
+        let target = self
+            .tcp_probe_targets
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .get(node_id)
+            .copied();
 
         target.map(|addr| TcpStream::connect_timeout(&addr, self.config.timeout).is_ok())
     }
@@ -234,7 +239,10 @@ impl NetworkHealthMonitor {
             });
 
             // Store recent check results (keep last 10)
-            let mut checks = self.recent_checks.lock().unwrap();
+            let mut checks = self
+                .recent_checks
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner());
             if let Some(node_checks) = checks.get_mut(&node.id) {
                 node_checks.push(result);
                 if node_checks.len() > 10 {
@@ -245,7 +253,10 @@ impl NetworkHealthMonitor {
             }
         }
 
-        *self.last_check.lock().unwrap() = Some(now);
+        *self
+            .last_check
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner()) = Some(now);
     }
 
     /// Get health status based on metrics
@@ -265,7 +276,10 @@ impl NetworkHealthMonitor {
 
     /// Get health report for a specific node
     pub fn get_node_health(&self, node_id: &str) -> Option<HealthCheckResult> {
-        let checks = self.recent_checks.lock().unwrap();
+        let checks = self
+            .recent_checks
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
         checks
             .get(node_id)
             .and_then(|checks| checks.last())
@@ -274,13 +288,19 @@ impl NetworkHealthMonitor {
 
     /// Get health report for all nodes
     pub fn get_all_health(&self) -> Vec<HealthCheckResult> {
-        let checks = self.recent_checks.lock().unwrap();
+        let checks = self
+            .recent_checks
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
         checks.values().flat_map(|checks| checks.clone()).collect()
     }
 
     /// Get the number of nodes whose latest health sample is healthy.
     pub fn healthy_node_count(&self) -> usize {
-        let checks = self.recent_checks.lock().unwrap();
+        let checks = self
+            .recent_checks
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
         checks
             .values()
             .filter(|node_checks| {
@@ -294,7 +314,10 @@ impl NetworkHealthMonitor {
 
     /// Check if node needs quantization fallback
     pub fn needs_quantization_fallback(&self, node_id: &str) -> bool {
-        let checks = self.recent_checks.lock().unwrap();
+        let checks = self
+            .recent_checks
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
 
         if let Some(node_checks) = checks.get(node_id) {
             // Check last 3 results for consistent degradation
@@ -321,7 +344,10 @@ impl NetworkHealthMonitor {
 
     /// Get cluster-wide health summary
     pub fn get_health_summary(&self) -> String {
-        let checks = self.recent_checks.lock().unwrap();
+        let checks = self
+            .recent_checks
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
 
         let total_nodes = self.cluster.node_count();
         let healthy_count = checks

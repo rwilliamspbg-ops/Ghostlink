@@ -1,0 +1,66 @@
+version: '3.8'
+
+services:
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ghostlink-ollama
+    ports:
+      - "11434:11434"
+    environment:
+      - OLLAMA_HOST=0.0.0.0:11434
+    volumes:
+      - ollama_data:/root/.ollama
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    pull_policy: always
+
+  ghostlink-backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.ghostlink
+    container_name: ghostlink-backend
+    ports:
+      - "8003:8003"
+    environment:
+      - OLLAMA_BASE_URL=http://ollama:11434
+      - RUST_LOG=debug
+    depends_on:
+      ollama:
+        condition: service_healthy
+    volumes:
+      - ./models.json:/app/models.json
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8003/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  ghostlink-frontend:
+    build:
+      context: ./ghostlink_gui_modern
+      dockerfile: Dockerfile
+    container_name: ghostlink-frontend
+    ports:
+      - "5173:3000"
+    environment:
+      - GHOSTLINK_API_BASE=http://127.0.0.1:8003
+    depends_on:
+      ghostlink-backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  ollama_data:
+    driver: local
+
+networks:
+  default:
+    name: ghostlink-network
+    driver: bridge

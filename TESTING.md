@@ -60,6 +60,12 @@ python3 scripts/analyze_flow_stage_metrics.py --glob './tmp/perf_snapshot_stress
 python3 scripts/check_perf_drift.py --baseline ./docs/PERF_BASELINE.json --current ./tmp/perf_snapshot/summary.json --max-throughput-drop-ratio 0.30 --max-p95-rise-ratio 0.60
 
 # Optional TCP inflight autotuning sweep for the current host profile
+# Default candidate sweeps now include the active inflight value plus nearby queue depths.
+# Override GHOSTLINK_TCP_AUTOTUNE_CANDIDATES only when you want an explicit custom search set.
+GHOSTLINK_TCP_AUTOTUNE=1 GHOSTLINK_TCP_AUTOTUNE_RUNS=3 \
+  cargo run -p ghost-link -- flow iprada-16gb zenbook-32gb 32 32 128 4 tcp
+
+# Example explicit candidate override for constrained experiments
 GHOSTLINK_TCP_AUTOTUNE=1 GHOSTLINK_TCP_AUTOTUNE_RUNS=3 GHOSTLINK_TCP_AUTOTUNE_CANDIDATES=32,64,128,256 \
   cargo run -p ghost-link -- flow iprada-16gb zenbook-32gb 32 32 128 4 tcp
 
@@ -77,9 +83,39 @@ python3 scripts/validate_stage_tail_metrics.py --glob './tmp/perf_snapshot/tcp-*
 # Enforce rollout canary guardrails from summary metrics
 python3 scripts/validate_flow_canary.py --summary ./tmp/perf_snapshot/summary.json --profile production
 
+# Validated 2026-07-01 local stress profile with autotune enabled
+GHOSTLINK_TCP_AUTOTUNE=1 GHOSTLINK_TCP_AUTOTUNE_REFRESH=1 \
+GHOSTLINK_TCP_AUTOTUNE_RUNS=3 GHOSTLINK_TCP_AUTOTUNE_TOKENS=512 \
+GHOSTLINK_TCP_AUTOTUNE_MICRO_BATCH=8 \
+python3 scripts/flow_perf_snapshot.py --runs 8 --warmup-runs 1 --modes tcp inmem \
+  --exec-tokens 512 --micro-batch 8 --output-dir ./tmp/perf_snapshot_stress_autotune
+python3 scripts/validate_stage_tail_metrics.py --glob './tmp/perf_snapshot_stress_autotune/tcp-*.json'
+python3 scripts/validate_flow_canary.py --summary ./tmp/perf_snapshot_stress_autotune/summary.json --profile stress
+
 # GUI readiness and detailed diagnostics
 cargo run -p ghost-link -- gui-check --strict
 GHOSTLINK_GUI_DIAG_JSON=./tmp/gui-diag.json cargo run -p ghost-link -- gui-diagnose --strict
+
+# By default, GUI and doctor commands prefer the repo `.venv/bin/python` when present.
+# Set GHOSTLINK_PYTHON only to override that interpreter selection explicitly.
+python3 scripts/validate_gui_python_config.py
+
+# Export doctor JSON with structured context for automation consumers
+cargo run -p ghost-link -- doctor --strict --json ./tmp/doctor-report.json
+
+# Example: inspect structured context for display session, config, GUI modules, and network probe
+jq '.checks[] | select(.name == "display-session" or .name == "local-config" or .name == "gui-python-modules" or .name == "network-probe") | {name, status, context}' ./tmp/doctor-report.json
+
+# Validate machine-readable doctor context without scraping detail strings
+python3 scripts/validate_doctor_context.py --report ./tmp/doctor-report.json --allow-missing-gui-modules --allow-headless
+
+# CI note: the `doctor-preflight` job runs the same validator against `./tmp/doctor-report.json`
+# It also runs a loopback-target accessibility pass and validates `network-probe.context`
+
+# Emit a compact markdown summary for artifact consumers
+python3 scripts/summarize_doctor_report.py --report ./tmp/doctor-report.json --output ./tmp/doctor-report-summary.md
+
+# CI note: the `doctor-preflight` job publishes both doctor markdown summaries to the GitHub Actions job summary
 
 # Package-owned integration suite
 cargo test -p ghostlink-core --test integration
@@ -90,7 +126,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 # Parse-check all Rust source files (including non-exported modules)
 find crates -name '*.rs' -print0 | xargs -0 -n1 rustfmt --check --edition 2021
 
-# Validate GUI endpoint contract drift against mock backend
+# Validate GUI endpoint contract drift against real-stack
 python3 scripts/validate_gui_api_contract.py
 
 # Fault-injection style runtime matrix (CI-friendly)
@@ -133,7 +169,7 @@ Use CI workflow summaries as the source of truth for branch-level totals.
 
 ## Coverage Status
 
-Coverage is reported by CI via `cargo tarpaulin` (`Lcov` output) and uploaded to Codecov, with raw coverage artifacts retained in workflow artifacts.
+Coverage is reported by CI via `cargo tarpaulin` (`Lcov` output) and uploaded to Codecov using GitHub Actions OIDC, with raw coverage artifacts retained in workflow artifacts.
 
 ## Runtime Detection Tests
 
@@ -161,4 +197,4 @@ Current benchmark targets cover:
 - Full hardware probing only exercises `nvidia-smi` and `lspci` when those tools exist on the host
 - Health monitoring uses collected cluster metrics and heartbeat state instead of direct ping-style network probes
 - Tensor migration remains incomplete; dynamic rebalance heuristics are now improved but still early-stage
-- GUI function-matrix validation currently runs as a local/devcontainer procedure, not a dedicated CI workflow job
+- GUI function-matrix smoke is executed in CI via the `production-gate.yml` workflow (`xvfb-run ... third_party/mohawk_gui/test_dashboard.py`)

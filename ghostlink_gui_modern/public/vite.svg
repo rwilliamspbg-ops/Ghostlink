@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" fill="none">
+  <!-- Ghostlink logo - stylized G with terminal cursor -->
+  <rect x="2" y="2" width="28" height="28" rx="6" fill="#1e293b" stroke="#3b82f6" stroke-width="2.5"/>
+  <text x="16" y="22" text-anchor="middle" font-family="monospace" font-size="18" font-weight="bold" fill="#3b82f6">G</text>
+  <rect x="20" y="9" width="2" height="10" fill="#60a5fa">
+    <animate attributeName="opacity" values="1;0;1" dur="1s" repeatCount="indefinite"/>
+  </rect>
+</svg>

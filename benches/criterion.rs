@@ -36,6 +36,32 @@ fn bench_ring(c: &mut Criterion) {
         });
     });
 
+    group.bench_function(BenchmarkId::new("spsc_throughput", "mt"), |b| {
+        b.iter_custom(|iters| {
+            let ring = Arc::new(SpscRingBuffer::<u64>::new(RingConfig::default()));
+            let producer_ring = Arc::clone(&ring);
+            let consumer_ring = Arc::clone(&ring);
+
+            let start = std::time::Instant::now();
+            let producer = std::thread::spawn(move || {
+                for i in 0..iters {
+                    while producer_ring.push(i).is_err() {
+                        core::hint::spin_loop();
+                    }
+                }
+            });
+
+            for _ in 0..iters {
+                while consumer_ring.pop().is_none() {
+                    core::hint::spin_loop();
+                }
+            }
+
+            producer.join().unwrap();
+            start.elapsed()
+        });
+    });
+
     group.finish();
 }
 

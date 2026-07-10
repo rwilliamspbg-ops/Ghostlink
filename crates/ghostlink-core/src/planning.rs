@@ -6,8 +6,8 @@
 //! - Load balancing and fault detection integration
 
 use crate::accelerator::ExecutionBackend;
+use crate::cluster::ClusterState;
 use crate::cluster::NodeStatus;
-use crate::cluster::{ClusterState, NodeMetrics};
 use crate::host::{AccelerationMode, RuntimeProfile};
 use crate::protocol::NodeResources;
 
@@ -372,12 +372,13 @@ pub fn rebalance_assignments(cluster: &ClusterState, plan: &mut PlacementPlan) -
 }
 
 /// Simulate layer streaming on a node with metrics updates
+#[cfg(test)]
 pub fn simulate_layer_streaming(
     node_id: &str,
     cluster: &ClusterState,
     start_layer: usize,
     end_layer: usize,
-) -> Option<NodeMetrics> {
+) -> Option<crate::cluster::NodeMetrics> {
     let mut metrics = cluster.get_metrics(node_id)?;
 
     // Record VRAM usage
