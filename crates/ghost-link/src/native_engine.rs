@@ -265,9 +265,19 @@ fn extract_generation_text(stdout: &str, stderr: &str, prompt: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::NativeEngineClient;
+    use std::sync::{Mutex, OnceLock};
+
+    fn env_lock() -> &'static Mutex<()> {
+        static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        ENV_LOCK.get_or_init(|| Mutex::new(()))
+    }
 
     #[test]
     fn native_engine_generates_preview() {
+        let _guard = env_lock().lock().expect("env lock poisoned");
+        std::env::remove_var("GHOSTLINK_NATIVE_ENGINE");
+        std::env::remove_var("GHOSTLINK_MODEL_PATH");
+
         let engine = NativeEngineClient::new();
         let out = engine
             .generate(
@@ -283,6 +293,8 @@ mod tests {
 
     #[test]
     fn llama_mode_requires_model_path() {
+        let _guard = env_lock().lock().expect("env lock poisoned");
+
         let engine = NativeEngineClient::new();
         std::env::set_var("GHOSTLINK_NATIVE_ENGINE", "llama_cpp");
         std::env::remove_var("GHOSTLINK_MODEL_PATH");
