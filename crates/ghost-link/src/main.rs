@@ -2167,7 +2167,11 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                 )
                 .await
             {
-                Ok(text) => (text.trim().to_string(), true, InferenceBackend::Ollama.as_str()),
+                Ok(text) => (
+                    text.trim().to_string(),
+                    true,
+                    InferenceBackend::Ollama.as_str(),
+                ),
                 Err(_) => {
                     let fallback = format!(
                         "Inference backend '{}' unavailable. Generated degraded fallback for prompt: '{}'",
@@ -4672,8 +4676,8 @@ fn run_gui_preflight_checks() -> Result<()> {
     Ok(())
 }
 
-mod ollama;
 mod native_engine;
+mod ollama;
 mod runtime;
 
 // Re-export protocol module for use in main.rs

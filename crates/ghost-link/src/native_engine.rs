@@ -196,7 +196,10 @@ impl NativeEngineClient {
         if let Some(text) = parsed
             .get("choices")
             .and_then(|choices| choices.get(0))
-            .and_then(|c| c.get("text").or_else(|| c.get("message").and_then(|m| m.get("content"))))
+            .and_then(|c| {
+                c.get("text")
+                    .or_else(|| c.get("message").and_then(|m| m.get("content")))
+            })
             .and_then(|v| v.as_str())
         {
             let text = text.trim();
@@ -210,7 +213,11 @@ impl NativeEngineClient {
 }
 
 fn extract_generation_text(stdout: &str, stderr: &str, prompt: &str) -> String {
-    let candidate = if stdout.trim().is_empty() { stderr } else { stdout };
+    let candidate = if stdout.trim().is_empty() {
+        stderr
+    } else {
+        stdout
+    };
 
     let mut kept = Vec::new();
     for raw in candidate.lines() {
@@ -263,7 +270,11 @@ mod tests {
     fn native_engine_generates_preview() {
         let engine = NativeEngineClient::new();
         let out = engine
-            .generate("ghostlink-30b-v1", "summarize distributed runtime scheduling", 128)
+            .generate(
+                "ghostlink-30b-v1",
+                "summarize distributed runtime scheduling",
+                128,
+            )
             .expect("native generation should succeed");
         assert!(out.text.contains("[native:ghostlink-30b-v1]"));
         assert!(out.text.contains("token budget 128"));

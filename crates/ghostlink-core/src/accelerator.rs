@@ -154,16 +154,6 @@ unsafe fn scale_x86_256_impl(input: &[f32], output: &mut [f32], scale: f32) {
     scale_scalar(&input[index..], &mut output[index..], scale);
 }
 
-#[cfg(target_arch = "x86_64")]
-unsafe fn scale_x86_512_impl(input: &[f32], output: &mut [f32], scale: f32) {
-    scale_x86_256(input, output, scale)
-}
-
-#[cfg(target_arch = "x86")]
-unsafe fn scale_x86_512_impl(input: &[f32], output: &mut [f32], scale: f32) {
-    scale_x86_256(input, output, scale)
-}
-
 #[cfg(target_arch = "aarch64")]
 unsafe fn scale_neon_impl(input: &[f32], output: &mut [f32], scale: f32) {
     use std::arch::aarch64::{vdupq_n_f32, vld1q_f32, vmulq_f32, vst1q_f32};
