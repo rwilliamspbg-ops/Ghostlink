@@ -103,11 +103,8 @@ fn scale_x86_256(input: &[f32], output: &mut [f32], scale: f32) {
 
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 fn scale_x86_512(input: &[f32], output: &mut [f32], scale: f32) {
-    if std::is_x86_feature_detected!("avx512f") {
-        unsafe { scale_x86_512_impl(input, output, scale) }
-    } else {
-        scale_x86_256(input, output, scale)
-    }
+    // Keep AVX-512 mode API-compatible on stable Rust by falling back to AVX2/scalar.
+    scale_x86_256(input, output, scale)
 }
 
 #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
@@ -153,38 +150,6 @@ unsafe fn scale_x86_256_impl(input: &[f32], output: &mut [f32], scale: f32) {
         let output_vec = _mm256_mul_ps(input_vec, scale_vec);
         _mm256_storeu_ps(output.as_mut_ptr().add(index), output_vec);
         index += 8;
-    }
-    scale_scalar(&input[index..], &mut output[index..], scale);
-}
-
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx512f")]
-unsafe fn scale_x86_512_impl(input: &[f32], output: &mut [f32], scale: f32) {
-    use std::arch::x86_64::{_mm512_loadu_ps, _mm512_mul_ps, _mm512_set1_ps, _mm512_storeu_ps};
-
-    let scale_vec = _mm512_set1_ps(scale);
-    let mut index = 0usize;
-    while index + 16 <= input.len() {
-        let input_vec = _mm512_loadu_ps(input.as_ptr().add(index));
-        let output_vec = _mm512_mul_ps(input_vec, scale_vec);
-        _mm512_storeu_ps(output.as_mut_ptr().add(index), output_vec);
-        index += 16;
-    }
-    scale_scalar(&input[index..], &mut output[index..], scale);
-}
-
-#[cfg(target_arch = "x86")]
-#[target_feature(enable = "avx512f")]
-unsafe fn scale_x86_512_impl(input: &[f32], output: &mut [f32], scale: f32) {
-    use std::arch::x86::{_mm512_loadu_ps, _mm512_mul_ps, _mm512_set1_ps, _mm512_storeu_ps};
-
-    let scale_vec = _mm512_set1_ps(scale);
-    let mut index = 0usize;
-    while index + 16 <= input.len() {
-        let input_vec = _mm512_loadu_ps(input.as_ptr().add(index));
-        let output_vec = _mm512_mul_ps(input_vec, scale_vec);
-        _mm512_storeu_ps(output.as_mut_ptr().add(index), output_vec);
-        index += 16;
     }
     scale_scalar(&input[index..], &mut output[index..], scale);
 }

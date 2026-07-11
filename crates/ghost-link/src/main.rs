@@ -112,6 +112,33 @@ impl FlowTransportMode {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InferenceBackend {
+    Ollama,
+    Native,
+}
+
+impl InferenceBackend {
+    fn from_env() -> Self {
+        match std::env::var("GHOSTLINK_INFERENCE_BACKEND")
+            .unwrap_or_else(|_| "ollama".to_string())
+            .trim()
+            .to_ascii_lowercase()
+            .as_str()
+        {
+            "native" | "fabric" => Self::Native,
+            _ => Self::Ollama,
+        }
+    }
+
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Ollama => "ollama",
+            Self::Native => "native",
+        }
+    }
+}
+
 struct FlowOptions<'a> {
     local_id: &'a str,
     remote_id: &'a str,
@@ -1425,6 +1452,8 @@ struct BackendState {
     started_at: Instant,
     backend_url: String,
     cluster: Arc<ClusterState>,
+    inference_backend: InferenceBackend,
+    native_engine_client: native_engine::NativeEngineClient,
     ollama_client: ollama::OllamaClient,
     ollama_available: Arc<tokio::sync::Mutex<bool>>,
 }
@@ -1646,7 +1675,18 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         State(state): State<Arc<Mutex<BackendState>>>,
         Json(req): Json<ChatCompletionRequest>,
     ) -> Json<ChatCompletionResponse> {
-        let (model, cluster, chat_req_id) = {
+        let prompt = req
+            .messages
+            .iter()
+            .rev()
+            .find_map(|msg| {
+                msg.get("content")
+                    .and_then(|content| content.as_str())
+                    .map(str::to_owned)
+            })
+            .unwrap_or_default();
+
+        let (model, cluster, chat_req_id, inference_backend, native_engine_client) = {
             let mut backend = lock_state(&state);
             backend.chat_requests = backend.chat_requests.saturating_add(1);
             let model = if req.model.trim().is_empty() {
@@ -1654,7 +1694,13 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             } else {
                 req.model.clone()
             };
-            (model, Arc::clone(&backend.cluster), backend.chat_requests)
+            (
+                model,
+                Arc::clone(&backend.cluster),
+                backend.chat_requests,
+                backend.inference_backend,
+                backend.native_engine_client.clone(),
+            )
         };
 
         let nodes = cluster.nodes();
@@ -1719,6 +1765,42 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             );
         }
 
+        let (response_text, real_inference, backend_used) = match inference_backend {
+            InferenceBackend::Ollama => (
+                format!(
+                    "Ghostlink '{}' backend accepted completion request #{} for model '{}'. Prompt length: {} chars.{}",
+                    InferenceBackend::Ollama.as_str(),
+                    chat_req_id,
+                    model,
+                    prompt.len(),
+                    execution_info
+                ),
+                false,
+                InferenceBackend::Ollama.as_str(),
+            ),
+            InferenceBackend::Native => match native_engine_client
+                .generate(&model, &prompt, exec_tokens)
+            {
+                Ok(gen) => (
+                    gen.text,
+                    gen.real_inference,
+                    InferenceBackend::Native.as_str(),
+                ),
+                Err(err) => (
+                    format!(
+                        "Ghostlink native fabric backend executed request #{} on model '{}'. Prompt length: {} chars.{} Native error: {}",
+                        chat_req_id,
+                        model,
+                        prompt.len(),
+                        execution_info,
+                        err
+                    ),
+                    false,
+                    InferenceBackend::Native.as_str(),
+                ),
+            },
+        };
+
         Json(ChatCompletionResponse {
             id: format!("chatcmpl-{}", rand::random::<u32>()),
             object: "chat.completion".to_string(),
@@ -1731,14 +1813,9 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                 index: 0,
                 message: serde_json::json!({
                     "role": "assistant",
-                    "content": format!(
-                        "As your Principal Engineer for **Sovereign Mohawk Proto LLC**, I have fulfilled completion request #{} using model '{}' (exec_tokens={}, micro_batch={}). Nominal performance achieved: {}",
-                        chat_req_id,
-                        model,
-                        exec_tokens,
-                        exec_micro_batch,
-                        execution_info
-                    )
+                    "content": response_text,
+                    "backend": backend_used,
+                    "real_inference": real_inference
                 }),
                 finish_reason: "stop".to_string(),
             }],
@@ -2056,13 +2133,22 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             }
         }
 
-        let (current_model, cluster, ollama_client, ollama_available) = {
+        let (
+            current_model,
+            cluster,
+            ollama_client,
+            ollama_available,
+            inference_backend,
+            native_engine_client,
+        ) = {
             let backend = lock_state(&state);
             (
                 backend.current_model.clone(),
                 Arc::clone(&backend.cluster),
                 backend.ollama_client.clone(),
                 Arc::clone(&backend.ollama_available),
+                backend.inference_backend,
+                backend.native_engine_client.clone(),
             )
         };
 
@@ -2071,30 +2157,52 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         let exec_tokens = chat_exec_token_budget(requested_exec_tokens);
         let exec_micro_batch = chat_exec_micro_batch();
 
-        // Always attempt real inference first. Keep the availability flag as
-        // an observed health signal instead of a hard gate.
-        let (response_text, ollama_is_available) = match ollama_client
-            .generate(
-                &current_model,
-                &req.message,
-                req.temperature.unwrap_or(0.7),
-                exec_tokens,
-            )
-            .await
-        {
-            Ok(text) => (text.trim().to_string(), true),
-            Err(_) => {
-                let fallback = format!(
-                    "Ollama unavailable. Simulated response to: '{}'",
-                    req.message
-                );
-                (fallback, false)
+        let (response_text, real_inference, backend_used) = match inference_backend {
+            InferenceBackend::Ollama => match ollama_client
+                .generate(
+                    &current_model,
+                    &req.message,
+                    req.temperature.unwrap_or(0.7),
+                    exec_tokens,
+                )
+                .await
+            {
+                Ok(text) => (
+                    text.trim().to_string(),
+                    true,
+                    InferenceBackend::Ollama.as_str(),
+                ),
+                Err(_) => {
+                    let fallback = format!(
+                        "Inference backend '{}' unavailable. Generated degraded fallback for prompt: '{}'",
+                        InferenceBackend::Ollama.as_str(),
+                        req.message
+                    );
+                    (fallback, false, InferenceBackend::Ollama.as_str())
+                }
+            },
+            InferenceBackend::Native => {
+                match native_engine_client.generate(&current_model, &req.message, exec_tokens) {
+                    Ok(gen) => (
+                        gen.text,
+                        gen.real_inference,
+                        InferenceBackend::Native.as_str(),
+                    ),
+                    Err(err) => (
+                        format!(
+                            "Ghostlink native fabric backend processed model '{}' with {} estimated tokens. Native error: {}",
+                            current_model, exec_tokens, err
+                        ),
+                        false,
+                        InferenceBackend::Native.as_str(),
+                    ),
+                }
             }
         };
 
         {
             let mut available_flag = ollama_available.lock().await;
-            *available_flag = ollama_is_available;
+            *available_flag = real_inference;
         }
 
         let nodes = cluster.nodes();
@@ -2203,11 +2311,12 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             "request_id": format!("req-{}", request_id),
             "session_id": session_id,
             "model": current_model,
-            "ollama_url": "local",
+            "inference_backend": backend_used,
+            "ollama_url": if backend_used == "ollama" { "local" } else { "disabled" },
             "tokens_estimated": token_estimate,
             "exec_tokens": exec_tokens,
             "exec_micro_batch": exec_micro_batch,
-            "real_inference": ollama_is_available,
+            "real_inference": real_inference,
             "metrics": result.map(|r| serde_json::json!({
                 "throughput": r.throughput_tokens_per_sec,
                 "p95_ms": r.p95_token_latency_ms
@@ -2488,14 +2597,15 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
     let ollama_url = std::env::var("OLLAMA_BASE_URL")
         .ok()
         .unwrap_or_else(|| "http://localhost:11434".to_string());
+    let inference_backend = InferenceBackend::from_env();
+    let native_engine_client = native_engine::NativeEngineClient::new();
     let ollama_client = ollama::OllamaClient::new(ollama_url);
     let ollama_available = Arc::new(tokio::sync::Mutex::new(false));
 
-    if false {
-        println!("Ollama backend connected and available.");
-    } else {
-        println!("Ollama backend NOT available - using mock responses.");
-    }
+    println!(
+        "Inference backend selected: {} (set GHOSTLINK_INFERENCE_BACKEND=native|ollama)",
+        inference_backend.as_str()
+    );
 
     let state = Arc::new(Mutex::new(BackendState {
         models,
@@ -2516,6 +2626,8 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         started_at: Instant::now(),
         backend_url,
         cluster,
+        inference_backend,
+        native_engine_client,
         ollama_client,
         ollama_available,
     }));
@@ -4564,6 +4676,7 @@ fn run_gui_preflight_checks() -> Result<()> {
     Ok(())
 }
 
+mod native_engine;
 mod ollama;
 mod runtime;
 

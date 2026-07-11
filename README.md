@@ -69,6 +69,42 @@ npm run dev -- --host 127.0.0.1 --port 5173
 ollama serve
 ```
 
+## Native Llama Server Mode
+
+Use this path to run Ghostlink with native local inference (no Ollama dependency in request path).
+
+### One-command stack launch
+
+```bash
+bash scripts/run_native_llama_server_stack.sh
+```
+
+This script will:
+1. Ensure `llama.cpp` exists under `third_party/llama.cpp`.
+2. Build `llama-server` when missing.
+3. Download a tiny GGUF model to `/tmp/ghostlink-models/stories15M-q4_0.gguf` when missing.
+4. Start `llama-server` on `127.0.0.1:8080`.
+5. Start Ghostlink API on `127.0.0.1:8003` with native backend mode.
+
+### Validation (real inference proof)
+
+```bash
+bash scripts/validate_native_llama_server.sh
+```
+
+Expected output includes:
+- `real_inference=True`
+- `inference_backend=native`
+
+### Key environment variables
+
+- `GHOSTLINK_MODEL_PATH`: override GGUF file path.
+- `GHOSTLINK_MODEL_URL`: override download URL for first-time bootstrap.
+- `GHOSTLINK_LLAMA_SERVER_HOST`: server bind host (default `127.0.0.1`).
+- `GHOSTLINK_LLAMA_SERVER_PORT`: server port (default `8080`).
+- `GHOSTLINK_API_HOST`: Ghostlink API host (default `127.0.0.1`).
+- `GHOSTLINK_API_PORT`: Ghostlink API port (default `8003`).
+
 ## Docker
 
 ### Production compose
