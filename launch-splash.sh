@@ -1,7 +1,6 @@
 #!/bin/bash
 
-# Ghostlink Studio - Splash Screen with Progress Indicator
-# Shows animated progress while services start up
+# Ghostlink Studio - Splash Screen (native llama-server path)
 
 # Colors
 RED='\033[0;31m'
@@ -59,14 +58,12 @@ echo ""
 echo -e "${BLUE}Checking Components:${NC}"
 echo ""
 
-# Check Ollama
-echo -n "  Ollama: "
-if command -v ollama &> /dev/null; then
-    echo -e "${GREEN}✓ Installed${NC}"
-    OLLAMA_INSTALLED=1
+# Check native launcher
+echo -n "  Native stack launcher: "
+if [ -f "scripts/run_native_llama_server_stack.sh" ]; then
+    echo -e "${GREEN}✓ Found${NC}"
 else
-    echo -e "${YELLOW}✗ Not installed${NC}"
-    OLLAMA_INSTALLED=0
+    echo -e "${RED}✗ Missing${NC}"
 fi
 
 # Check Backend
@@ -93,28 +90,9 @@ echo ""
 echo -e "${BLUE}Starting Services:${NC}"
 echo ""
 
-# Ollama startup
-if [ $OLLAMA_INSTALLED -eq 1 ]; then
-    echo "  1. Ollama (Model Inference)"
-    progress_bar 0 4
-    echo "   Starting..."
-    sleep 1
-    progress_bar 1 4
-    echo "   Checking health..."
-    sleep 1
-    progress_bar 2 4
-    echo "   Pulling model..."
-    sleep 1
-    progress_bar 3 4
-    echo "   Ready!"
-    progress_bar 4 4
-    echo -e "   ${GREEN}✓ Online${NC}"
-    echo ""
-fi
-
 # Backend startup
 if [ $BACKEND_FOUND -eq 1 ]; then
-    echo "  2. Ghostlink Backend (API Server)"
+    echo "  1. Ghostlink Backend (API Server)"
     progress_bar 0 3
     echo "   Starting..."
     sleep 1
@@ -130,7 +108,7 @@ fi
 
 # GUI startup
 if [ $GUI_FOUND -eq 1 ]; then
-    echo "  3. Ghostlink GUI (Web Interface)"
+    echo "  2. Ghostlink GUI (Web Interface)"
     progress_bar 0 4
     echo "   Installing dependencies..."
     sleep 1
@@ -152,15 +130,13 @@ fi
 echo -e "${BLUE}Services Ready:${NC}"
 echo ""
 
-if [ $OLLAMA_INSTALLED -eq 1 ]; then
-    echo -e "  ${CYAN}Ollama${NC}           → ${WHITE}http://localhost:11434${NC}"
-fi
 if [ $BACKEND_FOUND -eq 1 ]; then
     echo -e "  ${CYAN}Backend${NC}          → ${WHITE}http://127.0.0.1:8003${NC}"
 fi
 if [ $GUI_FOUND -eq 1 ]; then
     echo -e "  ${CYAN}Frontend${NC}         → ${WHITE}http://127.0.0.1:5173${NC}"
 fi
+echo -e "  ${CYAN}Native Inference${NC} → ${WHITE}llama-server (port 8080 by default)${NC}"
 
 echo ""
 echo -e "${MAGENTA}┌────────────────────────────────────────────────────────────────────────────────┐${NC}"

@@ -1,0 +1,45 @@
+# VCS and editor
+.git
+.github
+.vscode
+
+# Build artifacts
+target
+target/
+**/target
+**/target/
+*.o
+*.a
+*.so
+*.dylib
+
+# Local runtime/model artifacts
+third_party
+third_party/
+tmp
+tmp/
+*.gguf
+*.bin
+*.exe
+
+# Python cache / env
+__pycache__/
+**/__pycache__/
+.venv
+.venv/
+venv
+venv/
+
+# Node artifacts
+node_modules
+node_modules/
+**/node_modules/
+
+# Logs and reports
+*.log
+*.out
+*.tmp
+
+# Large docs and notes not needed in container runtime
+*.md
+*.txt

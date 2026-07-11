@@ -27,3 +27,7 @@ ghostlink.toml
 .git_commit_msg
 server.log
 .github_pr_template.md
+
+# Local native-runtime bootstrap artifacts
+third_party/llama.cpp/
+stories15M-q4_0.gguf

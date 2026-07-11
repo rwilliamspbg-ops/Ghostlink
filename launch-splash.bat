@@ -35,15 +35,12 @@ REM Check components
 echo Checking Components:
 echo.
 
-REM Check Ollama
-echo   Ollama: 
-where ollama >nul 2>nul
-if !errorlevel! equ 0 (
-    echo     [OK] Installed
-    set OLLAMA_INSTALLED=1
+REM Check native stack launcher
+echo   Native stack launcher:
+if exist "scripts\run_native_llama_server_stack.sh" (
+    echo     [OK] Found
 ) else (
-    echo     [--] Not installed
-    set OLLAMA_INSTALLED=0
+    echo     [--] Missing
 )
 
 REM Check Backend
@@ -73,23 +70,9 @@ echo.
 echo Starting Services:
 echo.
 
-REM Ollama startup
-if !OLLAMA_INSTALLED! equ 1 (
-    echo   1. Ollama (Model Inference)
-    echo   [==========----------] 25%% Starting...
-    timeout /t 1 /nobreak >nul
-    echo   [====================] 50%% Checking health...
-    timeout /t 1 /nobreak >nul
-    echo   [============================] 75%% Pulling model...
-    timeout /t 1 /nobreak >nul
-    echo   [====================================] 100%% Ready!
-    echo   [OK] Online
-    echo.
-)
-
 REM Backend startup
 if !BACKEND_FOUND! equ 1 (
-    echo   2. Ghostlink Backend (API Server)
+    echo   1. Ghostlink Backend (API Server)
     echo   [==============------] 33%% Starting...
     timeout /t 1 /nobreak >nul
     echo   [==========================] 66%% Loading...
@@ -101,7 +84,7 @@ if !BACKEND_FOUND! equ 1 (
 
 REM GUI startup
 if !GUI_FOUND! equ 1 (
-    echo   3. Ghostlink GUI (Web Interface)
+    echo   2. Ghostlink GUI (Web Interface)
     echo   [==========----------] 25%% Installing dependencies...
     timeout /t 1 /nobreak >nul
     echo   [====================] 50%% Building assets...
@@ -117,15 +100,13 @@ REM Service info
 echo Services Ready:
 echo.
 
-if !OLLAMA_INSTALLED! equ 1 (
-    echo   Ollama             ^> http://localhost:11434
-)
 if !BACKEND_FOUND! equ 1 (
     echo   Backend            ^> http://127.0.0.1:8003
 )
 if !GUI_FOUND! equ 1 (
     echo   Frontend           ^> http://127.0.0.1:5173
 )
+echo   Native Inference   ^> llama-server (port 8080 by default)
 
 echo.
 echo ┌────────────────────────────────────────────────────────────────────────────────┐

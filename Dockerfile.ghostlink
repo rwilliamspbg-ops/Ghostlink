@@ -2,32 +2,14 @@
 # Optimized for layer caching and minimal final image size
 
 # Build stage
-FROM rust:1.82-bookworm as builder
+FROM rust:1.88-bookworm as builder
 WORKDIR /build
 
-# 1. Cache dependencies
-# Copy manifests only
+# Copy workspace manifests and source
 COPY Cargo.toml Cargo.lock ./
-COPY crates/ghost-link/Cargo.toml ./crates/ghost-link/
-COPY crates/ghostlink-core/Cargo.toml ./crates/ghostlink-core/
-COPY crates/ghostlink-gui/Cargo.toml ./crates/ghostlink-gui/
-
-# Create a dummy src for dependency compilation
-RUN mkdir -p crates/ghost-link/src crates/ghostlink-core/src \
-    && echo "fn main() {}" > crates/ghost-link/src/main.rs \
-    && echo "fn main() {}" > crates/ghostlink-core/src/lib.rs
-
-# Build only dependencies
-RUN cargo build --release -p ghost-link -p ghostlink-core
-
-# 2. Build application
-# Now copy actual source
 COPY crates ./crates
 
-# Remove dummy files to ensure fresh build of the source
-RUN rm crates/ghost-link/src/main.rs crates/ghostlink-core/src/lib.rs
-
-# Full build
+# Build application
 RUN cargo build --release -p ghost-link -p ghostlink-core
 
 # Runtime stage

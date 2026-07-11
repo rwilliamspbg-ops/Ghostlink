@@ -1,8 +1,6 @@
 @echo off
-REM
 REM Ghostlink Studio - Complete Launch Script (Windows)
-REM Starts all services: Ollama, Backend API, GUI Frontend, and Runtime Detection
-REM
+REM Native llama-server + backend + GUI
 
 setlocal enabledelayedexpansion
 
@@ -10,6 +8,10 @@ set "BACKEND_HOST=127.0.0.1"
 set "BACKEND_PORT=8003"
 set "GUI_PORT=5173"
 set "PROJECT_ROOT=%~dp0"
+set "LLAMA_SERVER_BIN=%PROJECT_ROOT%third_party\llama.cpp\build\bin\llama-server.exe"
+set "LLAMA_SERVER_BIN_ALT=%PROJECT_ROOT%third_party\llama.cpp\build\bin\llama-server"
+set "LLAMA_MODEL=%PROJECT_ROOT%tmp\models\model.gguf"
+set "LLAMA_SERVER_URL=http://127.0.0.1:8080/completion"
 
 echo.
 echo ════════════════════════════════════════════════════
@@ -44,27 +46,44 @@ echo [✓] Backend built
 cd "%PROJECT_ROOT%"
 
 echo.
-echo Configuring Ollama backend...
-python use_ollama.py
-if errorlevel 1 (
-    echo [WARN] Failed to apply Ollama configuration. Continuing with default backend.
-) else (
-    echo [✓] Ollama configuration applied.
-)
-
-echo.
 echo Starting services...
 echo.
 
-REM Start Ollama service in a new window
-echo [INFO] Starting Ollama Service...
-start "Ollama" cmd /k "ollama serve"
-timeout /t 3 /nobreak >nul
-echo [✓] Ollama startup command issued.
+if exist "%LLAMA_SERVER_BIN%" (
+    echo [INFO] Starting llama-server on http://127.0.0.1:8080 ...
+    if not exist "%LLAMA_MODEL%" (
+        echo [WARN] Model not found at %LLAMA_MODEL%
+        echo [WARN] Falling back to simulated native mode.
+        set "GHOSTLINK_NATIVE_ENGINE=simulated"
+    ) else (
+        start "llama-server" cmd /k ""%LLAMA_SERVER_BIN%" -m "%LLAMA_MODEL%" --host 127.0.0.1 --port 8080 -ngl 0"
+        timeout /t 3 /nobreak >nul
+        set "GHOSTLINK_NATIVE_ENGINE=llama_server"
+    )
+)
+if not defined GHOSTLINK_NATIVE_ENGINE if exist "%LLAMA_SERVER_BIN_ALT%" (
+    echo [INFO] Starting llama-server on http://127.0.0.1:8080 ...
+    if not exist "%LLAMA_MODEL%" (
+        echo [WARN] Model not found at %LLAMA_MODEL%
+        echo [WARN] Falling back to simulated native mode.
+        set "GHOSTLINK_NATIVE_ENGINE=simulated"
+    ) else (
+        start "llama-server" cmd /k ""%LLAMA_SERVER_BIN_ALT%" -m "%LLAMA_MODEL%" --host 127.0.0.1 --port 8080 -ngl 0"
+        timeout /t 3 /nobreak >nul
+        set "GHOSTLINK_NATIVE_ENGINE=llama_server"
+    )
+)
+if not defined GHOSTLINK_NATIVE_ENGINE (
+    echo [WARN] llama-server binary not found at %LLAMA_SERVER_BIN%
+    echo [WARN] Backend will run with simulated native mode unless env overrides are provided.
+    set "GHOSTLINK_NATIVE_ENGINE=simulated"
+)
+set "GHOSTLINK_INFERENCE_BACKEND=native"
+set "GHOSTLINK_LLAMA_SERVER_URL=%LLAMA_SERVER_URL%"
 
 REM Start backend in new window
 echo [INFO] Starting Backend API on http://%BACKEND_HOST%:%BACKEND_PORT%
-start "Ghostlink Backend API" cmd /k "cd /d \"%PROJECT_ROOT%crates\\ghost-link\" && cargo run --release -- serve %BACKEND_HOST% %BACKEND_PORT%"
+start "Ghostlink Backend API" cmd /k "cd /d "%PROJECT_ROOT%" && set GHOSTLINK_INFERENCE_BACKEND=%GHOSTLINK_INFERENCE_BACKEND% && set GHOSTLINK_NATIVE_ENGINE=%GHOSTLINK_NATIVE_ENGINE% && set GHOSTLINK_LLAMA_SERVER_URL=%GHOSTLINK_LLAMA_SERVER_URL% && cargo run -p ghost-link -- serve %BACKEND_HOST% %BACKEND_PORT%"
 timeout /t 3 /nobreak >nul
 
 REM Start GUI in new window
@@ -94,6 +113,7 @@ echo Test Commands:
 echo   Runtime:   curl http://%BACKEND_HOST%:%BACKEND_PORT%/api/runtime/detect
 echo   Models:    curl "http://%BACKEND_HOST%:%BACKEND_PORT%/api/runtime/models?runtime=cpu"
 echo   Recommend: curl "http://%BACKEND_HOST%:%BACKEND_PORT%/api/runtime/recommend?memory_gb=8"
+echo   Native:    curl -X POST http://%BACKEND_HOST%:%BACKEND_PORT%/api/inference/chat -H "content-type: application/json" -d "{\"message\":\"hello\"}"
 echo Open http://127.0.0.1:%GUI_PORT% in your browser
 echo ════════════════════════════════════════════════════
 echo.
