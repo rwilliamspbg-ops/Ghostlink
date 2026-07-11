@@ -129,6 +129,28 @@ unsafe fn scale_x86_256_impl(input: &[f32], output: &mut [f32], scale: f32) {
 
     let scale_vec = _mm256_set1_ps(scale);
     let mut index = 0usize;
+    // Unroll 4x to process 32 floats (four 256-bit AVX2 registers) per loop iteration.
+    // This allows modern CPU out-of-order execution pipelines to execute multiple independent
+    // vector multiplications in parallel, avoiding dependency stalls and loop overhead.
+    while index + 32 <= input.len() {
+        let input_vec0 = _mm256_loadu_ps(input.as_ptr().add(index));
+        let input_vec1 = _mm256_loadu_ps(input.as_ptr().add(index + 8));
+        let input_vec2 = _mm256_loadu_ps(input.as_ptr().add(index + 16));
+        let input_vec3 = _mm256_loadu_ps(input.as_ptr().add(index + 24));
+
+        let output_vec0 = _mm256_mul_ps(input_vec0, scale_vec);
+        let output_vec1 = _mm256_mul_ps(input_vec1, scale_vec);
+        let output_vec2 = _mm256_mul_ps(input_vec2, scale_vec);
+        let output_vec3 = _mm256_mul_ps(input_vec3, scale_vec);
+
+        _mm256_storeu_ps(output.as_mut_ptr().add(index), output_vec0);
+        _mm256_storeu_ps(output.as_mut_ptr().add(index + 8), output_vec1);
+        _mm256_storeu_ps(output.as_mut_ptr().add(index + 16), output_vec2);
+        _mm256_storeu_ps(output.as_mut_ptr().add(index + 24), output_vec3);
+
+        index += 32;
+    }
+    // Clean up remaining vectors of size 8
     while index + 8 <= input.len() {
         let input_vec = _mm256_loadu_ps(input.as_ptr().add(index));
         let output_vec = _mm256_mul_ps(input_vec, scale_vec);
@@ -145,6 +167,28 @@ unsafe fn scale_x86_256_impl(input: &[f32], output: &mut [f32], scale: f32) {
 
     let scale_vec = _mm256_set1_ps(scale);
     let mut index = 0usize;
+    // Unroll 4x to process 32 floats (four 256-bit AVX2 registers) per loop iteration.
+    // This allows modern CPU out-of-order execution pipelines to execute multiple independent
+    // vector multiplications in parallel, avoiding dependency stalls and loop overhead.
+    while index + 32 <= input.len() {
+        let input_vec0 = _mm256_loadu_ps(input.as_ptr().add(index));
+        let input_vec1 = _mm256_loadu_ps(input.as_ptr().add(index + 8));
+        let input_vec2 = _mm256_loadu_ps(input.as_ptr().add(index + 16));
+        let input_vec3 = _mm256_loadu_ps(input.as_ptr().add(index + 24));
+
+        let output_vec0 = _mm256_mul_ps(input_vec0, scale_vec);
+        let output_vec1 = _mm256_mul_ps(input_vec1, scale_vec);
+        let output_vec2 = _mm256_mul_ps(input_vec2, scale_vec);
+        let output_vec3 = _mm256_mul_ps(input_vec3, scale_vec);
+
+        _mm256_storeu_ps(output.as_mut_ptr().add(index), output_vec0);
+        _mm256_storeu_ps(output.as_mut_ptr().add(index + 8), output_vec1);
+        _mm256_storeu_ps(output.as_mut_ptr().add(index + 16), output_vec2);
+        _mm256_storeu_ps(output.as_mut_ptr().add(index + 24), output_vec3);
+
+        index += 32;
+    }
+    // Clean up remaining vectors of size 8
     while index + 8 <= input.len() {
         let input_vec = _mm256_loadu_ps(input.as_ptr().add(index));
         let output_vec = _mm256_mul_ps(input_vec, scale_vec);
