@@ -5,3 +5,7 @@
 ## 2026-07-02 - [TCP Transport Buffer Optimization]
 **Learning:** High-throughput TCP transport can be bottlenecked by intermediate buffer copies and zero-initialization of vectors. Using stack-allocated headers and writing directly to a `BufWriter` avoids large intermediate memory copies. For `f32` payloads on little-endian systems, reading directly into `MaybeUninit` memory and then transmuting to `Vec<f32>` eliminates the significant cost of zero-initialization without creating UB references to uninitialized memory.
 **Action:** Minimize intermediate buffers in hot paths. Use `MaybeUninit` and `transmute` (for POD types like `f32`) when reading large datasets from the network if performance is critical.
+
+## 2026-07-02 - [Binary Protocol Serialization Optimization]
+**Learning:** Pre-allocating a single `Vec` of the exact final capacity and serializing struct payloads directly into it via an `encode_payload_into` method avoids the overhead of intermediate heap allocations and memory copies. Additionally, avoiding `copy_from_slice` in low-level header encoding by assigning elements directly to fixed indices eliminates bounds checks and improves instruction pipelining.
+**Action:** Always provide an `encode_into` style method for high-performance binary structures to allow zero-copy/zero-allocation serialization directly into target buffers or frames. Avoid bounds checking in short fixed-size array writes by indexing them directly with constant offsets instead of using slice copy methods.
