@@ -9,3 +9,7 @@
 ## 2026-07-02 - [Binary Protocol Serialization Optimization]
 **Learning:** Pre-allocating a single `Vec` of the exact final capacity and serializing struct payloads directly into it via an `encode_payload_into` method avoids the overhead of intermediate heap allocations and memory copies. Additionally, avoiding `copy_from_slice` in low-level header encoding by assigning elements directly to fixed indices eliminates bounds checks and improves instruction pipelining.
 **Action:** Always provide an `encode_into` style method for high-performance binary structures to allow zero-copy/zero-allocation serialization directly into target buffers or frames. Avoid bounds checking in short fixed-size array writes by indexing them directly with constant offsets instead of using slice copy methods.
+
+## 2026-07-02 - [Cluster Health Query Optimization]
+**Learning:** Redundant iterations and nested metric lookups on thread-safe collections (like `ClusterState::get_metrics`) introduce unnecessary mutex acquisition overhead and expensive clones of large status structs (such as `NodeMetrics`). Consolidating query loops with functional combinators like `filter_map` reduces lock contention and halves cloning/lookup overhead.
+**Action:** When querying statuses or counting/collecting across thread-safe shared maps or lists, perform lookups once per element, derive any required aggregations directly, and avoid secondary lookups or passes.
