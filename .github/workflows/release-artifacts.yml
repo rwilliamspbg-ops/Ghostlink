@@ -68,7 +68,7 @@ jobs:
           output-file: ./artifacts/release/sbom.spdx.json
 
       - name: Attest release artifact provenance
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@v4
         with:
           subject-path: ./artifacts/release/ghost-link
 
