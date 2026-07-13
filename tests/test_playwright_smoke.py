@@ -13,3 +13,4 @@ def test_ghostlink_homepage_smoke(page: Page):
     expect(page.get_by_text("Commercial path")).to_be_visible()
     expect(page.get_by_text("See Ghostlink in action")).to_be_visible()
     expect(page.get_by_text("Run the demo in 3 steps")).to_be_visible()
+    expect(page.get_by_text("What the terminal output looks like")).to_be_visible()
