@@ -6,32 +6,37 @@
     <meta name="description" content="Ghostlink is a high-performance distributed inference and scheduling fabric for custom LLM systems." />
     <title>Ghostlink — Distributed LLM Inference Fabric</title>
     <style>
-      :root { color-scheme: dark; }
-      body { margin: 0; font-family: Inter, Arial, sans-serif; background: linear-gradient(135deg, #020617, #111827); color: #f8fafc; }
-      a { color: #93c5fd; }
-      header { padding: 4rem 1.5rem 2rem; max-width: 960px; margin: 0 auto; }
-      h1 { font-size: 2.6rem; margin-bottom: 0.8rem; }
-      .lead { font-size: 1.15rem; line-height: 1.7; color: #cbd5e1; max-width: 760px; }
+      :root { color-scheme: dark; --bg: #030712; --panel: rgba(6, 16, 32, 0.86); --panel-2: rgba(8, 23, 42, 0.9); --text: #f8fafc; --muted: #9fb3c8; --line: rgba(56, 189, 248, 0.28); --accent: #22d3ee; --accent-2: #8b5cf6; }
+      * { box-sizing: border-box; }
+      body { margin: 0; font-family: Inter, Segoe UI, Roboto, Arial, sans-serif; background: radial-gradient(circle at top left, rgba(34,211,238,0.16), transparent 25%), linear-gradient(135deg, #020617 0%, #050b16 40%, #020617 100%); color: var(--text); min-height: 100vh; }
+      body::before { content: ""; position: fixed; inset: 0; pointer-events: none; background-image: linear-gradient(rgba(34,211,238,0.06) 1px, transparent 1px), linear-gradient(90deg, rgba(34,211,238,0.06) 1px, transparent 1px); background-size: 28px 28px; mask-image: linear-gradient(to bottom, rgba(0,0,0,0.6), transparent); }
+      a { color: #7dd3fc; }
+      header { padding: 4rem 1.5rem 2rem; max-width: 1040px; margin: 0 auto; }
+      h1 { font-size: 3rem; margin-bottom: 0.8rem; letter-spacing: 0.08em; text-transform: uppercase; text-shadow: 0 0 20px rgba(34,211,238,0.35); }
+      h2 { font-size: 1.2rem; letter-spacing: 0.06em; text-transform: uppercase; margin-top: 0; color: #dbeafe; }
+      .lead { font-size: 1.15rem; line-height: 1.8; color: var(--muted); max-width: 760px; }
       .actions { display: flex; gap: 1rem; flex-wrap: wrap; margin-top: 1.5rem; }
-      .btn { display: inline-block; padding: 0.85rem 1.2rem; border-radius: 999px; text-decoration: none; font-weight: 600; }
-      .btn-primary { background: #2563eb; color: white; }
-      .btn-secondary { background: #1f2937; color: #e5e7eb; border: 1px solid #374151; }
-      main { max-width: 960px; margin: 0 auto; padding: 0 1.5rem 3rem; }
-      .card { background: rgba(15, 23, 42, 0.84); border: 1px solid rgba(148, 163, 184, 0.22); border-radius: 18px; padding: 1.4rem; margin-top: 1rem; }
+      .btn { display: inline-block; padding: 0.85rem 1.2rem; border-radius: 999px; text-decoration: none; font-weight: 700; letter-spacing: 0.03em; transition: transform 160ms ease, box-shadow 160ms ease, border-color 160ms ease; }
+      .btn:hover { transform: translateY(-1px); }
+      .btn-primary { background: linear-gradient(90deg, var(--accent), #38bdf8); color: white; box-shadow: 0 0 20px rgba(34,211,238,0.25); }
+      .btn-secondary { background: rgba(8, 23, 42, 0.9); color: #e2e8f0; border: 1px solid var(--line); box-shadow: inset 0 0 0 1px rgba(255,255,255,0.02); }
+      main { max-width: 1040px; margin: 0 auto; padding: 0 1.5rem 3rem; }
+      .card { background: linear-gradient(145deg, rgba(8, 23, 42, 0.9), rgba(3, 10, 20, 0.92)); border: 1px solid var(--line); border-radius: 20px; padding: 1.4rem; margin-top: 1rem; box-shadow: 0 0 0 1px rgba(255,255,255,0.02) inset, 0 20px 45px rgba(2,8,23,0.35); }
       .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 1rem; }
-      .benchmark { background: linear-gradient(90deg, rgba(37, 99, 235, 0.2), rgba(14, 165, 233, 0.14)); border: 1px solid rgba(96, 165, 250, 0.35); border-radius: 16px; padding: 1.2rem 1.3rem; margin-top: 1rem; }
-      .placeholder { height: 180px; border-radius: 16px; border: 1px dashed #64748b; display: flex; align-items: center; justify-content: center; color: #cbd5e1; margin-top: 1rem; background: rgba(15, 23, 42, 0.6); }
+      .benchmark { background: linear-gradient(90deg, rgba(34,211,238,0.16), rgba(139,92,246,0.16)); border: 1px solid rgba(34,211,238,0.28); border-radius: 16px; padding: 1.2rem 1.3rem; margin-top: 1rem; color: #e2f7ff; box-shadow: 0 0 25px rgba(34,211,238,0.12); }
+      .placeholder { height: 220px; border-radius: 22px; border: 1px solid rgba(34,211,238,0.28); display: flex; align-items: center; justify-content: center; color: #cbd5e1; margin-top: 1rem; background: linear-gradient(135deg, rgba(2, 8, 23, 0.95), rgba(15, 23, 42, 0.8)); box-shadow: inset 0 0 40px rgba(34,211,238,0.08); }
       .value-prop { font-size: 1rem; line-height: 1.75; color: #e2e8f0; margin-top: 1rem; }
       .compare-list { display: grid; gap: 0.75rem; margin-top: 0.75rem; }
-      .compare-item { padding: 0.75rem 0.9rem; background: rgba(30, 41, 59, 0.8); border-radius: 12px; }
+      .compare-item, .use-case, .proof-card, .pricing-card { background: rgba(6, 16, 32, 0.8); border: 1px solid rgba(34,211,238,0.16); border-radius: 14px; box-shadow: inset 0 0 16px rgba(34,211,238,0.05); }
+      .compare-item { padding: 0.75rem 0.9rem; }
       .pricing-grid { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); margin-top: 1rem; }
-      .pricing-card { background: rgba(15, 23, 42, 0.72); border: 1px solid rgba(148, 163, 184, 0.22); border-radius: 14px; padding: 1rem; }
+      .pricing-card { padding: 1rem; }
       .use-cases { display: grid; gap: 0.75rem; margin-top: 0.75rem; }
-      .use-case { padding: 0.8rem 0.95rem; background: rgba(30, 41, 59, 0.8); border-radius: 12px; }
+      .use-case { padding: 0.8rem 0.95rem; }
       .proof-grid { display: grid; gap: 0.75rem; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); margin-top: 0.9rem; }
-      .proof-card { padding: 0.9rem 1rem; background: rgba(15, 23, 42, 0.74); border: 1px solid rgba(148, 163, 184, 0.2); border-radius: 12px; }
-      ul { padding-left: 1.1rem; line-height: 1.7; }
-      footer { max-width: 960px; margin: 0 auto; padding: 0 1.5rem 2rem; color: #94a3b8; font-size: 0.95rem; }
+      .proof-card { padding: 0.9rem 1rem; }
+      ul { padding-left: 1.1rem; line-height: 1.7; color: #dbeafe; }
+      footer { max-width: 1040px; margin: 0 auto; padding: 0 1.5rem 2rem; color: #7dd3fc; font-size: 0.95rem; }
     </style>
   </head>
   <body>
