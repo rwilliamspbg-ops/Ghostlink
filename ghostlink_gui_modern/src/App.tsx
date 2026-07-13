@@ -12,6 +12,9 @@ import {
   User,
   ChevronRight,
   Menu,
+  Cpu,
+  Zap,
+  Wifi,
 } from 'lucide-react';
 import { useAppStore } from './store';
 import { GhostlinkAPI } from './api';
@@ -32,6 +35,95 @@ const tabs = [
   { label: 'Security', icon: Shield, id: 5 },
   { label: 'Settings', icon: Settings, id: 6 },
 ];
+
+const LOADING_STEPS = [
+  'Connecting to backend...',
+  'Scanning available models...',
+  'Initializing inference engine...',
+  'Establishing real-time metrics...',
+];
+
+function SplashScreen() {
+  const [step, setStep] = useState(0);
+  const [dots, setDots] = useState('');
+
+  useEffect(() => {
+    const stepInterval = setInterval(() => {
+      setStep((s) => (s < LOADING_STEPS.length - 1 ? s + 1 : s));
+    }, 1800);
+    const dotInterval = setInterval(() => {
+      setDots((d) => (d.length >= 3 ? '' : d + '.'));
+    }, 400);
+    return () => {
+      clearInterval(stepInterval);
+      clearInterval(dotInterval);
+    };
+  }, []);
+
+  return (
+    <div className="flex items-center justify-center h-screen bg-slate-950">
+      <div className="text-center max-w-md">
+        {/* Logo */}
+        <div className="mb-8 flex justify-center">
+          <div className="w-16 h-16 bg-gradient-to-br from-blue-600 to-blue-800 rounded-2xl flex items-center justify-center shadow-lg shadow-blue-600/20">
+            <span className="text-3xl font-bold text-white">G</span>
+          </div>
+        </div>
+
+        {/* Title */}
+        <h1 className="text-2xl font-bold text-white mb-2">Ghostlink Studio</h1>
+        <p className="text-sm text-slate-500 mb-8">Distributed LLM Inference Fabric</p>
+
+        {/* Loading animation */}
+        <div className="relative mb-8 flex justify-center">
+          <div className="w-12 h-12 border-[3px] border-slate-800 border-t-blue-500 rounded-full animate-spin" />
+        </div>
+
+        {/* Connection status */}
+        <div className="space-y-3">
+          {LOADING_STEPS.map((s, i) => (
+            <div key={i} className="flex items-center gap-3 text-sm">
+              <div
+                className={`w-5 h-5 rounded-full border-2 flex items-center justify-center shrink-0 transition-all duration-500 ${
+                  i < step
+                    ? 'bg-green-500/20 border-green-500 text-green-400'
+                    : i === step
+                    ? 'border-blue-500 text-blue-400'
+                    : 'border-slate-700 text-slate-600'
+                }`}
+              >
+                {i < step ? (
+                  <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                  </svg>
+                ) : i === step ? (
+                  <div className="w-1.5 h-1.5 bg-blue-400 rounded-full animate-pulse" />
+                ) : null}
+              </div>
+              <span
+                className={`transition-colors duration-500 ${
+                  i < step ? 'text-slate-400' : i === step ? 'text-slate-300' : 'text-slate-600'
+                }`}
+              >
+                {s}
+                {i === step && (
+                  <span className="inline-block w-4 text-left text-blue-400">{dots}</span>
+                )}
+              </span>
+            </div>
+          ))}
+        </div>
+
+        {/* Footer */}
+        <div className="mt-10 flex items-center justify-center gap-4 text-xs text-slate-600">
+          <span className="flex items-center gap-1"><Cpu size={12} /> GPU</span>
+          <span className="flex items-center gap-1"><Zap size={12} /> NPU</span>
+          <span className="flex items-center gap-1"><Wifi size={12} /> Cluster</span>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 function App() {
   const { currentModel, uptime, activeTab, setActiveTab, setModels, setUptime, setApiBase } = useAppStore();
@@ -77,14 +169,7 @@ function App() {
 
   const renderTab = () => {
     if (!api) {
-      return (
-        <div className="flex items-center justify-center h-full text-slate-400">
-          <div className="text-center">
-            <div className="mb-4 text-sm">Initializing backend connection...</div>
-            <div className="w-8 h-8 border-2 border-slate-700 border-t-blue-600 rounded-full animate-spin mx-auto"></div>
-          </div>
-        </div>
-      );
+      return <SplashScreen />;
     }
 
     switch (activeTab) {

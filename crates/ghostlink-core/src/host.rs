@@ -351,14 +351,14 @@ fn detect_full_gpu_probe_cached() -> Option<GpuProbeResult> {
         return Some(probe);
     }
 
-    // Probe chain: NVIDIA SMI -> [AMD ROCm SMI -> Windows WMI AMD] -> lspci (vendor-agnostic)
+    // Probe chain: NVIDIA SMI -> [AMD ROCm SMI] -> Windows WMI (any GPU) -> lspci (Linux)
     #[allow(unused_mut)]
     let mut probe = detect_nvidia_smi();
     #[cfg(feature = "rocm")]
     {
-        probe = probe.or_else(detect_rocm_smi).or_else(detect_windows_amd_gpu);
+        probe = probe.or_else(detect_rocm_smi);
     }
-    let probe = probe.or_else(detect_lspci_gpu)?;
+    let probe = probe.or_else(detect_windows_any_gpu).or_else(detect_lspci_gpu)?;
     *cache.lock().unwrap_or_else(|poison| poison.into_inner()) = Some(CachedProbeEntry {
         captured_at: Instant::now(),
         probe: probe.clone(),
@@ -419,9 +419,15 @@ fn detect_rocm_smi() -> Option<GpuProbeResult> {
     })
 }
 
-/// Detect AMD GPU on Windows via WMI (Win32_VideoController).
+/// Detect AMD GPU on Windows via WMI (Win32_VideoController) — requires `rocm` feature.
 #[cfg(feature = "rocm")]
 fn detect_windows_amd_gpu() -> Option<GpuProbeResult> {
+    detect_windows_any_gpu()
+}
+
+/// Detect any GPU on Windows via WMI (Win32_VideoController).
+/// Not gated behind `rocm` feature — works for AMD, Intel, and any D3D-capable GPU.
+fn detect_windows_any_gpu() -> Option<GpuProbeResult> {
     #[cfg(target_os = "windows")]
     {
         let output = Command::new("wmic")
@@ -444,17 +450,19 @@ fn detect_windows_amd_gpu() -> Option<GpuProbeResult> {
                 continue;
             }
             let lower = trimmed.to_ascii_lowercase();
-            let is_amd = lower.contains("amd") || lower.contains("radeon") || lower.contains("advanced micro");
-            if !is_amd {
+            // Skip Microsoft Basic Display Adapter (no real GPU)
+            if lower.contains("microsoft basic display") {
                 continue;
             }
             let mut parts = trimmed.split(',').map(str::trim);
             let _node = parts.next()?; // CSV node column
             let gpu_name = parts.next()?.to_string();
+            if gpu_name.is_empty() {
+                continue;
+            }
             let vram_bytes: Option<f32> = parts
-                .next()?
-                .parse::<f32>()
-                .ok()
+                .next()
+                .and_then(|v| v.parse::<f32>().ok())
                 .filter(|&b| b > 0.0);
             let vram_gb = vram_bytes.map(|b| b / 1073741824.0);
             let compute = infer_compute_capability_from_name(&gpu_name);

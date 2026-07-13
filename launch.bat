@@ -19,14 +19,17 @@ set "LLAMA_PORT=8080"
 set "LLAMA_NGL=%GHOSTLINK_LLAMA_NGL%"
 if "%LLAMA_NGL%"=="" set "LLAMA_NGL=-1"
 
-REM Auto-detect GPU: check NVIDIA, AMD ROCm, then fall back to CPU
+REM Auto-detect GPU: check NVIDIA, AMD (DirectML/Vulkan), Intel, NPU, then fall back to CPU
 set "GPU_VENDOR="
+set "NPU_DETECTED=0"
+set "LLAMA_GPU_BACKEND="
 where nvidia-smi >nul 2>&1
 if not errorlevel 1 (
     for /f "tokens=*" %%a in ('nvidia-smi --query-gpu=name --format=csv,noheader 2^>nul') do set "GPU_NAME=%%a"
     if defined GPU_NAME (
         echo %GREEN%  ⚡ NVIDIA GPU detected: %GPU_NAME%%NC%
         set "GPU_VENDOR=nvidia"
+        set "LLAMA_GPU_BACKEND=CUDA"
     )
 )
 if not defined GPU_VENDOR (
@@ -36,22 +39,52 @@ if not defined GPU_VENDOR (
         if defined GPU_NAME (
             echo %GREEN%  ⚡ AMD GPU detected: %GPU_NAME%%NC%
             set "GPU_VENDOR=amd"
+            set "LLAMA_GPU_BACKEND=HIP"
         ) else (
             echo %GREEN%  ⚡ AMD ROCm detected (rocm-smi)%NC%
             set "GPU_VENDOR=amd"
+            set "LLAMA_GPU_BACKEND=HIP"
         )
     )
 )
+REM For AMD GPUs on Windows, prefer Vulkan over HIP (ROCm doesn't support most AMD iGPUs)
 if not defined GPU_VENDOR (
-    REM Windows WMI fallback for AMD GPUs
     for /f "skip=1 tokens=2 delims=," %%a in ('wmic path Win32_VideoController get Name /format:csv 2^>nul') do (
         echo %%a | findstr /i "amd radeon advanced.micro" >nul
         if not errorlevel 1 (
             set "GPU_NAME=%%a"
             echo %GREEN%  ⚡ AMD GPU detected: %%a%NC%
             set "GPU_VENDOR=amd"
+            REM AMD iGPUs (Radeon 8xxM series etc.) use DirectML/Vulkan on Windows, not HIP/ROCm
+            echo %%a | findstr /i "radeon.*m" >nul
+            if not errorlevel 1 (
+                set "LLAMA_GPU_BACKEND=Vulkan"
+                echo %DIM%  ⚡ AMD integrated GPU — using Vulkan backend%NC%
+            ) else (
+                set "LLAMA_GPU_BACKEND=Vulkan"
+            )
         )
     )
+)
+if not defined GPU_VENDOR (
+    for /f "skip=1 tokens=2 delims=," %%a in ('wmic path Win32_VideoController get Name /format:csv 2^>nul') do (
+        echo %%a | findstr /i "intel iris arc" >nul
+        if not errorlevel 1 (
+            set "GPU_NAME=%%a"
+            echo %GREEN%  ⚡ Intel GPU detected: %%a%NC%
+            set "GPU_VENDOR=intel"
+            set "LLAMA_GPU_BACKEND=Vulkan"
+        )
+    )
+)
+REM Add AMD NPU detection (Ryzen AI / XDNA)
+powershell -NoProfile -Command "
+    $npus = Get-CimInstance -Namespace 'root\cimv2' -ClassName Win32_PnPEntity 2>$null | Where-Object { $_.PNPClass -eq 'System' -and $_.Name -match '(NPU|Neural|AI Accelerator|XDNA|Ryzen AI)' }
+    if (-not $npus) { $npus = Get-CimInstance -Namespace 'root\cimv2' -ClassName Win32_PnPEntity 2>$null | Where-Object { $_.Name -match '(NPU|Neural|AI Accelerator|XDNA|Ryzen AI)' } }
+    if ($npus) { Write-Output 'NPU_FOUND' }
+" >nul 2>&1 && (
+    echo %GREEN%  ⚡ AMD Ryzen AI NPU detected%NC%
+    set "NPU_DETECTED=1"
 )
 if not defined GPU_VENDOR (
     if "%LLAMA_NGL%"=="-1" (
@@ -60,8 +93,10 @@ if not defined GPU_VENDOR (
         set "LLAMA_NGL=0"
     )
 ) else (
-    if "%GPU_VENDOR%"=="amd" echo %DIM%  ⚡ AMD GPU will use ROCm/HIP backend via llama.cpp%NC%
-    if "%GPU_VENDOR%"=="nvidia" echo %DIM%  ⚡ NVIDIA GPU will use CUDA backend via llama.cpp%NC%
+    if "%LLAMA_GPU_BACKEND%"=="Vulkan" echo %DIM%  ⚡ Using Vulkan backend for GPU acceleration%NC%
+    if "%LLAMA_GPU_BACKEND%"=="CUDA" echo %DIM%  ⚡ NVIDIA GPU will use CUDA backend via llama.cpp%NC%
+    if "%LLAMA_GPU_BACKEND%"=="HIP" echo %DIM%  ⚡ AMD GPU will use ROCm/HIP backend via llama.cpp%NC%
+    if "%NPU_DETECTED%"=="1" echo %DIM%  ⚡ NPU acceleration available for supported models%NC%
 )
 set "MODEL_DIR=.\models"
 set "MODEL_FILE=%MODEL_DIR%\stories15M-q4_0.gguf"
@@ -229,15 +264,25 @@ if "%LLAMA_BUILT%"=="0" (
     )
     
     echo   %DIM%  Configuring CMake (Release)...%NC%
-    REM Select GPU backend: NVIDIA CUDA, AMD HIP, or CPU-only
+    REM Select GPU backend: NVIDIA CUDA, AMD HIP/Vulkan, Intel Vulkan, or CPU-only
     set "CMAKE_GPU_FLAGS="
     if "%GPU_VENDOR%"=="nvidia" (
         set "CMAKE_GPU_FLAGS=-DLLAMA_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=all"
         echo   %DIM%  NVIDIA GPU detected — building with CUDA support%NC%
     )
     if "%GPU_VENDOR%"=="amd" (
-        set "CMAKE_GPU_FLAGS=-DLLAMA_HIPBLAS=ON -DAMDGPU_TARGETS=all"
-        echo   %DIM%  AMD GPU detected — building with HIP/ROCm support%NC%
+        if "%LLAMA_GPU_BACKEND%"=="HIP" (
+            set "CMAKE_GPU_FLAGS=-DLLAMA_HIPBLAS=ON -DAMDGPU_TARGETS=all"
+            echo   %DIM%  AMD GPU detected — building with HIP/ROCm support%NC%
+        ) else (
+            REM Use Vulkan for AMD iGPUs (ROCm doesn't support RDNA3.5+ iGPUs on Windows)
+            set "CMAKE_GPU_FLAGS=-DLLAMA_VULKAN=ON -DLLAMA_VULKAN_RUN_TESTS=OFF"
+            echo   %DIM%  AMD GPU detected — building with Vulkan support (DirectML)%NC%
+        )
+    )
+    if "%GPU_VENDOR%"=="intel" (
+        set "CMAKE_GPU_FLAGS=-DLLAMA_VULKAN=ON -DLLAMA_VULKAN_RUN_TESTS=OFF"
+        echo   %DIM%  Intel GPU detected — building with Vulkan support%NC%
     )
     if "%GPU_VENDOR%"=="" (
         echo   %DIM%  No GPU detected — building CPU-only llama.cpp%NC%
@@ -328,7 +373,18 @@ set "GHOSTLINK_INFERENCE_BACKEND=native"
 set "GHOSTLINK_NATIVE_ENGINE=llama_server"
 set "GHOSTLINK_LLAMA_SERVER_URL=http://127.0.0.1:%LLAMA_PORT%/completion"
 
-start "Ghostlink API" cmd /k "set GHOSTLINK_INFERENCE_BACKEND=native && set GHOSTLINK_NATIVE_ENGINE=llama_server && set GHOSTLINK_LLAMA_SERVER_URL=http://127.0.0.1:%LLAMA_PORT%/completion && cargo run -p ghost-link -- serve %BACKEND_HOST% %BACKEND_PORT%"
+REM Use pre-built binary if available, otherwise fall back to cargo run
+set "GHOSTLINK_BINARY="
+if exist "target\release\ghost-link.exe" set "GHOSTLINK_BINARY=target\release\ghost-link.exe"
+if exist "target\debug\ghost-link.exe" if "%GHOSTLINK_BINARY%"=="" set "GHOSTLINK_BINARY=target\debug\ghost-link.exe"
+
+if not "%GHOSTLINK_BINARY%"=="" (
+    echo %DIM%  Using pre-built binary: %GHOSTLINK_BINARY%%NC%
+    start "Ghostlink API" cmd /k ""%GHOSTLINK_BINARY%" serve %BACKEND_HOST% %BACKEND_PORT%"
+) else (
+    echo %YELLOW%  No pre-built binary found — building with cargo...%NC%
+    start "Ghostlink API" cmd /k "cargo run -p ghost-link -- serve %BACKEND_HOST% %BACKEND_PORT%"
+)
 
 echo   %DIM%  Waiting for Ghostlink API health check...%NC%
 :WAIT_API

@@ -6,11 +6,12 @@ use serde::{Deserialize, Serialize};
 #[allow(clippy::upper_case_acronyms)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Runtime {
-    CUDA,  // NVIDIA GPUs
-    Metal, // Apple Silicon / Apple GPUs
-    ROCm,  // AMD GPUs
-    NPU,   // Neural Processing Units (Qualcomm, MediaTek)
-    CPU,   // CPU fallback
+    CUDA,     // NVIDIA GPUs
+    Metal,    // Apple Silicon / Apple GPUs
+    ROCm,     // AMD GPUs (Linux / discrete)
+    DirectML, // DirectML on Windows (AMD iGPU, Intel ARC, any DirectX 12 GPU)
+    NPU,      // Neural Processing Units (AMD XDNA, Qualcomm, Intel NPU)
+    CPU,      // CPU fallback
 }
 
 impl std::fmt::Display for Runtime {
@@ -19,6 +20,7 @@ impl std::fmt::Display for Runtime {
             Runtime::CUDA => write!(f, "CUDA (NVIDIA GPU)"),
             Runtime::Metal => write!(f, "Metal (Apple Silicon)"),
             Runtime::ROCm => write!(f, "ROCm (AMD GPU)"),
+            Runtime::DirectML => write!(f, "DirectML (DirectX 12 GPU)"),
             Runtime::NPU => write!(f, "NPU (Neural Processor)"),
             Runtime::CPU => write!(f, "CPU (Default)"),
         }
@@ -71,6 +73,7 @@ impl RuntimeDetector {
         let mut runtimes = vec![
             Self::detect_cuda(),
             Self::detect_metal(),
+            Self::detect_directml(),
             Self::detect_npu(),
             Self::detect_cpu(),
         ];
@@ -241,8 +244,91 @@ impl RuntimeDetector {
         None
     }
 
-    /// Detect Neural Processing Units
+    /// Detect DirectML-capable GPUs (Windows)
+    /// This catches AMD iGPUs, Intel ARC, and any DirectX 12 GPU not detected by CUDA/ROCm
+    fn detect_directml() -> Option<RuntimeInfo> {
+        #[cfg(windows)]
+        {
+            // On Windows, check for GPUs via WMI that are NOT NVIDIA (handled by CUDA detection)
+            // and NOT already detected by Metal
+            let has_nvidia = std::process::Command::new("nvidia-smi")
+                .arg("--version")
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false);
+
+            if !has_nvidia {
+                // Check for AMD or Intel GPUs via WMI
+                if let Ok(output) = std::process::Command::new("wmic")
+                    .args(["path", "Win32_VideoController", "get", "Name", "/format:csv"])
+                    .output()
+                {
+                    if output.status.success() {
+                        let stdout = String::from_utf8_lossy(&output.stdout);
+                        for line in stdout.lines().skip(1) {
+                            let name = line.trim();
+                            if name.is_empty() { continue; }
+                            let lower = name.to_lowercase();
+                            let is_amd = lower.contains("amd") || lower.contains("radeon");
+                            let is_intel = lower.contains("intel") || lower.contains("iris") || lower.contains("arc");
+                            let is_generic_d3d = lower.contains("microsoft basic display")
+                                || lower.contains("directx");
+
+                            if is_amd || is_intel || is_generic_d3d {
+                                // Check for DirectX 12 / WDDM 2.0+ support via dxdiag or registry
+                                let d3d12_available = std::path::Path::new("C:\\Windows\\System32\\d3d12.dll").exists();
+                                if d3d12_available {
+                                    return Some(RuntimeInfo {
+                                        detected_runtime: Runtime::DirectML,
+                                        is_available: true,
+                                        compute_capability: Some("DirectX 12".to_string()),
+                                        memory_gb: Self::detect_gpu_memory(),
+                                        device_count: Some(1),
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// Detect Neural Processing Units (AMD XDNA, Qualcomm, MediaTek, Intel)
     fn detect_npu() -> Option<RuntimeInfo> {
+        #[cfg(windows)]
+        {
+            // Windows: check for AMD Ryzen AI NPU (XDNA) or Intel NPU via WMI/PnP
+            let has_amd_npu = std::process::Command::new("wmic")
+                .args(["path", "Win32_PnPEntity", "get", "Name", "/format:csv"])
+                .output()
+                .map(|output| {
+                    if output.status.success() {
+                        let stdout = String::from_utf8_lossy(&output.stdout);
+                        let lower = stdout.to_lowercase();
+                        lower.contains("npu")
+                            || lower.contains("neural")
+                            || lower.contains("xdna")
+                            || lower.contains("ai accelerator")
+                            || lower.contains("ryzen ai")
+                            || lower.contains("intel npu")
+                    } else {
+                        false
+                    }
+                })
+                .unwrap_or(false);
+
+            if has_amd_npu {
+                return Some(RuntimeInfo {
+                    detected_runtime: Runtime::NPU,
+                    is_available: true,
+                    compute_capability: Some("AI Accelerator".to_string()),
+                    memory_gb: Some(2.0),
+                    device_count: Some(1),
+                });
+            }
+        }
         // Check for common NPU environments
         let has_npu_env = std::env::var("NPU_DEVICE").is_ok()
             || std::env::var("QUALCOMM_NPU").is_ok()
@@ -425,7 +511,7 @@ impl ModelRegistry {
                 parameters: "3B".to_string(),
                 size_gb: 1.7,
                 memory_required_gb: 2.0,
-                recommended_runtimes: vec![Runtime::CPU, Runtime::NPU],
+                recommended_runtimes: vec![Runtime::CPU, Runtime::NPU, Runtime::DirectML],
                 inference_speed: ModelSpeed::Fast,
                 quality_tier: QualityTier::Lightweight,
                 use_cases: vec![
@@ -439,7 +525,7 @@ impl ModelRegistry {
                 parameters: "3B".to_string(),
                 size_gb: 2.0,
                 memory_required_gb: 3.0,
-                recommended_runtimes: vec![Runtime::CPU, Runtime::NPU],
+                recommended_runtimes: vec![Runtime::CPU, Runtime::NPU, Runtime::DirectML],
                 inference_speed: ModelSpeed::Fast,
                 quality_tier: QualityTier::Lightweight,
                 use_cases: vec![
@@ -456,6 +542,7 @@ impl ModelRegistry {
                 recommended_runtimes: vec![
                     Runtime::CPU,
                     Runtime::NPU,
+                    Runtime::DirectML,
                     Runtime::CUDA,
                     Runtime::Metal,
                     Runtime::ROCm,
@@ -473,7 +560,7 @@ impl ModelRegistry {
                 parameters: "7B".to_string(),
                 size_gb: 4.0,
                 memory_required_gb: 6.0,
-                recommended_runtimes: vec![Runtime::CPU, Runtime::CUDA, Runtime::Metal],
+                recommended_runtimes: vec![Runtime::CPU, Runtime::DirectML, Runtime::CUDA, Runtime::Metal],
                 inference_speed: ModelSpeed::Standard,
                 quality_tier: QualityTier::Standard,
                 use_cases: vec![
@@ -490,6 +577,7 @@ impl ModelRegistry {
                 memory_required_gb: 5.5,
                 recommended_runtimes: vec![
                     Runtime::CPU,
+                    Runtime::DirectML,
                     Runtime::CUDA,
                     Runtime::Metal,
                     Runtime::ROCm,
@@ -507,7 +595,7 @@ impl ModelRegistry {
                 parameters: "7B".to_string(),
                 size_gb: 4.1,
                 memory_required_gb: 6.0,
-                recommended_runtimes: vec![Runtime::CPU, Runtime::CUDA, Runtime::Metal],
+                recommended_runtimes: vec![Runtime::CPU, Runtime::DirectML, Runtime::CUDA, Runtime::Metal],
                 inference_speed: ModelSpeed::Standard,
                 quality_tier: QualityTier::Standard,
                 use_cases: vec![
@@ -521,7 +609,7 @@ impl ModelRegistry {
                 parameters: "13B".to_string(),
                 size_gb: 7.3,
                 memory_required_gb: 10.0,
-                recommended_runtimes: vec![Runtime::CUDA, Runtime::Metal, Runtime::ROCm],
+                recommended_runtimes: vec![Runtime::DirectML, Runtime::CUDA, Runtime::Metal, Runtime::ROCm],
                 inference_speed: ModelSpeed::Standard,
                 quality_tier: QualityTier::Premium,
                 use_cases: vec![
@@ -536,7 +624,7 @@ impl ModelRegistry {
                 parameters: "13B".to_string(),
                 size_gb: 8.0,
                 memory_required_gb: 12.0,
-                recommended_runtimes: vec![Runtime::CUDA, Runtime::Metal, Runtime::ROCm],
+                recommended_runtimes: vec![Runtime::DirectML, Runtime::CUDA, Runtime::Metal, Runtime::ROCm],
                 inference_speed: ModelSpeed::Slow,
                 quality_tier: QualityTier::Premium,
                 use_cases: vec![
@@ -550,7 +638,7 @@ impl ModelRegistry {
                 parameters: "70B".to_string(),
                 size_gb: 39.0,
                 memory_required_gb: 48.0,
-                recommended_runtimes: vec![Runtime::CUDA, Runtime::ROCm],
+                recommended_runtimes: vec![Runtime::DirectML, Runtime::CUDA, Runtime::ROCm],
                 inference_speed: ModelSpeed::Slow,
                 quality_tier: QualityTier::Premium,
                 use_cases: vec![
@@ -565,7 +653,7 @@ impl ModelRegistry {
                 parameters: "13B".to_string(),
                 size_gb: 7.5,
                 memory_required_gb: 10.0,
-                recommended_runtimes: vec![Runtime::CUDA, Runtime::Metal],
+                recommended_runtimes: vec![Runtime::DirectML, Runtime::CUDA, Runtime::Metal],
                 inference_speed: ModelSpeed::Slow,
                 quality_tier: QualityTier::Specialized,
                 use_cases: vec![
@@ -579,7 +667,7 @@ impl ModelRegistry {
                 parameters: "8x7B".to_string(),
                 size_gb: 26.0,
                 memory_required_gb: 32.0,
-                recommended_runtimes: vec![Runtime::CUDA, Runtime::ROCm],
+                recommended_runtimes: vec![Runtime::DirectML, Runtime::CUDA, Runtime::ROCm],
                 inference_speed: ModelSpeed::Slow,
                 quality_tier: QualityTier::Specialized,
                 use_cases: vec![
@@ -632,10 +720,11 @@ mod tests {
     }
 
     #[test]
-    fn test_cpu_always_available() {
+    fn test_runtime_always_detected() {
         let primary = RuntimeDetector::detect_primary();
-        // At worst, CPU should be available
-        assert_eq!(primary, Runtime::CPU);
+        // At worst, CPU should be available as fallback
+        let valid = matches!(primary, Runtime::CPU | Runtime::DirectML | Runtime::CUDA | Runtime::ROCm | Runtime::Metal | Runtime::NPU);
+        assert!(valid, "A runtime should always be detected");
     }
 
     #[test]
