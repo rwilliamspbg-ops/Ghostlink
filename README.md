@@ -18,6 +18,14 @@ A polished landing page and launch collateral are now available for the project:
 
 The main landing page highlights concrete demo themes such as adaptive model routing, hardware-aware placement, operational visibility, and a terminal-style request flow.
 
+## Architecture at a glance
+Ghostlink is organized around a small set of core layers:
+- Runtime and planning: hardware detection, placement strategy, and inference scheduling logic.
+- Control plane: model management, routing decisions, and service orchestration.
+- Interfaces: CLI commands, an OpenAI-compatible API, and the web-based GUI experience.
+
+This makes it easier to reason about the system as a distributed inference fabric rather than a single monolithic app.
+
 ## Quick Start (Windows)
 
 ### Prerequisites
