@@ -5,7 +5,7 @@ black==24.8.0
 certifi==2024.8.30
 cryptography==49.0.0
 fastapi==0.139.0
-flake8==7.1.1
+flake8==7.3.0
 mypy==1.11.2
 psutil==6.1.0
 pyqtgraph==0.13.7
