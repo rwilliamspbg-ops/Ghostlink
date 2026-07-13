@@ -8,18 +8,37 @@
     <style>
       :root { color-scheme: dark; --bg: #030712; --panel: rgba(6, 16, 32, 0.86); --panel-2: rgba(8, 23, 42, 0.9); --text: #f8fafc; --muted: #9fb3c8; --line: rgba(56, 189, 248, 0.28); --accent: #22d3ee; --accent-2: #8b5cf6; }
       * { box-sizing: border-box; }
-      body { margin: 0; font-family: Inter, Segoe UI, Roboto, Arial, sans-serif; background: radial-gradient(circle at top left, rgba(34,211,238,0.16), transparent 25%), linear-gradient(135deg, #020617 0%, #050b16 40%, #020617 100%); color: var(--text); min-height: 100vh; }
+      body { margin: 0; font-family: Inter, Segoe UI, Roboto, Arial, sans-serif; background: radial-gradient(circle at top left, rgba(34,211,238,0.16), transparent 25%), linear-gradient(135deg, #020617 0%, #050b16 40%, #020617 100%); color: var(--text); min-height: 100vh; overflow-x: hidden; }
       body::before { content: ""; position: fixed; inset: 0; pointer-events: none; background-image: linear-gradient(rgba(34,211,238,0.06) 1px, transparent 1px), linear-gradient(90deg, rgba(34,211,238,0.06) 1px, transparent 1px); background-size: 28px 28px; mask-image: linear-gradient(to bottom, rgba(0,0,0,0.6), transparent); }
+      body::after { content: ""; position: fixed; inset: 0; pointer-events: none; background: linear-gradient(transparent 0%, rgba(34,211,238,0.03) 50%, transparent 100%); mix-blend-mode: screen; animation: scanline 7s linear infinite; }
       a { color: #7dd3fc; }
       header { padding: 4rem 1.5rem 2rem; max-width: 1040px; margin: 0 auto; }
       h1 { font-size: 3rem; margin-bottom: 0.8rem; letter-spacing: 0.08em; text-transform: uppercase; text-shadow: 0 0 20px rgba(34,211,238,0.35); }
       h2 { font-size: 1.2rem; letter-spacing: 0.06em; text-transform: uppercase; margin-top: 0; color: #dbeafe; }
+      .hero-panel { position: relative; overflow: hidden; padding: 1.15rem; border-radius: 24px; background: linear-gradient(135deg, rgba(10,22,40,.96), rgba(3,10,20,.95)); border: 1px solid rgba(34,211,238,.24); box-shadow: 0 0 0 1px rgba(255,255,255,0.02) inset, 0 20px 60px rgba(2,8,23,0.5); backdrop-filter: blur(16px); }
+      .hero-panel::before { content: ""; position: absolute; inset: 0; background: linear-gradient(115deg, transparent 0%, rgba(34,211,238,0.12) 45%, transparent 60%, rgba(139,92,246,0.12) 100%); transform: translateX(-100%); animation: hologramSweep 8s linear infinite; pointer-events: none; }
+      .hero-panel::after { content: ""; position: absolute; inset: 0; background: radial-gradient(circle at 20% 20%, rgba(34,211,238,0.22), transparent 30%), radial-gradient(circle at 80% 0%, rgba(139,92,246,0.2), transparent 25%); mix-blend-mode: screen; pointer-events: none; }
+      .hero-topbar { display: flex; gap: 0.4rem; margin-bottom: 1rem; position: relative; z-index: 1; }
+      .dot { width: 10px; height: 10px; border-radius: 50%; background: #22d3ee; box-shadow: 0 0 10px rgba(34,211,238,0.6); }
+      .dot:nth-child(2) { background: #8b5cf6; box-shadow: 0 0 10px rgba(139,92,246,0.5); }
+      .dot:nth-child(3) { background: #f59e0b; box-shadow: 0 0 10px rgba(245,158,11,0.4); }
+      .hero-content { display: grid; gap: 1rem; grid-template-columns: 1.2fr 0.95fr; align-items: center; position: relative; z-index: 1; }
+      .eyebrow { margin: 0 0 0.4rem; color: #7dd3fc; text-transform: uppercase; letter-spacing: 0.16em; font-size: 0.75rem; }
       .lead { font-size: 1.15rem; line-height: 1.8; color: var(--muted); max-width: 760px; }
       .actions { display: flex; gap: 1rem; flex-wrap: wrap; margin-top: 1.5rem; }
       .btn { display: inline-block; padding: 0.85rem 1.2rem; border-radius: 999px; text-decoration: none; font-weight: 700; letter-spacing: 0.03em; transition: transform 160ms ease, box-shadow 160ms ease, border-color 160ms ease; }
       .btn:hover { transform: translateY(-1px); }
       .btn-primary { background: linear-gradient(90deg, var(--accent), #38bdf8); color: white; box-shadow: 0 0 20px rgba(34,211,238,0.25); }
       .btn-secondary { background: rgba(8, 23, 42, 0.9); color: #e2e8f0; border: 1px solid var(--line); box-shadow: inset 0 0 0 1px rgba(255,255,255,0.02); }
+      .terminal-card { position: relative; padding: 1rem; border-radius: 18px; background: rgba(2,8,23,.85); border: 1px solid rgba(34,211,238,.18); overflow: hidden; font-family: "Fira Code", Consolas, monospace; box-shadow: inset 0 0 40px rgba(34,211,238,0.08); }
+      .terminal-card::before { content: ""; position: absolute; inset: 0; background: linear-gradient(180deg, transparent 0%, rgba(34,211,238,0.06) 50%, transparent 100%); pointer-events: none; }
+      .terminal-line { position: relative; z-index: 1; font-size: 0.95rem; line-height: 1.7; color: #7dd3fc; }
+      .terminal-line:nth-child(2) { color: #e2e8f0; }
+      .terminal-line:nth-child(3) { color: #22d3ee; }
+      .glitch { position: relative; display: inline-block; margin-bottom: 0.8rem; }
+      .glitch::before, .glitch::after { content: attr(data-text); position: absolute; left: 0; top: 0; width: 100%; overflow: hidden; opacity: 0.55; }
+      .glitch::before { color: #22d3ee; animation: glitchShift 2.2s infinite linear alternate-reverse; transform: translate(-2px, 0); }
+      .glitch::after { color: #8b5cf6; animation: glitchShift 1.6s infinite linear alternate; transform: translate(2px, 0); }
       main { max-width: 1040px; margin: 0 auto; padding: 0 1.5rem 3rem; }
       .card { background: linear-gradient(145deg, rgba(8, 23, 42, 0.9), rgba(3, 10, 20, 0.92)); border: 1px solid var(--line); border-radius: 20px; padding: 1.4rem; margin-top: 1rem; box-shadow: 0 0 0 1px rgba(255,255,255,0.02) inset, 0 20px 45px rgba(2,8,23,0.35); }
       .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 1rem; }
@@ -37,16 +56,35 @@
       .proof-card { padding: 0.9rem 1rem; }
       ul { padding-left: 1.1rem; line-height: 1.7; color: #dbeafe; }
       footer { max-width: 1040px; margin: 0 auto; padding: 0 1.5rem 2rem; color: #7dd3fc; font-size: 0.95rem; }
+      @keyframes hologramSweep { 0% { transform: translateX(-100%); } 100% { transform: translateX(120%); } }
+      @keyframes glitchShift { 0% { clip-path: inset(0 0 85% 0); } 100% { clip-path: inset(0 0 10% 0); } }
+      @keyframes scanline { 0% { transform: translateY(-100%); } 100% { transform: translateY(100%); } }
+      @media (max-width: 760px) { .hero-content { grid-template-columns: 1fr; } h1 { font-size: 2.2rem; } }
     </style>
   </head>
   <body>
     <header>
-      <h1>Ghostlink</h1>
-      <p class="lead">A high-performance distributed inference and scheduling fabric for teams building custom LLM systems. Built for low-latency planning, control, and flexible deployment across heterogeneous hardware.</p>
-      <div class="actions">
-        <a class="btn btn-primary" href="https://github.com/rwilliamspbg-ops/Ghostlink">View on GitHub</a>
-        <a class="btn btn-secondary" href="comparison_sheet.html">See comparison sheet</a>
-        <a class="btn btn-secondary" href="launch_demo.md">Try the demo flow</a>
+      <div class="hero-panel">
+        <div class="hero-topbar">
+          <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+        </div>
+        <div class="hero-content">
+          <div>
+            <p class="eyebrow">Distributed inference fabric / v0.1</p>
+            <h1 class="glitch" data-text="Ghostlink">Ghostlink</h1>
+            <p class="lead">A high-performance distributed inference and scheduling fabric for teams building custom LLM systems. Built for low-latency planning, control, and flexible deployment across heterogeneous hardware.</p>
+            <div class="actions">
+              <a class="btn btn-primary" href="https://github.com/rwilliamspbg-ops/Ghostlink">View on GitHub</a>
+              <a class="btn btn-secondary" href="comparison_sheet.html">See comparison sheet</a>
+              <a class="btn btn-secondary" href="launch_demo.md">Try the demo flow</a>
+            </div>
+          </div>
+          <div class="terminal-card">
+            <div class="terminal-line">$ ghostlink --route inference --priority low-latency</div>
+            <div class="terminal-line">↳ topology: hybrid / adaptive / secure</div>
+            <div class="terminal-line">↳ state: online · planning · synchronized</div>
+          </div>
+        </div>
       </div>
       <div class="benchmark">
         <strong>Benchmark note:</strong> Ghostlink is positioned around fast scheduling and low-latency planning for custom inference topologies, with a clear path to paid support and deployment services.
