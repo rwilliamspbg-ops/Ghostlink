@@ -52,6 +52,9 @@ Near-term roadmap themes:
 - Does Ghostlink require specific hardware? No. It can run on CPU, GPU, NPU, and mixed setups, with detection and routing adapting to what is available.
 - Can I use it for demos and early pilots? Yes. The project is designed to support local experiments, demos, and self-hosted evaluation before broader production rollout.
 
+## Evaluation and contact
+If you want to evaluate Ghostlink for a pilot, internal demo, or custom inference workflow, the easiest next step is to start from the public landing page and the demo flow documents. For deployment support, onboarding, or commercial discussions, use the repository as the initial point of contact and open a discussion or issue to begin the conversation.
+
 ## Quick Start (Windows)
 
 ### Prerequisites
