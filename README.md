@@ -47,6 +47,11 @@ Near-term roadmap themes:
 - strengthen deployment and production guidance,
 - expand validation for different runtimes and hardware profiles.
 
+## FAQ
+- Why use Ghostlink instead of a generic orchestrator? It focuses on latency-aware planning and custom inference topologies rather than acting as a broad-purpose scheduler.
+- Does Ghostlink require specific hardware? No. It can run on CPU, GPU, NPU, and mixed setups, with detection and routing adapting to what is available.
+- Can I use it for demos and early pilots? Yes. The project is designed to support local experiments, demos, and self-hosted evaluation before broader production rollout.
+
 ## Quick Start (Windows)
 
 ### Prerequisites
