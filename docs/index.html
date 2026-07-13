@@ -24,6 +24,8 @@
       .value-prop { font-size: 1rem; line-height: 1.75; color: #e2e8f0; margin-top: 1rem; }
       .compare-list { display: grid; gap: 0.75rem; margin-top: 0.75rem; }
       .compare-item { padding: 0.75rem 0.9rem; background: rgba(30, 41, 59, 0.8); border-radius: 12px; }
+      .pricing-grid { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); margin-top: 1rem; }
+      .pricing-card { background: rgba(15, 23, 42, 0.72); border: 1px solid rgba(148, 163, 184, 0.22); border-radius: 14px; padding: 1rem; }
       ul { padding-left: 1.1rem; line-height: 1.7; }
       footer { max-width: 960px; margin: 0 auto; padding: 0 1.5rem 2rem; color: #94a3b8; font-size: 0.95rem; }
     </style>
@@ -53,6 +55,23 @@
           <div class="compare-item"><strong>vs. vLLM:</strong> more control over custom scheduling and deployment topology.</div>
           <div class="compare-item"><strong>vs. Ray:</strong> less overhead for latency-sensitive inference workflows.</div>
           <div class="compare-item"><strong>vs. DeepSpeed:</strong> simpler path for teams that want a focused inference fabric.</div>
+        </div>
+      </div>
+      <div class="card">
+        <h2>Commercial path</h2>
+        <div class="pricing-grid">
+          <div class="pricing-card">
+            <h3>Open Source</h3>
+            <p class="value-prop">Self-hosted access for experimentation, prototyping, and internal evaluation.</p>
+          </div>
+          <div class="pricing-card">
+            <h3>Pro</h3>
+            <p class="value-prop">Support, deployment guidance, and onboarding for small teams adopting Ghostlink in production.</p>
+          </div>
+          <div class="pricing-card">
+            <h3>Enterprise</h3>
+            <p class="value-prop">SLA-backed deployment support, security review, and custom rollout planning.</p>
+          </div>
         </div>
       </div>
       <div class="grid">
