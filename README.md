@@ -26,6 +26,19 @@ Ghostlink is organized around a small set of core layers:
 
 This makes it easier to reason about the system as a distributed inference fabric rather than a single monolithic app.
 
+## Project status
+Ghostlink is currently positioned as a launch-ready open-source foundation with a strong demo story and public-facing collateral. The core project already supports local development workflows, model-management flows, and a browser-accessible landing experience.
+
+Current strengths:
+- a working local launch path for experimentation and demos,
+- a clear positioning around distributed inference scheduling and routing,
+- public assets for comparison, demo flow, and product storytelling.
+
+Current focus areas:
+- strengthening the end-to-end demo experience,
+- improving documentation for deployment and production use,
+- expanding real-world validation across more hardware and runtime setups.
+
 ## Quick Start (Windows)
 
 ### Prerequisites
