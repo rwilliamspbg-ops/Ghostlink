@@ -10,7 +10,7 @@
       * { box-sizing: border-box; }
       body { margin: 0; font-family: Inter, Segoe UI, Roboto, Arial, sans-serif; background: radial-gradient(circle at top left, rgba(34,211,238,0.16), transparent 25%), linear-gradient(135deg, #020617 0%, #050b16 40%, #020617 100%); color: var(--text); min-height: 100vh; overflow-x: hidden; }
       body::before { content: ""; position: fixed; inset: 0; pointer-events: none; background-image: linear-gradient(rgba(34,211,238,0.06) 1px, transparent 1px), linear-gradient(90deg, rgba(34,211,238,0.06) 1px, transparent 1px); background-size: 28px 28px; mask-image: linear-gradient(to bottom, rgba(0,0,0,0.6), transparent); }
-      body::after { content: ""; position: fixed; inset: 0; pointer-events: none; background: linear-gradient(transparent 0%, rgba(34,211,238,0.03) 50%, transparent 100%); mix-blend-mode: screen; animation: scanline 7s linear infinite; }
+      body::after { content: ""; position: fixed; inset: 0; pointer-events: none; background: linear-gradient(transparent 0%, rgba(34,211,238,0.03) 50%, transparent 100%), repeating-linear-gradient(180deg, rgba(34,211,238,0.04) 0 1px, transparent 1px 7px); mix-blend-mode: screen; animation: scanline 7s linear infinite; }
       a { color: #7dd3fc; }
       header { padding: 4rem 1.5rem 2rem; max-width: 1040px; margin: 0 auto; }
       h1 { font-size: 3rem; margin-bottom: 0.8rem; letter-spacing: 0.08em; text-transform: uppercase; text-shadow: 0 0 20px rgba(34,211,238,0.35); }
@@ -19,6 +19,9 @@
       .hero-panel::before { content: ""; position: absolute; inset: 0; background: linear-gradient(115deg, transparent 0%, rgba(34,211,238,0.12) 45%, transparent 60%, rgba(139,92,246,0.12) 100%); transform: translateX(-100%); animation: hologramSweep 8s linear infinite; pointer-events: none; }
       .hero-panel::after { content: ""; position: absolute; inset: 0; background: radial-gradient(circle at 20% 20%, rgba(34,211,238,0.22), transparent 30%), radial-gradient(circle at 80% 0%, rgba(139,92,246,0.2), transparent 25%); mix-blend-mode: screen; pointer-events: none; }
       .hero-topbar { display: flex; gap: 0.4rem; margin-bottom: 1rem; position: relative; z-index: 1; }
+      .status-panel { margin-top: 1rem; padding: 0.9rem 1rem; border-radius: 16px; background: rgba(2, 8, 23, 0.78); border: 1px solid rgba(34,211,238,0.2); box-shadow: inset 0 0 20px rgba(34,211,238,0.06); }
+      .status-row { display: flex; justify-content: space-between; gap: 0.5rem; margin: 0.35rem 0; color: #dbeafe; font-size: 0.95rem; }
+      .status-value { color: #22d3ee; font-weight: 700; }
       .dot { width: 10px; height: 10px; border-radius: 50%; background: #22d3ee; box-shadow: 0 0 10px rgba(34,211,238,0.6); }
       .dot:nth-child(2) { background: #8b5cf6; box-shadow: 0 0 10px rgba(139,92,246,0.5); }
       .dot:nth-child(3) { background: #f59e0b; box-shadow: 0 0 10px rgba(245,158,11,0.4); }
@@ -83,6 +86,11 @@
             <div class="terminal-line">$ ghostlink --route inference --priority low-latency</div>
             <div class="terminal-line">↳ topology: hybrid / adaptive / secure</div>
             <div class="terminal-line">↳ state: online · planning · synchronized</div>
+            <div class="status-panel">
+              <div class="status-row"><span>Node health</span><span class="status-value">97%</span></div>
+              <div class="status-row"><span>Active routes</span><span class="status-value">12</span></div>
+              <div class="status-row"><span>Model queue</span><span class="status-value">stable</span></div>
+            </div>
           </div>
         </div>
       </div>
