@@ -26,6 +26,8 @@
       .compare-item { padding: 0.75rem 0.9rem; background: rgba(30, 41, 59, 0.8); border-radius: 12px; }
       .pricing-grid { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); margin-top: 1rem; }
       .pricing-card { background: rgba(15, 23, 42, 0.72); border: 1px solid rgba(148, 163, 184, 0.22); border-radius: 14px; padding: 1rem; }
+      .use-cases { display: grid; gap: 0.75rem; margin-top: 0.75rem; }
+      .use-case { padding: 0.8rem 0.95rem; background: rgba(30, 41, 59, 0.8); border-radius: 12px; }
       ul { padding-left: 1.1rem; line-height: 1.7; }
       footer { max-width: 960px; margin: 0 auto; padding: 0 1.5rem 2rem; color: #94a3b8; font-size: 0.95rem; }
     </style>
@@ -55,6 +57,14 @@
           <div class="compare-item"><strong>vs. vLLM:</strong> more control over custom scheduling and deployment topology.</div>
           <div class="compare-item"><strong>vs. Ray:</strong> less overhead for latency-sensitive inference workflows.</div>
           <div class="compare-item"><strong>vs. DeepSpeed:</strong> simpler path for teams that want a focused inference fabric.</div>
+        </div>
+      </div>
+      <div class="card">
+        <h2>Use cases</h2>
+        <div class="use-cases">
+          <div class="use-case"><strong>Custom inference stacks:</strong> teams that want more control over scheduling and deployment topology.</div>
+          <div class="use-case"><strong>Inference startups:</strong> teams that need a lightweight self-hosted fabric for early production pilots.</div>
+          <div class="use-case"><strong>Research labs:</strong> groups running experiments across mixed hardware and needing flexible orchestration.</div>
         </div>
       </div>
       <div class="card">
