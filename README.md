@@ -1,6 +1,6 @@
 # Ghostlink
 
-A high-performance distributed LLM inference fabric that turns spare local GPUs into a shared execution surface. Zero-config discovery, hardware-aware pipeline planning, and multi-transport execution across heterogeneous devices.
+Ghostlink is a high-performance distributed inference fabric for teams building custom LLM systems. It combines hardware-aware planning, flexible routing, and model-management workflows so inference workloads can be distributed across heterogeneous devices with more explicit control than generic orchestration layers.
 
 ## Why Ghostlink
 Ghostlink is designed for teams that want lower-latency planning, more control over distributed inference topologies, and a simpler path to custom LLM serving than generic orchestration stacks.
@@ -9,6 +9,14 @@ Use Ghostlink when you need:
 - fast model and workload scheduling across heterogeneous hardware,
 - a self-hosted inference fabric with open-source flexibility,
 - a platform that can be extended into a paid commercial offering with support and enterprise deployment services.
+
+## Public launch assets
+A polished landing page and launch collateral are now available for the project:
+- Live site: https://rwilliamspbg-ops.github.io/Ghostlink/
+- Comparison sheet: [docs/comparison_sheet.md](docs/comparison_sheet.md)
+- Demo flow: [docs/launch_demo.md](docs/launch_demo.md)
+
+The main landing page highlights concrete demo themes such as adaptive model routing, hardware-aware placement, operational visibility, and a terminal-style request flow.
 
 ## Quick Start (Windows)
 
@@ -41,6 +49,12 @@ This starts three services:
 - **llama-server** (inference engine, port 8080)
 - **Ghostlink API** backend (port 8003)
 - **React frontend** at http://127.0.0.1:5173
+
+### Demo walkthrough
+A simple product-style demo flow is:
+1. Launch the local control plane and confirm the runtime is online.
+2. Point Ghostlink at a local or remote model endpoint and review the route decision.
+3. Submit a sample request and inspect the queue, placement, and status output.
 
 ### What to Expect
 
