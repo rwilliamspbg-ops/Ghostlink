@@ -405,32 +405,22 @@ pub fn calculate_cluster_health(cluster: &ClusterState) -> (f32, usize, Vec<Stri
     let avg_delivery_ratio =
         active_nodes.iter().map(|m| m.delivery_ratio).sum::<f32>() / active_nodes.len() as f32;
 
-    // Count failed nodes
-    let failed_count = cluster
-        .nodes_snapshot()
-        .iter()
-        .filter(|n| {
-            if let Some(metrics) = cluster.get_metrics(&n.id) {
-                metrics.status == NodeStatus::Failed
-            } else {
-                false
-            }
-        })
-        .count();
-
-    // Get failed node IDs
+    // Get failed node IDs and count them in a single pass, avoiding redundant mutex locks and clones of NodeMetrics
     let failed_nodes: Vec<String> = cluster
         .nodes_snapshot()
         .iter()
-        .filter(|n| {
-            if let Some(metrics) = cluster.get_metrics(&n.id) {
-                metrics.status == NodeStatus::Failed
-            } else {
-                false
-            }
+        .filter_map(|n| {
+            cluster.get_metrics(&n.id).and_then(|metrics| {
+                if metrics.status == NodeStatus::Failed {
+                    Some(n.id.clone())
+                } else {
+                    None
+                }
+            })
         })
-        .map(|n| n.id.clone())
         .collect();
+
+    let failed_count = failed_nodes.len();
 
     (avg_delivery_ratio, failed_count, failed_nodes)
 }
