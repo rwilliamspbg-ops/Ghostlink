@@ -22,6 +22,8 @@
       .benchmark { background: linear-gradient(90deg, rgba(37, 99, 235, 0.2), rgba(14, 165, 233, 0.14)); border: 1px solid rgba(96, 165, 250, 0.35); border-radius: 16px; padding: 1.2rem 1.3rem; margin-top: 1rem; }
       .placeholder { height: 180px; border-radius: 16px; border: 1px dashed #64748b; display: flex; align-items: center; justify-content: center; color: #cbd5e1; margin-top: 1rem; background: rgba(15, 23, 42, 0.6); }
       .value-prop { font-size: 1rem; line-height: 1.75; color: #e2e8f0; margin-top: 1rem; }
+      .compare-list { display: grid; gap: 0.75rem; margin-top: 0.75rem; }
+      .compare-item { padding: 0.75rem 0.9rem; background: rgba(30, 41, 59, 0.8); border-radius: 12px; }
       ul { padding-left: 1.1rem; line-height: 1.7; }
       footer { max-width: 960px; margin: 0 auto; padding: 0 1.5rem 2rem; color: #94a3b8; font-size: 0.95rem; }
     </style>
@@ -45,6 +47,14 @@
         <h2>How it works</h2>
         <p class="value-prop">Ghostlink combines hardware-aware planning, distributed scheduling, and model-management workflows so teams can route inference requests across heterogeneous resources with more control than generic orchestration layers.</p>
       </div>
+      <div class="card">
+        <h2>Why Ghostlink over alternatives</h2>
+        <div class="compare-list">
+          <div class="compare-item"><strong>vs. vLLM:</strong> more control over custom scheduling and deployment topology.</div>
+          <div class="compare-item"><strong>vs. Ray:</strong> less overhead for latency-sensitive inference workflows.</div>
+          <div class="compare-item"><strong>vs. DeepSpeed:</strong> simpler path for teams that want a focused inference fabric.</div>
+        </div>
+      </div>
       <div class="grid">
         <div class="card">
           <h2>Why teams evaluate Ghostlink</h2>
@@ -53,6 +63,11 @@
             <li>Custom distributed inference topologies</li>
             <li>Open-source core with commercial support path</li>
           </ul>
+        </div>
+        <div class="card">
+          <h2>Book a demo</h2>
+          <p class="value-prop">For teams evaluating a custom inference fabric, Ghostlink is a strong fit for early pilots, performance tuning, and self-hosted deployment support.</p>
+          <a class="btn btn-primary" href="https://github.com/rwilliamspbg-ops/Ghostlink">Start a conversation</a>
         </div>
         <div class="card">
           <h2>Who it’s for</h2>
