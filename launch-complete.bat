@@ -8,6 +8,35 @@ set "BACKEND_HOST=127.0.0.1"
 set "BACKEND_PORT=8003"
 set "GUI_PORT=5173"
 set "PROJECT_ROOT=%~dp0"
+set "LLAMA_NGL=%GHOSTLINK_LLAMA_NGL%"
+if "%LLAMA_NGL%"=="" set "LLAMA_NGL=-1"
+
+REM Auto-detect GPU: NVIDIA -> AMD ROCm -> Windows WMI -> CPU
+set "GPU_VENDOR="
+where nvidia-smi >nul 2>&1
+if not errorlevel 1 (
+    for /f "tokens=*" %%a in ('nvidia-smi --query-gpu=name --format=csv,noheader 2^>nul') do set "GPU_NAME=%%a"
+    if defined GPU_NAME echo [INFO] NVIDIA GPU: %%GPU_NAME%% & set "GPU_VENDOR=nvidia"
+)
+if not defined GPU_VENDOR (
+    where rocm-smi >nul 2>&1
+    if not errorlevel 1 (
+        echo [INFO] AMD ROCm detected
+        set "GPU_VENDOR=amd"
+    )
+)
+if not defined GPU_VENDOR (
+    for /f "skip=1 tokens=2 delims=," %%a in ('wmic path Win32_VideoController get Name /format:csv 2^>nul') do (
+        echo %%a | findstr /i "amd radeon" >nul
+        if not errorlevel 1 echo [INFO] AMD GPU: %%a & set "GPU_VENDOR=amd"
+    )
+)
+if not defined GPU_VENDOR (
+    if "%LLAMA_NGL%"=="-1" (
+        echo [INFO] No GPU detected - using CPU mode (ngl=0)
+        set "LLAMA_NGL=0"
+    )
+)
 set "LLAMA_SERVER_BIN=%PROJECT_ROOT%third_party\llama.cpp\build\bin\llama-server.exe"
 set "LLAMA_SERVER_BIN_ALT=%PROJECT_ROOT%third_party\llama.cpp\build\bin\llama-server"
 set "LLAMA_MODEL=%PROJECT_ROOT%tmp\models\model.gguf"
@@ -56,7 +85,7 @@ if exist "%LLAMA_SERVER_BIN%" (
         echo [WARN] Falling back to simulated native mode.
         set "GHOSTLINK_NATIVE_ENGINE=simulated"
     ) else (
-        start "llama-server" cmd /k ""%LLAMA_SERVER_BIN%" -m "%LLAMA_MODEL%" --host 127.0.0.1 --port 8080 -ngl 0"
+        start "llama-server" cmd /k ""%LLAMA_SERVER_BIN%" -m "%LLAMA_MODEL%" --host 127.0.0.1 --port 8080 -ngl %LLAMA_NGL%"
         timeout /t 3 /nobreak >nul
         set "GHOSTLINK_NATIVE_ENGINE=llama_server"
     )
@@ -68,7 +97,7 @@ if not defined GHOSTLINK_NATIVE_ENGINE if exist "%LLAMA_SERVER_BIN_ALT%" (
         echo [WARN] Falling back to simulated native mode.
         set "GHOSTLINK_NATIVE_ENGINE=simulated"
     ) else (
-        start "llama-server" cmd /k ""%LLAMA_SERVER_BIN_ALT%" -m "%LLAMA_MODEL%" --host 127.0.0.1 --port 8080 -ngl 0"
+        start "llama-server" cmd /k ""%LLAMA_SERVER_BIN_ALT%" -m "%LLAMA_MODEL%" --host 127.0.0.1 --port 8080 -ngl %LLAMA_NGL%"
         timeout /t 3 /nobreak >nul
         set "GHOSTLINK_NATIVE_ENGINE=llama_server"
     )

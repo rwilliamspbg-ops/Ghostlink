@@ -67,13 +67,16 @@ pub struct RuntimeDetector;
 impl RuntimeDetector {
     /// Auto-detect available runtimes on the system
     pub fn detect() -> Vec<RuntimeInfo> {
-        vec![
+        #[allow(unused_mut)]
+        let mut runtimes = vec![
             Self::detect_cuda(),
             Self::detect_metal(),
-            Self::detect_rocm(),
             Self::detect_npu(),
             Self::detect_cpu(),
-        ]
+        ];
+        #[cfg(feature = "rocm")]
+        runtimes.insert(2, Self::detect_rocm());
+        runtimes
         .into_iter()
         .flatten()
         .collect()
@@ -88,19 +91,47 @@ impl RuntimeDetector {
             .unwrap_or(Runtime::CPU)
     }
 
-    /// Detect NVIDIA CUDA
+    /// Detect NVIDIA CUDA — checks toolkit path, env vars, and nvidia-smi
     fn detect_cuda() -> Option<RuntimeInfo> {
-        // Check for CUDA toolkit
-        if std::path::Path::new("/usr/local/cuda").exists()
+        // Check for CUDA toolkit or nvidia-smi
+        let has_cuda_toolkit = std::path::Path::new("/usr/local/cuda").exists()
             || std::env::var("CUDA_PATH").is_ok()
-            || std::env::var("CUDA_HOME").is_ok()
-        {
+            || std::env::var("CUDA_HOME").is_ok();
+        let has_nvidia_smi = std::process::Command::new("nvidia-smi")
+            .arg("--version")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+
+        if has_cuda_toolkit || has_nvidia_smi {
+            // Detect number of GPUs and compute capability via nvidia-smi
+            let (device_count, compute_capability) = if has_nvidia_smi {
+                let count = std::process::Command::new("nvidia-smi")
+                    .args(["--query-gpu=index", "--format=csv,noheader"])
+                    .output()
+                    .ok()
+                    .map(|o| String::from_utf8_lossy(&o.stdout).lines().count());
+                let cc = std::process::Command::new("nvidia-smi")
+                    .args(["--query-gpu=compute_cap", "--format=csv,noheader"])
+                    .output()
+                    .ok()
+                    .and_then(|o| {
+                        String::from_utf8_lossy(&o.stdout)
+                            .lines()
+                            .next()
+                            .map(|l| l.trim().to_string())
+                    });
+                (count.or(Some(1)), cc.or(Some("7.0+".to_string())))
+            } else {
+                (Some(1), Some("7.0+".to_string()))
+            };
+
             return Some(RuntimeInfo {
                 detected_runtime: Runtime::CUDA,
                 is_available: true,
-                compute_capability: Some("7.0+".to_string()),
+                compute_capability,
                 memory_gb: Self::detect_gpu_memory(),
-                device_count: Some(1),
+                device_count,
             });
         }
         None
@@ -124,20 +155,89 @@ impl RuntimeDetector {
         None
     }
 
-    /// Detect AMD ROCm
+    /// Detect AMD ROCm — works on Linux (/opt/rocm, rocm-smi) and Windows (HIP_PATH, ROCM_PATH)
+    #[cfg(feature = "rocm")]
     fn detect_rocm() -> Option<RuntimeInfo> {
-        #[cfg(feature = "rocm")]
+        // Linux: /opt/rocm directory or ROCM_HOME env var
+        let has_rocm_linux = std::path::Path::new("/opt/rocm").exists()
+            || std::env::var("ROCM_HOME").is_ok()
+            || std::env::var("ROCM_PATH").is_ok();
+
+        // Windows: HIP SDK path or ROCM_PATH
+        let has_rocm_windows = std::env::var("HIP_PATH").is_ok()
+            || std::env::var("ROCM_PATH").is_ok()
+            || std::path::Path::new("C:\\Program Files\\AMD\\ROCm").exists()
+            || std::path::Path::new("C:\\Program Files\\AMD\\HIP").exists();
+
+        // Check via rocm-smi tool (cross-platform)
+        let has_rocm_smi = std::process::Command::new("rocm-smi")
+            .arg("--version")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+
+        // Check via hipconfig (AMD's HIP config tool)
+        let has_hipconfig = std::process::Command::new("hipconfig")
+            .arg("--full")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+
+        // Check visible device env vars
+        let has_visible_devices = std::env::var("ROCR_VISIBLE_DEVICES").is_ok()
+            || std::env::var("HIP_VISIBLE_DEVICES").is_ok();
+
+        if has_rocm_linux || has_rocm_windows || has_rocm_smi || has_hipconfig || has_visible_devices
         {
-            if std::path::Path::new("/opt/rocm").exists() || std::env::var("ROCM_HOME").is_ok() {
-                return Some(RuntimeInfo {
-                    detected_runtime: Runtime::ROCm,
-                    is_available: true,
-                    compute_capability: Some("RDNA/CDNA".to_string()),
-                    memory_gb: Self::detect_gpu_memory(),
-                    device_count: Some(1),
-                });
-            }
+            let device_count = if has_rocm_smi {
+                // Count AMD GPUs via rocm-smi
+                std::process::Command::new("rocm-smi")
+                    .args(["--showid"])
+                    .output()
+                    .ok()
+                    .map(|o| {
+                        String::from_utf8_lossy(&o.stdout)
+                            .lines()
+                            .filter(|l| l.contains("GPU["))
+                            .count()
+                    })
+                    .or_else(|| {
+                        std::env::var("ROCR_VISIBLE_DEVICES")
+                            .or_else(|_| std::env::var("HIP_VISIBLE_DEVICES"))
+                            .ok()
+                            .map(|v| v.split(',').count())
+                    })
+                    .or(Some(1))
+            } else {
+                Some(1)
+            };
+
+            // Try to get actual GPU memory via rocm-smi
+            let memory_gb = std::process::Command::new("rocm-smi")
+                .args(["--showmeminfo", "vram"])
+                .output()
+                .ok()
+                .and_then(|o| {
+                    let stdout = String::from_utf8_lossy(&o.stdout);
+                    stdout.lines().find(|l| l.contains("Total Memory")).and_then(|l| {
+                        let val = l.split(':').nth(1)?.trim().to_lowercase();
+                        let num: f32 = val.split_whitespace().next()?.parse().ok()?;
+                        if val.contains("gb") { Some(num) }
+                        else if val.contains("mb") { Some(num / 1024.0) }
+                        else { None }
+                    })
+                })
+                .or_else(|| Self::detect_gpu_memory());
+
+            return Some(RuntimeInfo {
+                detected_runtime: Runtime::ROCm,
+                is_available: true,
+                compute_capability: Some("RDNA3/CDNA3".to_string()),
+                memory_gb,
+                device_count,
+            });
         }
+
         None
     }
 
@@ -204,16 +304,58 @@ impl RuntimeDetector {
     }
 
     fn detect_gpu_memory() -> Option<f32> {
-        // Try to detect GPU memory (simplified)
-        // In production, use nvidia-smi, rocm-smi, etc.
-        #[cfg(any(feature = "cuda", feature = "rocm"))]
+        // Try NVIDIA SMI first
+        if let Ok(output) = std::process::Command::new("nvidia-smi")
+            .args(["--query-gpu=memory.total", "--format=csv,noheader,nounits"])
+            .output()
         {
-            Some(8.0) // Default assumption: 8GB
+            if output.status.success() {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                if let Some(line) = stdout.lines().next() {
+                    if let Ok(mib) = line.trim().parse::<f32>() {
+                        return Some(mib / 1024.0);
+                    }
+                }
+            }
         }
-        #[cfg(not(any(feature = "cuda", feature = "rocm")))]
+
+        // Try ROCm SMI for AMD GPUs
+        if let Ok(output) = std::process::Command::new("rocm-smi")
+            .args(["--showmeminfo", "vram"])
+            .output()
         {
-            None
+            if output.status.success() {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                if let Some(line) = stdout.lines().find(|l| l.contains("Total Memory")) {
+                    let val = line.split(':').nth(1)?.trim().to_lowercase();
+                    let num: f32 = val.split_whitespace().next()?.parse().ok()?;
+                    if val.contains("gb") { return Some(num); }
+                    if val.contains("mb") { return Some(num / 1024.0); }
+                }
+            }
         }
+
+        // Windows WMI fallback for any GPU
+        #[cfg(windows)]
+        {
+            if let Ok(output) = std::process::Command::new("wmic")
+                .args(["path", "Win32_VideoController", "get", "AdapterRAM", "/format:csv"])
+                .output()
+            {
+                if output.status.success() {
+                    let stdout = String::from_utf8_lossy(&output.stdout);
+                    for line in stdout.lines().skip(1) {
+                        if let Ok(bytes) = line.trim().parse::<f64>() {
+                            if bytes > 0.0 {
+                                return Some((bytes / 1_073_741_824.0) as f32);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        None
     }
 
     fn detect_system_memory() -> Option<f32> {
@@ -515,5 +657,48 @@ mod tests {
     fn test_best_model() {
         let best = ModelRegistry::best_for_runtime(Runtime::CPU);
         assert!(best.is_some());
+    }
+
+    #[test]
+    fn test_rocm_models_include_amd_compatible_models() {
+        let rocm_models = ModelRegistry::models_for_runtime(Runtime::ROCm);
+        assert!(!rocm_models.is_empty(), "ROCm should have compatible models");
+
+        let names: Vec<&str> = rocm_models.iter().map(|m| m.name.as_str()).collect();
+        assert!(names.contains(&"mistral"), "mistral should be ROCm compatible");
+        assert!(names.contains(&"llama2"), "llama2 should be ROCm compatible");
+        assert!(names.contains(&"llama2-13b"), "llama2-13b should be ROCm compatible");
+    }
+
+    #[test]
+    fn test_rocm_best_model() {
+        let best = ModelRegistry::best_for_runtime(Runtime::ROCm);
+        assert!(best.is_some());
+        assert_eq!(best.unwrap().quality_tier, QualityTier::Standard);
+    }
+
+    #[test]
+    fn test_rocm_model_recommendations_fit_memory() {
+        let recommended = ModelRegistry::recommend_models(Runtime::ROCm, 12.0);
+        assert!(!recommended.is_empty());
+        for model in &recommended {
+            assert!(model.memory_required_gb <= 12.0);
+        }
+    }
+
+    #[test]
+    fn test_rocm_recommendation_filters_by_vram() {
+        let limited = ModelRegistry::recommend_models(Runtime::ROCm, 6.0);
+        let abundant = ModelRegistry::recommend_models(Runtime::ROCm, 48.0);
+        assert!(limited.len() < abundant.len(), "More VRAM should allow more models");
+    }
+
+    #[cfg(feature = "rocm")]
+    #[test]
+    fn test_rocm_detection_is_available() {
+        let runtimes = RuntimeDetector::detect();
+        // On a system without AMD ROCm installed, ROCm detection returns no entry,
+        // but the detection should at least run without panicking.
+        assert!(!runtimes.is_empty(), "Runtime detection should always return at least CPU");
     }
 }

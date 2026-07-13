@@ -1,6 +1,6 @@
 [package]
 name = "ghostlink-core"
-version = "0.1.0-alpha.0"
+version = "1.0.0"
 edition = "2021"
 authors = ["Ryan K Williams"]
 description = "High-performance, low-level network fabric utilizing zero-copy SPSC buffers and AF_XDP kernel bypass."
@@ -9,6 +9,10 @@ readme = "../../README.md"
 license = "MIT"
 keywords = ["networking", "xdp", "zero-copy", "async"]
 categories = ["asynchronous", "network-programming"]
+
+[features]
+default = []
+rocm = []
 
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }

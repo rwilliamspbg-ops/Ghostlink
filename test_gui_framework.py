@@ -247,7 +247,7 @@ class TestGhostlinkGUI(unittest.TestCase):
 
     def test_model_operations_sequence(self):
         """Test a realistic sequence of model operations."""
-        try
+        try:
             # Load models and chat
             payload = {"model": "tinyllama"}
             

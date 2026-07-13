@@ -23,6 +23,9 @@ crates/ghostlink-gui/src-tauri/gen/schemas/
 # Local quickstart config bootstrap artifact
 ghostlink.toml
 
+# Runtime settings persisted by the API (auto-generated, machine-specific)
+settings.json
+
 # Local scratch / runtime artifacts that should never be committed
 .git_commit_msg
 server.log
@@ -31,3 +34,21 @@ server.log
 # Local native-runtime bootstrap artifacts
 third_party/llama.cpp/
 stories15M-q4_0.gguf
+
+# Binary executables and installers (never track these)
+*.exe
+*.msi
+*.dmg
+*.pkg
+*.deb
+*.rpm
+*.AppImage
+*.bin
+
+# Temporary report and working files (never commit session artifacts)
+REPORT_*.md
+*_REPORT.md
+*_SUMMARY.md
+*_READINESS.md
+*_READY.md
+OUTPUT.md

@@ -1,6 +1,7 @@
 #!/bin/bash
 
 # Ghostlink Studio - Splash Screen (native llama-server path)
+# With real service verification
 
 # Colors
 RED='\033[0;31m'
@@ -27,6 +28,26 @@ progress_bar() {
     printf "] %3d%% " "$percent"
 }
 
+# Wait for HTTP endpoint with timeout
+wait_for_http() {
+    local url="$1"
+    local label="$2"
+    local timeout_s="${3:-60}"
+    local start
+    start=$(date +%s)
+    while true; do
+        if curl -sf "$url" >/dev/null 2>&1; then
+            printf "  ${GREEN}✓${NC} %s is healthy at %s\n" "$label" "$url"
+            return 0
+        fi
+        if (( $(date +%s) - start >= timeout_s )); then
+            printf "  ${RED}✗${NC} %s failed health check: %s\n" "$label" "$url"
+            return 1
+        fi
+        sleep 1
+    done
+}
+
 # Clear screen
 clear
 
@@ -50,8 +71,8 @@ echo ""
 # System info
 echo -e "${BLUE}System Information:${NC}"
 echo -e "  OS: $(uname -s)"
-echo -e "  Node.js: $(node -v)"
-echo -e "  npm: $(npm -v)"
+echo -e "  Node.js: $(node -v 2>/dev/null || echo 'not installed')"
+echo -e "  npm: $(npm -v 2>/dev/null || echo 'not installed')"
 echo ""
 
 # Check components
@@ -90,39 +111,45 @@ echo ""
 echo -e "${BLUE}Starting Services:${NC}"
 echo ""
 
-# Backend startup
+# Backend startup with real health check
 if [ $BACKEND_FOUND -eq 1 ]; then
     echo "  1. Ghostlink Backend (API Server)"
     progress_bar 0 3
     echo "   Starting..."
-    sleep 1
-    progress_bar 1 3
-    echo "   Loading..."
-    sleep 1
-    progress_bar 2 3
-    echo "   Ready!"
-    progress_bar 3 3
-    echo -e "   ${GREEN}✓ Online${NC}"
+    # Actual service start would happen here via launch-complete.sh
+    # This splash just verifies, so we check if already running
+    if wait_for_http "http://127.0.0.1:8003/health" "Backend" 5; then
+        progress_bar 3 3
+        echo -e "   ${GREEN}✓ Online${NC}"
+    else
+        progress_bar 1 3
+        echo "   Starting..."
+        progress_bar 2 3
+        echo "   Loading..."
+        progress_bar 3 3
+        echo -e "   ${YELLOW}⚠ Starting (will be verified by full launcher)${NC}"
+    fi
     echo ""
 fi
 
-# GUI startup
+# GUI startup with real health check
 if [ $GUI_FOUND -eq 1 ]; then
     echo "  2. Ghostlink GUI (Web Interface)"
     progress_bar 0 4
-    echo "   Installing dependencies..."
-    sleep 1
-    progress_bar 1 4
-    echo "   Building assets..."
-    sleep 1
-    progress_bar 2 4
-    echo "   Starting dev server..."
-    sleep 1
-    progress_bar 3 4
-    echo "   Opening browser..."
-    sleep 1
-    progress_bar 4 4
-    echo -e "   ${GREEN}✓ Online${NC}"
+    echo "   Checking..."
+    if wait_for_http "http://127.0.0.1:5173" "Frontend" 5; then
+        progress_bar 4 4
+        echo -e "   ${GREEN}✓ Online${NC}"
+    else
+        progress_bar 1 4
+        echo "   Installing dependencies..."
+        progress_bar 2 4
+        echo "   Building assets..."
+        progress_bar 3 4
+        echo "   Starting dev server..."
+        progress_bar 4 4
+        echo -e "   ${YELLOW}⚠ Starting (will be verified by full launcher)${NC}"
+    fi
     echo ""
 fi
 

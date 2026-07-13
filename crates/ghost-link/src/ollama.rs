@@ -63,6 +63,9 @@ impl OllamaClient {
         model: &str,
         prompt: &str,
         temperature: f32,
+        top_p: f32,
+        top_k: usize,
+        repeat_penalty: f32,
         max_tokens: usize,
     ) -> Result<String, Box<dyn Error>> {
         let payload = json!({
@@ -70,6 +73,9 @@ impl OllamaClient {
             "prompt": prompt,
             "stream": false,
             "temperature": temperature.clamp(0.0, 2.0),
+            "top_p": top_p.clamp(0.0, 1.0),
+            "top_k": top_k.clamp(1, 200),
+            "repeat_penalty": repeat_penalty.clamp(0.0, 2.0),
             "num_predict": max_tokens,
         });
 

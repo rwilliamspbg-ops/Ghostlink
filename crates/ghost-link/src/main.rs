@@ -40,6 +40,8 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
+use tokio::io::AsyncWriteExt;
+
 #[derive(Debug, Default, Deserialize)]
 struct FileConfig {
     flow: Option<FlowDefaults>,
@@ -1456,6 +1458,68 @@ struct BackendState {
     native_engine_client: native_engine::NativeEngineClient,
     ollama_client: ollama::OllamaClient,
     ollama_available: Arc<tokio::sync::Mutex<bool>>,
+    settings: RuntimeSettings,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct RuntimeSettings {
+    inference_backend: String,
+    native_engine: String,
+    ngl: i32,
+    model_path: String,
+    models_dir: String,
+    llama_server_url: String,
+    llama_port: u16,
+    api_host: String,
+    api_port: u16,
+    gui_port: u16,
+    threads: usize,
+    ctx_size: usize,
+    temperature: f32,
+    top_p: f32,
+    top_k: usize,
+    repeat_penalty: f32,
+    max_tokens: usize,
+    chat_exec_tokens: usize,
+    chat_micro_batch: usize,
+    tcp_max_inflight: usize,
+    discovery_listen: String,
+    discovery_broadcast: String,
+    discovery_auth_token: String,
+    tcp_auth_token: String,
+    xdp_interface: String,
+}
+
+impl Default for RuntimeSettings {
+    fn default() -> Self {
+        Self {
+            inference_backend: "native".to_string(),
+            native_engine: "llama_server".to_string(),
+            ngl: -1,
+            model_path: String::new(),
+            models_dir: "models".to_string(),
+            llama_server_url: "http://127.0.0.1:8080/completion".to_string(),
+            llama_port: 8080,
+            api_host: "127.0.0.1".to_string(),
+            api_port: 8003,
+            gui_port: 5173,
+            threads: 4,
+            ctx_size: 4096,
+            temperature: 0.7,
+            top_p: 0.9,
+            top_k: 40,
+            repeat_penalty: 1.1,
+            max_tokens: 2048,
+            chat_exec_tokens: 1024,
+            chat_micro_batch: 4,
+            tcp_max_inflight: 256,
+            discovery_listen: "0.0.0.0:45885".to_string(),
+            discovery_broadcast: "255.255.255.255:45885".to_string(),
+            discovery_auth_token: String::new(),
+            tcp_auth_token: String::new(),
+            xdp_interface: "eth0".to_string(),
+        }
+    }
 }
 
 struct ToolDispatcher;
@@ -1509,6 +1573,7 @@ fn load_persistent_models() -> Vec<ModelRecord> {
             model_type: "LLM".to_string(),
             quantization: "Q4_K_M".to_string(),
             status: "Ready".to_string(),
+            local_path: String::new(),
         },
         ModelRecord {
             name: "mistralai/Mistral-7B-Instruct-v0.2".to_string(),
@@ -1516,6 +1581,7 @@ fn load_persistent_models() -> Vec<ModelRecord> {
             model_type: "LLM".to_string(),
             quantization: "Q8_0".to_string(),
             status: "Ready".to_string(),
+            local_path: String::new(),
         },
         ModelRecord {
             name: "google/gemma-7b-it".to_string(),
@@ -1523,6 +1589,7 @@ fn load_persistent_models() -> Vec<ModelRecord> {
             model_type: "LLM".to_string(),
             quantization: "BF16".to_string(),
             status: "Ready".to_string(),
+            local_path: String::new(),
         },
         ModelRecord {
             name: "ghostlink-30b-v1".to_string(),
@@ -1530,6 +1597,7 @@ fn load_persistent_models() -> Vec<ModelRecord> {
             model_type: "LLM".to_string(),
             quantization: "Q4_K_M".to_string(),
             status: "Ready".to_string(),
+            local_path: String::new(),
         },
     ]
 }
@@ -1537,6 +1605,24 @@ fn load_persistent_models() -> Vec<ModelRecord> {
 fn save_persistent_models(models: &[ModelRecord]) {
     if let Ok(data) = serde_json::to_string_pretty(models) {
         let _ = fs::write("models.json", data);
+    }
+}
+
+fn load_settings() -> RuntimeSettings {
+    let path = Path::new("settings.json");
+    if path.exists() {
+        if let Ok(data) = fs::read_to_string(path) {
+            if let Ok(settings) = serde_json::from_str::<RuntimeSettings>(&data) {
+                return settings;
+            }
+        }
+    }
+    RuntimeSettings::default()
+}
+
+fn save_settings(settings: &RuntimeSettings) {
+    if let Ok(data) = serde_json::to_string_pretty(settings) {
+        let _ = fs::write("settings.json", data);
     }
 }
 
@@ -1596,6 +1682,8 @@ struct ModelRecord {
     model_type: String,
     quantization: String,
     status: String,
+    #[serde(default)]
+    local_path: String,
 }
 #[derive(Debug, Clone, Serialize)]
 struct WorkerRecord {
@@ -1779,7 +1867,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                 InferenceBackend::Ollama.as_str(),
             ),
             InferenceBackend::Native => match native_engine_client
-                .generate(&model, &prompt, exec_tokens)
+                .generate(&model, &prompt, exec_tokens, 0.7, 0.9, 40, 1.1)
             {
                 Ok(gen) => (
                     gen.text,
@@ -1822,6 +1910,110 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         })
     }
 
+    fn detect_quantization(filename: &str) -> String {
+        let upper = filename.to_uppercase();
+        let quants = [
+            "Q2_K", "Q3_K", "Q4_K", "Q5_K", "Q6_K", "Q8_0",
+            "Q4_0", "Q4_1", "Q5_0", "Q5_1", "F16", "BF16",
+        ];
+        for q in &quants {
+            if upper.contains(q) {
+                return q.to_string();
+            }
+        }
+        "unknown".to_string()
+    }
+
+    fn scan_local_models_dir(models_dir: &str) -> Vec<ModelRecord> {
+        let dir = std::path::Path::new(models_dir);
+        if !dir.exists() {
+            return vec![];
+        }
+        let mut local = Vec::new();
+        if let Ok(entries) = fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().map(|e| e == "gguf").unwrap_or(false) {
+                    let filename = path.file_name().unwrap().to_string_lossy().to_string();
+                    let size_bytes = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+                    let size_gb = size_bytes as f32 / (1024.0 * 1024.0 * 1024.0);
+                    let name = filename.strip_suffix(".gguf").unwrap_or(&filename).to_string();
+                    local.push(ModelRecord {
+                        name,
+                        size_gb,
+                        model_type: "LLM".to_string(),
+                        quantization: detect_quantization(&filename),
+                        status: "Ready".to_string(),
+                        local_path: path.to_string_lossy().to_string(),
+                    });
+                }
+            }
+        }
+        local
+    }
+
+    async fn download_hf_model(model_id: &str, models_dir: &std::path::Path) -> Result<String, String> {
+        let client = reqwest::Client::builder()
+            .user_agent("ghostlink/1.0")
+            .build()
+            .map_err(|e| format!("HTTP client error: {}", e))?;
+
+        let api_url = format!("https://huggingface.co/api/models/{}", model_id);
+        let resp = client.get(&api_url).send().await.map_err(|e| format!("API error: {}", e))?;
+
+        if !resp.status().is_success() {
+            return Err(format!("Model '{}' not found on HuggingFace", model_id));
+        }
+
+        let data: serde_json::Value = resp.json().await.map_err(|e| format!("Parse error: {}", e))?;
+
+        let gguf_files: Vec<String> = data
+            .get("siblings")
+            .and_then(|s| s.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|s| s.get("rfilename").and_then(|f| f.as_str()))
+                    .filter(|f| f.ends_with(".gguf"))
+                    .map(|f| f.to_string())
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        if gguf_files.is_empty() {
+            return Err("No GGUF files found in this repository. Try a GGUF-quantized variant (e.g. lmstudio-community/Meta-Llama-3-8B-Instruct-GGUF).".to_string());
+        }
+
+        let filename = &gguf_files[0];
+        let file_url = format!("https://huggingface.co/{}/resolve/main/{}", model_id, filename);
+        let dest_path = models_dir.join(filename);
+
+        if dest_path.exists() {
+            return Ok(dest_path.to_string_lossy().to_string());
+        }
+
+        let resp = client.get(&file_url).send().await.map_err(|e| format!("Download error: {}", e))?;
+
+        if !resp.status().is_success() {
+            return Err(format!("Failed to download file (HTTP {})", resp.status()));
+        }
+
+        if let Some(parent) = dest_path.parent() {
+            fs::create_dir_all(parent).map_err(|e| format!("Dir error: {}", e))?;
+        }
+        let mut file = tokio::fs::File::create(&dest_path)
+            .await
+            .map_err(|e| format!("File error: {}", e))?;
+        let mut stream = resp;
+        while let Some(chunk) = stream.chunk().await.map_err(|e| format!("Stream error: {}", e))? {
+            file.write_all(&chunk)
+                .await
+                .map_err(|e| format!("Write error: {}", e))?;
+        }
+        file.flush().await.ok();
+
+        Ok(dest_path.to_string_lossy().to_string())
+    }
+
     async fn handle_models(
         State(state): State<Arc<Mutex<BackendState>>>,
     ) -> Json<serde_json::Value> {
@@ -1850,8 +2042,18 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
     ) -> Json<serde_json::Value> {
         let backend = lock_state(&state);
 
-        let models = backend
-            .models
+        let mut merged: Vec<ModelRecord> = backend.models.clone();
+        let local = scan_local_models_dir(&backend.settings.models_dir);
+        for l in &local {
+            if let Some(existing) = merged.iter_mut().find(|m| m.name == l.name) {
+                existing.local_path = l.local_path.clone();
+                existing.size_gb = l.size_gb;
+            } else {
+                merged.push(l.clone());
+            }
+        }
+
+        let models = merged
             .iter()
             .map(|model| {
                 serde_json::json!({
@@ -1860,6 +2062,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                     "type": model.model_type,
                     "quantization": model.quantization,
                     "status": model.status,
+                    "local_path": model.local_path,
                 })
             })
             .collect::<Vec<_>>();
@@ -1868,7 +2071,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             "models": models,
             "current_model": backend.current_model,
             "total_models": models.len(),
-            "loaded_count": models.iter().filter(|m| m.get("status").and_then(|s| s.as_str()) == Some("Loaded")).count()
+            "loaded_count": merged.iter().filter(|m| m.status == "Loaded").count()
         }))
     }
 
@@ -1906,6 +2109,31 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         }
         let mut backend = lock_state(&state);
 
+        // Merge local scans so we can find local_path for locally-downloaded models
+        let local = scan_local_models_dir(&backend.settings.models_dir);
+        for l in &local {
+            if !backend.models.iter().any(|m| m.name == l.name) {
+                backend.models.push(l.clone());
+            }
+        }
+
+        let local_path = backend
+            .models
+            .iter()
+            .find(|m| m.name == requested_model)
+            .and_then(|m| {
+                if m.local_path.is_empty() {
+                    None
+                } else {
+                    Some(m.local_path.clone())
+                }
+            });
+
+        if let Some(path) = local_path {
+            backend.settings.model_path = path;
+            save_settings(&backend.settings);
+        }
+
         for m in &mut backend.models {
             if m.status == "Loaded" {
                 m.status = "Ready".to_string();
@@ -1918,7 +2146,11 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         backend.current_model = requested_model.clone();
         save_persistent_models(&backend.models);
 
-        Json(serde_json::json!({ "status": "ok", "current_model": backend.current_model }))
+        Json(serde_json::json!({
+            "status": "ok",
+            "current_model": backend.current_model,
+            "model_path": backend.settings.model_path,
+        }))
     }
 
     async fn handle_gui_model_download(
@@ -1926,20 +2158,67 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         Json(req): Json<ModelDownloadRequest>,
     ) -> Json<serde_json::Value> {
         let model_id = req.model_id.trim().to_string();
-        let mut backend = lock_state(&state);
-        if !backend.models.iter().any(|m| m.name == model_id) {
-            backend.models.push(ModelRecord {
-                name: model_id.clone(),
-                size_gb: 8.0,
-                model_type: "LLM".to_string(),
-                quantization: "unknown".to_string(),
-                status: "Ready".to_string(),
-            });
-            save_persistent_models(&backend.models);
+        if model_id.is_empty() {
+            return Json(serde_json::json!({ "error": "model_id cannot be empty" }));
         }
-        Json(
-            serde_json::json!({ "status": "ok", "message": format!("model '{}' ready", model_id) }),
-        )
+
+        let models_dir = {
+            let backend = lock_state(&state);
+            backend.settings.models_dir.clone()
+        };
+        let models_path = std::path::Path::new(&models_dir);
+        fs::create_dir_all(models_path).ok();
+
+        {
+            let mut backend = lock_state(&state);
+            if !backend.models.iter().any(|m| m.name == model_id) {
+                backend.models.push(ModelRecord {
+                    name: model_id.clone(),
+                    size_gb: 0.0,
+                    model_type: "LLM".to_string(),
+                    quantization: "unknown".to_string(),
+                    status: "Downloading".to_string(),
+                    local_path: String::new(),
+                });
+                save_persistent_models(&backend.models);
+            } else if let Some(m) = backend.models.iter_mut().find(|m| m.name == model_id) {
+                m.status = "Downloading".to_string();
+                save_persistent_models(&backend.models);
+            }
+        }
+
+        let result = download_hf_model(&model_id, models_path).await;
+
+        match result {
+            Ok(local_path) => {
+                let filename = std::path::Path::new(&local_path)
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .to_string();
+                let name = filename.strip_suffix(".gguf").unwrap_or(&filename).to_string();
+                let size_bytes = fs::metadata(&local_path).map(|m| m.len()).unwrap_or(0);
+                let size_gb = size_bytes as f32 / (1024.0 * 1024.0 * 1024.0);
+
+                let mut backend = lock_state(&state);
+                backend.models.retain(|m| m.name != model_id);
+                backend.models.push(ModelRecord {
+                    name,
+                    size_gb,
+                    model_type: "LLM".to_string(),
+                    quantization: detect_quantization(&filename),
+                    status: "Ready".to_string(),
+                    local_path,
+                });
+                save_persistent_models(&backend.models);
+
+                Json(serde_json::json!({
+                    "status": "ok",
+                    "message": format!("model downloaded ({:.2} GB)", size_gb),
+                }))
+            }
+            Err(err) => Json(serde_json::json!({ "error": err })),
+        }
     }
 
     async fn handle_gui_model_delete(
@@ -1958,6 +2237,21 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         Path(model_name): Path<String>,
     ) -> Json<serde_json::Value> {
         let mut backend = lock_state(&state);
+
+        // Also check local scan for this model
+        let local = scan_local_models_dir(&backend.settings.models_dir);
+        for l in &local {
+            if l.name == model_name && !l.local_path.is_empty() {
+                let _ = fs::remove_file(&l.local_path);
+            }
+        }
+
+        if let Some(m) = backend.models.iter().find(|m| m.name == model_name) {
+            if !m.local_path.is_empty() {
+                let _ = fs::remove_file(&m.local_path);
+            }
+        }
+
         backend.models.retain(|m| m.name != model_name);
         if backend.current_model == model_name {
             backend.current_model = "none".to_string();
@@ -1990,11 +2284,67 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         Query(params): Query<HashMap<String, String>>,
     ) -> Json<serde_json::Value> {
         let query = params.get("q").cloned().unwrap_or_default();
-        let results = vec![
-            serde_json::json!({ "id": format!("meta-llama/Llama-3-{}", query), "name": "Llama 3", "downloads": 1000000, "likes": 50000 }),
-            serde_json::json!({ "id": format!("mistralai/Mistral-{}", query), "name": "Mistral", "downloads": 800000, "likes": 40000 }),
-        ];
-        Json(serde_json::json!({ "models": results }))
+        if query.trim().is_empty() {
+            return Json(serde_json::json!({ "models": [] }));
+        }
+
+        let client = reqwest::Client::builder()
+            .user_agent("ghostlink/1.0")
+            .timeout(Duration::from_secs(10))
+            .build()
+            .unwrap_or_default();
+
+        let url = "https://huggingface.co/api/models";
+        let resp = client
+            .get(url)
+            .query(&[
+                ("search", query.as_str()),
+                ("task", "text-generation"),
+                ("sort", "downloads"),
+                ("direction", "-1"),
+                ("limit", "20"),
+            ])
+            .send()
+            .await;
+
+        match resp {
+            Ok(r) if r.status().is_success() => {
+                if let Ok(data) = r.json::<serde_json::Value>().await {
+                    let models = data
+                        .as_array()
+                        .map(|arr| {
+                            arr.iter()
+                                .map(|m| {
+                                    let id = m
+                                        .get("modelId")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("");
+                                    let name = id.rsplit('/').next().unwrap_or(id);
+                                    let downloads = m
+                                        .get("downloads")
+                                        .and_then(|v| v.as_u64())
+                                        .unwrap_or(0);
+                                    let likes = m
+                                        .get("likes")
+                                        .and_then(|v| v.as_u64())
+                                        .unwrap_or(0);
+                                    serde_json::json!({
+                                        "id": id,
+                                        "name": name,
+                                        "downloads": downloads,
+                                        "likes": likes,
+                                    })
+                                })
+                                .collect::<Vec<_>>()
+                        })
+                        .unwrap_or_default();
+                    return Json(serde_json::json!({ "models": models }));
+                }
+            }
+            _ => {}
+        }
+
+        Json(serde_json::json!({ "models": [] }))
     }
 
     async fn handle_gui_workers(
@@ -2140,6 +2490,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             ollama_available,
             inference_backend,
             native_engine_client,
+            settings,
         ) = {
             let backend = lock_state(&state);
             (
@@ -2149,22 +2500,22 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                 Arc::clone(&backend.ollama_available),
                 backend.inference_backend,
                 backend.native_engine_client.clone(),
+                backend.settings.clone(),
             )
         };
 
         let token_estimate = req.message.split_whitespace().count().clamp(1, 1024);
-        let requested_exec_tokens = req.max_tokens.unwrap_or(token_estimate).clamp(16, 4096);
+        let temp = req.temperature.unwrap_or(settings.temperature);
+        let top_p = req.top_p.unwrap_or(settings.top_p);
+        let top_k = req.top_k.unwrap_or(settings.top_k);
+        let penalty = req.penalty.unwrap_or(settings.repeat_penalty);
+        let requested_exec_tokens = req.max_tokens.unwrap_or(settings.max_tokens).clamp(16, 4096);
         let exec_tokens = chat_exec_token_budget(requested_exec_tokens);
         let exec_micro_batch = chat_exec_micro_batch();
 
         let (response_text, real_inference, backend_used) = match inference_backend {
             InferenceBackend::Ollama => match ollama_client
-                .generate(
-                    &current_model,
-                    &req.message,
-                    req.temperature.unwrap_or(0.7),
-                    exec_tokens,
-                )
+                .generate(&current_model, &req.message, temp, top_p, top_k, penalty, exec_tokens)
                 .await
             {
                 Ok(text) => (
@@ -2182,7 +2533,10 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                 }
             },
             InferenceBackend::Native => {
-                match native_engine_client.generate(&current_model, &req.message, exec_tokens) {
+                match native_engine_client.generate(
+                    &current_model, &req.message, exec_tokens,
+                    temp, top_p, top_k, penalty,
+                ) {
                     Ok(gen) => (
                         gen.text,
                         gen.real_inference,
@@ -2469,6 +2823,66 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         }))
     }
 
+    async fn handle_get_settings(
+        State(state): State<Arc<Mutex<BackendState>>>,
+    ) -> Json<serde_json::Value> {
+        let backend = lock_state(&state);
+        let s = &backend.settings;
+        Json(serde_json::json!(s))
+    }
+
+    async fn handle_update_settings(
+        State(state): State<Arc<Mutex<BackendState>>>,
+        Json(req): Json<serde_json::Value>,
+    ) -> Json<serde_json::Value> {
+        let backend = &mut *lock_state(&state);
+        let mut current = backend.settings.clone();
+        if let Some(obj) = req.as_object() {
+            for (key, value) in obj {
+                match key.as_str() {
+                    "inference_backend" => if let Some(v) = value.as_str() { current.inference_backend = v.to_string(); },
+                    "native_engine" => if let Some(v) = value.as_str() { current.native_engine = v.to_string(); },
+                    "ngl" => if let Some(v) = value.as_i64() { current.ngl = v as i32; },
+                    "model_path" => if let Some(v) = value.as_str() { current.model_path = v.to_string(); },
+                    "llama_server_url" => if let Some(v) = value.as_str() { current.llama_server_url = v.to_string(); },
+                    "llama_port" => if let Some(v) = value.as_u64() { current.llama_port = v as u16; },
+                    "api_host" => if let Some(v) = value.as_str() { current.api_host = v.to_string(); },
+                    "api_port" => if let Some(v) = value.as_u64() { current.api_port = v as u16; },
+                    "gui_port" => if let Some(v) = value.as_u64() { current.gui_port = v as u16; },
+                    "threads" => if let Some(v) = value.as_u64() { current.threads = v as usize; },
+                    "ctx_size" => if let Some(v) = value.as_u64() { current.ctx_size = v as usize; },
+                    "temperature" => if let Some(v) = value.as_f64() { current.temperature = v as f32; },
+                    "top_p" => if let Some(v) = value.as_f64() { current.top_p = v as f32; },
+                    "top_k" => if let Some(v) = value.as_u64() { current.top_k = v as usize; },
+                    "repeat_penalty" => if let Some(v) = value.as_f64() { current.repeat_penalty = v as f32; },
+                    "max_tokens" => if let Some(v) = value.as_u64() { current.max_tokens = v as usize; },
+                    "chat_exec_tokens" => if let Some(v) = value.as_u64() { current.chat_exec_tokens = v as usize; },
+                    "chat_micro_batch" => if let Some(v) = value.as_u64() { current.chat_micro_batch = v as usize; },
+                    "tcp_max_inflight" => if let Some(v) = value.as_u64() { current.tcp_max_inflight = v as usize; },
+                    "discovery_listen" => if let Some(v) = value.as_str() { current.discovery_listen = v.to_string(); },
+                    "discovery_broadcast" => if let Some(v) = value.as_str() { current.discovery_broadcast = v.to_string(); },
+                    "discovery_auth_token" => if let Some(v) = value.as_str() { current.discovery_auth_token = v.to_string(); },
+                    "tcp_auth_token" => if let Some(v) = value.as_str() { current.tcp_auth_token = v.to_string(); },
+                    "xdp_interface" => if let Some(v) = value.as_str() { current.xdp_interface = v.to_string(); },
+                    _ => {}
+                }
+            }
+        }
+        backend.settings = current.clone();
+        save_settings(&current);
+        Json(serde_json::json!({"status": "ok", "settings": current}))
+    }
+
+    async fn handle_reset_settings(
+        State(state): State<Arc<Mutex<BackendState>>>,
+    ) -> Json<serde_json::Value> {
+        let backend = &mut *lock_state(&state);
+        let defaults = RuntimeSettings::default();
+        backend.settings = defaults.clone();
+        save_settings(&defaults);
+        Json(serde_json::json!({"status": "ok", "settings": defaults}))
+    }
+
     async fn handle_health(
         State(state): State<Arc<Mutex<BackendState>>>,
     ) -> Json<serde_json::Value> {
@@ -2504,6 +2918,9 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
     println!("  - POST /api/queue");
     println!("  - POST /api/security/jwt/refresh");
     println!("  - POST /api/security/pqc/enable");
+    println!("  - GET  /api/settings");
+    println!("  - POST /api/settings");
+    println!("  - POST /api/settings/reset");
     println!("  - POST /api/inference/chat");
 
     let profile = detect_runtime_profile("studio-api");
@@ -2594,6 +3011,18 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
     let models = load_persistent_models();
     save_persistent_models(&models);
 
+    let settings = load_settings();
+    save_settings(&settings);
+
+    {
+        let models_dir = &settings.models_dir;
+        if !models_dir.is_empty() {
+            fs::create_dir_all(models_dir).unwrap_or_else(|e| {
+                eprintln!("Warning: could not create models directory '{}': {}", models_dir, e);
+            });
+        }
+    }
+
     let ollama_url = std::env::var("OLLAMA_BASE_URL")
         .ok()
         .unwrap_or_else(|| "http://localhost:11434".to_string());
@@ -2630,6 +3059,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         native_engine_client,
         ollama_client,
         ollama_available,
+        settings,
     }));
 
     rt.block_on(async {
@@ -2673,6 +3103,9 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             .route("/api/security/jwt/refresh", post(handle_gui_jwt_refresh))
             .route("/api/security/pqc/enable", post(handle_gui_pqc_enable))
             .route("/api/inference/chat", post(handle_gui_chat))
+            .route("/api/settings", get(handle_get_settings))
+            .route("/api/settings", post(handle_update_settings))
+            .route("/api/settings/reset", post(handle_reset_settings))
             .route("/api/runtime/detect", get(handle_runtime_detection))
             .route("/api/runtime/models", get(handle_models_by_runtime))
             .route("/api/runtime/recommend", get(handle_model_recommendations))
@@ -2701,7 +3134,13 @@ fn build_device_map_from_cluster(
     cluster: &ClusterState,
 ) -> HashMap<String, DeviceKind> {
     let local_device = match local_profile.acceleration_mode {
-        ghostlink_core::host::AccelerationMode::Gpu => DeviceKind::Gpu,
+        ghostlink_core::host::AccelerationMode::Gpu => {
+            if local_profile.node_resources.compute_capability == "rocm" {
+                DeviceKind::RocmGpu
+            } else {
+                DeviceKind::Gpu
+            }
+        }
         ghostlink_core::host::AccelerationMode::Neon => DeviceKind::Npu,
         _ => DeviceKind::Cpu,
     };
@@ -2711,9 +3150,12 @@ fn build_device_map_from_cluster(
         if node.id == local_profile.node_resources.id {
             map.insert(node.id, local_device);
         } else {
-            // Assume remote nodes with VRAM are GPUs
             let device = if node.vram_gb > 0.0 {
-                DeviceKind::Gpu
+                if node.compute_capability == "rocm" {
+                    DeviceKind::RocmGpu
+                } else {
+                    DeviceKind::Gpu
+                }
             } else {
                 DeviceKind::Cpu
             };
@@ -2729,7 +3171,13 @@ fn build_device_map(
     remote_id: &str,
 ) -> HashMap<String, DeviceKind> {
     let local_device = match local_profile.acceleration_mode {
-        ghostlink_core::host::AccelerationMode::Gpu => DeviceKind::Gpu,
+        ghostlink_core::host::AccelerationMode::Gpu => {
+            if local_profile.node_resources.compute_capability == "rocm" {
+                DeviceKind::RocmGpu
+            } else {
+                DeviceKind::Gpu
+            }
+        }
         ghostlink_core::host::AccelerationMode::Neon => DeviceKind::Npu,
         _ => DeviceKind::Cpu,
     };
@@ -4787,6 +5235,22 @@ mod tests {
         let map = build_device_map(&profile, "n1", "n2");
         assert_eq!(map.len(), 2);
         assert_eq!(map.get("n1"), Some(&DeviceKind::Gpu));
+    }
+
+    #[test]
+    fn test_build_device_map_rocm_gpu() {
+        let profile = RuntimeProfile {
+            node_resources: NodeResources::new("amdgpu", 48.0, 128.0, "rocm", Some("AMD Radeon RX 7900 XTX".to_string())),
+            logical_cores: 16,
+            recommended_workers: 8,
+            acceleration_mode: AccelerationMode::Gpu,
+            xdp_supported: false,
+            detection_source: "rocm-smi".to_string(),
+            probe_mode: ProbeMode::Fast,
+        };
+        let map = build_device_map(&profile, "amdgpu", "n2");
+        assert_eq!(map.get("amdgpu"), Some(&DeviceKind::RocmGpu));
+        assert_eq!(map.get("n2"), Some(&DeviceKind::Gpu));
     }
 
     #[test]

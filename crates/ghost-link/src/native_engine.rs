@@ -25,6 +25,10 @@ impl NativeEngineClient {
         model: &str,
         prompt: &str,
         max_tokens: usize,
+        temperature: f32,
+        top_p: f32,
+        top_k: usize,
+        repeat_penalty: f32,
     ) -> Result<NativeGeneration, String> {
         if model.trim().is_empty() {
             return Err("model cannot be empty".to_string());
@@ -50,7 +54,9 @@ impl NativeEngineClient {
             .as_str()
         {
             "llama_server" | "llama-server" => {
-                let text = self.generate_with_llama_server(cleaned_prompt, max_tokens)?;
+                let text = self.generate_with_llama_server(
+                    cleaned_prompt, max_tokens, temperature, top_p, top_k, repeat_penalty,
+                )?;
                 Ok(NativeGeneration {
                     text,
                     real_inference: true,
@@ -142,6 +148,10 @@ impl NativeEngineClient {
         &self,
         cleaned_prompt: &str,
         max_tokens: usize,
+        temperature: f32,
+        top_p: f32,
+        top_k: usize,
+        repeat_penalty: f32,
     ) -> Result<String, String> {
         let url = std::env::var("GHOSTLINK_LLAMA_SERVER_URL")
             .ok()
@@ -157,7 +167,10 @@ impl NativeEngineClient {
         let payload = serde_json::json!({
             "prompt": cleaned_prompt,
             "n_predict": max_tokens,
-            "temperature": 0.7,
+            "temperature": temperature.clamp(0.0, 2.0),
+            "top_p": top_p.clamp(0.0, 1.0),
+            "top_k": top_k.clamp(1, 200),
+            "repeat_penalty": repeat_penalty.clamp(0.0, 2.0),
             "stream": false
         })
         .to_string();
@@ -284,6 +297,7 @@ mod tests {
                 "ghostlink-30b-v1",
                 "summarize distributed runtime scheduling",
                 128,
+                0.7, 0.9, 40, 1.1,
             )
             .expect("native generation should succeed");
         assert!(out.text.contains("[native:ghostlink-30b-v1]"));
@@ -299,7 +313,7 @@ mod tests {
         std::env::set_var("GHOSTLINK_NATIVE_ENGINE", "llama_cpp");
         std::env::remove_var("GHOSTLINK_MODEL_PATH");
         let err = engine
-            .generate("ghostlink-30b-v1", "hello", 32)
+            .generate("ghostlink-30b-v1", "hello", 32, 0.7, 0.9, 40, 1.1)
             .expect_err("llama mode without model path should fail");
         assert!(err.contains("GHOSTLINK_MODEL_PATH"));
         std::env::remove_var("GHOSTLINK_NATIVE_ENGINE");

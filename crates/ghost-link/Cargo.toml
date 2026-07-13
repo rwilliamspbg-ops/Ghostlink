@@ -1,6 +1,6 @@
 [package]
 name = "ghost-link"
-version = "0.1.0-alpha.0"
+version = "1.0.0"
 edition = "2021"
 authors = ["Ryan K Williams"]
 description = "High-performance, low-level network fabric utilizing optimized in-memory transport and zero-copy SPSC buffers for distributed AI model inference."
@@ -16,10 +16,10 @@ categories = ["asynchronous", "network-programming"]
 [features]
 default = []
 cuda = []
-rocm = []
+rocm = ["ghostlink-core/rocm"]
 
 [dependencies]
-ghostlink-core = { path = "../ghostlink-core", version = "0.1.0-alpha.0" }
+ghostlink-core = { path = "../ghostlink-core", version = "1.0.0" }
 
 # Production error handling
 anyhow = "1"

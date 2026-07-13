@@ -1,5 +1,5 @@
 import axios, { AxiosInstance } from 'axios';
-import { Model, Metric, Session, Worker } from './store';
+import { Model, Metric, Session, Worker, Settings } from './store';
 
 export class GhostlinkAPI {
   private http: AxiosInstance;
@@ -205,6 +205,42 @@ export class GhostlinkAPI {
     try {
       const response = await this.http.post(`/api/sessions/${sessionId}/cancel`);
       return { success: true, data: response.data };
+    } catch (error: any) {
+      return { success: false, error: error.response?.data?.error || error.message };
+    }
+  }
+
+  async getRuntimes(): Promise<{ available_runtimes: any[]; error?: string }> {
+    try {
+      const response = await this.http.get('/api/runtime/detect');
+      return { available_runtimes: response.data.available_runtimes || [] };
+    } catch (error: any) {
+      return { available_runtimes: [], error: error.message };
+    }
+  }
+
+  async getSettings(): Promise<{ settings: Settings; error?: string }> {
+    try {
+      const response = await this.http.get('/api/settings');
+      return { settings: response.data };
+    } catch (error: any) {
+      return { settings: {} as Settings, error: error.message };
+    }
+  }
+
+  async updateSettings(settings: Partial<Settings>): Promise<{ success: boolean; settings?: Settings; error?: string }> {
+    try {
+      const response = await this.http.post('/api/settings', settings);
+      return { success: true, settings: response.data.settings };
+    } catch (error: any) {
+      return { success: false, error: error.response?.data?.error || error.message };
+    }
+  }
+
+  async resetSettings(): Promise<{ success: boolean; settings?: Settings; error?: string }> {
+    try {
+      const response = await this.http.post('/api/settings/reset');
+      return { success: true, settings: response.data.settings };
     } catch (error: any) {
       return { success: false, error: error.response?.data?.error || error.message };
     }

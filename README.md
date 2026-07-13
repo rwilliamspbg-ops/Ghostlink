@@ -1,199 +1,242 @@
-# Ghostlink Studio
+# Ghostlink
 
-Ghostlink Studio is a full-stack local AI workspace with:
-- a Rust backend API
-- a modern React GUI
-- optional Ollama inference integration
-- model/session/worker management surfaces
+A high-performance distributed LLM inference fabric that turns spare local GPUs into a shared execution surface. Ghostlink provides zero-config discovery, hardware-aware pipeline planning, and multi-transport execution across heterogeneous devices.
 
-## At A Glance
+## Architecture
 
-- Backend API: http://127.0.0.1:8003
-- GUI: http://127.0.0.1:5173
-- Ollama (optional): http://127.0.0.1:11434
+Ghostlink is organized as a Rust workspace with two crates:
 
-## Unified Launch Paths
-
-All launch scripts are now aligned to the same default ports and full-stack behavior.
-
-| Script | Platform | Starts Backend | Starts GUI | Starts Ollama | Notes |
-|---|---|---:|---:|---:|---|
-| `launch-complete.sh` | Linux/macOS | Yes | Yes | If needed | Canonical full-stack launcher |
-| `launch-splash.sh` | Linux/macOS | Yes | Yes | If needed | Splash + delegates to `launch-complete.sh` |
-| `launch.sh` | Linux/macOS | Yes | Yes | Launcher-managed | Delegates to `scripts/launch_studio.sh` |
-| `launch-complete.bat` | Windows | Yes | Yes | Yes | Full-stack launcher in separate consoles |
-| `launch-splash.bat` | Windows | Yes | Yes | Yes | Splash + delegates to `launch-complete.bat` |
-| `launch.bat` | Windows | Yes | Yes | Launcher-managed | Delegates to `scripts/launch_studio.bat` |
-| `ghostlink_gui_modern/launch-gui.sh` | Linux/macOS | No | Yes | No | Frontend-only launcher |
-| `ghostlink_gui_modern/launch-gui.bat` | Windows | No | Yes | No | Frontend-only launcher |
-
-## Quick Start
-
-### Linux/macOS
-
-```bash
-bash launch-complete.sh
+```
+crates/
+├── ghostlink-core/     # Shared runtime primitives
+│   ├── runtime.rs      # Pipeline execution (in-memory, TCP, AF_XDP)
+│   ├── host.rs          # GPU/Runtime auto-detection
+│   ├── ring.rs          # Zero-copy SPSC ring buffer
+│   ├── protocol.rs      # Binary protocol with CRC32 integrity
+│   ├── cluster.rs       # Thread-safe node state & metrics
+│   ├── planning.rs      # Layer assignment & quantization
+│   ├── health.rs        # Network health & fault detection
+│   ├── load_balance.rs  # Tensor distribution across nodes
+│   ├── accelerator.rs   # CPU SIMD paths (AVX2, AVX-512, NEON)
+│   └── discovery.rs     # UDP broadcast discovery
+├── ghost-link/          # CLI demo & API server
 ```
 
-### Windows
+**Control plane** (`control-plane/`) is a lightweight Go service registry for multi-host deployments.
 
-```bat
-launch-complete.bat
+## Runtime Detection
+
+Ghostlink detects and profiles available hardware on startup:
+
+| Runtime | Detection Method | Feature Flag |
+|---------|-----------------|--------------|
+| CUDA (NVIDIA) | `nvidia-smi`, `CUDA_PATH` | Always enabled |
+| ROCm (AMD) | `rocm-smi`, `hipconfig`, WMI, sysfs | `--features rocm` |
+| Metal (Apple) | `sysctl hw.optional.arm64` | Always enabled (macOS) |
+| NPU | Env vars, sysfs indicators | Always enabled |
+| CPU | Always available | Always enabled |
+
+The probe chain is: `nvidia-smi → rocm-smi → WMI (AMD) → lspci → sysfs → env vars`. When the `rocm` feature is disabled, AMD GPUs are detected via lspci/sysfs with generic `"gpu"` compute capability. When enabled, they are identified with `"rocm"` capability and routed through AMD-specific probe paths.
+
+### Device Types
+
+Pipelines can target four device kinds with calibrated cost models:
+
+| DeviceKind | Per-Layer Cost | Use Case |
+|------------|---------------|----------|
+| `Npu` | 0.42 ms | Neural processors (Qualcomm, MediaTek) |
+| `Gpu` | 0.55 ms | NVIDIA CUDA GPUs |
+| `RocmGpu` | 0.58 ms | AMD GPUs via ROCm/HIP |
+| `Cpu` | 1.25 ms | CPU fallback (AVX2/AVX-512/NEON) |
+
+## Pipeline Execution
+
+Ghostlink supports three transport modes for inter-stage communication:
+
+- **In-Memory**: Channel-backed zero-copy SPSC ring buffers for single-process execution
+- **TCP Loopback**: Socket-backed transport with HMAC auth, configurable inflight, reconnect with backoff, and autotune
+- **AF_XDP**: Kernel-bypass transport on Linux with automatic TCP fallback
+
+Transport autotuning sweeps max-inflight candidates and caches optimal values to `tmp/tcp_autotune_cache.tsv`.
+
+### Execution Flow
+
+```
+Input Tokens → [Stage 0] → Bridge → [Stage 1] → Bridge → ... → [Stage N] → Output
+                  ↑                          ↑
+              DeviceKind                Transport Mode
+              (Npu/Gpu/RocmGpu/Cpu)    (InMem/TCP/XDP)
 ```
 
-The launcher will:
-1. Build and start backend on `127.0.0.1:8003`.
-2. Start GUI on `127.0.0.1:5173`.
-3. Start or reuse Ollama when available.
-4. Keep services running until `Ctrl+C`.
+Each stage runs a bounded transform on batched token payloads. Bridges handle serialization, HMAC authentication, and reconnection. Cluster health metrics are fed back into the planner for dynamic rebalancing.
 
-## Manual Start (Alternative)
+## Usage
 
-### Terminal 1: backend
+### CLI Commands
 
 ```bash
-cargo run -p ghost-link -- serve 127.0.0.1 8003
-```
+# Build
+cargo build --release -p ghost-link
 
-### Terminal 2: GUI
+# With AMD ROCm support
+cargo build --release -p ghost-link --features rocm
 
-```bash
-cd ghostlink_gui_modern
-npm install --legacy-peer-deps
-npm run dev -- --host 127.0.0.1 --port 5173
-```
-
-### Terminal 3 (optional): Ollama
-
-```bash
-ollama serve
-```
-
-## Native Llama Server Mode
-
-Use this path to run Ghostlink with native local inference (no Ollama dependency in request path).
-
-### One-command stack launch
-
-```bash
-bash scripts/run_native_llama_server_stack.sh
-```
-
-This script will:
-1. Ensure `llama.cpp` exists under `third_party/llama.cpp`.
-2. Build `llama-server` when missing.
-3. Download a tiny GGUF model to `/tmp/ghostlink-models/stories15M-q4_0.gguf` when missing.
-4. Start `llama-server` on `127.0.0.1:8080`.
-5. Start Ghostlink API on `127.0.0.1:8003` with native backend mode.
-
-### Validation (real inference proof)
-
-```bash
-bash scripts/validate_native_llama_server.sh
-```
-
-Expected output includes:
-- `real_inference=True`
-- `inference_backend=native`
-
-### Key environment variables
-
-- `GHOSTLINK_MODEL_PATH`: override GGUF file path.
-- `GHOSTLINK_MODEL_URL`: override download URL for first-time bootstrap.
-- `GHOSTLINK_LLAMA_SERVER_HOST`: server bind host (default `127.0.0.1`).
-- `GHOSTLINK_LLAMA_SERVER_PORT`: server port (default `8080`).
-- `GHOSTLINK_API_HOST`: Ghostlink API host (default `127.0.0.1`).
-- `GHOSTLINK_API_PORT`: Ghostlink API port (default `8003`).
-
-## Docker
-
-### Production compose
-
-```bash
-docker compose -f docker-compose.production.yml up --build
-```
-
-### Launch compose
-
-```bash
-docker compose -f docker-compose.launch.yml up --build
-```
-
-## Core Endpoints
-
-- Health: `GET /health`
-- Models: `GET /api/models`
-- Model status: `GET /api/models/status`
-- Metrics: `GET /api/metrics`
-- Sessions: `GET /api/sessions`
-- Workers: `GET /api/workers`
-- Chat: `POST /api/inference/chat`
-
-Example:
-
-```bash
-curl -s http://127.0.0.1:8003/health
-curl -s http://127.0.0.1:8003/api/models
-curl -s -X POST http://127.0.0.1:8003/api/inference/chat \
-  -H 'Content-Type: application/json' \
-  -d '{"message":"hello","max_tokens":32}'
-```
-
-## Capability Notes
-
-- When Ollama is available and reachable, backend can route chat to real model inference.
-- When Ollama is unavailable, backend returns deterministic fallback responses so the GUI and API remain usable.
-- Tool/MCP payload fields are accepted by backend and reflected in response metadata; external MCP execution capability depends on configured servers and runtime integration.
-
-## Validation Commands
-
-Run these before opening a PR:
-
-```bash
+# Run tests
 cargo test --workspace
+cargo test --workspace --features rocm
+
+# Generate a placement plan for your hardware
+cargo run -p ghost-link -- plan
+
+# Probe local hardware profile
+cargo run -p ghost-link -- probe my-node
+cargo run -p ghost-link -- probe my-node --full
+
+# Join a cluster node
+cargo run -p ghost-link -- join node-02
+
+# Listen for discovery broadcasts
+cargo run -p ghost-link -- listen workstation-a --once
+
+# Run the full 30B planning flow with TCP loopback
+cargo run -p ghost-link -- flow iprada-16gb zenbook-32gb 32 32 64 4 tcp
+
+# Run with in-memory transport
+cargo run -p ghost-link -- flow iprada-16gb zenbook-32gb 32 32 64 4 inmem
+
+# Start the OpenAI-compatible API server
+cargo run -p ghost-link -- serve 127.0.0.1 8003
+
+# Launch the ASCII cluster dashboard
+cargo run -p ghost-link -- dashboard
+
+# Unified troubleshooting
+cargo run -p ghost-link -- doctor --strict
+cargo run -p ghost-link -- doctor --strict --json ./tmp/doctor-report.json
+cargo run -p ghost-link -- doctor --network-probe
+
+# Start a local cluster for testing
+cargo run -p ghost-link -- cluster-start 3 46000
+```
+
+### API Endpoints (when serving)
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/health` | GET | Health check |
+| `/api/models` | GET | List available models |
+| `/api/models/status` | GET | Loaded model status |
+| `/api/models/by-runtime?runtime=rocm` | GET | Models filtered by runtime |
+| `/api/metrics` | GET | Performance metrics |
+| `/api/sessions` | GET | Chat sessions |
+| `/api/workers` | GET | Worker status |
+| `/api/inference/chat` | POST | Chat completion |
+
+### Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `GHOSTLINK_INFERENCE_BACKEND` | `ollama` | `ollama` or `native` |
+| `GHOSTLINK_CONFIG` | `./ghostlink.toml` | Config file path |
+| `GHOSTLINK_DISCOVERY_LISTEN` | `0.0.0.0:45885` | Discovery bind address |
+| `GHOSTLINK_DISCOVERY_BROADCAST` | `255.255.255.255:45885` | Discovery broadcast target |
+| `GHOSTLINK_TCP_MAX_INFLIGHT` | `256` | Max inflight batches per bridge |
+| `GHOSTLINK_TCP_AUTOTUNE` | `1` | Enable transport autotuning |
+| `GHOSTLINK_TCP_AUTH_TOKEN` | — | HMAC auth token for bridges |
+| `GHOSTLINK_XDP_INTERFACE` | `eth0` | AF_XDP interface name |
+| `GHOSTLINK_FLOW_ENABLE_REBALANCE` | `0` | Enable runtime rebalancing |
+| `GHOSTLINK_GPU_NAME` | — | Override detected GPU name |
+| `GHOSTLINK_VRAM_GB` | — | Override detected VRAM |
+| `GHOSTLINK_COMPUTE_CAPABILITY` | — | Override compute capability |
+| `GHOSTLINK_SYSTEM_MEMORY_GB` | — | Override system memory |
+
+### Config File
+
+Ghostlink supports TOML config files with per-section defaults:
+
+```toml
+[flow]
+local_id = "iprada-16gb"
+remote_id = "zenbook-32gb"
+remote_vram_gb = 32.0
+remote_system_memory_gb = 32.0
+execution_tokens = 64
+micro_batch = 4
+transport = "tcp"
+
+[discovery]
+listen = "0.0.0.0:45885"
+broadcast = "255.255.255.255:45885"
+timeout_ms = 2000
+auth_token = "my-secret"
+
+[tcp]
+max_inflight = 256
+reconnect_attempts = 3
+reconnect_backoff_ms = 25
+auth_token = "my-secret"
+
+[cluster_start]
+node_count = 4
+base_port = 46000
+
+[gui]
+python = "/usr/bin/python3.11"
+```
+
+## Performance
+
+The pipeline execution engine records per-stage and aggregate metrics:
+
+```
+Execution Runtime
+=================
+Tokens: 64 | Micro-batch: 4 | Batches: 16 | Stages: 2
+Measured wall-clock time: 12.34 ms
+Throughput: 5187.20 tokens/sec
+Avg token latency: 0.77 ms | P95: 1.23 ms
+```
+
+Transport autotuning selects optimal inflight depth via candidate sweep, improving throughput by reducing bridge contention. Results are cached to `tmp/tcp_autotune_cache.tsv`.
+
+## Testing
+
+```bash
+# Full test suite
+cargo test --workspace
+
+# With ROCm feature
+cargo test --workspace --features rocm
+
+# Integration tests only
+cargo test --test integration
+cargo test --test multinode_heterogeneity_and_npu_perf
+
+# Run benchmarks
+cargo bench
+
+# Lint
 cargo clippy --workspace --all-targets -- -D warnings
-python3 scripts/verify_hf_models.py
 ```
 
-Additional checks:
+Test coverage includes:
+- Runtime detection (CUDA, ROCm, Metal, NPU, CPU)
+- Device mapping and pipeline planning
+- Multi-node discovery and registration
+- Ring buffer stress tests (concurrent, wrap-around, rate mismatch)
+- Protocol encoding/decoding with CRC corruption detection
+- Network failure injection and recovery
+- Health monitoring and adaptive quantization
+- AF_XDP scaffolding validation
+- Heterogeneous device pipelines (NPU + GPU + CPU + ROCm)
 
-```bash
-python3 scripts/test_api_contract.py
-python3 scripts/test_gui_backend_integration.py
-```
+## Requirements
 
-## Troubleshooting
+- **Rust**: 1.85.0+ (MSRV)
+- **Optional**: CMake 3.20+ (for native llama.cpp inference)
+- **Optional**: Node.js 18+ (for React GUI)
+- **Optional**: Go 1.21+ (for control-plane)
 
-### Port already in use
+## License
 
-- Backend port: set `GHOSTLINK_HOST` / `GHOSTLINK_PORT`.
-- GUI port: set `GUI_PORT`.
-
-Example:
-
-```bash
-GHOSTLINK_PORT=8010 GUI_PORT=5178 bash launch-complete.sh
-```
-
-### GUI starts but backend not reachable
-
-1. Check backend health:
-   ```bash
-   curl -s http://127.0.0.1:8003/health
-   ```
-2. Re-run backend manually:
-   ```bash
-   cargo run -p ghost-link -- serve 127.0.0.1 8003
-   ```
-
-### Ollama not installed
-
-The stack still launches. Chat remains available with fallback behavior until Ollama is installed.
-
-## Repository Pointers
-
-- Backend crate: `crates/ghost-link`
-- Core runtime/fabric: `crates/ghostlink-core`
-- Modern GUI: `ghostlink_gui_modern`
-- Launch orchestrator: `scripts/launch_studio.py`
-
+MIT

@@ -27,6 +27,33 @@ export interface Session {
   tokens: number;
 }
 
+export interface Settings {
+  inference_backend: string;
+  native_engine: string;
+  ngl: number;
+  model_path: string;
+  llama_server_url: string;
+  llama_port: number;
+  api_host: string;
+  api_port: number;
+  gui_port: number;
+  threads: number;
+  ctx_size: number;
+  temperature: number;
+  top_p: number;
+  top_k: number;
+  repeat_penalty: number;
+  max_tokens: number;
+  chat_exec_tokens: number;
+  chat_micro_batch: number;
+  tcp_max_inflight: number;
+  discovery_listen: string;
+  discovery_broadcast: string;
+  discovery_auth_token: string;
+  tcp_auth_token: string;
+  xdp_interface: string;
+}
+
 export interface Worker {
   id: string;
   host: string;

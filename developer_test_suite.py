@@ -68,8 +68,8 @@ class TestGhostlinkCrossPlatform(unittest.TestCase):
         """Test GUI functionality across different environments"""
         # Test that we can at least import core modules
         try:
-        from ghostlink_gui_test_suite import __init__ as gui_tests
-        
+            from ghostlink_gui_test_suite import __init__ as gui_tests
+
             # In a real scenario, we'd run more comprehensive tests here
             self.assertTrue(True)
             

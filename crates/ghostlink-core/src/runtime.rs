@@ -20,6 +20,7 @@ use std::time::Instant;
 pub enum DeviceKind {
     Npu,
     Gpu,
+    RocmGpu,
     Cpu,
 }
 
@@ -29,6 +30,7 @@ impl DeviceKind {
         match self {
             Self::Npu => "NPU",
             Self::Gpu => "GPU",
+            Self::RocmGpu => "ROCm GPU",
             Self::Cpu => "CPU",
         }
     }
@@ -109,6 +111,7 @@ impl PipelinePlan {
         match device {
             DeviceKind::Npu => 0.42,
             DeviceKind::Gpu => 0.55,
+            DeviceKind::RocmGpu => 0.58,
             DeviceKind::Cpu => 1.25,
         }
     }
@@ -147,12 +150,14 @@ fn run_stage_compute(payload: &mut [f32], stage: &StagePlacement) {
     let rounds = match stage.device {
         DeviceKind::Npu => base_rounds,
         DeviceKind::Gpu => base_rounds * 2,
+        DeviceKind::RocmGpu => (base_rounds as f32 * 2.1) as usize,
         DeviceKind::Cpu => base_rounds * 3,
     };
 
     let alpha = match stage.device {
         DeviceKind::Npu => 1.001_f32,
         DeviceKind::Gpu => 1.003_f32,
+        DeviceKind::RocmGpu => 1.0035_f32,
         DeviceKind::Cpu => 1.005_f32,
     };
 
@@ -893,7 +898,7 @@ pub fn spawn_xdp_bridge(
     connect_addr: SocketAddr,
     interface_name: String,
 ) -> thread::JoinHandle<BridgeAccumulator> {
-    let mut manager = crate::xdp::XdpSocketManager::new(&interface_name);
+    let mut manager = crate::xdp::TransportSocketManager::new(&interface_name);
     match manager.init() {
         Ok(()) => {
             manager.close();

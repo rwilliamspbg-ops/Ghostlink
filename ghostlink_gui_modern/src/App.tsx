@@ -21,6 +21,7 @@ import { MetricsTab } from './components/MetricsTab';
 import { SessionsTab } from './components/SessionsTab';
 import { WorkersTab } from './components/WorkersTab';
 import { SecurityTab } from './components/SecurityTab';
+import { SettingsTab } from './components/SettingsTab';
 
 const tabs = [
   { label: 'Chat', icon: MessageSquare, id: 0 },
@@ -29,6 +30,7 @@ const tabs = [
   { label: 'Sessions', icon: Clock, id: 3 },
   { label: 'Workers', icon: Network, id: 4 },
   { label: 'Security', icon: Shield, id: 5 },
+  { label: 'Settings', icon: Settings, id: 6 },
 ];
 
 function App() {
@@ -98,6 +100,8 @@ function App() {
         return <WorkersTab api={api} />;
       case 5:
         return <SecurityTab api={api} />;
+      case 6:
+        return <SettingsTab api={api} />;
       default:
         return null;
     }
@@ -146,10 +150,6 @@ function App() {
           </nav>
 
           <div className="mt-auto pt-4 border-t border-slate-800 space-y-1">
-            <button className="flex items-center gap-3 w-full px-3 py-2.5 rounded-xl text-slate-400 hover:bg-slate-800 hover:text-slate-200 transition text-sm font-medium">
-              <Settings size={18} />
-              <span>Settings</span>
-            </button>
             <div className="flex items-center gap-3 px-3 py-3 mt-2 rounded-xl bg-slate-800/50">
                 <div className="w-8 h-8 bg-gradient-to-br from-orange-400 to-pink-500 rounded-full flex items-center justify-center text-xs font-bold text-white uppercase">
                     {currentModel.substring(0, 1)}
