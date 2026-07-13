@@ -1,0 +1,11 @@
+FROM python:3.12-slim
+
+WORKDIR /app
+
+RUN pip install --no-cache-dir requests==2.32.3
+
+COPY . /app
+
+EXPOSE 8001 9999
+
+CMD ["python3", "model_manager.py"]

@@ -2,6 +2,14 @@
 
 A high-performance distributed LLM inference fabric that turns spare local GPUs into a shared execution surface. Zero-config discovery, hardware-aware pipeline planning, and multi-transport execution across heterogeneous devices.
 
+## Why Ghostlink
+Ghostlink is designed for teams that want lower-latency planning, more control over distributed inference topologies, and a simpler path to custom LLM serving than generic orchestration stacks.
+
+Use Ghostlink when you need:
+- fast model and workload scheduling across heterogeneous hardware,
+- a self-hosted inference fabric with open-source flexibility,
+- a platform that can be extended into a paid commercial offering with support and enterprise deployment services.
+
 ## Quick Start (Windows)
 
 ### Prerequisites
@@ -170,6 +178,9 @@ cargo test --workspace
 # With ROCm feature
 cargo test --workspace --features rocm
 ```
+
+## Comparison Snapshot
+See [docs/comparison_sheet.md](docs/comparison_sheet.md) for a concise Ghostlink vs. vLLM / DeepSpeed / Ray / TensorRT-LLM positioning sheet.
 
 ## License
 
