@@ -28,6 +28,8 @@
       .pricing-card { background: rgba(15, 23, 42, 0.72); border: 1px solid rgba(148, 163, 184, 0.22); border-radius: 14px; padding: 1rem; }
       .use-cases { display: grid; gap: 0.75rem; margin-top: 0.75rem; }
       .use-case { padding: 0.8rem 0.95rem; background: rgba(30, 41, 59, 0.8); border-radius: 12px; }
+      .proof-grid { display: grid; gap: 0.75rem; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); margin-top: 0.9rem; }
+      .proof-card { padding: 0.9rem 1rem; background: rgba(15, 23, 42, 0.74); border: 1px solid rgba(148, 163, 184, 0.2); border-radius: 12px; }
       ul { padding-left: 1.1rem; line-height: 1.7; }
       footer { max-width: 960px; margin: 0 auto; padding: 0 1.5rem 2rem; color: #94a3b8; font-size: 0.95rem; }
     </style>
@@ -47,6 +49,14 @@
     </header>
     <main>
       <div class="placeholder">Product architecture screenshot placeholder</div>
+      <div class="card">
+        <h2>Proof points</h2>
+        <div class="proof-grid">
+          <div class="proof-card"><strong>Latency-aware control:</strong> designed for planning and scheduling behavior that is more explicit than generic orchestration layers.</div>
+          <div class="proof-card"><strong>Flexible deployment:</strong> supports mixed hardware and custom inference topologies without locking teams into one runtime path.</div>
+          <div class="proof-card"><strong>Commercial readiness:</strong> open-source core plus a clear path to paid support, onboarding, and deployment guidance.</div>
+        </div>
+      </div>
       <div class="card">
         <h2>How it works</h2>
         <p class="value-prop">Ghostlink combines hardware-aware planning, distributed scheduling, and model-management workflows so teams can route inference requests across heterogeneous resources with more control than generic orchestration layers.</p>
