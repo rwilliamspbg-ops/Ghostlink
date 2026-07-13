@@ -1,6 +1,19 @@
 # Ghostlink
 
+[![GitHub Repo](https://img.shields.io/badge/GitHub-Ghostlink-181717?logo=github)](https://github.com/rwilliamspbg-ops/Ghostlink)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](https://github.com/rwilliamspbg-ops/Ghostlink/blob/main/LICENSE)
+[![Docs](https://img.shields.io/badge/Docs-GitHub%20Pages-0ea5e9)](https://rwilliamspbg-ops.github.io/Ghostlink/)
+[![Status](https://img.shields.io/badge/Status-Launch%20ready-22c55e)](https://rwilliamspbg-ops.github.io/Ghostlink/)
+
+> Distributed inference fabric for custom LLM systems.
+> Route workloads across CPU, GPU, and NPU resources with more explicit scheduling, hardware-aware placement, and a polished demo path.
+
 Ghostlink is a high-performance distributed inference fabric for teams building custom LLM systems. It combines hardware-aware planning, flexible routing, and model-management workflows so inference workloads can be distributed across heterogeneous devices with more explicit control than generic orchestration layers.
+
+### What Ghostlink brings
+- Clear routing and scheduling for custom inference topologies
+- Hardware-aware placement across mixed compute environments
+- A strong open-source foundation with a commercial support path
 
 ## Why Ghostlink
 Ghostlink is designed for teams that want lower-latency planning, more control over distributed inference topologies, and a simpler path to custom LLM serving than generic orchestration stacks.

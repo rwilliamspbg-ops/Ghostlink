@@ -28,8 +28,7 @@ jobs:
         id: setup_pages
         uses: actions/configure-pages@v5
         with:
-          enablement: false
-        continue-on-error: true
+          enablement: true
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
@@ -39,11 +38,9 @@ jobs:
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
-        continue-on-error: true
 
       - name: Report deployment status
         if: always()
         run: |
           echo "Pages setup status: ${{ steps.setup_pages.outcome }}"
           echo "Deployment status: ${{ steps.deployment.outcome }}"
-          echo "If GitHub Pages is not enabled in repository settings, enable it under Settings > Pages > GitHub Actions."
