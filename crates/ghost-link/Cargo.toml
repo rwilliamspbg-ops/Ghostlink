@@ -1,14 +1,16 @@
 [package]
 name = "ghost-link"
-version = "1.0.0"
+version = "0.1.0-alpha.0"
 edition = "2021"
 authors = ["Ryan K Williams"]
-description = "High-performance, low-level network fabric utilizing optimized in-memory transport and zero-copy SPSC buffers for distributed AI model inference."
+description = "CLI and API runtime for Ghostlink, a distributed inference fabric for routing and scheduling custom LLM workloads across heterogeneous hardware."
+homepage = "https://rwilliamspbg-ops.github.io/Ghostlink/"
+documentation = "https://rwilliamspbg-ops.github.io/Ghostlink/"
 repository = "https://github.com/rwilliamspbg-ops/Ghostlink"
 readme = "../../README.md"
 license = "MIT"
-keywords = ["networking", "spsc", "zero-copy", "async", "distributed-inference"]
-categories = ["asynchronous", "network-programming"]
+keywords = ["networking", "spsc", "zero-copy", "async", "distributed-inference", "llm", "inference"]
+categories = ["asynchronous", "network-programming", "command-line-utilities"]
 
 # Minimum Supported Rust Version (MSRV)
   rust-version = "1.85.0"
@@ -19,7 +21,7 @@ cuda = []
 rocm = ["ghostlink-core/rocm"]
 
 [dependencies]
-ghostlink-core = { path = "../ghostlink-core", version = "1.0.0" }
+ghostlink-core = { path = "../ghostlink-core", version = "0.1.0-alpha.0" }
 
 # Production error handling
 anyhow = "1"

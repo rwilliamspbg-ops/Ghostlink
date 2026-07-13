@@ -1,13 +1,15 @@
 [package]
 name = "ghostlink-core"
-version = "1.0.0"
+version = "0.1.0-alpha.0"
 edition = "2021"
 authors = ["Ryan K Williams"]
-description = "High-performance, low-level network fabric utilizing zero-copy SPSC buffers and AF_XDP kernel bypass."
+description = "Core runtime primitives for Ghostlink, including planning, routing, health monitoring, and transport logic for distributed inference workloads."
+homepage = "https://rwilliamspbg-ops.github.io/Ghostlink/"
+documentation = "https://rwilliamspbg-ops.github.io/Ghostlink/"
 repository = "https://github.com/rwilliamspbg-ops/Ghostlink"
 readme = "../../README.md"
 license = "MIT"
-keywords = ["networking", "xdp", "zero-copy", "async"]
+keywords = ["networking", "xdp", "zero-copy", "async", "llm", "inference"]
 categories = ["asynchronous", "network-programming"]
 
 [features]
