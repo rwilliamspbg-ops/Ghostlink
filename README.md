@@ -39,6 +39,14 @@ Current focus areas:
 - improving documentation for deployment and production use,
 - expanding real-world validation across more hardware and runtime setups.
 
+## Contributing and roadmap
+Contributions are welcome. A practical next step for contributors is to help improve the runtime experience, expand deployment guidance, and validate Ghostlink across more hardware combinations.
+
+Near-term roadmap themes:
+- improve end-to-end demo reliability and documentation,
+- strengthen deployment and production guidance,
+- expand validation for different runtimes and hardware profiles.
+
 ## Quick Start (Windows)
 
 ### Prerequisites
