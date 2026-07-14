@@ -5,6 +5,10 @@ import { useAppStore } from '../store';
 export const WorkersTab: React.FC<{ api: any }> = ({ api }) => {
   const { workers, setWorkers } = useAppStore();
   const [loading, setLoading] = useState(false);
+  const [showAddForm, setShowAddForm] = useState(false);
+  const [addHost, setAddHost] = useState('');
+  const [addPort, setAddPort] = useState('8003');
+  const [addError, setAddError] = useState('');
 
   const refreshWorkers = async () => {
     setLoading(true);
@@ -34,6 +38,28 @@ export const WorkersTab: React.FC<{ api: any }> = ({ api }) => {
     }
   };
 
+  const handleAddWorker = async () => {
+    setAddError('');
+    if (!addHost.trim()) {
+      setAddError('Host is required');
+      return;
+    }
+    const port = parseInt(addPort, 10);
+    if (isNaN(port) || port < 1 || port > 65535) {
+      setAddError('Port must be 1-65535');
+      return;
+    }
+    const result = await api.addWorker(addHost.trim(), port);
+    if (result.success) {
+      setShowAddForm(false);
+      setAddHost('');
+      setAddPort('8003');
+      refreshWorkers();
+    } else {
+      setAddError(result.error || 'Failed to add worker');
+    }
+  };
+
   return (
     <div className="flex flex-col h-full bg-slate-950">
       <div className="flex items-center justify-between px-6 py-4 border-b border-slate-900 sticky top-0 bg-slate-950/50 backdrop-blur-md z-10">
@@ -44,7 +70,10 @@ export const WorkersTab: React.FC<{ api: any }> = ({ api }) => {
             </div>
         </div>
         <div className="flex items-center gap-2">
-            <button className="flex items-center gap-2 px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold rounded-lg transition">
+            <button
+                onClick={() => { setShowAddForm(!showAddForm); setAddError(''); }}
+                className="flex items-center gap-2 px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold rounded-lg transition"
+            >
                 <Plus size={14} /> Add Worker
             </button>
             <button
@@ -55,6 +84,40 @@ export const WorkersTab: React.FC<{ api: any }> = ({ api }) => {
             </button>
         </div>
       </div>
+
+      {showAddForm && (
+        <div className="px-6 py-4 border-b border-slate-800 bg-slate-900/30">
+          <div className="flex items-end gap-3 max-w-lg">
+            <div className="flex-1">
+              <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1">Host</label>
+              <input
+                type="text"
+                value={addHost}
+                onChange={(e) => setAddHost(e.target.value)}
+                placeholder="192.168.1.100"
+                className="w-full px-3 py-1.5 bg-slate-800 border border-slate-700 rounded-lg text-sm text-slate-200 placeholder-slate-500 focus:outline-none focus:border-blue-500"
+              />
+            </div>
+            <div className="w-24">
+              <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1">Port</label>
+              <input
+                type="number"
+                value={addPort}
+                onChange={(e) => setAddPort(e.target.value)}
+                placeholder="8003"
+                className="w-full px-3 py-1.5 bg-slate-800 border border-slate-700 rounded-lg text-sm text-slate-200 placeholder-slate-500 focus:outline-none focus:border-blue-500"
+              />
+            </div>
+            <button
+              onClick={handleAddWorker}
+              className="px-4 py-1.5 bg-green-600 hover:bg-green-500 text-white text-xs font-bold rounded-lg transition"
+            >
+              Connect
+            </button>
+          </div>
+          {addError && <p className="text-red-400 text-xs mt-2">{addError}</p>}
+        </div>
+      )}
 
       <div className="flex-1 overflow-y-auto p-6">
         <div className="max-w-5xl mx-auto">

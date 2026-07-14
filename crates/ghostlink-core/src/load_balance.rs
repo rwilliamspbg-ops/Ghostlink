@@ -571,6 +571,7 @@ mod tests {
             logical_cores: 16,
             recommended_workers: 6,
             acceleration_mode: AccelerationMode::Gpu,
+            gpu_backend: crate::host::GpuBackend::Cuda,
             xdp_supported: true,
             detection_source: String::from("test"),
             probe_mode: crate::host::ProbeMode::Fast,

@@ -1768,79 +1768,37 @@ fn collect_system_metrics() -> (f32, f32, f32, f32) {
         let mut gpu_usage = 0.0;
         let mut gpu_memory = 0.0;
 
-        if let Ok(output) = Command::new("wmic")
-            .args(["cpu", "get", "loadpercentage", "/format:list"])
+        // CPU usage via PowerShell (wmic is deprecated on modern Windows)
+        if let Ok(output) = Command::new("powershell")
+            .args(["-NoProfile", "-Command", "(Get-CimInstance Win32_Processor).LoadPercentage"])
             .output()
         {
             if output.status.success() {
                 let stdout = String::from_utf8_lossy(&output.stdout);
-                for line in stdout.lines() {
-                    if let Some(value) = line.strip_prefix("LoadPercentage=") {
-                        if let Ok(val) = value.trim().parse::<f32>() {
-                            cpu_usage = val;
-                        }
-                    }
+                if let Ok(val) = stdout.trim().parse::<f32>() {
+                    cpu_usage = val;
                 }
             }
         }
 
-        if cpu_usage == 0.0 {
-            if let Ok(output) = Command::new("powershell")
-                .args(["-NoProfile", "-Command", "(Get-CimInstance Win32_Processor).LoadPercentage"])
-                .output()
-            {
-                if output.status.success() {
-                    let stdout = String::from_utf8_lossy(&output.stdout);
-                    if let Ok(val) = stdout.trim().parse::<f32>() {
-                        cpu_usage = val;
-                    }
-                }
-            }
-        }
-
-        if let Ok(output) = Command::new("wmic")
-            .args(["os", "get", "FreePhysicalMemory,TotalVisibleMemorySize", "/format:list"])
+        // Memory usage via PowerShell
+        if let Ok(output) = Command::new("powershell")
+            .args([
+                "-NoProfile",
+                "-Command",
+                "$os = Get-CimInstance Win32_OperatingSystem; $used = $os.TotalVisibleMemorySize - $os.FreePhysicalMemory; [math]::Round(($used / $os.TotalVisibleMemorySize) * 100, 2)"
+            ])
             .output()
         {
             if output.status.success() {
                 let stdout = String::from_utf8_lossy(&output.stdout);
-                let mut free_mem = 0.0;
-                let mut total_mem = 0.0;
-                for line in stdout.lines() {
-                    if let Some(value) = line.strip_prefix("FreePhysicalMemory=") {
-                        if let Ok(val) = value.trim().parse::<f64>() {
-                            free_mem = val;
-                        }
-                    } else if let Some(value) = line.strip_prefix("TotalVisibleMemorySize=") {
-                        if let Ok(val) = value.trim().parse::<f64>() {
-                            total_mem = val;
-                        }
-                    }
-                }
-                if total_mem > 0.0 {
-                    memory_usage = ((total_mem - free_mem) / total_mem) * 100.0;
+                if let Ok(val) = stdout.trim().parse::<f64>() {
+                    memory_usage = val;
                 }
             }
         }
 
-        if memory_usage == 0.0 {
-            if let Ok(output) = Command::new("powershell")
-                .args([
-                    "-NoProfile",
-                    "-Command",
-                    "$os = Get-CimInstance Win32_OperatingSystem; $used = $os.TotalVisibleMemorySize - $os.FreePhysicalMemory; [math]::Round(($used / $os.TotalVisibleMemorySize) * 100, 2)"
-                ])
-                .output()
-            {
-                if output.status.success() {
-                    let stdout = String::from_utf8_lossy(&output.stdout);
-                    if let Ok(val) = stdout.trim().parse::<f64>() {
-                        memory_usage = val;
-                    }
-                }
-            }
-        }
-
+        // GPU metrics via nvidia-smi
         if let Ok(output) = Command::new("nvidia-smi")
             .args(["--query-gpu=utilization.gpu,memory.used,memory.total", "--format=csv,noheader,nounits"])
             .output()
@@ -2879,9 +2837,12 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         
         let (cpu_usage, memory_usage, gpu_usage, gpu_memory) = collect_system_metrics();
         
-        let throughput = backend.cluster.total_vram_gb() * 15.0;
+        // Calculate throughput from actual request tracking
+        let uptime_secs = backend.started_at.elapsed().as_secs().max(1);
+        let estimated_tokens = backend.chat_requests * 150;
+        let throughput = estimated_tokens as f32 / uptime_secs as f32;
         let latency_p50 = backend.last_latency_ms;
-        let latency_p95 = backend.last_latency_ms * 1.5;
+        let latency_p95 = backend.last_latency_ms * 1.2;
         
         Json(serde_json::json!({
             "metrics": {
@@ -5742,7 +5703,7 @@ mod protocol {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ghostlink_core::host::{AccelerationMode, RuntimeProfile};
+    use ghostlink_core::host::{AccelerationMode, GpuBackend, RuntimeProfile};
     use std::net::TcpListener;
 
     fn args(items: &[&str]) -> impl Iterator<Item = String> {
@@ -5834,6 +5795,7 @@ mod tests {
             logical_cores: 16,
             recommended_workers: 8,
             acceleration_mode: AccelerationMode::Gpu,
+            gpu_backend: GpuBackend::Cuda,
             xdp_supported: false,
             detection_source: "manual".to_string(),
             probe_mode: ProbeMode::Fast,
@@ -5850,6 +5812,7 @@ mod tests {
             logical_cores: 16,
             recommended_workers: 8,
             acceleration_mode: AccelerationMode::Gpu,
+            gpu_backend: GpuBackend::Rocm,
             xdp_supported: false,
             detection_source: "rocm-smi".to_string(),
             probe_mode: ProbeMode::Fast,
@@ -5999,6 +5962,7 @@ mod tests {
             logical_cores: 8,
             recommended_workers: 4,
             acceleration_mode: AccelerationMode::Neon,
+            gpu_backend: GpuBackend::Cpu,
             xdp_supported: true,
             detection_source: "test".to_string(),
             probe_mode: ProbeMode::Fast,

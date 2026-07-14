@@ -28,6 +28,7 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
   const [pendingActions, setPendingActions] = useState<Record<string, string>>({});
   const [hfResults, setHfResults] = useState<{ id: string; name: string; downloads: number; likes: number }[]>([]);
   const [hfSearching, setHfSearching] = useState(false);
+  const [downloadProgress, setDownloadProgress] = useState<Record<string, number>>({});
 
   const searchHF = useCallback(async (query: string) => {
     setHfSearching(true);
@@ -142,15 +143,30 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
   const handleDownloadModel = async (id: string) => {
     setPendingActions(prev => ({ ...prev, [id]: 'downloading' }));
     setMessage(`Downloading ${id}...`);
+    setDownloadProgress(prev => ({ ...prev, [id]: 0 }));
+
+    // Poll progress every 2 seconds
+    const progressInterval = setInterval(async () => {
+      const result = await api.getDownloadProgress(id);
+      if (result.progress !== undefined) {
+        setDownloadProgress(prev => ({ ...prev, [id]: result.progress }));
+      }
+      if (result.status === 'completed' || result.status === 'failed') {
+        clearInterval(progressInterval);
+      }
+    }, 2000);
+
     try {
       const result = await api.downloadModel(id);
       if (result.success) {
+        setDownloadProgress(prev => ({ ...prev, [id]: 1 }));
         setMessage(`Downloaded ${id}`);
         refreshModels();
       } else {
         setMessage(`Error: ${result.error}`);
       }
     } finally {
+      clearInterval(progressInterval);
       setPendingActions(prev => {
         const newState = { ...prev };
         delete newState[id];
@@ -220,64 +236,78 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
             </div>
             <div className="space-y-2">
               {models.map((model) => (
-                <div key={model.name} className="flex items-center justify-between px-4 py-3 bg-slate-800/50 rounded-lg border border-slate-800 hover:border-slate-700 transition">
-                  <div className="flex items-center gap-3">
-                    <div className="flex items-center gap-2">
-                      <Cpu className="h-5 w-5 text-slate-400" />
-                      <div>
-                        <div className="font-semibold text-white">{model.name}</div>
-                        <div className="text-xs text-slate-400">{model.type}</div>
+                <div key={model.name} className="flex flex-col px-4 py-3 bg-slate-800/50 rounded-lg border border-slate-800 hover:border-slate-700 transition">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-3">
+                      <div className="flex items-center gap-2">
+                        <Cpu className="h-5 w-5 text-slate-400" />
+                        <div>
+                          <div className="font-semibold text-white">{model.name}</div>
+                          <div className="text-xs text-slate-400">{model.type}</div>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        {model.usable ? (
+                          <CheckCircle2 className="h-4 w-4 text-green-500" />
+                        ) : model.status === 'Downloading' ? (
+                          <Loader className="h-4 w-4 text-blue-500 animate-spin" />
+                        ) : (
+                          <AlertCircle className="h-4 w-4 text-red-500" />
+                        )}
+                        <span className="text-xs text-slate-400">{model.status}</span>
                       </div>
                     </div>
                     <div className="flex items-center gap-2">
-                      {model.usable ? (
-                        <CheckCircle2 className="h-4 w-4 text-green-500" />
-                      ) : (
-                        <AlertCircle className="h-4 w-4 text-red-500" />
+                      {model.name === currentModel && pendingActions[model.name] !== 'unloading' && pendingActions[model.name] !== 'deleting' ? (
+                        <button
+                          onClick={() => handleUnloadModel(model.name)}
+                          disabled={pendingActions[model.name] === 'unloading' || pendingActions[model.name] === 'deleting'}
+                          className="flex items-center gap-2 px-3 py-1 bg-slate-800 hover:bg-blue-600 text-xs font-medium rounded-full transition"
+                        >
+                          {pendingActions[model.name] === 'unloading' ? (
+                            <Loader size={16} className="mr-1" />
+                          ) : (
+                            <Power size={16} />
+                          )}
+                          Unload
+                        </button>
+                      ) : model.status !== 'Downloading' ? (
+                        <button
+                          onClick={() => handleLoadModel(model.name)}
+                          disabled={pendingActions[model.name] === 'loading' || pendingActions[model.name] === 'unloading' || pendingActions[model.name] === 'deleting' || loading}
+                          className="flex items-center gap-2 px-3 py-1 bg-slate-800 hover:bg-blue-600 text-xs font-medium rounded-full transition"
+                        >
+                          {pendingActions[model.name] === 'loading' ? (
+                            <Loader size={16} className="mr-1" />
+                          ) : (
+                            <Play size={16} />
+                          )}
+                          Load
+                        </button>
+                      ) : null}
+                      {model.status !== 'Downloading' && (
+                        <button
+                          onClick={() => handleDeleteModel(model.name)}
+                          disabled={pendingActions[model.name] === 'deleting' || pendingActions[model.name] === 'loading' || pendingActions[model.name] === 'unloading' || loading}
+                          className="p-1 hover:bg-slate-700 rounded-lg transition text-slate-400 hover:text-white"
+                        >
+                          {pendingActions[model.name] === 'deleting' ? (
+                            <Loader size={16} className="mr-1" />
+                          ) : (
+                            <Trash2 size={16} />
+                          )}
+                        </button>
                       )}
-                      <span className="text-xs text-slate-400">{model.status}</span>
                     </div>
                   </div>
-                  <div className="flex items-center gap-2">
-                    {model.name === currentModel && pendingActions[model.name] !== 'unloading' && pendingActions[model.name] !== 'deleting' ? (
-                      <button
-                        onClick={() => handleUnloadModel(model.name)}
-                        disabled={pendingActions[model.name] === 'unloading' || pendingActions[model.name] === 'deleting'}
-                        className="flex items-center gap-2 px-3 py-1 bg-slate-800 hover:bg-blue-600 text-xs font-medium rounded-full transition"
-                      >
-                        {pendingActions[model.name] === 'unloading' ? (
-                          <Loader size={16} className="mr-1" />
-                        ) : (
-                          <Power size={16} />
-                        )}
-                        Unload
-                      </button>
-                    ) : (
-                      <button
-                        onClick={() => handleLoadModel(model.name)}
-                        disabled={pendingActions[model.name] === 'loading' || pendingActions[model.name] === 'unloading' || pendingActions[model.name] === 'deleting' || loading}
-                        className="flex items-center gap-2 px-3 py-1 bg-slate-800 hover:bg-blue-600 text-xs font-medium rounded-full transition"
-                      >
-                        {pendingActions[model.name] === 'loading' ? (
-                          <Loader size={16} className="mr-1" />
-                        ) : (
-                          <Play size={16} />
-                        )}
-                        Load
-                      </button>
-                    )}
-                    <button
-                      onClick={() => handleDeleteModel(model.name)}
-                      disabled={pendingActions[model.name] === 'deleting' || pendingActions[model.name] === 'loading' || pendingActions[model.name] === 'unloading' || loading}
-                      className="p-1 hover:bg-slate-700 rounded-lg transition text-slate-400 hover:text-white"
-                    >
-                      {pendingActions[model.name] === 'deleting' ? (
-                        <Loader size={16} className="mr-1" />
-                      ) : (
-                        <Trash2 size={16} />
-                      )}
-                    </button>
-                  </div>
+                  {model.status === 'Downloading' && downloadProgress[model.name] !== undefined && (
+                    <div className="mt-2 w-full bg-slate-700 rounded-full h-1.5">
+                      <div
+                        className="bg-blue-500 h-1.5 rounded-full transition-all duration-500"
+                        style={{ width: `${Math.round(downloadProgress[model.name] * 100)}%` }}
+                      />
+                    </div>
+                  )}
                 </div>
               ))}
             </div>
@@ -315,11 +345,14 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                       className="inline-flex items-center gap-2 px-4 py-2 bg-slate-800 hover:bg-blue-600 text-white rounded-xl text-xs font-bold transition group-hover:shadow-lg group-hover:shadow-blue-500/20"
                     >
                       {pendingActions[m.id] === 'downloading' ? (
-                        <Loader size={14} className="mr-2" />
+                        <>
+                          <Loader size={14} className="mr-2" />
+                          {downloadProgress[m.id] !== undefined ? `${Math.round(downloadProgress[m.id] * 100)}%` : '...'}
+                        </>
                       ) : (
                         <Download size={14} />
                       )}
-                      Download
+                      {pendingActions[m.id] === 'downloading' ? '' : 'Download'}
                     </button>
                   </td>
                 </tr>

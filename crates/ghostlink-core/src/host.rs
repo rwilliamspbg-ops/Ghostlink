@@ -12,6 +12,32 @@ use std::time::{Duration, Instant};
 
 use crate::protocol::NodeResources;
 
+/// Backend technology hint for the detected GPU.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GpuBackend {
+    Cuda,
+    Rocm,
+    Vulkan,
+    Directml,
+    Metal,
+    Npu,
+    Cpu,
+}
+
+impl GpuBackend {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Cuda => "cuda",
+            Self::Rocm => "rocm",
+            Self::Vulkan => "vulkan",
+            Self::Directml => "directml",
+            Self::Metal => "metal",
+            Self::Npu => "npu",
+            Self::Cpu => "cpu",
+        }
+    }
+}
+
 const FULL_PROBE_CACHE_TTL: Duration = Duration::from_secs(30);
 const FAST_PROFILE_CACHE_TTL: Duration = Duration::from_secs(5);
 
@@ -76,6 +102,8 @@ pub struct RuntimeProfile {
     pub recommended_workers: usize,
     /// Preferred acceleration path.
     pub acceleration_mode: AccelerationMode,
+    /// Detected GPU backend technology.
+    pub gpu_backend: GpuBackend,
     /// Whether AF_XDP can plausibly be used on this host.
     pub xdp_supported: bool,
     /// Best-effort hardware probe source.
@@ -97,25 +125,27 @@ impl RuntimeProfile {
              GPU VRAM: {:.1} GB\n\
              Compute capability: {}\n\
              GPU: {}\n\
+             GPU Backend: {}\n\
              Acceleration: {}\n\
              XDP support: {}\n\
              Detection source: {}\n\
              Probe mode: {}\n",
-            self.node_resources.id,
-            self.logical_cores,
-            self.recommended_workers,
-            self.node_resources.system_memory_gb,
-            self.node_resources.vram_gb,
-            if self.node_resources.compute_capability.is_empty() {
-                "cpu"
-            } else {
-                &self.node_resources.compute_capability
-            },
-            self.node_resources
-                .gpu_name
-                .as_deref()
-                .unwrap_or("Not detected"),
-            self.acceleration_mode.as_str(),
+             self.node_resources.id,
+             self.logical_cores,
+             self.recommended_workers,
+             self.node_resources.system_memory_gb,
+             self.node_resources.vram_gb,
+             if self.node_resources.compute_capability.is_empty() {
+                 "cpu"
+             } else {
+                 &self.node_resources.compute_capability
+             },
+             self.node_resources
+                 .gpu_name
+                 .as_deref()
+                 .unwrap_or("Not detected"),
+             self.gpu_backend.as_str(),
+             self.acceleration_mode.as_str(),
             if self.xdp_supported {
                 "available"
             } else {
@@ -133,6 +163,12 @@ struct GpuProbeResult {
     vram_gb: Option<f32>,
     compute_capability: Option<String>,
     detection_source: Option<String>,
+    backend: Option<GpuBackend>,
+}
+
+fn result_with_backend(mut result: GpuProbeResult, backend: GpuBackend) -> GpuProbeResult {
+    result.backend.get_or_insert(backend);
+    result
 }
 
 #[derive(Clone, Debug)]
@@ -173,6 +209,7 @@ pub fn detect_runtime_profile_with_mode(
     let gpu_name = detect_gpu_name(gpu_probe.gpu_name.clone());
     let compute_capability = detect_compute_capability(gpu_probe.compute_capability.clone());
     let acceleration_mode = detect_acceleration_mode(vram_gb, gpu_name.as_deref());
+    let gpu_backend = gpu_probe.backend.unwrap_or(GpuBackend::Cpu);
     let xdp_supported = cfg!(target_os = "linux");
     let detection_source = gpu_probe
         .detection_source
@@ -198,6 +235,7 @@ pub fn detect_runtime_profile_with_mode(
         logical_cores,
         recommended_workers,
         acceleration_mode,
+        gpu_backend,
         xdp_supported,
         detection_source,
         probe_mode,
@@ -273,6 +311,7 @@ fn detect_env_probe() -> Option<GpuProbeResult> {
         vram_gb,
         compute_capability,
         detection_source: Some(String::from("env")),
+        backend: None,
     })
 }
 
@@ -309,11 +348,12 @@ fn detect_sysfs_gpu() -> Option<GpuProbeResult> {
 
         if gpu_name.is_some() || vram_gb.is_some() {
             return Some(GpuProbeResult {
-                gpu_name,
-                vram_gb,
-                compute_capability,
-                detection_source: Some(String::from("sysfs")),
-            });
+            gpu_name,
+            vram_gb,
+            compute_capability,
+            detection_source: Some(String::from("sysfs")),
+            backend: None,
+        });
         }
     }
 
@@ -336,6 +376,7 @@ fn detect_visible_hint_probe() -> Option<GpuProbeResult> {
         vram_gb: None,
         compute_capability: Some(String::from("gpu")),
         detection_source: Some(String::from("visible-device")),
+        backend: None,
     })
 }
 
@@ -351,14 +392,18 @@ fn detect_full_gpu_probe_cached() -> Option<GpuProbeResult> {
         return Some(probe);
     }
 
-    // Probe chain: NVIDIA SMI -> [AMD ROCm SMI] -> Windows WMI (any GPU) -> lspci (Linux)
+    // Probe chain: NVIDIA SMI -> [AMD ROCm SMI] -> Windows WMI -> Vulkan -> lspci -> NPU
     #[allow(unused_mut)]
-    let mut probe = detect_nvidia_smi();
+    let mut probe = detect_nvidia_smi().map(|r| result_with_backend(r, GpuBackend::Cuda));
     #[cfg(feature = "rocm")]
     {
-        probe = probe.or_else(detect_rocm_smi);
+        probe = probe.or_else(|| detect_rocm_smi().map(|r| result_with_backend(r, GpuBackend::Rocm)));
     }
-    let probe = probe.or_else(detect_windows_any_gpu).or_else(detect_lspci_gpu)?;
+    let probe = probe
+        .or_else(|| detect_windows_any_gpu().map(|r| result_with_backend(r, GpuBackend::Directml)))
+        .or_else(|| detect_vulkan_gpu().map(|r| result_with_backend(r, GpuBackend::Vulkan)))
+        .or_else(|| detect_lspci_gpu().map(|r| result_with_backend(r, GpuBackend::Vulkan)))
+        .or_else(|| detect_npu_device().map(|r| result_with_backend(r, GpuBackend::Npu)))?;
     *cache.lock().unwrap_or_else(|poison| poison.into_inner()) = Some(CachedProbeEntry {
         captured_at: Instant::now(),
         probe: probe.clone(),
@@ -416,6 +461,7 @@ fn detect_rocm_smi() -> Option<GpuProbeResult> {
         vram_gb: vram,
         compute_capability: Some(compute_capability),
         detection_source: Some(String::from("rocm-smi")),
+        backend: Some(GpuBackend::Rocm),
     })
 }
 
@@ -471,6 +517,7 @@ fn detect_windows_any_gpu() -> Option<GpuProbeResult> {
                 vram_gb,
                 compute_capability: Some(compute),
                 detection_source: Some(String::from("wmi")),
+                backend: Some(GpuBackend::Directml),
             });
         }
     }
@@ -542,6 +589,73 @@ fn detect_lspci_gpu() -> Option<GpuProbeResult> {
     })
 }
 
+/// Detect GPU via Vulkan's `vulkaninfo` command.
+fn detect_vulkan_gpu() -> Option<GpuProbeResult> {
+    let output = Command::new("vulkaninfo")
+        .args(["--summary"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // Look for "GPU id" or device name lines
+    let gpu_name = stdout
+        .lines()
+        .find(|line| line.contains("deviceName") || line.contains("GPU id"))
+        .and_then(|line| {
+            if let Some(val) = line.split(':').nth(1) {
+                Some(val.trim().to_string())
+            } else {
+                None
+            }
+        })
+        .or_else(|| {
+            stdout
+                .lines()
+                .find(|line| line.trim().contains("Vulkan"))
+                .map(|l| l.trim().to_string())
+        })
+        .filter(|n| !n.is_empty())?;
+
+    Some(GpuProbeResult {
+        gpu_name: Some(gpu_name),
+        vram_gb: None,
+        compute_capability: Some(String::from("gpu")),
+        detection_source: Some(String::from("vulkaninfo")),
+        backend: Some(GpuBackend::Vulkan),
+    })
+}
+
+/// Detect NPU (Neural Processing Unit) on Linux via sysfs `/sys/class/accel/`.
+fn detect_npu_device() -> Option<GpuProbeResult> {
+    let accel_dir = Path::new("/sys/class/accel");
+    if !accel_dir.exists() {
+        return None;
+    }
+    for entry in fs::read_dir(accel_dir).ok()? {
+        let entry = entry.ok()?;
+        let device_path = entry.path().join("device");
+        if !device_path.exists() {
+            continue;
+        }
+        let npu_name = fs::read_to_string(device_path.join("product_name"))
+            .ok()
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty());
+        if let Some(name) = npu_name {
+            return Some(GpuProbeResult {
+                gpu_name: Some(format!("NPU: {name}")),
+                vram_gb: None,
+                compute_capability: Some(String::from("npu")),
+                detection_source: Some(String::from("sysfs-npu")),
+                backend: Some(GpuBackend::Npu),
+            });
+        }
+    }
+    None
+}
+
 fn parse_nvidia_smi_csv(stdout: &str) -> Option<GpuProbeResult> {
     let line = stdout.lines().find(|line| !line.trim().is_empty())?;
     let mut parts = line.split(',').map(str::trim);
@@ -554,6 +668,7 @@ fn parse_nvidia_smi_csv(stdout: &str) -> Option<GpuProbeResult> {
         vram_gb: Some(memory_mib / 1024.0),
         compute_capability,
         detection_source: None,
+        backend: None,
     })
 }
 
@@ -585,6 +700,7 @@ fn parse_lspci_gpu(stdout: &str) -> Option<GpuProbeResult> {
         vram_gb: None,
         compute_capability: Some(String::from("gpu")),
         detection_source: None,
+        backend: None,
     })
 }
 
@@ -719,6 +835,7 @@ mod tests {
             logical_cores: 16,
             recommended_workers: 10,
             acceleration_mode: AccelerationMode::Gpu,
+            gpu_backend: GpuBackend::Cuda,
             xdp_supported: true,
             detection_source: String::from("test"),
             probe_mode: ProbeMode::Fast,

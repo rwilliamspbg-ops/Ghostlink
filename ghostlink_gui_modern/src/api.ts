@@ -254,4 +254,50 @@ export class GhostlinkAPI {
       return { workers: [], error: error.message };
     }
   }
+
+  async getDownloadProgress(modelId: string): Promise<{ progress: number; status: string; error?: string }> {
+    try {
+      const response = await this.http.get('/api/models/download/progress', { params: { model_id: modelId } });
+      const p = response.data;
+      return { progress: p.progress || 0, status: p.status || 'unknown' };
+    } catch (error: any) {
+      return { progress: 0, status: 'unknown', error: error.message };
+    }
+  }
+
+  async addWorker(host: string, port: number): Promise<{ success: boolean; error?: string }> {
+    try {
+      const response = await this.http.post('/api/workers/add', { host, port });
+      return { success: true };
+    } catch (error: any) {
+      return { success: false, error: error.response?.data?.error || error.message };
+    }
+  }
+
+  async refreshJWT(): Promise<{ success: boolean; data?: { token: string }; error?: string }> {
+    try {
+      const response = await this.http.post('/api/security/refresh-jwt');
+      return { success: true, data: response.data };
+    } catch (error: any) {
+      return { success: false, error: error.response?.data?.error || error.message };
+    }
+  }
+
+  async enablePQC(): Promise<{ success: boolean; data?: any; error?: string }> {
+    try {
+      const response = await this.http.post('/api/security/enable-pqc');
+      return { success: true, data: response.data };
+    } catch (error: any) {
+      return { success: false, error: error.response?.data?.error || error.message };
+    }
+  }
+
+  async getAuditLog(): Promise<{ entries: any[]; error?: string }> {
+    try {
+      const response = await this.http.get('/api/security/audit-log');
+      return { entries: response.data?.entries || [] };
+    } catch (error: any) {
+      return { entries: [], error: error.message };
+    }
+  }
 }

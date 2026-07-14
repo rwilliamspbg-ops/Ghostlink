@@ -17,9 +17,7 @@ ENV GHOSTLINK_API_BASE=http://127.0.0.1:8003
 EXPOSE 3000
 
 # Script to inject environment variables at runtime
-RUN echo '#!/bin/sh\n\
-echo "window._env_ = { GHOSTLINK_API_BASE: \"$GHOSTLINK_API_BASE\" };" > /app/dist/env-config.js\n\
-exec serve -s dist -l 3000' > /app/entrypoint.sh
+RUN printf '#!/bin/sh\necho "window._env_ = { GHOSTLINK_API_BASE: \"$GHOSTLINK_API_BASE\" };" > /app/dist/env-config.js\nexec serve -s dist -l 3000\n' > /app/entrypoint.sh
 RUN chmod +x /app/entrypoint.sh
 
 ENTRYPOINT ["/app/entrypoint.sh"]

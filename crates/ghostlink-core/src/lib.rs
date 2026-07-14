@@ -48,7 +48,7 @@ pub use cluster::{ClusterState, NodeMetrics, NodeStatus};
 pub use discovery::{broadcast_and_collect, UdpDiscoveryConfig, DEFAULT_DISCOVERY_PORT};
 pub use host::{
     detect_local_node_resources, detect_runtime_profile, detect_runtime_profile_full,
-    detect_runtime_profile_with_mode, AccelerationMode, ProbeMode, RuntimeProfile,
+    detect_runtime_profile_with_mode, AccelerationMode, GpuBackend, ProbeMode, RuntimeProfile,
 };
 pub use planning::{
     assign_layers_sequentially, assign_layers_with_fault_tolerance_and_runtime,

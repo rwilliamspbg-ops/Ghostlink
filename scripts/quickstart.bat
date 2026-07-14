@@ -65,7 +65,7 @@ set "MODEL_URL=https://huggingface.co/ggml-org/models/resolve/main/tinyllamas/st
 if not exist "%MODEL_DIR%" mkdir "%MODEL_DIR%" 2>nul
 
 if not exist "%MODEL_FILE%" (
-    echo [INFO] Downloading bootstrap model (~15 MB)...
+    echo [INFO] Downloading bootstrap model ^(~15 MB^)...
     curl -L --fail --progress-bar -o "%MODEL_FILE%" "%MODEL_URL%"
     if errorlevel 1 (
         echo [WARN] Model download failed -- chat will use simulated backend

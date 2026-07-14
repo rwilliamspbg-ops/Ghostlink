@@ -158,14 +158,14 @@ function App() {
     }, 30000);
 
     const uptimeInterval = setInterval(() => {
-        setUptime(uptime + 1);
+        setUptime(prev => prev + 1);
     }, 1000);
     
     return () => {
       clearInterval(healthInterval);
       clearInterval(uptimeInterval);
     };
-  }, [api, setModels, setUptime, uptime]);
+  }, [api, setModels, setUptime]);
 
   const renderTab = () => {
     if (!api) {

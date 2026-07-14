@@ -52,3 +52,12 @@ REPORT_*.md
 *_READINESS.md
 *_READY.md
 OUTPUT.md
+
+# Generated files
+ghostlink_backend.log
+ghostlink_frontend.log
+$null
+opencode.json
+launch-fast.sh
+models/*.gguf
+ghostlink_gui_modern/dist/

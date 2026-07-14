@@ -18,11 +18,16 @@ use std::collections::HashMap;
 
 /// Helper: Create a simulated runtime profile for a device type
 fn create_profile_for_device(acceleration: AccelerationMode) -> RuntimeProfile {
+    let backend = match acceleration {
+        AccelerationMode::Gpu => ghostlink_core::host::GpuBackend::Cuda,
+        _ => ghostlink_core::host::GpuBackend::Cpu,
+    };
     RuntimeProfile {
         node_resources: NodeResources::new("local", 0.0, 16.0, "cpu", None),
         logical_cores: 8,
         recommended_workers: 4,
         acceleration_mode: acceleration,
+        gpu_backend: backend,
         xdp_supported: true,
         detection_source: "test".to_string(),
         probe_mode: ghostlink_core::host::ProbeMode::Fast,

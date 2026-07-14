@@ -18,13 +18,9 @@ export const SecurityTab: React.FC<{ api: any }> = ({ api }) => {
 
   useEffect(() => {
     const fetchAuditLog = async () => {
-      try {
-        const resp = await api.http.get('/api/security/audit-log');
-        if (resp.data?.entries) {
-          setAuditLog(resp.data.entries);
-        }
-      } catch {
-        // silent fail
+      const result = await api.getAuditLog();
+      if (result.entries) {
+        setAuditLog(result.entries);
       }
     };
     fetchAuditLog();
@@ -140,7 +136,7 @@ export const SecurityTab: React.FC<{ api: any }> = ({ api }) => {
             <div className="p-6 border-b border-slate-800 flex items-center justify-between">
                 <h3 className="font-bold text-slate-100">Security Audit Log</h3>
                 <button
-                  onClick={() => api.http.get('/api/security/audit-log').then((r: any) => { if (r.data?.entries) setAuditLog(r.data.entries); })}
+                  onClick={async () => { const result = await api.getAuditLog(); if (result.entries) setAuditLog(result.entries); }}
                   className="p-2 hover:bg-slate-800 rounded-lg transition text-slate-500 hover:text-white"
                 >
                   <RefreshCw size={14} />

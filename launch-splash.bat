@@ -1,9 +1,8 @@
 @echo off
 setlocal enabledelayedexpansion
 
-REM ============================================================================
-REM  Ghostlink Studio – Splash Screen with Hardware Detection (Windows)
-REM ============================================================================
+REM Ghostlink Studio - Splash Screen with Hardware Detection (Windows)
+REM Now delegates to launch.bat for native stack launch.
 
 title Ghostlink Studio - Launching...
 
@@ -27,7 +26,7 @@ cls
 
 REM ──────────────── BANNER ────────────────
 echo.
-echo %CYAN%  ╔══════════════════════════════════════════════════════════════════════╗%NC%
+echo %CYAN%  ╔═══════════════════════════════════════════════════════════════════════════════════╗%NC%
 echo %CYAN%  ║%NC%  %WHITE%%BOLD%███████╗██╗  ██╗ ██████╗ ███████╗████████╗██╗     ██╗███╗   ██╗██╗  ██╗%CYAN%    ║%NC%
 echo %CYAN%  ║%NC%  %WHITE%%BOLD%██╔════╝██║  ██║██╔═══██╗██╔════╝╚══██╔══╝██║     ██║████╗  ██║██║ ██╔╝%CYAN%    ║%NC%
 echo %CYAN%  ║%NC%  %WHITE%%BOLD%█████╗  ███████║██║   ██║███████╗   ██║   ██║     ██║██╔██╗ ██║█████╔╝ %CYAN%    ║%NC%
@@ -35,7 +34,7 @@ echo %CYAN%  ║%NC%  %WHITE%%BOLD%██╔══╝  ██╔══██║�
 echo %CYAN%  ║%NC%  %WHITE%%BOLD%██║     ██║  ██║╚██████╔╝███████║   ██║   ███████╗██║██║ ╚████║██║  ██╗%CYAN%    ║%NC%
 echo %CYAN%  ║%NC%  %WHITE%%BOLD%╚═╝     ╚═╝  ╚═╝ ╚═════╝ ╚══════╝   ╚═╝   ╚══════╝╚═╝╚═╝  ╚═══╝╚═╝  ╚═╝%CYAN%    ║%NC%
 echo %CYAN%  ║%NC%  %GRAY%Distributed LLM Inference Fabric%NC%                                   %CYAN%║%NC%
-echo %CYAN%  ╚══════════════════════════════════════════════════════════════════════╝%NC%
+echo %CYAN%  ╚═════════════════════════════════════════════════════════════════════════════════════╝%NC%
 echo.
 
 REM ──────────────── HARDWARE DETECTION ────────────────
@@ -46,32 +45,32 @@ set "GPU_DETECTED="
 set "GPU_NAME="
 set "NPU_DETECTED="
 
-REM Check GPU via WMI
-for /f "skip=1 tokens=2 delims=," %%a in ('wmic path Win32_VideoController get Name /format:csv 2^>nul') do (
-    echo %%a | findstr /i "microsoft basic display" >nul
-    if errorlevel 1 (
-        set "GPU_NAME=%%a"
-        set "GPU_DETECTED=1"
-    )
+REM Check GPU via PowerShell
+for /f "delims=" %%a in ('powershell -NoProfile -Command "Get-CimInstance Win32_VideoController | Where-Object { $_.Name -notmatch 'Microsoft Basic Display' } | ForEach-Object { $_.Name }" 2^>nul') do (
+    set "GPU_NAME=%%a"
+    set "GPU_DETECTED=1"
 )
 
 REM Check NPU via WMI (AMD XDNA / Intel NPU)
-powershell -NoProfile -Command "& {Get-CimInstance -ClassName Win32_PnPEntity -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '(NPU|Neural|AI Accelerator|XDNA|Ryzen AI)' } | ForEach-Object { Write-Output $_.Name }}" > "%TEMP%\ghostlink_npu.txt" 2>nul
+type nul > "%TEMP%\ghostlink_npu.txt" 2>nul
+powershell -NoProfile -Command "& {Get-CimInstance -ClassName Win32_PnPEntity -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '\b(NPU|Neural Processor|AI Accelerator|XDNA|Ryzen AI)\b' } | ForEach-Object { Write-Output $_.Name }}" > "%TEMP%\ghostlink_npu.txt" 2>nul
+set "NPU_DETECTED="
 for /f "delims=" %%a in ('type "%TEMP%\ghostlink_npu.txt" 2^>nul') do (
     if not "%%a"=="" (
-        set "NPU_DETECTED=%%a"
+        echo %%a | findstr /i "keyboard mouse hid usb input" >nul
+        if errorlevel 1 set "NPU_DETECTED=%%a"
     )
 )
 del "%TEMP%\ghostlink_npu.txt" 2>nul
 
 REM Check CPU / RAM
-for /f "tokens=2 delims==" %%a in ('wmic cpu get NumberOfCores /value 2^>nul') do set "CPU_CORES=%%a"
-for /f "tokens=2 delims==" %%a in ('wmic os get TotalVisibleMemorySize /value 2^>nul') do set /a "RAM_GB=%%a / 1048576" 2>nul
+for /f %%a in ('powershell -NoProfile -Command "(Get-CimInstance Win32_ComputerSystem).NumberOfLogicalProcessors" 2^>nul') do set "CPU_CORES=%%a"
+for /f %%a in ('powershell -NoProfile -Command "[Math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB)" 2^>nul') do set "RAM_GB=%%a"
 
 if defined GPU_DETECTED (
     echo    %GREEN%GPU%NC%       %GPU_NAME%
 ) else (
-    echo    %YELLOW%GPU%NC%       Not detected (CPU mode)
+    echo    %YELLOW%GPU%NC%       Not detected ^(CPU mode^)
 )
 if defined NPU_DETECTED (
     echo    %MAGENTA%NPU%NC%       !NPU_DETECTED!
@@ -86,78 +85,38 @@ REM ──────────────── COMPONENT CHECKS ───�
 echo %BLUE%%BOLD%  ✓ Component Check%NC%
 echo.
 
-set "BACKEND_OK=0"
-set "LLAMA_OK=0"
-set "MODEL_OK=0"
-set "GUI_OK=0"
-
 if exist "target\release\ghost-link.exe" (
-   echo    %GREEN%[OK]%NC%  Backend binary    %DIM%(target\release\ghost-link.exe)%NC%
-    set "BACKEND_OK=1"
+    echo    %GREEN%[OK]%NC%  Backend binary    %DIM%^(target\release\ghost-link.exe^)%NC%
 ) else if exist "target\debug\ghost-link.exe" (
-    echo    %YELLOW%[--]%NC%  Backend binary    %DIM%(debug build)%NC%
-    set "BACKEND_OK=1"
+    echo    %YELLOW%[--]%NC%  Backend binary    %DIM%^(debug build^)%NC%
 ) else (
-    echo    %RED%[XX]%NC%  Backend binary    %DIM%(build with: cargo build --release -p ghost-link)%NC%
+    echo    %YELLOW%[--]%NC%  Backend binary    %DIM%^(will compile^)%NC%
 )
 
 if exist "third_party\llama.cpp\build\bin\Release\llama-server.exe" (
-    echo    %GREEN%[OK]%NC%  llama-server      %DIM%(third_party\llama.cpp\build\bin\Release\)%NC%
-    set "LLAMA_OK=1"
+    echo    %GREEN%[OK]%NC%  llama-server      %DIM%^(built^)%NC%
 ) else if exist "third_party\llama.cpp\build\bin\llama-server.exe" (
-    echo    %GREEN%[OK]%NC%  llama-server      %DIM%(third_party\llama.cpp\build\bin\)%NC%
-    set "LLAMA_OK=1"
+    echo    %GREEN%[OK]%NC%  llama-server      %DIM%^(built^)%NC%
 ) else (
-    echo    %YELLOW%[--]%NC%  llama-server      %DIM%(not built; will build on first launch)%NC%
-)
-
-set "MODEL_PATH="
-for %%f in (models\*.gguf) do (
-    if exist "%%f" (
-        set "MODEL_PATH=%%f"
-    )
-)
-if defined MODEL_PATH (
-    for %%f in ("!MODEL_PATH!") do set "MODEL_SIZE=%%~zf"
-    if defined MODEL_SIZE (
-        set /a "MODEL_SIZE_MB=!MODEL_SIZE! / 1048576"
-        2>nul
-    )
-    echo    %GREEN%[OK]%NC%  Model             %DIM%!MODEL_PATH! (!MODEL_SIZE_MB! MB)%NC%
-    set "MODEL_OK=1"
-) else (
-    echo    %YELLOW%[--]%NC%  Model             %DIM%(none found; launch.bat will download one)%NC%
+    echo    %YELLOW%[--]%NC%  llama-server      %DIM%^(will build^)%NC%
 )
 
 if exist "ghostlink_gui_modern\package.json" (
-    echo    %GREEN%[OK]%NC%  React GUI         %DIM%(ghostlink_gui_modern/)%NC%
-    set "GUI_OK=1"
+    echo    %GREEN%[OK]%NC%  React GUI         %DIM%^(ghostlink_gui_modern/^)%NC%
 ) else (
-    echo    %RED%[XX]%NC%  React GUI         %DIM%(ghostlink_gui_modern/ not found)%NC%
+    echo    %RED%[XX]%NC%  React GUI         %DIM%^(ghostlink_gui_modern/ not found^)%NC%
 )
 
 echo.
-
-REM ──────────────── LAUNCH SUMMARY ────────────────
 echo %GREEN%%BOLD%  ✓ Ready to Launch%NC%
 echo.
 echo    %WHITE%Backend%NC%       http://127.0.0.1:8003
 echo    %WHITE%Frontend%NC%      http://127.0.0.1:5173
-echo    %WHITE%Inference%NC%     http://127.0.0.1:8080 %DIM%(llama-server)%NC%
+echo    %WHITE%Inference%NC%     http://127.0.0.1:8080
 echo.
 
-REM Detect Python virtualenv
-set "PY_ACTIVE="
-if exist ".venv\Scripts\python.exe" set "PY_ACTIVE=.venv"
-
-echo %GRAY%  Prerequisites: Rust, Node.js, CMake%NC%
-if defined PY_ACTIVE (
-    echo %GRAY%  Python venv:     %PY_ACTIVE%%NC%
-)
+echo %CYAN%  Starting native stack...%NC%
 echo.
 
-echo %CYAN%  Starting services...%NC%
-echo.
-
-call "%~dp0launch-complete.bat" %*
+call "%~dp0launch-complete.bat"
 exit /b %errorlevel%
