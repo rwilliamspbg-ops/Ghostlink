@@ -23,6 +23,7 @@ REM Auto-detect GPU: check NVIDIA, AMD (DirectML/Vulkan), Intel, NPU, then fall 
 set "GPU_VENDOR="
 set "NPU_DETECTED=0"
 set "LLAMA_GPU_BACKEND="
+set "CMAKE_GPU_FLAGS="
 where nvidia-smi >nul 2>&1
 if not errorlevel 1 (
     for /f "tokens=*" %%a in ('nvidia-smi --query-gpu=name --format=csv,noheader 2^>nul') do set "GPU_NAME=%%a"
@@ -101,6 +102,19 @@ if not defined GPU_VENDOR (
 set "MODEL_DIR=.\models"
 set "MODEL_FILE=%MODEL_DIR%\stories15M-q4_0.gguf"
 set "MODEL_URL=https://huggingface.co/ggml-org/models/resolve/main/tinyllamas/stories15M-q4_0.gguf"
+
+REM Check if ports are already in use
+echo Checking port availability...
+for %%P in (%BACKEND_PORT% %GUI_PORT% %LLAMA_PORT%) do (
+    netstat -ano | findstr "%%P" | findstr "LISTENING" >nul 2>&1
+    if not errorlevel 1 (
+        echo %RED%[ERROR] Port %%P is already in use. Please stop the existing service or use a different port.%NC%
+        pause
+        exit /b 1
+    )
+)
+echo %GREEN%[OK] All ports are available%NC%
+echo.
 
 REM Read model_path from settings.json if available (PowerShell JSON parsing)
 if exist "settings.json" (
@@ -263,31 +277,31 @@ if "%LLAMA_BUILT%"=="0" (
         git clone https://github.com/ggml-org/llama.cpp.git "%LLAMA_CPP_DIR%" >nul 2>&1
     )
     
-    echo   %DIM%  Configuring CMake (Release)...%NC%
-    REM Select GPU backend: NVIDIA CUDA, AMD HIP/Vulkan, Intel Vulkan, or CPU-only
-    set "CMAKE_GPU_FLAGS="
-    if "%GPU_VENDOR%"=="nvidia" (
-        set "CMAKE_GPU_FLAGS=-DLLAMA_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=all"
-        echo   %DIM%  NVIDIA GPU detected — building with CUDA support%NC%
-    )
-    if "%GPU_VENDOR%"=="amd" (
-        if "%LLAMA_GPU_BACKEND%"=="HIP" (
-            set "CMAKE_GPU_FLAGS=-DLLAMA_HIPBLAS=ON -DAMDGPU_TARGETS=all"
-            echo   %DIM%  AMD GPU detected — building with HIP/ROCm support%NC%
-        ) else (
-            REM Use Vulkan for AMD iGPUs (ROCm doesn't support RDNA3.5+ iGPUs on Windows)
-            set "CMAKE_GPU_FLAGS=-DLLAMA_VULKAN=ON -DLLAMA_VULKAN_RUN_TESTS=OFF"
-            echo   %DIM%  AMD GPU detected — building with Vulkan support (DirectML)%NC%
-        )
-    )
-    if "%GPU_VENDOR%"=="intel" (
-        set "CMAKE_GPU_FLAGS=-DLLAMA_VULKAN=ON -DLLAMA_VULKAN_RUN_TESTS=OFF"
-        echo   %DIM%  Intel GPU detected — building with Vulkan support%NC%
-    )
-    if "%GPU_VENDOR%"=="" (
-        echo   %DIM%  No GPU detected — building CPU-only llama.cpp%NC%
-    )
-    cmake -S "%LLAMA_CPP_DIR%" -B "%LLAMA_CPP_DIR%\build" -DCMAKE_BUILD_TYPE=Release %CMAKE_GPU_FLAGS% >nul 2>&1
+     echo   %DIM%  Configuring CMake (Release)...%NC%
+     REM Select GPU backend: NVIDIA CUDA, AMD HIP/Vulkan, Intel Vulkan, or CPU-only
+     set "CMAKE_GPU_FLAGS="
+     if "%GPU_VENDOR%"=="nvidia" (
+         set "CMAKE_GPU_FLAGS=-DLLAMA_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=all"
+         echo   %DIM%  NVIDIA GPU detected — building with CUDA support%NC%
+     )
+     if "%GPU_VENDOR%"=="amd" (
+         if "%LLAMA_GPU_BACKEND%"=="HIP" (
+             set "CMAKE_GPU_FLAGS=-DLLAMA_HIPBLAS=ON -DAMDGPU_TARGETS=all"
+             echo   %DIM%  AMD GPU detected — building with HIP/ROCm support%NC%
+         ) else (
+             REM Use Vulkan for AMD iGPUs (ROCm doesn't support RDNA3.5+ iGPUs on Windows)
+             set "CMAKE_GPU_FLAGS=-DLLAMA_VULKAN=ON -DLLAMA_VULKAN_RUN_TESTS=OFF"
+             echo   %DIM%  AMD GPU detected — building with Vulkan support (DirectML)%NC%
+         )
+     )
+     if "%GPU_VENDOR%"=="intel" (
+         set "CMAKE_GPU_FLAGS=-DLLAMA_VULKAN=ON -DLLAMA_VULKAN_RUN_TESTS=OFF"
+         echo   %DIM%  Intel GPU detected — building with Vulkan support%NC%
+     )
+     if "%GPU_VENDOR%"=="" (
+         echo   %DIM%  No GPU detected — building CPU-only llama.cpp%NC%
+     )
+     cmake -S "%LLAMA_CPP_DIR%" -B "%LLAMA_CPP_DIR%\build" -DCMAKE_BUILD_TYPE=Release %CMAKE_GPU_FLAGS%
     if errorlevel 1 (
         echo   %RED%✗%NC% CMake configuration failed
         echo   %YELLOW%  Retrying with CPU-only flags...%NC%

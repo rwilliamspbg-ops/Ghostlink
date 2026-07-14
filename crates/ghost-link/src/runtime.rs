@@ -177,7 +177,9 @@ impl RuntimeDetector {
     fn detect_cuda() -> Option<RuntimeInfo> {
         let has_cuda_toolkit = std::path::Path::new("/usr/local/cuda").exists()
             || std::env::var("CUDA_PATH").is_ok()
-            || std::env::var("CUDA_HOME").is_ok();
+            || std::env::var("CUDA_HOME").is_ok()
+            || std::env::var("CUDA_TOOLKIT_ROOT_DIR").is_ok();
+        
         let has_nvidia_smi = std::process::Command::new("nvidia-smi")
             .arg("--version")
             .output()
@@ -401,7 +403,11 @@ impl RuntimeDetector {
     fn detect_npu() -> Option<RuntimeInfo> {
         #[cfg(windows)]
         {
-            let npu_keywords = ["npu", "neural", "xdna", "ai accelerator", "ryzen ai", "intel npu"];
+            let npu_keywords = [
+                "npu", "neural", "xdna", "ai accelerator", "ryzen ai", 
+                "intel npu", "neural processor", "amd npu", "ryze ai",
+                "ryzenai", "neural processing unit", "ai engine"
+            ];
             if wmi_pnp_search(&npu_keywords) {
                 return Some(RuntimeInfo {
                     detected_runtime: Runtime::NPU,
@@ -411,6 +417,48 @@ impl RuntimeDetector {
                     device_count: Some(1),
                     gpu_name: Some("NPU".to_string()),
                 });
+            }
+
+            if let Ok(output) = std::process::Command::new("wmic")
+                .args(["path", "Win32_PnPEntity", "get", "Name,PNPClass", "/format:csv"])
+                .output()
+            {
+                if output.status.success() {
+                    let stdout = String::from_utf8_lossy(&output.stdout);
+                    let lower = stdout.to_lowercase();
+                    
+                    let has_npu = lower.contains("npu") 
+                        || lower.contains("neural processor")
+                        || lower.contains("ai accelerator")
+                        || lower.contains("xdna")
+                        || lower.contains("ryzen ai");
+                    
+                    if has_npu {
+                        let gpu_name = stdout
+                            .lines()
+                            .find(|line| {
+                                let lower_line = line.to_lowercase();
+                                lower_line.contains("npu") || 
+                                lower_line.contains("neural") ||
+                                lower_line.contains("ai accelerator") ||
+                                lower_line.contains("xdna") ||
+                                lower_line.contains("ryzen ai")
+                            })
+                            .and_then(|line| {
+                                line.split(',').nth(1).map(|s| s.trim().to_string())
+                            })
+                            .unwrap_or_else(|| "NPU".to_string());
+
+                        return Some(RuntimeInfo {
+                            detected_runtime: Runtime::NPU,
+                            is_available: true,
+                            compute_capability: Some("AI Accelerator".to_string()),
+                            memory_gb: Some(2.0),
+                            device_count: Some(1),
+                            gpu_name: Some(gpu_name),
+                        });
+                    }
+                }
             }
         }
 

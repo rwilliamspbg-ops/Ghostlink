@@ -14,6 +14,18 @@ set "MODEL_DIR=.\models"
 set "MODEL_FILE=%MODEL_DIR%\stories15M-q4_0.gguf"
 set "MODEL_URL=https://huggingface.co/ggml-org/models/resolve/main/tinyllamas/stories15M-q4_0.gguf"
 
+REM Check if ports are already in use
+echo Checking port availability...
+for %%P in (%BACKEND_PORT% %GUI_PORT% %LLAMA_PORT%) do (
+    netstat -ano | findstr "%%P" | findstr "LISTENING" >nul 2>&1
+    if not errorlevel 1 (
+        echo [ERROR] Port %%P is already in use. Please stop the existing service or use a different port.
+        pause
+        exit /b 1
+    )
+)
+echo [OK] All ports are available
+
 if not exist "target\release\ghost-link.exe" (
     if exist "target\debug\ghost-link.exe" (
         set "BINARY=target\debug\ghost-link.exe"
@@ -60,8 +72,16 @@ if exist "%LLAMA_SERVER%" (
 set "GHOSTLINK_INFERENCE_BACKEND=native"
 set "GHOSTLINK_LLAMA_SERVER_URL=http://127.0.0.1:%LLAMA_PORT%/completion"
 
+REM Set environment variables BEFORE starting the API server so they are inherited
+set GHOSTLINK_INFERENCE_BACKEND=%GHOSTLINK_INFERENCE_BACKEND%
+set GHOSTLINK_NATIVE_ENGINE=%GHOSTLINK_NATIVE_ENGINE%
+set GHOSTLINK_LLAMA_SERVER_URL=%GHOSTLINK_LLAMA_SERVER_URL%
+
 echo Starting Ghostlink API on port %BACKEND_PORT%...
-start "Ghostlink API" cmd /k "set GHOSTLINK_INFERENCE_BACKEND=%GHOSTLINK_INFERENCE_BACKEND% && set GHOSTLINK_NATIVE_ENGINE=%GHOSTLINK_NATIVE_ENGINE% && set GHOSTLINK_LLAMA_SERVER_URL=%GHOSTLINK_LLAMA_SERVER_URL% && "%BINARY%" serve %BACKEND_HOST% %BACKEND_PORT%"
+echo   Inference Backend: %GHOSTLINK_INFERENCE_BACKEND%
+echo   Native Engine: %GHOSTLINK_NATIVE_ENGINE%
+echo   Llama Server URL: %GHOSTLINK_LLAMA_SERVER_URL%
+start "Ghostlink API" cmd /k ""%BINARY%" serve %BACKEND_HOST% %BACKEND_PORT%"
 
 echo Waiting for Ghostlink API...
 :WAIT_API

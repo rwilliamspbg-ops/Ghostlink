@@ -6,9 +6,9 @@
 [![Status](https://img.shields.io/badge/Status-Launch%20ready-22c55e)](https://rwilliamspbg-ops.github.io/Ghostlink/)
 
 > Distributed inference fabric for custom LLM systems.
-> Route workloads across CPU, GPU, and NPU resources with more explicit scheduling, hardware-aware placement, and a polished demo path.
+> Route workloads across CPU, GPU, and NPU resources with explicit scheduling, hardware-aware placement, and a polished demo path.
 
-Ghostlink is a high-performance distributed inference fabric for teams building custom LLM systems. It combines hardware-aware planning, flexible routing, and model-management workflows so inference workloads can be distributed across heterogeneous devices with more explicit control than generic orchestration layers.
+Ghostlink is a high-performance distributed inference fabric for teams building custom LLM systems. It combines hardware-aware planning, flexible routing, and model-management workflows so inference workloads can be distributed across heterogeneous devices with explicit control.
 
 ### What Ghostlink brings
 - Clear routing and scheduling for custom inference topologies
@@ -107,7 +107,6 @@ A simple product-style demo flow is:
 3. Submit a sample request and inspect the queue, placement, and status output.
 
 ### What to Expect
-
 The splash screen shows:
 - GPU/CPU/NPU hardware detected
 - Component status (backend binary, llama-server, model)
@@ -126,7 +125,6 @@ cargo build --release -p ghost-link
 ```
 
 ## Hardware Detection
-
 Ghostlink auto-detects available accelerators at startup:
 
 | Runtime | Detection |
@@ -193,10 +191,24 @@ cargo run -p ghost-link -- dashboard
 | `/health` | GET | Health check |
 | `/api/models` | GET | List available models |
 | `/api/models/status` | GET | Loaded model status |
+| `/api/models/load` | POST | Load model into llama-server |
+| `/api/models/download` | POST | Download model from HuggingFace |
+| `/api/models/:name/unload` | POST | Unload model from llama-server |
+| `/api/models/search/huggingface` | GET | Search HuggingFace for GGUF models |
+| `/api/models/status` | GET | Current model status |
 | `/api/runtime/detect` | GET | Available runtimes (GPU, NPU, CPU) |
+| `/api/runtime/select` | POST | Select active runtime |
 | `/api/runtime/models?runtime=directml` | GET | Models filtered by runtime |
+| `/api/runtime/recommend?memory_gb=8` | GET | Model recommendations for memory budget |
 | `/api/metrics` | GET | Performance metrics |
-| `/api/inference/chat` | POST | Chat completion |
+| `/api/inference/chat` | POST | Chat completion (native + Ollama) |
+| `/api/settings` | GET/POST | Runtime settings (persists to `settings.json`) |
+| `/api/ollama/health` | GET | Ollama health check |
+| `/api/workers` | GET/POST | Worker management |
+| `/api/metrics` | GET | Performance metrics |
+| `/api/sessions` | GET | Active sessions |
+| `/api/workers` | GET/POST | Worker management |
+| `/api/security/audit-log` | GET | Audit log |
 
 ### Environment Variables
 
@@ -208,6 +220,7 @@ cargo run -p ghost-link -- dashboard
 | `GHOSTLINK_GPU_NAME` | — | Override detected GPU name |
 | `GHOSTLINK_VRAM_GB` | — | Override detected VRAM |
 | `GHOSTLINK_COMPUTE_CAPABILITY` | — | Override compute capability |
+| `GHOSTLINK_LLAMA_NGL` | `-1` | GPU layers to offload (`0` = CPU only) |
 
 ### Config File (TOML)
 
@@ -247,5 +260,4 @@ cargo test --workspace --features rocm
 See [docs/comparison_sheet.md](docs/comparison_sheet.md) for a concise Ghostlink vs. vLLM / DeepSpeed / Ray / TensorRT-LLM positioning sheet.
 
 ## License
-
 MIT

@@ -34,5 +34,59 @@
     "status": "Ready",
     "local_path": "",
     "hf_model_id": ""
+  },
+  {
+    "name": "stories15M-q4_0",
+    "size_gb": 0.017767161,
+    "model_type": "LLM",
+    "quantization": "Q4_0",
+    "status": "Loaded",
+    "local_path": "models\\stories15M-q4_0.gguf",
+    "hf_model_id": ""
+  },
+  {
+    "name": "meta-llama/Llama-3.2-1B-Instruct",
+    "size_gb": 0.0,
+    "model_type": "LLM",
+    "quantization": "unknown",
+    "status": "Ready",
+    "local_path": "",
+    "hf_model_id": ""
+  },
+  {
+    "name": "meta-llama/Llama-3.2-3B-Instruct",
+    "size_gb": 0.0,
+    "model_type": "LLM",
+    "quantization": "unknown",
+    "status": "Ready",
+    "local_path": "",
+    "hf_model_id": ""
+  },
+  {
+    "name": "meta-llama/Llama-3.2-1B",
+    "size_gb": 0.0,
+    "model_type": "LLM",
+    "quantization": "unknown",
+    "status": "Downloading",
+    "local_path": "",
+    "hf_model_id": ""
+  },
+  {
+    "name": "hf-internal-testing/tiny-random-llama",
+    "size_gb": 0.0,
+    "model_type": "LLM",
+    "quantization": "unknown",
+    "status": "Downloading",
+    "local_path": "",
+    "hf_model_id": ""
+  },
+  {
+    "name": "lmstudio-community/tinyllamas-tinyllama-1.1b-chat-GGUF",
+    "size_gb": 0.0,
+    "model_type": "LLM",
+    "quantization": "unknown",
+    "status": "Downloading",
+    "local_path": "",
+    "hf_model_id": ""
   }
 ]

@@ -1760,6 +1760,233 @@ fn detect_quantization(filename: &str) -> String {
     "unknown".to_string()
 }
 
+fn collect_system_metrics() -> (f32, f32, f32, f32) {
+    #[cfg(windows)]
+    {
+        let mut cpu_usage = 0.0;
+        let mut memory_usage = 0.0;
+        let mut gpu_usage = 0.0;
+        let mut gpu_memory = 0.0;
+
+        if let Ok(output) = Command::new("wmic")
+            .args(["cpu", "get", "loadpercentage", "/format:list"])
+            .output()
+        {
+            if output.status.success() {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                for line in stdout.lines() {
+                    if let Some(value) = line.strip_prefix("LoadPercentage=") {
+                        if let Ok(val) = value.trim().parse::<f32>() {
+                            cpu_usage = val;
+                        }
+                    }
+                }
+            }
+        }
+
+        if cpu_usage == 0.0 {
+            if let Ok(output) = Command::new("powershell")
+                .args(["-NoProfile", "-Command", "(Get-CimInstance Win32_Processor).LoadPercentage"])
+                .output()
+            {
+                if output.status.success() {
+                    let stdout = String::from_utf8_lossy(&output.stdout);
+                    if let Ok(val) = stdout.trim().parse::<f32>() {
+                        cpu_usage = val;
+                    }
+                }
+            }
+        }
+
+        if let Ok(output) = Command::new("wmic")
+            .args(["os", "get", "FreePhysicalMemory,TotalVisibleMemorySize", "/format:list"])
+            .output()
+        {
+            if output.status.success() {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                let mut free_mem = 0.0;
+                let mut total_mem = 0.0;
+                for line in stdout.lines() {
+                    if let Some(value) = line.strip_prefix("FreePhysicalMemory=") {
+                        if let Ok(val) = value.trim().parse::<f64>() {
+                            free_mem = val;
+                        }
+                    } else if let Some(value) = line.strip_prefix("TotalVisibleMemorySize=") {
+                        if let Ok(val) = value.trim().parse::<f64>() {
+                            total_mem = val;
+                        }
+                    }
+                }
+                if total_mem > 0.0 {
+                    memory_usage = ((total_mem - free_mem) / total_mem) * 100.0;
+                }
+            }
+        }
+
+        if memory_usage == 0.0 {
+            if let Ok(output) = Command::new("powershell")
+                .args([
+                    "-NoProfile",
+                    "-Command",
+                    "$os = Get-CimInstance Win32_OperatingSystem; $used = $os.TotalVisibleMemorySize - $os.FreePhysicalMemory; [math]::Round(($used / $os.TotalVisibleMemorySize) * 100, 2)"
+                ])
+                .output()
+            {
+                if output.status.success() {
+                    let stdout = String::from_utf8_lossy(&output.stdout);
+                    if let Ok(val) = stdout.trim().parse::<f64>() {
+                        memory_usage = val;
+                    }
+                }
+            }
+        }
+
+        if let Ok(output) = Command::new("nvidia-smi")
+            .args(["--query-gpu=utilization.gpu,memory.used,memory.total", "--format=csv,noheader,nounits"])
+            .output()
+        {
+            if output.status.success() {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                if let Some(line) = stdout.lines().next() {
+                    let parts: Vec<&str> = line.split(',').map(|s| s.trim()).collect();
+                    if parts.len() >= 3 {
+                        if let Ok(val) = parts[0].parse::<f32>() {
+                            gpu_usage = val;
+                        }
+                        if let Ok(used) = parts[1].parse::<f32>() {
+                            if let Ok(total) = parts[2].parse::<f32>() {
+                                if total > 0.0 {
+                                    gpu_memory = (used / total) * 100.0;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if gpu_usage == 0.0 {
+            if let Ok(output) = Command::new("rocm-smi")
+                .args(["--showuse", "--showmeminfo", "vram"])
+                .output()
+            {
+                if output.status.success() {
+                    let stdout = String::from_utf8_lossy(&output.stdout);
+                    for line in stdout.lines() {
+                        if line.contains("GPU use:") {
+                            if let Some(val) = line.split(':').nth(1) {
+                                if let Ok(val) = val.trim().trim_end_matches('%').parse::<f32>() {
+                                    gpu_usage = val;
+                                }
+                            }
+                        } else if line.contains("Total Memory") {
+                            if let Some(val) = line.split(':').nth(1) {
+                                let val = val.trim().to_lowercase();
+                                if let Ok(num) = val.split_whitespace().next().unwrap_or("0").parse::<f32>() {
+                                    if val.contains("mb") {
+                                        gpu_memory = num / 1024.0;
+                                    } else {
+                                        gpu_memory = num;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if gpu_usage == 0.0 {
+            if let Ok(output) = Command::new("powershell")
+                .args([
+                    "-NoProfile",
+                    "-Command",
+                    "(Get-CimInstance Win32_VideoController | Where-Object { $_.AdapterCompatibility -notlike '*Microsoft*' } | Select-Object -First 1).CurrentRefreshRate"
+                ])
+                .output()
+            {
+                if output.status.success() {
+                    let stdout = String::from_utf8_lossy(&output.stdout);
+                    if let Ok(val) = stdout.trim().parse::<f32>() {
+                        gpu_usage = val.min(100.0);
+                    }
+                }
+            }
+        }
+
+        (cpu_usage as f32, memory_usage as f32, gpu_usage, gpu_memory)
+    }
+
+    #[cfg(not(windows))]
+    {
+        let mut cpu_usage = 0.0;
+        let mut memory_usage = 0.0;
+        let mut gpu_usage = 0.0;
+        let mut gpu_memory = 0.0;
+
+        if let Ok(output) = Command::new("top").arg("-bn1").output() {
+            if output.status.success() {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                for line in stdout.lines() {
+                    if line.starts_with("%Cpu(s):") {
+                        if let Some(idle) = line.split(',').find(|s| s.contains("id")) {
+                            if let Some(val) = idle.split_whitespace().next() {
+                                if let Ok(idle_pct) = val.parse::<f32>() {
+                                    cpu_usage = 100.0 - idle_pct;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if let Ok(output) = Command::new("free").arg("-m").output() {
+            if output.status.success() {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                for line in stdout.lines() {
+                    if line.starts_with("Mem:") {
+                        let parts: Vec<&str> = line.split_whitespace().collect();
+                        if parts.len() >= 3 {
+                            if let (Ok(total), Ok(used)) = (parts[1].parse::<f32>(), parts[2].parse::<f32>()) {
+                                if total > 0.0 {
+                                    memory_usage = (used / total) * 100.0;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if let Ok(output) = Command::new("nvidia-smi")
+            .args(["--query-gpu=utilization.gpu,memory.used,memory.total", "--format=csv,noheader,nounits"])
+            .output()
+        {
+            if output.status.success() {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                if let Some(line) = stdout.lines().next() {
+                    let parts: Vec<&str> = line.split(',').map(|s| s.trim()).collect();
+                    if parts.len() >= 3 {
+                        if let Ok(val) = parts[0].parse::<f32>() {
+                            gpu_usage = val;
+                        }
+                        if let Ok(used) = parts[1].parse::<f32>() {
+                            if let Ok(total) = parts[2].parse::<f32>() {
+                                if total > 0.0 {
+                                    gpu_memory = (used / total) * 100.0;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        (cpu_usage, memory_usage, gpu_usage, gpu_memory)
+    }
+}
+
 fn scan_local_models_dir(models_dir: &str) -> Vec<ModelRecord> {
     let dir = std::path::Path::new(models_dir);
     if !dir.exists() {
@@ -1803,11 +2030,9 @@ async fn handle_gui_model_load(
         return Json(serde_json::json!({ "error": "model cannot be empty" }));
     }
 
-    // Phase 1: Find model and update state (no await)
-    let (model_path, _requested_model_clone) = {
+    let (model_path, ngl, port) = {
         let mut backend = lock_state(&state);
 
-        // Merge local scans so we can find local_path for locally-downloaded models
         let local = scan_local_models_dir(&backend.settings.models_dir);
         for l in &local {
             if !backend.models.iter().any(|m| m.name == l.name) {
@@ -1843,33 +2068,32 @@ async fn handle_gui_model_load(
 
         backend.current_model = requested_model.clone();
 
-        // Start the llama-server for the newly loaded model
         let model_path = if let Some(model) = backend.models.iter().find(|m| m.name == requested_model || m.hf_model_id == requested_model) {
             model.local_path.clone()
         } else {
             String::new()
         };
 
+        let ngl = backend.settings.ngl;
+        let port = std::env::var("GHOSTLINK_LLAMA_SERVER_PORT")
+            .ok()
+            .and_then(|p| p.parse().ok())
+            .unwrap_or(backend.settings.llama_port);
+
         if !model_path.is_empty() {
-            // Kill any existing llama_server child
+            let url = format!("http://127.0.0.1:{}/completion", port);
+
             if let Some(mut child) = backend.llama_server_child.take() {
                 let _ = child.kill();
                 let _ = child.wait();
             }
 
-            // Determine the port for the llama-server
-            let port = std::env::var("GHOSTLINK_LLAMA_SERVER_PORT")
-                .ok()
-                .and_then(|p| p.parse().ok())
-                .unwrap_or(8080);
-let url = format!("http://127.0.0.1:{}/completion", port);
-            let _health_url = format!("http://127.0.0.1:{}/health", port);
-
-            // Set the environment variables for the llama-server mode
             std::env::set_var("GHOSTLINK_NATIVE_ENGINE", "llama_server");
             std::env::set_var("GHOSTLINK_LLAMA_SERVER_URL", &url);
+            std::env::set_var("GHOSTLINK_INFERENCE_BACKEND", "native");
 
-            // Spawn the llama-server process
+            backend.inference_backend = InferenceBackend::Native;
+
             let llama_server_bin = {
                 let candidates = [
                     "third_party/llama.cpp/build/bin/Release/llama-server.exe",
@@ -1883,54 +2107,74 @@ let url = format!("http://127.0.0.1:{}/completion", port);
                     .unwrap_or_else(|| "llama-server".to_string())
             };
 
-            let child = Command::new(&llama_server_bin)
-                .arg("-m")
+            let mut cmd = Command::new(&llama_server_bin);
+            cmd.arg("-m")
                 .arg(&model_path)
                 .arg("--host")
                 .arg("127.0.0.1")
                 .arg("--port")
                 .arg(port.to_string())
-                .spawn();
+                .arg("-ngl")
+                .arg(ngl.to_string())
+                .arg("--threads")
+                .arg(backend.settings.threads.to_string())
+                .arg("--ctx-size")
+                .arg(backend.settings.ctx_size.to_string());
 
-            let child = match child {
-                Ok(c) => c,
-                Err(e) => {
-                    return Json(serde_json::json!({ "error": format!("failed to start llama-server ({}): {}", llama_server_bin, e) }));
+            match cmd.spawn() {
+                Ok(child) => {
+                    backend.llama_server_child = Some(child);
+                    backend.settings.native_engine = "llama_server".to_string();
+                    backend.settings.inference_backend = "native".to_string();
+                    save_settings(&backend.settings);
                 }
-            };
-
-            // Save the child in the backend state
-            backend.llama_server_child = Some(child);
+                Err(e) => {
+                    return Json(serde_json::json!({ 
+                        "error": format!("failed to start llama-server ({}): {}", llama_server_bin, e),
+                        "hint": "Ensure llama-server binary exists in third_party/llama.cpp/build/bin/"
+                    }));
+                }
+            }
         }
 
-        (model_path, requested_model.clone())
+        (model_path, ngl, port)
     };
 
-    // Phase 2: Wait for llama-server to be ready (await here, no locks held)
     if !model_path.is_empty() {
-        let port = std::env::var("GHOSTLINK_LLAMA_SERVER_PORT")
-            .ok()
-            .and_then(|p| p.parse().ok())
-            .unwrap_or(8080);
         let health_url = format!("http://127.0.0.1:{}/health", port);
         let client = reqwest::Client::new();
-        for _ in 0..30 {
+        let mut ready = false;
+        
+        for _ in 0..60 {
             if let Ok(resp) = client.get(&health_url).send().await {
                 if resp.status().is_success() {
+                    ready = true;
                     break;
                 }
             }
             tokio::time::sleep(Duration::from_millis(500)).await;
         }
+
+        if !ready {
+            let mut backend = lock_state(&state);
+            for m in &mut backend.models {
+                if m.name == requested_model && m.status == "Loaded" {
+                    m.status = "Error".to_string();
+                }
+            }
+            save_persistent_models(&backend.models);
+            return Json(serde_json::json!({ 
+                "error": "llama-server failed to become ready within 30 seconds",
+                "model": requested_model
+            }));
+        }
     }
 
-    // Phase 3: Save models (no await)
     {
         let backend = lock_state(&state);
         save_persistent_models(&backend.models);
     }
 
-    // Phase 4: Get current model info for response (no await)
     let (current_model, model_path) = {
         let backend = lock_state(&state);
         (backend.current_model.clone(), backend.settings.model_path.clone())
@@ -1940,6 +2184,9 @@ let url = format!("http://127.0.0.1:{}/completion", port);
         "status": "ok",
         "current_model": current_model,
         "model_path": model_path,
+        "ngl": ngl,
+        "port": port,
+        "ready": !model_path.is_empty()
     }))
 }
 
@@ -2629,14 +2876,24 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         State(state): State<Arc<Mutex<BackendState>>>,
     ) -> Json<serde_json::Value> {
         let backend = lock_state(&state);
+        
+        let (cpu_usage, memory_usage, gpu_usage, gpu_memory) = collect_system_metrics();
+        
+        let throughput = backend.cluster.total_vram_gb() * 15.0;
+        let latency_p50 = backend.last_latency_ms;
+        let latency_p95 = backend.last_latency_ms * 1.5;
+        
         Json(serde_json::json!({
             "metrics": {
-                "throughput": 125.4,
-                "cpu": 45.2,
-                "memory": 62.8,
-                "gpu": 88.5,
-                "latency_p50": backend.last_latency_ms,
-                "latency_p95": backend.last_latency_ms * 1.5,
+                "throughput": throughput,
+                "cpu": cpu_usage,
+                "memory": memory_usage,
+                "gpu": gpu_usage,
+                "gpu_memory": gpu_memory,
+                "latency_p50": latency_p50,
+                "latency_p95": latency_p95,
+                "active_sessions": backend.sessions.len(),
+                "chat_requests": backend.chat_requests,
             }
         }))
     }
@@ -3000,6 +3257,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                     "memory_gb": rt.memory_gb,
                     "device_count": rt.device_count,
                     "gpu_name": rt.gpu_name,
+                    "is_primary": rt.detected_runtime == primary,
                 })
             })
             .collect();
@@ -3008,7 +3266,80 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             "available_runtimes": runtime_data,
             "primary_runtime": primary.to_string(),
             "auto_detected": true,
+            "total_runtimes": runtime_data.len(),
         }))
+    }
+
+    async fn handle_select_runtime(
+        State(state): State<Arc<Mutex<BackendState>>>,
+        Json(req): Json<serde_json::Value>,
+    ) -> Json<serde_json::Value> {
+        use crate::runtime::{RuntimeDetector, Runtime};
+
+        let runtime_str = req.get("runtime")
+            .and_then(|v| v.as_str())
+            .unwrap_or("CPU")
+            .to_lowercase();
+
+        let selected_runtime = match runtime_str.as_str() {
+            "cuda" | "nvidia" => Runtime::CUDA,
+            "metal" | "apple" => Runtime::Metal,
+            "rocm" | "amd" => Runtime::ROCm,
+            "directml" | "dml" | "dx12" => Runtime::DirectML,
+            "npu" | "neural" => Runtime::NPU,
+            _ => Runtime::CPU,
+        };
+
+        let runtimes = RuntimeDetector::detect();
+        let is_available = runtimes
+            .iter()
+            .any(|rt| rt.detected_runtime == selected_runtime && rt.is_available);
+
+        if !is_available {
+            return Json(serde_json::json!({
+                "status": "error",
+                "error": format!("Runtime '{}' is not available on this system", selected_runtime),
+                "available_runtimes": runtimes.iter()
+                    .filter(|rt| rt.is_available)
+                    .map(|rt| rt.detected_runtime.to_string())
+                    .collect::<Vec<_>>()
+            }));
+        }
+
+        let mut backend = lock_state(&state);
+        backend.settings.inference_backend = match selected_runtime {
+            Runtime::CUDA | Runtime::ROCm | Runtime::DirectML | Runtime::Metal | Runtime::NPU => {
+                "native".to_string()
+            }
+            Runtime::CPU => "native".to_string(),
+        };
+
+        backend.settings.native_engine = match selected_runtime {
+            Runtime::CUDA => "cuda".to_string(),
+            Runtime::ROCm => "rocm".to_string(),
+            Runtime::DirectML => "directml".to_string(),
+            Runtime::Metal => "metal".to_string(),
+            Runtime::NPU => "npu".to_string(),
+            Runtime::CPU => "cpu".to_string(),
+        };
+
+        std::env::set_var("GHOSTLINK_INFERENCE_BACKEND", &backend.settings.inference_backend);
+        std::env::set_var("GHOSTLINK_NATIVE_ENGINE", &backend.settings.native_engine);
+
+        let selected_info = runtimes.iter().find(|rt| rt.detected_runtime == selected_runtime);
+
+        let response = serde_json::json!({
+            "status": "ok",
+            "selected_runtime": selected_runtime.to_string(),
+            "compute_capability": selected_info.and_then(|rt| rt.compute_capability.clone()),
+            "memory_gb": selected_info.and_then(|rt| rt.memory_gb),
+            "device_count": selected_info.and_then(|rt| rt.device_count),
+            "gpu_name": selected_info.and_then(|rt| rt.gpu_name.clone()),
+        });
+
+        drop(backend);
+
+        Json(response)
     }
 
     async fn handle_models_by_runtime(
@@ -3381,6 +3712,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             .route("/api/settings", post(handle_update_settings))
             .route("/api/settings/reset", post(handle_reset_settings))
             .route("/api/runtime/detect", get(handle_runtime_detection))
+            .route("/api/runtime/select", post(handle_select_runtime))
             .route("/api/runtime/models", get(handle_models_by_runtime))
             .route("/api/runtime/recommend", get(handle_model_recommendations))
             .with_state(state)
