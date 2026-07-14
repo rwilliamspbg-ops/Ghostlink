@@ -2999,6 +2999,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                     "compute_capability": rt.compute_capability,
                     "memory_gb": rt.memory_gb,
                     "device_count": rt.device_count,
+                    "gpu_name": rt.gpu_name,
                 })
             })
             .collect();

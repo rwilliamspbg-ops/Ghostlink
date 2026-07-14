@@ -38,10 +38,10 @@ export const SettingsTab: React.FC<{ api: any }> = ({ api }) => {
     if (runtimeResult?.available_runtimes) {
       setRuntimes(runtimeResult.available_runtimes);
       const gpuRuntime = runtimeResult.available_runtimes.find(
-        (r: any) => r.runtime?.includes('NVIDIA') || r.runtime?.includes('AMD') || r.runtime?.includes('ROCm')
+        (r: any) => r.runtime !== 'CPU (Default)' && r.available
       );
       if (gpuRuntime) {
-        setDetectedGpuName(gpuRuntime.runtime);
+        setDetectedGpuName(gpuRuntime.gpu_name || gpuRuntime.runtime);
       }
     }
     setLoading(false);
