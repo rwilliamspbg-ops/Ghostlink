@@ -20,6 +20,7 @@ impl NativeEngineClient {
         Self
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn generate(
         &self,
         model: &str,
@@ -55,7 +56,12 @@ impl NativeEngineClient {
         {
             "llama_server" | "llama-server" => {
                 let text = self.generate_with_llama_server(
-                    cleaned_prompt, max_tokens, temperature, top_p, top_k, repeat_penalty,
+                    cleaned_prompt,
+                    max_tokens,
+                    temperature,
+                    top_p,
+                    top_k,
+                    repeat_penalty,
                 )?;
                 Ok(NativeGeneration {
                     text,
@@ -297,7 +303,10 @@ mod tests {
                 "ghostlink-30b-v1",
                 "summarize distributed runtime scheduling",
                 128,
-                0.7, 0.9, 40, 1.1,
+                0.7,
+                0.9,
+                40,
+                1.1,
             )
             .expect("native generation should succeed");
         assert!(out.text.contains("[native:ghostlink-30b-v1]"));

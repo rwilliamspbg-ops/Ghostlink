@@ -292,6 +292,15 @@ export class GhostlinkAPI {
     }
   }
 
+  async selectRuntime(runtime: string): Promise<{ success: boolean; error?: string; data?: any }> {
+    try {
+      const res = await this.http.post('/api/runtime/select', { runtime });
+      return { success: true, data: res.data };
+    } catch (error: any) {
+      return { success: false, error: error.response?.data?.error || error.message };
+    }
+  }
+
   async getAuditLog(): Promise<{ entries: any[]; error?: string }> {
     try {
       const response = await this.http.get('/api/security/audit-log');

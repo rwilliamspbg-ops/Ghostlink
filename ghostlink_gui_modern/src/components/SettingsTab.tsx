@@ -19,7 +19,8 @@ export const SettingsTab: React.FC<{ api: any }> = ({ api }) => {
   const [settings, setSettings] = useState<SettingsType | null>(null);
   const [loading, setLoading] = useState(true);
   const [runtimes, setRuntimes] = useState<any[]>([]);
-  const [detectedGpuName, setDetectedGpuName] = useState<string>('');
+  const [selectedRuntime, setSelectedRuntime] = useState<string>('');
+  const [runtimeStatus, setRuntimeStatus] = useState<string>('');
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState('');
@@ -32,20 +33,33 @@ export const SettingsTab: React.FC<{ api: any }> = ({ api }) => {
     ]);
     if (result.settings && !result.error) {
       setSettings(result.settings);
+      const nativeEngine = result.settings.native_engine;
+      if (nativeEngine) {
+        setSelectedRuntime(nativeEngine);
+      }
     } else {
       setError(result.error || 'Failed to load settings');
     }
     if (runtimeResult?.available_runtimes) {
       setRuntimes(runtimeResult.available_runtimes);
-      const gpuRuntime = runtimeResult.available_runtimes.find(
-        (r: any) => r.runtime !== 'CPU (Default)' && r.available
-      );
-      if (gpuRuntime) {
-        setDetectedGpuName(gpuRuntime.gpu_name || gpuRuntime.runtime);
-      }
     }
     setLoading(false);
   }, [api]);
+
+  const handleSelectRuntime = async (runtime: string) => {
+    setRuntimeStatus('switching...');
+    const result = await api.selectRuntime(runtime);
+    if (result.success) {
+      setSelectedRuntime(runtime);
+      setRuntimeStatus(`switched to ${runtime}`);
+      setTimeout(() => setRuntimeStatus(''), 2000);
+      if (settings) {
+        setSettings({ ...settings, native_engine: runtime });
+      }
+    } else {
+      setRuntimeStatus(result.error || 'switch failed');
+    }
+  };
 
   useEffect(() => {
     loadSettings();
@@ -223,26 +237,40 @@ export const SettingsTab: React.FC<{ api: any }> = ({ api }) => {
                   const isGpu = rt.runtime?.includes('NVIDIA') || rt.runtime?.includes('AMD') || rt.runtime?.includes('ROCm');
                   const isCpu = rt.runtime?.includes('CPU');
                   const isNpu = rt.runtime?.includes('NPU');
+                  const runtimeKey = rt.runtime?.toLowerCase().replace(/[^a-z0-9]/g, '') || '';
+                  const isSelected = selectedRuntime && runtimeKey.includes(selectedRuntime.toLowerCase());
                   return (
-                    <div key={i} className={`p-3 rounded-2xl border ${
-                      rt.is_available
-                        ? isGpu ? 'bg-green-500/5 border-green-500/20' : isNpu ? 'bg-purple-500/5 border-purple-500/20' : 'bg-slate-800/50 border-slate-700'
-                        : 'bg-slate-800/20 border-slate-800/30'
-                    }`}>
+                    <button
+                      key={i}
+                      onClick={() => rt.is_available && handleSelectRuntime(runtimeKey)}
+                      disabled={!rt.is_available}
+                      className={`p-3 rounded-2xl border text-left transition-all ${
+                        rt.is_available
+                          ? isSelected
+                            ? 'bg-blue-500/10 border-blue-500/50 ring-1 ring-blue-500/50'
+                            : isGpu ? 'bg-green-500/5 border-green-500/20 hover:bg-green-500/10' : isNpu ? 'bg-purple-500/5 border-purple-500/20 hover:bg-purple-500/10' : 'bg-slate-800/50 border-slate-700 hover:bg-slate-800'
+                          : 'bg-slate-800/20 border-slate-800/30 cursor-not-allowed opacity-50'
+                      }`}
+                    >
                       <div className="flex items-center gap-2 mb-1">
                         {isGpu ? <GpuIcon size={14} className="text-green-400" /> : isCpu ? <Cpu size={14} className="text-slate-400" /> : <Zap size={14} className="text-purple-400" />}
                         <span className={`text-xs font-bold ${rt.is_available ? (isGpu ? 'text-green-400' : 'text-slate-300') : 'text-slate-600'}`}>
-                          {rt.is_available ? 'Available' : 'Unavailable'}
+                          {rt.is_available ? (isSelected ? 'Active' : 'Available') : 'Unavailable'}
                         </span>
                       </div>
                       <p className="text-sm font-mono text-slate-200 truncate" title={rt.runtime}>
                         {rt.runtime}
                       </p>
                       {rt.memory_gb && <p className="text-[10px] text-slate-500">{rt.memory_gb.toFixed(1)} GB</p>}
-                    </div>
+                    </button>
                   );
                 })}
               </div>
+              {runtimeStatus && (
+                <div className="mt-3 text-xs text-blue-400 bg-blue-500/10 px-3 py-1.5 rounded-lg">
+                  {runtimeStatus}
+                </div>
+              )}
             </div>
           )}
 

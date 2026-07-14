@@ -415,7 +415,7 @@ if errorlevel 1 (
 echo [OK] Backend API is healthy
 
 REM ==================== Start GUI ====================
-echo [INFO] Starting GUI on http://127.0.0.1:%GUI_PORT%
+echo [INFO] Building and starting GUI on http://127.0.0.1:%GUI_PORT%
 cd "%PROJECT_ROOT%ghostlink_gui_modern"
 
 if not exist "node_modules" (
@@ -428,13 +428,25 @@ if not exist "node_modules" (
     )
 )
 
-start "Ghostlink Studio GUI" cmd /k "npm run dev -- --host 127.0.0.1 --port %GUI_PORT%"
+REM Build for production (served from dist/ via vite preview)
+if not exist "dist" (
+    echo [INFO] Building frontend for production...
+    call npm run build
+    if errorlevel 1 (
+        echo [WARN] Frontend build failed, falling back to dev server
+        start "Ghostlink Studio GUI" cmd /k "npm run dev -- --host 127.0.0.1 --port %GUI_PORT%"
+        goto WAIT_GUI
+    )
+    echo [OK] Frontend built successfully
+)
+
+start "Ghostlink Studio GUI" cmd /k "npm run preview -- --host 127.0.0.1 --port %GUI_PORT%"
 
 cd "%PROJECT_ROOT%"
 
+:WAIT_GUI
 REM Wait for GUI
 echo [INFO] Waiting for frontend...
-:WAIT_GUI
 curl -sf http://127.0.0.1:%GUI_PORT% >nul 2>&1
 if errorlevel 1 (
     ping -n 2 127.0.0.1 >nul

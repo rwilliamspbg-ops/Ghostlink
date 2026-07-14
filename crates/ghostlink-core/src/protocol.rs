@@ -141,7 +141,11 @@ impl NodeResources {
     ///
     /// Returns the length of the written payload on success, or an Error on validation failure.
     #[inline]
-    pub fn encode_payload_into(&self, buffer: &mut Vec<u8>, max_size: usize) -> Result<usize, &'static str> {
+    pub fn encode_payload_into(
+        &self,
+        buffer: &mut Vec<u8>,
+        max_size: usize,
+    ) -> Result<usize, &'static str> {
         let id_bytes = self.id.as_bytes();
         let cc_bytes = self.compute_capability.as_bytes();
         let gpu_bytes = self.gpu_name.as_ref().map(|name| name.as_bytes());
@@ -184,10 +188,17 @@ impl NodeResources {
     /// Format: [id_len(1) + id + vram_f32_le + mem_f32_le + cc_len(1) + cc]
     #[inline]
     pub fn encode_payload(&self, max_size: usize) -> Vec<u8> {
-        let id_bytes_len = self.id.as_bytes().len();
-        let cc_bytes_len = self.compute_capability.as_bytes().len();
-        let gpu_bytes_len = self.gpu_name.as_ref().map_or(0, |name| name.as_bytes().len());
-        let est_len = 11 + id_bytes_len + cc_bytes_len + if gpu_bytes_len > 0 { 2 + gpu_bytes_len } else { 0 };
+        let id_bytes_len = self.id.len();
+        let cc_bytes_len = self.compute_capability.len();
+        let gpu_bytes_len = self.gpu_name.as_ref().map_or(0, |name| name.len());
+        let est_len = 11
+            + id_bytes_len
+            + cc_bytes_len
+            + if gpu_bytes_len > 0 {
+                2 + gpu_bytes_len
+            } else {
+                0
+            };
 
         let mut payload = Vec::with_capacity(est_len);
         if self.encode_payload_into(&mut payload, max_size).is_ok() {
@@ -299,15 +310,22 @@ impl DiscoveryFrame {
     /// Encode discovery frame to bytes (header + payload)
     #[inline]
     pub fn encode(&self) -> Vec<u8> {
-        let id_bytes_len = self.node.id.as_bytes().len();
-        let cc_bytes_len = self.node.compute_capability.as_bytes().len();
-        let payload_len = 11 + id_bytes_len + cc_bytes_len + self.node.gpu_name.as_ref().map_or(0, |name| 2 + name.as_bytes().len());
+        let id_bytes_len = self.node.id.len();
+        let cc_bytes_len = self.node.compute_capability.len();
+        let payload_len = 11
+            + id_bytes_len
+            + cc_bytes_len
+            + self.node.gpu_name.as_ref().map_or(0, |name| 2 + name.len());
 
         let mut frame = Vec::with_capacity(8 + payload_len);
         // Reserve the first 8 bytes for the header with a fast slice extension
         frame.extend_from_slice(&[0u8; 8]);
 
-        if self.node.encode_payload_into(&mut frame, MAX_PAYLOAD_SIZE).is_ok() {
+        if self
+            .node
+            .encode_payload_into(&mut frame, MAX_PAYLOAD_SIZE)
+            .is_ok()
+        {
             // Compute CRC32 over payload
             let mut hasher = Hasher::new();
             hasher.update(&frame[8..]);

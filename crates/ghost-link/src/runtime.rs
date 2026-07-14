@@ -83,7 +83,11 @@ fn wmi_query_values(class: &str, property: &str) -> Vec<String> {
                     let parts: Vec<&str> = trimmed.splitn(2, ',').collect();
                     if parts.len() >= 2 {
                         let val = parts[1].trim().to_string();
-                        if val.is_empty() { None } else { Some(val) }
+                        if val.is_empty() {
+                            None
+                        } else {
+                            Some(val)
+                        }
                     } else {
                         None
                     }
@@ -179,7 +183,7 @@ impl RuntimeDetector {
             || std::env::var("CUDA_PATH").is_ok()
             || std::env::var("CUDA_HOME").is_ok()
             || std::env::var("CUDA_TOOLKIT_ROOT_DIR").is_ok();
-        
+
         let has_nvidia_smi = std::process::Command::new("nvidia-smi")
             .arg("--version")
             .output()
@@ -224,9 +228,19 @@ impl RuntimeDetector {
                             .and_then(|l| l.trim().parse::<f32>().ok())
                             .map(|mib| mib / 1024.0)
                     });
-                (count.or(Some(1)), cc.or(Some("7.0+".to_string())), name, mem)
+                (
+                    count.or(Some(1)),
+                    cc.or(Some("7.0+".to_string())),
+                    name,
+                    mem,
+                )
             } else {
-                (Some(1), Some("7.0+".to_string()), None, Self::detect_gpu_memory())
+                (
+                    Some(1),
+                    Some("7.0+".to_string()),
+                    None,
+                    Self::detect_gpu_memory(),
+                )
             };
 
             return Some(RuntimeInfo {
@@ -284,7 +298,11 @@ impl RuntimeDetector {
         let has_visible_devices = std::env::var("ROCR_VISIBLE_DEVICES").is_ok()
             || std::env::var("HIP_VISIBLE_DEVICES").is_ok();
 
-        if has_rocm_linux || has_rocm_windows || has_rocm_smi || has_hipconfig || has_visible_devices
+        if has_rocm_linux
+            || has_rocm_windows
+            || has_rocm_smi
+            || has_hipconfig
+            || has_visible_devices
         {
             let device_count = if has_rocm_smi {
                 std::process::Command::new("rocm-smi")
@@ -308,13 +326,20 @@ impl RuntimeDetector {
                 .ok()
                 .and_then(|o| {
                     let stdout = String::from_utf8_lossy(&o.stdout);
-                    stdout.lines().find(|l| l.contains("Total Memory")).and_then(|l| {
-                        let val = l.split(':').nth(1)?.trim().to_lowercase();
-                        let num: f32 = val.split_whitespace().next()?.parse().ok()?;
-                        if val.contains("gb") { Some(num) }
-                        else if val.contains("mb") { Some(num / 1024.0) }
-                        else { None }
-                    })
+                    stdout
+                        .lines()
+                        .find(|l| l.contains("Total Memory"))
+                        .and_then(|l| {
+                            let val = l.split(':').nth(1)?.trim().to_lowercase();
+                            let num: f32 = val.split_whitespace().next()?.parse().ok()?;
+                            if val.contains("gb") {
+                                Some(num)
+                            } else if val.contains("mb") {
+                                Some(num / 1024.0)
+                            } else {
+                                None
+                            }
+                        })
                 })
                 .or_else(|| Self::detect_gpu_memory());
 
@@ -364,12 +389,17 @@ impl RuntimeDetector {
                 if is_basic {
                     continue;
                 }
-                let is_amd = lower.contains("amd") || lower.contains("radeon") || lower.contains("advanced micro");
-                let is_intel = lower.contains("intel") || lower.contains("iris") || lower.contains("arc");
-                let is_gpu = is_amd || is_intel || lower.contains("nvidia") || lower.contains("geforce");
+                let is_amd = lower.contains("amd")
+                    || lower.contains("radeon")
+                    || lower.contains("advanced micro");
+                let is_intel =
+                    lower.contains("intel") || lower.contains("iris") || lower.contains("arc");
+                let is_gpu =
+                    is_amd || is_intel || lower.contains("nvidia") || lower.contains("geforce");
 
                 if is_gpu {
-                    let d3d12_available = std::path::Path::new("C:\\Windows\\System32\\d3d12.dll").exists();
+                    let d3d12_available =
+                        std::path::Path::new("C:\\Windows\\System32\\d3d12.dll").exists();
                     if d3d12_available {
                         return Some(RuntimeInfo {
                             detected_runtime: Runtime::DirectML,
@@ -384,7 +414,8 @@ impl RuntimeDetector {
             }
 
             if !gpu_names.is_empty() {
-                let d3d12_available = std::path::Path::new("C:\\Windows\\System32\\d3d12.dll").exists();
+                let d3d12_available =
+                    std::path::Path::new("C:\\Windows\\System32\\d3d12.dll").exists();
                 if d3d12_available {
                     return Some(RuntimeInfo {
                         detected_runtime: Runtime::DirectML,
@@ -404,9 +435,18 @@ impl RuntimeDetector {
         #[cfg(windows)]
         {
             let npu_keywords = [
-                "npu", "neural", "xdna", "ai accelerator", "ryzen ai", 
-                "intel npu", "neural processor", "amd npu", "ryze ai",
-                "ryzenai", "neural processing unit", "ai engine"
+                "npu",
+                "neural",
+                "xdna",
+                "ai accelerator",
+                "ryzen ai",
+                "intel npu",
+                "neural processor",
+                "amd npu",
+                "ryze ai",
+                "ryzenai",
+                "neural processing unit",
+                "ai engine",
             ];
             if wmi_pnp_search(&npu_keywords) {
                 return Some(RuntimeInfo {
@@ -420,33 +460,37 @@ impl RuntimeDetector {
             }
 
             if let Ok(output) = std::process::Command::new("wmic")
-                .args(["path", "Win32_PnPEntity", "get", "Name,PNPClass", "/format:csv"])
+                .args([
+                    "path",
+                    "Win32_PnPEntity",
+                    "get",
+                    "Name,PNPClass",
+                    "/format:csv",
+                ])
                 .output()
             {
                 if output.status.success() {
                     let stdout = String::from_utf8_lossy(&output.stdout);
                     let lower = stdout.to_lowercase();
-                    
-                    let has_npu = lower.contains("npu") 
+
+                    let has_npu = lower.contains("npu")
                         || lower.contains("neural processor")
                         || lower.contains("ai accelerator")
                         || lower.contains("xdna")
                         || lower.contains("ryzen ai");
-                    
+
                     if has_npu {
                         let gpu_name = stdout
                             .lines()
                             .find(|line| {
                                 let lower_line = line.to_lowercase();
-                                lower_line.contains("npu") || 
-                                lower_line.contains("neural") ||
-                                lower_line.contains("ai accelerator") ||
-                                lower_line.contains("xdna") ||
-                                lower_line.contains("ryzen ai")
+                                lower_line.contains("npu")
+                                    || lower_line.contains("neural")
+                                    || lower_line.contains("ai accelerator")
+                                    || lower_line.contains("xdna")
+                                    || lower_line.contains("ryzen ai")
                             })
-                            .and_then(|line| {
-                                line.split(',').nth(1).map(|s| s.trim().to_string())
-                            })
+                            .and_then(|line| line.split(',').nth(1).map(|s| s.trim().to_string()))
                             .unwrap_or_else(|| "NPU".to_string());
 
                         return Some(RuntimeInfo {
@@ -546,8 +590,12 @@ impl RuntimeDetector {
                 if let Some(line) = stdout.lines().find(|l| l.contains("Total Memory")) {
                     let val = line.split(':').nth(1)?.trim().to_lowercase();
                     let num: f32 = val.split_whitespace().next()?.parse().ok()?;
-                    if val.contains("gb") { return Some(num); }
-                    if val.contains("mb") { return Some(num / 1024.0); }
+                    if val.contains("gb") {
+                        return Some(num);
+                    }
+                    if val.contains("mb") {
+                        return Some(num / 1024.0);
+                    }
                 }
             }
         }
@@ -658,7 +706,11 @@ impl ModelRegistry {
                 recommended_runtimes: vec![Runtime::CPU, Runtime::NPU, Runtime::DirectML],
                 inference_speed: ModelSpeed::Fast,
                 quality_tier: QualityTier::Lightweight,
-                use_cases: vec!["Quick responses".to_string(), "Edge devices".to_string(), "Real-time chat".to_string()],
+                use_cases: vec![
+                    "Quick responses".to_string(),
+                    "Edge devices".to_string(),
+                    "Real-time chat".to_string(),
+                ],
             },
             ModelInfo {
                 name: "phi".to_string(),
@@ -668,67 +720,128 @@ impl ModelRegistry {
                 recommended_runtimes: vec![Runtime::CPU, Runtime::NPU, Runtime::DirectML],
                 inference_speed: ModelSpeed::Fast,
                 quality_tier: QualityTier::Lightweight,
-                use_cases: vec!["Mobile deployment".to_string(), "Embedded systems".to_string(), "Low-latency".to_string()],
+                use_cases: vec![
+                    "Mobile deployment".to_string(),
+                    "Embedded systems".to_string(),
+                    "Low-latency".to_string(),
+                ],
             },
             ModelInfo {
                 name: "mistral".to_string(),
                 parameters: "7B".to_string(),
                 size_gb: 4.1,
                 memory_required_gb: 6.0,
-                recommended_runtimes: vec![Runtime::CPU, Runtime::NPU, Runtime::DirectML, Runtime::CUDA, Runtime::Metal, Runtime::ROCm],
+                recommended_runtimes: vec![
+                    Runtime::CPU,
+                    Runtime::NPU,
+                    Runtime::DirectML,
+                    Runtime::CUDA,
+                    Runtime::Metal,
+                    Runtime::ROCm,
+                ],
                 inference_speed: ModelSpeed::Standard,
                 quality_tier: QualityTier::Standard,
-                use_cases: vec!["General purpose".to_string(), "Default choice".to_string(), "Balanced quality/speed".to_string()],
+                use_cases: vec![
+                    "General purpose".to_string(),
+                    "Default choice".to_string(),
+                    "Balanced quality/speed".to_string(),
+                ],
             },
             ModelInfo {
                 name: "neural-chat".to_string(),
                 parameters: "7B".to_string(),
                 size_gb: 4.0,
                 memory_required_gb: 6.0,
-                recommended_runtimes: vec![Runtime::CPU, Runtime::DirectML, Runtime::CUDA, Runtime::Metal],
+                recommended_runtimes: vec![
+                    Runtime::CPU,
+                    Runtime::DirectML,
+                    Runtime::CUDA,
+                    Runtime::Metal,
+                ],
                 inference_speed: ModelSpeed::Standard,
                 quality_tier: QualityTier::Standard,
-                use_cases: vec!["Conversational AI".to_string(), "Chat applications".to_string(), "Instruction following".to_string()],
+                use_cases: vec![
+                    "Conversational AI".to_string(),
+                    "Chat applications".to_string(),
+                    "Instruction following".to_string(),
+                ],
             },
             ModelInfo {
                 name: "llama2".to_string(),
                 parameters: "7B".to_string(),
                 size_gb: 3.8,
                 memory_required_gb: 5.5,
-                recommended_runtimes: vec![Runtime::CPU, Runtime::DirectML, Runtime::CUDA, Runtime::Metal, Runtime::ROCm],
+                recommended_runtimes: vec![
+                    Runtime::CPU,
+                    Runtime::DirectML,
+                    Runtime::CUDA,
+                    Runtime::Metal,
+                    Runtime::ROCm,
+                ],
                 inference_speed: ModelSpeed::Standard,
                 quality_tier: QualityTier::Standard,
-                use_cases: vec!["Text generation".to_string(), "Code generation".to_string(), "Versatile tasks".to_string()],
+                use_cases: vec![
+                    "Text generation".to_string(),
+                    "Code generation".to_string(),
+                    "Versatile tasks".to_string(),
+                ],
             },
             ModelInfo {
                 name: "openhermes".to_string(),
                 parameters: "7B".to_string(),
                 size_gb: 4.1,
                 memory_required_gb: 6.0,
-                recommended_runtimes: vec![Runtime::CPU, Runtime::DirectML, Runtime::CUDA, Runtime::Metal],
+                recommended_runtimes: vec![
+                    Runtime::CPU,
+                    Runtime::DirectML,
+                    Runtime::CUDA,
+                    Runtime::Metal,
+                ],
                 inference_speed: ModelSpeed::Standard,
                 quality_tier: QualityTier::Standard,
-                use_cases: vec!["Instruction following".to_string(), "Question answering".to_string(), "Reasoning tasks".to_string()],
+                use_cases: vec![
+                    "Instruction following".to_string(),
+                    "Question answering".to_string(),
+                    "Reasoning tasks".to_string(),
+                ],
             },
             ModelInfo {
                 name: "llama2-13b".to_string(),
                 parameters: "13B".to_string(),
                 size_gb: 7.3,
                 memory_required_gb: 10.0,
-                recommended_runtimes: vec![Runtime::DirectML, Runtime::CUDA, Runtime::Metal, Runtime::ROCm],
+                recommended_runtimes: vec![
+                    Runtime::DirectML,
+                    Runtime::CUDA,
+                    Runtime::Metal,
+                    Runtime::ROCm,
+                ],
                 inference_speed: ModelSpeed::Standard,
                 quality_tier: QualityTier::Premium,
-                use_cases: vec!["Complex reasoning".to_string(), "Advanced reasoning".to_string(), "Long context".to_string()],
+                use_cases: vec![
+                    "Complex reasoning".to_string(),
+                    "Advanced reasoning".to_string(),
+                    "Long context".to_string(),
+                ],
             },
             ModelInfo {
                 name: "mistral-medium".to_string(),
                 parameters: "13B".to_string(),
                 size_gb: 8.0,
                 memory_required_gb: 12.0,
-                recommended_runtimes: vec![Runtime::DirectML, Runtime::CUDA, Runtime::Metal, Runtime::ROCm],
+                recommended_runtimes: vec![
+                    Runtime::DirectML,
+                    Runtime::CUDA,
+                    Runtime::Metal,
+                    Runtime::ROCm,
+                ],
                 inference_speed: ModelSpeed::Slow,
                 quality_tier: QualityTier::Premium,
-                use_cases: vec!["High quality responses".to_string(), "Complex analysis".to_string(), "Multi-step reasoning".to_string()],
+                use_cases: vec![
+                    "High quality responses".to_string(),
+                    "Complex analysis".to_string(),
+                    "Multi-step reasoning".to_string(),
+                ],
             },
             ModelInfo {
                 name: "llama2-70b".to_string(),
@@ -738,7 +851,11 @@ impl ModelRegistry {
                 recommended_runtimes: vec![Runtime::DirectML, Runtime::CUDA, Runtime::ROCm],
                 inference_speed: ModelSpeed::Slow,
                 quality_tier: QualityTier::Premium,
-                use_cases: vec!["Expert-level reasoning".to_string(), "Complex code".to_string(), "Research applications".to_string()],
+                use_cases: vec![
+                    "Expert-level reasoning".to_string(),
+                    "Complex code".to_string(),
+                    "Research applications".to_string(),
+                ],
             },
             ModelInfo {
                 name: "codeup".to_string(),
@@ -748,7 +865,11 @@ impl ModelRegistry {
                 recommended_runtimes: vec![Runtime::DirectML, Runtime::CUDA, Runtime::Metal],
                 inference_speed: ModelSpeed::Slow,
                 quality_tier: QualityTier::Specialized,
-                use_cases: vec!["Code generation".to_string(), "Code completion".to_string(), "Programming assistance".to_string()],
+                use_cases: vec![
+                    "Code generation".to_string(),
+                    "Code completion".to_string(),
+                    "Programming assistance".to_string(),
+                ],
             },
             ModelInfo {
                 name: "dolphin-mixtral".to_string(),
@@ -758,7 +879,11 @@ impl ModelRegistry {
                 recommended_runtimes: vec![Runtime::DirectML, Runtime::CUDA, Runtime::ROCm],
                 inference_speed: ModelSpeed::Slow,
                 quality_tier: QualityTier::Specialized,
-                use_cases: vec!["Advanced conversations".to_string(), "High complexity tasks".to_string(), "Multi-task handling".to_string()],
+                use_cases: vec![
+                    "Advanced conversations".to_string(),
+                    "High complexity tasks".to_string(),
+                    "Multi-task handling".to_string(),
+                ],
             },
         ]
     }
@@ -775,8 +900,16 @@ impl ModelRegistry {
         models
             .iter()
             .find(|m| m.quality_tier == QualityTier::Standard)
-            .or_else(|| models.iter().find(|m| m.quality_tier == QualityTier::Premium))
-            .or_else(|| models.iter().find(|m| m.quality_tier == QualityTier::Lightweight))
+            .or_else(|| {
+                models
+                    .iter()
+                    .find(|m| m.quality_tier == QualityTier::Premium)
+            })
+            .or_else(|| {
+                models
+                    .iter()
+                    .find(|m| m.quality_tier == QualityTier::Lightweight)
+            })
             .cloned()
     }
 }
@@ -794,7 +927,15 @@ mod tests {
     #[test]
     fn test_runtime_always_detected() {
         let primary = RuntimeDetector::detect_primary();
-        let valid = matches!(primary, Runtime::CPU | Runtime::DirectML | Runtime::CUDA | Runtime::ROCm | Runtime::Metal | Runtime::NPU);
+        let valid = matches!(
+            primary,
+            Runtime::CPU
+                | Runtime::DirectML
+                | Runtime::CUDA
+                | Runtime::ROCm
+                | Runtime::Metal
+                | Runtime::NPU
+        );
         assert!(valid, "A runtime should always be detected");
     }
 
@@ -821,11 +962,23 @@ mod tests {
     #[test]
     fn test_rocm_models_include_amd_compatible_models() {
         let rocm_models = ModelRegistry::models_for_runtime(Runtime::ROCm);
-        assert!(!rocm_models.is_empty(), "ROCm should have compatible models");
+        assert!(
+            !rocm_models.is_empty(),
+            "ROCm should have compatible models"
+        );
         let names: Vec<&str> = rocm_models.iter().map(|m| m.name.as_str()).collect();
-        assert!(names.contains(&"mistral"), "mistral should be ROCm compatible");
-        assert!(names.contains(&"llama2"), "llama2 should be ROCm compatible");
-        assert!(names.contains(&"llama2-13b"), "llama2-13b should be ROCm compatible");
+        assert!(
+            names.contains(&"mistral"),
+            "mistral should be ROCm compatible"
+        );
+        assert!(
+            names.contains(&"llama2"),
+            "llama2 should be ROCm compatible"
+        );
+        assert!(
+            names.contains(&"llama2-13b"),
+            "llama2-13b should be ROCm compatible"
+        );
     }
 
     #[test]
@@ -848,7 +1001,10 @@ mod tests {
     fn test_rocm_recommendation_filters_by_vram() {
         let limited = ModelRegistry::recommend_models(Runtime::ROCm, 6.0);
         let abundant = ModelRegistry::recommend_models(Runtime::ROCm, 48.0);
-        assert!(limited.len() < abundant.len(), "More VRAM should allow more models");
+        assert!(
+            limited.len() < abundant.len(),
+            "More VRAM should allow more models"
+        );
     }
 
     #[test]
@@ -856,13 +1012,19 @@ mod tests {
         let runtimes = RuntimeDetector::detect();
         let cpu = runtimes.iter().find(|r| r.detected_runtime == Runtime::CPU);
         assert!(cpu.is_some());
-        assert!(cpu.unwrap().gpu_name.is_none(), "CPU should not have gpu_name");
+        assert!(
+            cpu.unwrap().gpu_name.is_none(),
+            "CPU should not have gpu_name"
+        );
     }
 
     #[cfg(feature = "rocm")]
     #[test]
     fn test_rocm_detection_is_available() {
         let runtimes = RuntimeDetector::detect();
-        assert!(!runtimes.is_empty(), "Runtime detection should always return at least CPU");
+        assert!(
+            !runtimes.is_empty(),
+            "Runtime detection should always return at least CPU"
+        );
     }
 }

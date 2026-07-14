@@ -153,6 +153,7 @@ fn main() {
         logical_cores: 16,
         recommended_workers: 8,
         acceleration_mode: AccelerationMode::Gpu,
+        gpu_backend: ghostlink_core::host::GpuBackend::Cuda,
         xdp_supported: true,
         detection_source: String::from("bench"),
         probe_mode: ghostlink_core::ProbeMode::Fast,

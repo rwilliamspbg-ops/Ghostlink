@@ -130,22 +130,22 @@ impl RuntimeProfile {
              XDP support: {}\n\
              Detection source: {}\n\
              Probe mode: {}\n",
-             self.node_resources.id,
-             self.logical_cores,
-             self.recommended_workers,
-             self.node_resources.system_memory_gb,
-             self.node_resources.vram_gb,
-             if self.node_resources.compute_capability.is_empty() {
-                 "cpu"
-             } else {
-                 &self.node_resources.compute_capability
-             },
-             self.node_resources
-                 .gpu_name
-                 .as_deref()
-                 .unwrap_or("Not detected"),
-             self.gpu_backend.as_str(),
-             self.acceleration_mode.as_str(),
+            self.node_resources.id,
+            self.logical_cores,
+            self.recommended_workers,
+            self.node_resources.system_memory_gb,
+            self.node_resources.vram_gb,
+            if self.node_resources.compute_capability.is_empty() {
+                "cpu"
+            } else {
+                &self.node_resources.compute_capability
+            },
+            self.node_resources
+                .gpu_name
+                .as_deref()
+                .unwrap_or("Not detected"),
+            self.gpu_backend.as_str(),
+            self.acceleration_mode.as_str(),
             if self.xdp_supported {
                 "available"
             } else {
@@ -348,12 +348,12 @@ fn detect_sysfs_gpu() -> Option<GpuProbeResult> {
 
         if gpu_name.is_some() || vram_gb.is_some() {
             return Some(GpuProbeResult {
-            gpu_name,
-            vram_gb,
-            compute_capability,
-            detection_source: Some(String::from("sysfs")),
-            backend: None,
-        });
+                gpu_name,
+                vram_gb,
+                compute_capability,
+                detection_source: Some(String::from("sysfs")),
+                backend: None,
+            });
         }
     }
 
@@ -397,7 +397,8 @@ fn detect_full_gpu_probe_cached() -> Option<GpuProbeResult> {
     let mut probe = detect_nvidia_smi().map(|r| result_with_backend(r, GpuBackend::Cuda));
     #[cfg(feature = "rocm")]
     {
-        probe = probe.or_else(|| detect_rocm_smi().map(|r| result_with_backend(r, GpuBackend::Rocm)));
+        probe =
+            probe.or_else(|| detect_rocm_smi().map(|r| result_with_backend(r, GpuBackend::Rocm)));
     }
     let probe = probe
         .or_else(|| detect_windows_any_gpu().map(|r| result_with_backend(r, GpuBackend::Directml)))
@@ -453,7 +454,9 @@ fn detect_rocm_smi() -> Option<GpuProbeResult> {
             })
     };
 
-    let name = gpu_name.clone().unwrap_or_else(|| String::from("AMD GPU (rocm-smi)"));
+    let name = gpu_name
+        .clone()
+        .unwrap_or_else(|| String::from("AMD GPU (rocm-smi)"));
     let compute_capability = infer_compute_capability_from_name(&name);
 
     Some(GpuProbeResult {
@@ -603,13 +606,7 @@ fn detect_vulkan_gpu() -> Option<GpuProbeResult> {
     let gpu_name = stdout
         .lines()
         .find(|line| line.contains("deviceName") || line.contains("GPU id"))
-        .and_then(|line| {
-            if let Some(val) = line.split(':').nth(1) {
-                Some(val.trim().to_string())
-            } else {
-                None
-            }
-        })
+        .and_then(|line| line.split(':').nth(1).map(|val| val.trim().to_string()))
         .or_else(|| {
             stdout
                 .lines()
@@ -714,11 +711,17 @@ fn infer_compute_capability_from_name(name: &str) -> String {
         String::from("8.6")
     } else if lowered.contains("arc") {
         String::from("xe")
-    } else if cfg!(feature = "rocm") &&
-        (lowered.contains("radeon") || lowered.contains("amd") || lowered.contains("advanced micro")
-        || lowered.contains("rx ") || lowered.contains("w7900") || lowered.contains("w6800")
-        || lowered.contains("mi250") || lowered.contains("mi300") || lowered.contains("mi350")
-        || lowered.contains("instinct"))
+    } else if cfg!(feature = "rocm")
+        && (lowered.contains("radeon")
+            || lowered.contains("amd")
+            || lowered.contains("advanced micro")
+            || lowered.contains("rx ")
+            || lowered.contains("w7900")
+            || lowered.contains("w6800")
+            || lowered.contains("mi250")
+            || lowered.contains("mi300")
+            || lowered.contains("mi350")
+            || lowered.contains("instinct"))
     {
         String::from("rocm")
     } else if lowered.contains("intel") || lowered.contains("iris") || lowered.contains("uhd") {
@@ -870,17 +873,41 @@ mod tests {
         assert_eq!(infer_compute_capability_from_name("Arc A770"), "xe");
         #[cfg(feature = "rocm")]
         {
-            assert_eq!(infer_compute_capability_from_name("AMD Radeon RX 7900 XTX"), "rocm");
-            assert_eq!(infer_compute_capability_from_name("AMD Instinct MI250"), "rocm");
-            assert_eq!(infer_compute_capability_from_name("Radeon Pro W7900"), "rocm");
-            assert_eq!(infer_compute_capability_from_name("Advanced Micro Devices Radeon RX 6800"), "rocm");
+            assert_eq!(
+                infer_compute_capability_from_name("AMD Radeon RX 7900 XTX"),
+                "rocm"
+            );
+            assert_eq!(
+                infer_compute_capability_from_name("AMD Instinct MI250"),
+                "rocm"
+            );
+            assert_eq!(
+                infer_compute_capability_from_name("Radeon Pro W7900"),
+                "rocm"
+            );
+            assert_eq!(
+                infer_compute_capability_from_name("Advanced Micro Devices Radeon RX 6800"),
+                "rocm"
+            );
         }
         #[cfg(not(feature = "rocm"))]
         {
-            assert_eq!(infer_compute_capability_from_name("AMD Radeon RX 7900 XTX"), "gpu");
-            assert_eq!(infer_compute_capability_from_name("AMD Instinct MI250"), "gpu");
-            assert_eq!(infer_compute_capability_from_name("Radeon Pro W7900"), "gpu");
-            assert_eq!(infer_compute_capability_from_name("Advanced Micro Devices Radeon RX 6800"), "gpu");
+            assert_eq!(
+                infer_compute_capability_from_name("AMD Radeon RX 7900 XTX"),
+                "gpu"
+            );
+            assert_eq!(
+                infer_compute_capability_from_name("AMD Instinct MI250"),
+                "gpu"
+            );
+            assert_eq!(
+                infer_compute_capability_from_name("Radeon Pro W7900"),
+                "gpu"
+            );
+            assert_eq!(
+                infer_compute_capability_from_name("Advanced Micro Devices Radeon RX 6800"),
+                "gpu"
+            );
         }
     }
 
