@@ -266,6 +266,7 @@ class GhostlinkGUI:
         self.root.after(5000, self.refresh_metrics)
         self.root.after(5000, self.refresh_sessions)
         self.root.after(5000, self.refresh_workers)
+        self.root.after(2000, self.poll_download_progress)
         self.process_response_queue()
 
     def process_response_queue(self) -> None:
@@ -301,6 +302,38 @@ class GhostlinkGUI:
             self.active_model_label.configure(text=f"Model: {current_model}")
             self.header_status.configure(text=f"Backend healthy. Uptime {result.get('uptime_s', '?')}s")
         self.root.after(3000, self.poll_health)
+
+    def poll_download_progress(self) -> None:
+        if not hasattr(self, 'downloading_model_id') or not self.downloading_model_id:
+            self.root.after(2000, self.poll_download_progress)
+            return
+
+        result = self.api_call(f"/api/models/download/progress?model_id={self.downloading_model_id}")
+        if result.get("error"):
+            self.root.after(2000, self.poll_download_progress)
+            return
+
+        progress = result.get("progress", 0)
+        status = result.get("status", "unknown")
+        downloaded = result.get("downloaded_bytes", 0)
+        total = result.get("total_bytes", 0)
+
+        if total > 0:
+            mb_downloaded = downloaded / (1024 * 1024)
+            mb_total = total / (1024 * 1024)
+            self.header_status.configure(text=f"Downloading {self.downloading_model_id}: {progress*100:.1f}% ({mb_downloaded:.1f}/{mb_total:.1f} MB)")
+        else:
+            self.header_status.configure(text=f"Downloading {self.downloading_model_id}: {status}")
+
+        if status == "completed" or progress >= 1.0:
+            self.header_status.configure(text=f"Downloaded {self.downloading_model_id}")
+            self.downloading_model_id = None
+            self.refresh_models()
+        elif status == "failed":
+            self.header_status.configure(text=f"Download failed: {self.downloading_model_id}")
+            self.downloading_model_id = None
+        else:
+            self.root.after(2000, self.poll_download_progress)
 
     def build_chat_tab(self) -> None:
         container = tk.Frame(self.chat_tab, bg="#111318")
@@ -588,6 +621,8 @@ class GhostlinkGUI:
         if not model_id:
             return
 
+        self.downloading_model_id = model_id.strip()
+
         def task() -> None:
             result = self.api_call("/api/models/download", "POST", {"model_id": model_id.strip()})
             self.root.after(0, lambda: self.handle_simple_result(result, f"Downloaded model: {model_id.strip()}"))
@@ -650,11 +685,13 @@ class GhostlinkGUI:
 
     def _download_hf_model(self, model_id: str, auto_load: bool) -> None:
         def task() -> None:
+            self.root.after(0, lambda: setattr(self, 'downloading_model_id', model_id))
             result = self.api_call("/api/models/download", "POST", {"model_id": model_id})
 
             def finalize() -> None:
                 if result.get("error"):
                     messagebox.showerror("Hugging Face", result["error"])
+                    self.downloading_model_id = None
                     return
                 self.header_status.configure(text=f"Downloaded Hugging Face model: {model_id}")
                 self.refresh_models()

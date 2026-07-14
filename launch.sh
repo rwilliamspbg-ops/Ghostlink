@@ -21,6 +21,8 @@ CLEAR_LINE='\033[2K\r'
 HIDE_CURSOR='\033[?25l'
 SHOW_CURSOR='\033[?25h'
 
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 # Trap to ensure cursor is shown on exit
 trap 'echo -e "${SHOW_CURSOR}"; tput cnorm 2>/dev/null; exit' EXIT INT TERM
 
@@ -170,8 +172,8 @@ check_components() {
     
     # Model dir
     echo -ne "${BLUE}│${NC}  ${WHITE}Model Directory${NC}       "
-    mkdir -p /tmp/ghostlink-models
-    echo -e "${GREEN}✓ Ready${NC}  ${DIM}(/tmp/ghostlink-models/)${NC}"
+    mkdir -p "$PROJECT_ROOT/models"
+    echo -e "${GREEN}✓ Ready${NC}  ${DIM}($PROJECT_ROOT/models/)${NC}"
     
     echo -e "${BLUE}└────────────────────────────────────────────────────────────────────────────────────┘${NC}"
     echo ""
@@ -242,16 +244,16 @@ start_services() {
     
     # Start llama-server
     LLAMA_NGL="${LLAMA_NGL:--1}"
-    mkdir -p /tmp/ghostlink-models
-    if [ ! -f /tmp/ghostlink-models/stories15M-q4_0.gguf ]; then
+    mkdir -p "$PROJECT_ROOT/models"
+    if [ ! -f "$PROJECT_ROOT/models/stories15M-q4_0.gguf" ]; then
         echo -e "  ${DIM}Downloading model...${NC}"
-        curl -L --fail -o /tmp/ghostlink-models/stories15M-q4_0.gguf \
+        curl -L --fail -o "$PROJECT_ROOT/models/stories15M-q4_0.gguf" \
             "https://huggingface.co/ggml-org/models/resolve/main/tinyllamas/stories15M-q4_0.gguf" \
             2>/dev/null || echo "  ${YELLOW}⚠ Model download failed, will use existing if any${NC}"
     fi
     
     "$LLAMA_SERVER_BIN" \
-        -m /tmp/ghostlink-models/stories15M-q4_0.gguf \
+        -m "$PROJECT_ROOT/models/stories15M-q4_0.gguf" \
         --host 127.0.0.1 --port 8080 \
         -ngl "$LLAMA_NGL" \
         >/tmp/ghostlink_llama_server.log 2>&1 &
@@ -265,7 +267,15 @@ start_services() {
     GHOSTLINK_INFERENCE_BACKEND=native \
     GHOSTLINK_NATIVE_ENGINE=llama_server \
     GHOSTLINK_LLAMA_SERVER_URL="http://127.0.0.1:8080/completion" \
-    cargo run -p ghost-link -- serve 127.0.0.1 8003 \
+    bash -c "
+        if [ -f '$PROJECT_ROOT/target/release/ghost-link' ]; then
+            '$PROJECT_ROOT/target/release/ghost-link' serve 127.0.0.1 8003
+        elif [ -f '$PROJECT_ROOT/target/debug/ghost-link' ]; then
+            '$PROJECT_ROOT/target/debug/ghost-link' serve 127.0.0.1 8003
+        else
+            cargo run -p ghost-link -- serve 127.0.0.1 8003
+        fi
+    " \
         >/tmp/ghostlink_api.log 2>&1 &
     API_PID=$!
     

@@ -293,9 +293,175 @@ class TestGhostlinkGUI(unittest.TestCase):
         except Exception as e:
             self.fail(f"Health endpoint test failed: {e}")
 
+    def test_end_to_end_workflow(self):
+        """Test full user flow: list models → load → chat → unload → verify."""
+        try:
+            # 1. List models
+            list_resp = requests.get(f"{self.backend_url}/api/models", timeout=10)
+            self.assertEqual(list_resp.status_code, 200)
+            models = list_resp.json().get("models", [])
+            self.assertGreater(len(models), 0, "No models available")
+
+            model_name = models[0]["name"]
+
+            # 2. Load model
+            load_resp = requests.post(
+                f"{self.backend_url}/api/models/load",
+                json={"model": model_name},
+                timeout=30,
+            )
+            self.assertEqual(load_resp.status_code, 200)
+
+            # 3. Verify model is loaded
+            status_resp = requests.get(f"{self.backend_url}/api/models/status", timeout=10)
+            self.assertEqual(status_resp.status_code, 200)
+            loaded = status_resp.json().get("loaded_models", [])
+            self.assertIn(model_name, loaded, f"{model_name} not in loaded models")
+
+            # 4. Chat with loaded model
+            chat_resp = requests.post(
+                f"{self.backend_url}/api/inference/chat",
+                json={"message": "Hello from e2e test", "max_tokens": 32},
+                timeout=30,
+            )
+            self.assertEqual(chat_resp.status_code, 200)
+            self.assertIn("response", chat_resp.json())
+
+            # 5. Unload model
+            unload_resp = requests.post(
+                f"{self.backend_url}/api/models/{model_name}/unload",
+                timeout=10,
+            )
+            self.assertEqual(unload_resp.status_code, 200)
+
+            # 6. Verify model is no longer loaded
+            status2_resp = requests.get(f"{self.backend_url}/api/models/status", timeout=10)
+            self.assertEqual(status2_resp.status_code, 200)
+            loaded2 = status2_resp.json().get("loaded_models", [])
+            self.assertNotIn(model_name, loaded2, f"{model_name} still loaded after unload")
+
+            print("[OK] ✓ End-to-end workflow successful")
+        except Exception as e:
+            self.fail(f"End-to-end workflow failed: {e}")
+
+    def test_model_unload(self):
+        """Test that model unload resets status and stops llama-server."""
+        try:
+            # Load a model first
+            load_resp = requests.post(
+                f"{self.backend_url}/api/models/load",
+                json={"model": "tinyllama"},
+                timeout=30,
+            )
+            self.assertEqual(load_resp.status_code, 200)
+
+            # Unload it
+            unload_resp = requests.post(
+                f"{self.backend_url}/api/models/tinyllama/unload",
+                timeout=10,
+            )
+            self.assertEqual(unload_resp.status_code, 200)
+            data = unload_resp.json()
+            self.assertEqual(data.get("status"), "ok")
+
+            # Verify current_model is reset
+            status_resp = requests.get(f"{self.backend_url}/api/models/status", timeout=10)
+            current = status_resp.json().get("current_model", "")
+            self.assertNotEqual(current, "tinyllama", "current_model not reset after unload")
+
+            print("[OK] ✓ Model unload test successful")
+        except Exception as e:
+            self.fail(f"Model unload test failed: {e}")
+
+    def test_settings_roundtrip(self):
+        """Test GET/POST /api/settings preserves all fields."""
+        try:
+            # Get current settings
+            get_resp = requests.get(f"{self.backend_url}/api/settings", timeout=10)
+            self.assertEqual(get_resp.status_code, 200)
+            original = get_resp.json()
+
+            # Update a field
+            update_payload = {"temperature": 0.42, "top_k": 55}
+            post_resp = requests.post(
+                f"{self.backend_url}/api/settings",
+                json=update_payload,
+                timeout=10,
+            )
+            self.assertEqual(post_resp.status_code, 200)
+
+            # Verify the update persisted
+            get2_resp = requests.get(f"{self.backend_url}/api/settings", timeout=10)
+            self.assertEqual(get2_resp.status_code, 200)
+            updated = get2_resp.json()
+            self.assertAlmostEqual(updated.get("temperature", 0), 0.42, places=1)
+            self.assertEqual(updated.get("top_k"), 55)
+
+            # Restore original values
+            requests.post(
+                f"{self.backend_url}/api/settings",
+                json={"temperature": original.get("temperature", 0.7), "top_k": original.get("top_k", 40)},
+                timeout=10,
+            )
+
+            print("[OK] ✓ Settings roundtrip successful")
+        except Exception as e:
+            self.fail(f"Settings roundtrip failed: {e}")
+
     def tearDown(self):
         """Clean up after each test."""
         pass
+
+class PerformanceTester:
+    """Performance benchmarking for Ghostlink GUI operations."""
+
+    def __init__(self, backend_url="http://127.0.0.1:8003"):
+        self.backend_url = backend_url
+        self.results = {}
+
+    def profile_chat_performance(self):
+        """Measure chat endpoint latency and throughput."""
+        latencies = []
+        for i in range(5):
+            start = time.time()
+            try:
+                resp = requests.post(
+                    f"{self.backend_url}/api/inference/chat",
+                    json={"message": f"benchmark prompt {i}", "max_tokens": 32},
+                    timeout=30,
+                )
+                elapsed = (time.time() - start) * 1000
+                if resp.status_code == 200:
+                    latencies.append(elapsed)
+            except Exception:
+                pass
+
+        if latencies:
+            self.results["chat_latency_avg_ms"] = sum(latencies) / len(latencies)
+            self.results["chat_latency_p95_ms"] = sorted(latencies)[int(len(latencies) * 0.95)]
+            self.results["samples"] = len(latencies)
+        else:
+            self.results["error"] = "no successful requests"
+
+        return self.results
+
+    def profile_model_load_performance(self):
+        """Measure model load endpoint latency."""
+        start = time.time()
+        try:
+            resp = requests.post(
+                f"{self.backend_url}/api/models/load",
+                json={"model": "tinyllama"},
+                timeout=30,
+            )
+            elapsed = (time.time() - start) * 1000
+            self.results["model_load_ms"] = elapsed
+            self.results["model_load_status"] = resp.status_code
+        except Exception as e:
+            self.results["model_load_error"] = str(e)
+
+        return self.results
+
 
 def run_comprehensive_gui_tests():
     """Run comprehensive GUI tests and return results."""

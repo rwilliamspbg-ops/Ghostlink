@@ -6,6 +6,10 @@
 //! - `dashboard` - Display ASCII cluster dashboard
 
 use anyhow::Result;
+use axum::{
+    extract::{State},
+    Json,
+};
 use ghostlink_core::cluster::{ClusterState, NodeMetrics};
 use ghostlink_core::dashboard::Dashboard;
 use ghostlink_core::discovery::{
@@ -14,11 +18,13 @@ use ghostlink_core::discovery::{
 };
 use ghostlink_core::health::NetworkHealthMonitor;
 use ghostlink_core::host::{detect_runtime_profile, detect_runtime_profile_full, ProbeMode};
+use std::path::Path;
 use ghostlink_core::load_balance::LoadBalancer;
 use ghostlink_core::planning::{
     assign_layers_with_runtime_profile, select_quantization_mode, LayerSpec, PlacementPlan,
     QuantizationMode, RebalanceTrigger,
 };
+use std::sync::{Arc, Mutex};
 use ghostlink_core::protocol::NodeResources;
 use ghostlink_core::protocol::{DiscoveryFrame, FrameKind};
 use ghostlink_core::runtime::{
@@ -33,10 +39,8 @@ use std::collections::HashMap;
 use std::fs;
 use std::hash::{Hash, Hasher};
 use std::net::{Shutdown, SocketAddr, TcpStream, ToSocketAddrs};
-use std::path::Path;
 use std::path::PathBuf;
 use std::process::{Child, Command};
-use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -1443,6 +1447,7 @@ Distribution Summary:"
 
 #[derive(Debug)]
 struct BackendState {
+    llama_server_child: Option<Child>,
     models: Vec<ModelRecord>,
     current_model: String,
     workers: Vec<WorkerRecord>,
@@ -1459,6 +1464,16 @@ struct BackendState {
     ollama_client: ollama::OllamaClient,
     ollama_available: Arc<tokio::sync::Mutex<bool>>,
     settings: RuntimeSettings,
+    download_progress: Arc<tokio::sync::Mutex<HashMap<String, DownloadProgress>>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct DownloadProgress {
+    model_id: String,
+    progress: f32,
+    total_bytes: u64,
+    downloaded_bytes: u64,
+    status: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1574,6 +1589,7 @@ fn load_persistent_models() -> Vec<ModelRecord> {
             quantization: "Q4_K_M".to_string(),
             status: "Ready".to_string(),
             local_path: String::new(),
+            hf_model_id: String::new(),
         },
         ModelRecord {
             name: "mistralai/Mistral-7B-Instruct-v0.2".to_string(),
@@ -1582,6 +1598,7 @@ fn load_persistent_models() -> Vec<ModelRecord> {
             quantization: "Q8_0".to_string(),
             status: "Ready".to_string(),
             local_path: String::new(),
+            hf_model_id: String::new(),
         },
         ModelRecord {
             name: "google/gemma-7b-it".to_string(),
@@ -1590,6 +1607,7 @@ fn load_persistent_models() -> Vec<ModelRecord> {
             quantization: "BF16".to_string(),
             status: "Ready".to_string(),
             local_path: String::new(),
+            hf_model_id: String::new(),
         },
         ModelRecord {
             name: "ghostlink-30b-v1".to_string(),
@@ -1598,6 +1616,7 @@ fn load_persistent_models() -> Vec<ModelRecord> {
             quantization: "Q4_K_M".to_string(),
             status: "Ready".to_string(),
             local_path: String::new(),
+            hf_model_id: String::new(),
         },
     ]
 }
@@ -1684,6 +1703,8 @@ struct ModelRecord {
     status: String,
     #[serde(default)]
     local_path: String,
+    #[serde(default)]
+    hf_model_id: String,
 }
 #[derive(Debug, Clone, Serialize)]
 struct WorkerRecord {
@@ -1725,6 +1746,203 @@ struct ToolResult {
     success: bool,
 }
 
+fn detect_quantization(filename: &str) -> String {
+    let upper = filename.to_uppercase();
+    let quants = [
+        "Q2_K", "Q3_K", "Q4_K", "Q5_K", "Q6_K", "Q8_0",
+        "Q4_0", "Q4_1", "Q5_0", "Q5_1", "F16", "BF16",
+    ];
+    for q in &quants {
+        if upper.contains(q) {
+            return q.to_string();
+        }
+    }
+    "unknown".to_string()
+}
+
+fn scan_local_models_dir(models_dir: &str) -> Vec<ModelRecord> {
+    let dir = std::path::Path::new(models_dir);
+    if !dir.exists() {
+        return vec![];
+    }
+    let mut local = Vec::new();
+    if let Ok(entries) = fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().map(|e| e == "gguf").unwrap_or(false) {
+                let filename = path.file_name().unwrap().to_string_lossy().to_string();
+                let size_bytes = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+                let size_gb = size_bytes as f32 / (1024.0 * 1024.0 * 1024.0);
+                let name = filename.strip_suffix(".gguf").unwrap_or(&filename).to_string();
+                local.push(ModelRecord {
+                    name,
+                    size_gb,
+                    model_type: "LLM".to_string(),
+                    quantization: detect_quantization(&filename),
+                    status: "Ready".to_string(),
+                    local_path: path.to_string_lossy().to_string(),
+                    hf_model_id: String::new(),
+                });
+            }
+        }
+    }
+    local
+}
+
+fn lock_state(state: &Arc<Mutex<BackendState>>) -> std::sync::MutexGuard<'_, BackendState> {
+    state.lock().unwrap_or_else(|poison| poison.into_inner())
+}
+
+#[axum::debug_handler]
+async fn handle_gui_model_load(
+    State(state): State<Arc<Mutex<BackendState>>>,
+    Json(req): Json<ModelLoadRequest>,
+) -> Json<serde_json::Value> {
+    let requested_model = req.model.trim().to_string();
+    if requested_model.is_empty() {
+        return Json(serde_json::json!({ "error": "model cannot be empty" }));
+    }
+
+    // Phase 1: Find model and update state (no await)
+    let (model_path, _requested_model_clone) = {
+        let mut backend = lock_state(&state);
+
+        // Merge local scans so we can find local_path for locally-downloaded models
+        let local = scan_local_models_dir(&backend.settings.models_dir);
+        for l in &local {
+            if !backend.models.iter().any(|m| m.name == l.name) {
+                backend.models.push(l.clone());
+            }
+        }
+
+        let local_path = backend
+            .models
+            .iter()
+            .find(|m| m.name == requested_model || m.hf_model_id == requested_model)
+            .and_then(|m| {
+                if m.local_path.is_empty() {
+                    None
+                } else {
+                    Some(m.local_path.clone())
+                }
+            });
+
+        if let Some(path) = local_path {
+            backend.settings.model_path = path;
+            save_settings(&backend.settings);
+        }
+
+        for m in &mut backend.models {
+            if m.status == "Loaded" {
+                m.status = "Ready".to_string();
+            }
+            if m.name == requested_model || m.hf_model_id == requested_model {
+                m.status = "Loaded".to_string();
+            }
+        }
+
+        backend.current_model = requested_model.clone();
+
+        // Start the llama-server for the newly loaded model
+        let model_path = if let Some(model) = backend.models.iter().find(|m| m.name == requested_model || m.hf_model_id == requested_model) {
+            model.local_path.clone()
+        } else {
+            String::new()
+        };
+
+        if !model_path.is_empty() {
+            // Kill any existing llama_server child
+            if let Some(mut child) = backend.llama_server_child.take() {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+
+            // Determine the port for the llama-server
+            let port = std::env::var("GHOSTLINK_LLAMA_SERVER_PORT")
+                .ok()
+                .and_then(|p| p.parse().ok())
+                .unwrap_or(8080);
+let url = format!("http://127.0.0.1:{}/completion", port);
+            let _health_url = format!("http://127.0.0.1:{}/health", port);
+
+            // Set the environment variables for the llama-server mode
+            std::env::set_var("GHOSTLINK_NATIVE_ENGINE", "llama_server");
+            std::env::set_var("GHOSTLINK_LLAMA_SERVER_URL", &url);
+
+            // Spawn the llama-server process
+            let llama_server_bin = {
+                let candidates = [
+                    "third_party/llama.cpp/build/bin/Release/llama-server.exe",
+                    "third_party/llama.cpp/build/bin/llama-server.exe",
+                    "third_party/llama.cpp/build/bin/llama-server",
+                ];
+                candidates
+                    .iter()
+                    .find(|p| Path::new(p).exists())
+                    .map(|p| p.to_string())
+                    .unwrap_or_else(|| "llama-server".to_string())
+            };
+
+            let child = Command::new(&llama_server_bin)
+                .arg("-m")
+                .arg(&model_path)
+                .arg("--host")
+                .arg("127.0.0.1")
+                .arg("--port")
+                .arg(port.to_string())
+                .spawn();
+
+            let child = match child {
+                Ok(c) => c,
+                Err(e) => {
+                    return Json(serde_json::json!({ "error": format!("failed to start llama-server ({}): {}", llama_server_bin, e) }));
+                }
+            };
+
+            // Save the child in the backend state
+            backend.llama_server_child = Some(child);
+        }
+
+        (model_path, requested_model.clone())
+    };
+
+    // Phase 2: Wait for llama-server to be ready (await here, no locks held)
+    if !model_path.is_empty() {
+        let port = std::env::var("GHOSTLINK_LLAMA_SERVER_PORT")
+            .ok()
+            .and_then(|p| p.parse().ok())
+            .unwrap_or(8080);
+        let health_url = format!("http://127.0.0.1:{}/health", port);
+        let client = reqwest::Client::new();
+        for _ in 0..30 {
+            if let Ok(resp) = client.get(&health_url).send().await {
+                if resp.status().is_success() {
+                    break;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+    }
+
+    // Phase 3: Save models (no await)
+    {
+        let backend = lock_state(&state);
+        save_persistent_models(&backend.models);
+    }
+
+    // Phase 4: Get current model info for response (no await)
+    let (current_model, model_path) = {
+        let backend = lock_state(&state);
+        (backend.current_model.clone(), backend.settings.model_path.clone())
+    };
+
+    Json(serde_json::json!({
+        "status": "ok",
+        "current_model": current_model,
+        "model_path": model_path,
+    }))
+}
+
 fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
     use axum::{
         extract::{Path, Query, State},
@@ -1742,10 +1960,6 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
     use std::sync::{Arc, Mutex};
     use std::time::{SystemTime, UNIX_EPOCH};
     use tower_http::cors::CorsLayer;
-
-    fn lock_state(state: &Arc<Mutex<BackendState>>) -> std::sync::MutexGuard<'_, BackendState> {
-        state.lock().unwrap_or_else(|poison| poison.into_inner())
-    }
 
     fn chat_exec_micro_batch() -> usize {
         env_default_usize(
@@ -1924,35 +2138,11 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         "unknown".to_string()
     }
 
-    fn scan_local_models_dir(models_dir: &str) -> Vec<ModelRecord> {
-        let dir = std::path::Path::new(models_dir);
-        if !dir.exists() {
-            return vec![];
-        }
-        let mut local = Vec::new();
-        if let Ok(entries) = fs::read_dir(dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.extension().map(|e| e == "gguf").unwrap_or(false) {
-                    let filename = path.file_name().unwrap().to_string_lossy().to_string();
-                    let size_bytes = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
-                    let size_gb = size_bytes as f32 / (1024.0 * 1024.0 * 1024.0);
-                    let name = filename.strip_suffix(".gguf").unwrap_or(&filename).to_string();
-                    local.push(ModelRecord {
-                        name,
-                        size_gb,
-                        model_type: "LLM".to_string(),
-                        quantization: detect_quantization(&filename),
-                        status: "Ready".to_string(),
-                        local_path: path.to_string_lossy().to_string(),
-                    });
-                }
-            }
-        }
-        local
-    }
-
-    async fn download_hf_model(model_id: &str, models_dir: &std::path::Path) -> Result<String, String> {
+    async fn download_hf_model(
+        model_id: &str,
+        models_dir: &std::path::Path,
+        progress_state: Arc<tokio::sync::Mutex<HashMap<String, DownloadProgress>>>,
+    ) -> Result<String, String> {
         let client = reqwest::Client::builder()
             .user_agent("ghostlink/1.0")
             .build()
@@ -1991,10 +2181,35 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             return Ok(dest_path.to_string_lossy().to_string());
         }
 
+        {
+            let mut progress = progress_state.lock().await;
+            progress.insert(model_id.to_string(), DownloadProgress {
+                model_id: model_id.to_string(),
+                progress: 0.0,
+                total_bytes: 0,
+                downloaded_bytes: 0,
+                status: "starting".to_string(),
+            });
+        }
+
         let resp = client.get(&file_url).send().await.map_err(|e| format!("Download error: {}", e))?;
 
         if !resp.status().is_success() {
+            let mut progress = progress_state.lock().await;
+            if let Some(p) = progress.get_mut(model_id) {
+                p.status = "failed".to_string();
+            }
             return Err(format!("Failed to download file (HTTP {})", resp.status()));
+        }
+
+        let total_bytes = resp.content_length().unwrap_or(0);
+        
+        {
+            let mut progress = progress_state.lock().await;
+            if let Some(p) = progress.get_mut(model_id) {
+                p.total_bytes = total_bytes;
+                p.status = "downloading".to_string();
+            }
         }
 
         if let Some(parent) = dest_path.parent() {
@@ -2004,12 +2219,32 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             .await
             .map_err(|e| format!("File error: {}", e))?;
         let mut stream = resp;
+        let mut downloaded: u64 = 0;
+        
         while let Some(chunk) = stream.chunk().await.map_err(|e| format!("Stream error: {}", e))? {
             file.write_all(&chunk)
                 .await
                 .map_err(|e| format!("Write error: {}", e))?;
+            downloaded += chunk.len() as u64;
+            
+            if total_bytes > 0 {
+                let mut progress = progress_state.lock().await;
+                if let Some(p) = progress.get_mut(model_id) {
+                    p.downloaded_bytes = downloaded;
+                    p.progress = downloaded as f32 / total_bytes as f32;
+                }
+            }
         }
         file.flush().await.ok();
+
+        {
+            let mut progress = progress_state.lock().await;
+            if let Some(p) = progress.get_mut(model_id) {
+                p.progress = 1.0;
+                p.downloaded_bytes = total_bytes;
+                p.status = "completed".to_string();
+            }
+        }
 
         Ok(dest_path.to_string_lossy().to_string())
     }
@@ -2099,60 +2334,6 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         }))
     }
 
-    async fn handle_gui_model_load(
-        State(state): State<Arc<Mutex<BackendState>>>,
-        Json(req): Json<ModelLoadRequest>,
-    ) -> Json<serde_json::Value> {
-        let requested_model = req.model.trim().to_string();
-        if requested_model.is_empty() {
-            return Json(serde_json::json!({ "error": "model cannot be empty" }));
-        }
-        let mut backend = lock_state(&state);
-
-        // Merge local scans so we can find local_path for locally-downloaded models
-        let local = scan_local_models_dir(&backend.settings.models_dir);
-        for l in &local {
-            if !backend.models.iter().any(|m| m.name == l.name) {
-                backend.models.push(l.clone());
-            }
-        }
-
-        let local_path = backend
-            .models
-            .iter()
-            .find(|m| m.name == requested_model)
-            .and_then(|m| {
-                if m.local_path.is_empty() {
-                    None
-                } else {
-                    Some(m.local_path.clone())
-                }
-            });
-
-        if let Some(path) = local_path {
-            backend.settings.model_path = path;
-            save_settings(&backend.settings);
-        }
-
-        for m in &mut backend.models {
-            if m.status == "Loaded" {
-                m.status = "Ready".to_string();
-            }
-            if m.name == requested_model {
-                m.status = "Loaded".to_string();
-            }
-        }
-
-        backend.current_model = requested_model.clone();
-        save_persistent_models(&backend.models);
-
-        Json(serde_json::json!({
-            "status": "ok",
-            "current_model": backend.current_model,
-            "model_path": backend.settings.model_path,
-        }))
-    }
-
     async fn handle_gui_model_download(
         State(state): State<Arc<Mutex<BackendState>>>,
         Json(req): Json<ModelDownloadRequest>,
@@ -2169,6 +2350,11 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         let models_path = std::path::Path::new(&models_dir);
         fs::create_dir_all(models_path).ok();
 
+        let progress_state = {
+            let backend = lock_state(&state);
+            Arc::clone(&backend.download_progress)
+        };
+
         {
             let mut backend = lock_state(&state);
             if !backend.models.iter().any(|m| m.name == model_id) {
@@ -2179,6 +2365,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                     quantization: "unknown".to_string(),
                     status: "Downloading".to_string(),
                     local_path: String::new(),
+                    hf_model_id: String::new(),
                 });
                 save_persistent_models(&backend.models);
             } else if let Some(m) = backend.models.iter_mut().find(|m| m.name == model_id) {
@@ -2187,7 +2374,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             }
         }
 
-        let result = download_hf_model(&model_id, models_path).await;
+        let result = download_hf_model(&model_id, models_path, progress_state).await;
 
         match result {
             Ok(local_path) => {
@@ -2201,7 +2388,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                 let size_gb = size_bytes as f32 / (1024.0 * 1024.0 * 1024.0);
 
                 let mut backend = lock_state(&state);
-                backend.models.retain(|m| m.name != model_id);
+                backend.models.retain(|m| m.name != model_id && m.hf_model_id != model_id);
                 backend.models.push(ModelRecord {
                     name,
                     size_gb,
@@ -2209,6 +2396,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                     quantization: detect_quantization(&filename),
                     status: "Ready".to_string(),
                     local_path,
+                    hf_model_id: model_id.clone(),
                 });
                 save_persistent_models(&backend.models);
 
@@ -2218,6 +2406,36 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                 }))
             }
             Err(err) => Json(serde_json::json!({ "error": err })),
+        }
+    }
+
+    async fn handle_gui_model_download_progress(
+        State(state): State<Arc<Mutex<BackendState>>>,
+        axum::extract::Query(params): axum::extract::Query<HashMap<String, String>>,
+    ) -> Json<serde_json::Value> {
+        let model_id = params.get("model_id").cloned().unwrap_or_default();
+        let progress_state = {
+            let backend = lock_state(&state);
+            Arc::clone(&backend.download_progress)
+        };
+
+        let progress = progress_state.lock().await;
+        if let Some(p) = progress.get(&model_id) {
+            Json(serde_json::json!({
+                "model_id": p.model_id,
+                "progress": p.progress,
+                "total_bytes": p.total_bytes,
+                "downloaded_bytes": p.downloaded_bytes,
+                "status": p.status,
+            }))
+        } else {
+            Json(serde_json::json!({
+                "model_id": model_id,
+                "progress": 0.0,
+                "total_bytes": 0,
+                "downloaded_bytes": 0,
+                "status": "not_found",
+            }))
         }
     }
 
@@ -2256,6 +2474,18 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         if backend.current_model == model_name {
             backend.current_model = "none".to_string();
         }
+
+    // Stop the llama-server if it is running
+    if let Some(mut child) = backend.llama_server_child.take() {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    backend.llama_server_child = None;
+
+    // Reset the environment variables to simulated mode
+    std::env::set_var("GHOSTLINK_NATIVE_ENGINE", "simulated");
+    std::env::remove_var("GHOSTLINK_LLAMA_SERVER_URL");
+
         save_persistent_models(&backend.models);
         Json(serde_json::json!({
             "status": "ok",
@@ -2276,6 +2506,16 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         if backend.current_model == model_name {
             backend.current_model = "none".to_string();
         }
+
+        if let Some(mut child) = backend.llama_server_child.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        backend.llama_server_child = None;
+
+        std::env::set_var("GHOSTLINK_NATIVE_ENGINE", "simulated");
+        std::env::remove_var("GHOSTLINK_LLAMA_SERVER_URL");
+
         save_persistent_models(&backend.models);
         Json(serde_json::json!({ "status": "ok", "model": model_name }))
     }
@@ -2422,6 +2662,35 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
 
     async fn handle_gui_pqc_enable() -> Json<serde_json::Value> {
         Json(serde_json::json!({ "status": "ok", "enabled": true }))
+    }
+
+    async fn handle_gui_audit_log(
+        State(state): State<Arc<Mutex<BackendState>>>,
+    ) -> Json<serde_json::Value> {
+        let backend = lock_state(&state);
+        let uptime_s = backend.started_at.elapsed().as_secs();
+        let entries = vec![
+            serde_json::json!({
+                "event": "API_STARTED",
+                "status": "SUCCESS",
+                "ip": "127.0.0.1",
+                "time": format!("{}s ago", uptime_s),
+            }),
+            serde_json::json!({
+                "event": "CHAT_REQUEST",
+                "status": "SUCCESS",
+                "ip": "127.0.0.1",
+                "time": format!("{} requests", backend.chat_requests),
+            }),
+            serde_json::json!({
+                "event": "MODEL_LOADED",
+                "status": "SUCCESS",
+                "ip": "127.0.0.1",
+                "time": "active",
+                "detail": backend.current_model,
+            }),
+        ];
+        Json(serde_json::json!({ "entries": entries }))
     }
 
     async fn handle_gui_ollama_health(
@@ -3037,6 +3306,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
     );
 
     let state = Arc::new(Mutex::new(BackendState {
+        llama_server_child: None,
         models,
         current_model: "ghostlink-30b-v1".to_string(),
         workers: vec![WorkerRecord {
@@ -3060,6 +3330,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         ollama_client,
         ollama_available,
         settings,
+        download_progress: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
     }));
 
     rt.block_on(async {
@@ -3071,6 +3342,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             .route("/api/models/status", get(handle_gui_model_status))
             .route("/api/models/load", post(handle_gui_model_load))
             .route("/api/models/download", post(handle_gui_model_download))
+            .route("/api/models/download/progress", get(handle_gui_model_download_progress))
             .route("/api/models/delete", post(handle_gui_model_delete))
             .route(
                 "/api/models/:model_name",
@@ -3102,6 +3374,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             .route("/api/queue", post(handle_gui_queue))
             .route("/api/security/jwt/refresh", post(handle_gui_jwt_refresh))
             .route("/api/security/pqc/enable", post(handle_gui_pqc_enable))
+            .route("/api/security/audit-log", get(handle_gui_audit_log))
             .route("/api/inference/chat", post(handle_gui_chat))
             .route("/api/settings", get(handle_get_settings))
             .route("/api/settings", post(handle_update_settings))

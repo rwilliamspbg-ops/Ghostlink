@@ -1,12 +1,12 @@
 version: '3.8'
 
 services:
-  # Test runner for GUI functionality  
   gui_test_runner:
     build: 
       context: .
       dockerfile: Dockerfile.gui-test
     container_name: ghostlink_gui_tests
+    user: "${RUN_USER:-0}"
     volumes:
       - .:/app/ghostlink
       - /tmp/test_reports
@@ -19,7 +19,6 @@ services:
         aliases:
           - guitest.local
 
-  # Backend service for testing (reusing your existing server)
   backend_test_server:
     image: python:3.9-slim
     container_name: ghostlink_backend_test
@@ -32,7 +31,6 @@ services:
     networks:
       test_network:
 
-  # Headless browser service if needed for GUI testing
   gui_headless_test:
     image: selenium/standalone-debug-hub:latest
     container_name: ghostlink_gui_selenium_grid
@@ -45,9 +43,3 @@ services:
 networks:
   test_network:
     driver: bridge
-
-# Development override for faster local testing
-version: '3.8' 
-services:
-  gui_test_runner:
-    user: "${RUN_USER:-0}"

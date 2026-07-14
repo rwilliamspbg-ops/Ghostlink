@@ -89,11 +89,11 @@ fi
 
 # Check Backend
 echo -n "  Backend: "
-if [ -f "./ghostlink" ] || [ -f "./ghostlink-backend" ]; then
+if [ -f "./target/release/ghost-link" ] || [ -f "./target/debug/ghost-link" ]; then
     echo -e "${GREEN}✓ Found${NC}"
     BACKEND_FOUND=1
 else
-    echo -e "${YELLOW}✗ Binary not found${NC}"
+    echo -e "${YELLOW}✗ Will build on launch${NC}"
     BACKEND_FOUND=0
 fi
 

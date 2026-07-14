@@ -5,7 +5,8 @@
     "model_type": "LLM",
     "quantization": "Q4_K_M",
     "status": "Ready",
-    "local_path": ""
+    "local_path": "",
+    "hf_model_id": ""
   },
   {
     "name": "mistralai/Mistral-7B-Instruct-v0.2",
@@ -13,7 +14,8 @@
     "model_type": "LLM",
     "quantization": "Q8_0",
     "status": "Ready",
-    "local_path": ""
+    "local_path": "",
+    "hf_model_id": ""
   },
   {
     "name": "google/gemma-7b-it",
@@ -21,7 +23,8 @@
     "model_type": "LLM",
     "quantization": "BF16",
     "status": "Ready",
-    "local_path": ""
+    "local_path": "",
+    "hf_model_id": ""
   },
   {
     "name": "ghostlink-30b-v1",
@@ -29,6 +32,7 @@
     "model_type": "LLM",
     "quantization": "Q4_K_M",
     "status": "Ready",
-    "local_path": ""
+    "local_path": "",
+    "hf_model_id": ""
   }
 ]

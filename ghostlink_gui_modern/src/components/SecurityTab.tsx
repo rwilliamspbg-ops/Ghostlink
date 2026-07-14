@@ -1,11 +1,36 @@
-import React, { useState } from 'react';
-import { Shield, Lock, Key, RefreshCw, AlertTriangle, Eye, EyeOff, CheckCircle2 } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { Shield, Key, RefreshCw, AlertTriangle, Eye, EyeOff, CheckCircle2 } from 'lucide-react';
+
+interface AuditEntry {
+  event: string;
+  status: string;
+  ip: string;
+  time: string;
+  detail?: string;
+}
 
 export const SecurityTab: React.FC<{ api: any }> = ({ api }) => {
   const [loading, setLoading] = useState(false);
   const [showToken, setShowShowToken] = useState(false);
   const [pqcEnabled, setPqcEnabled] = useState(false);
   const [token, setToken] = useState('eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...');
+  const [auditLog, setAuditLog] = useState<AuditEntry[]>([]);
+
+  useEffect(() => {
+    const fetchAuditLog = async () => {
+      try {
+        const resp = await api.http.get('/api/security/audit-log');
+        if (resp.data?.entries) {
+          setAuditLog(resp.data.entries);
+        }
+      } catch {
+        // silent fail
+      }
+    };
+    fetchAuditLog();
+    const interval = setInterval(fetchAuditLog, 30000);
+    return () => clearInterval(interval);
+  }, [api]);
 
   const handleRefresh = async () => {
     setLoading(true);
@@ -112,28 +137,35 @@ export const SecurityTab: React.FC<{ api: any }> = ({ api }) => {
 
           {/* Audit Log */}
           <div className="bg-slate-900/50 border border-slate-800 rounded-3xl overflow-hidden shadow-2xl">
-            <div className="p-6 border-b border-slate-800">
+            <div className="p-6 border-b border-slate-800 flex items-center justify-between">
                 <h3 className="font-bold text-slate-100">Security Audit Log</h3>
+                <button
+                  onClick={() => api.http.get('/api/security/audit-log').then((r: any) => { if (r.data?.entries) setAuditLog(r.data.entries); })}
+                  className="p-2 hover:bg-slate-800 rounded-lg transition text-slate-500 hover:text-white"
+                >
+                  <RefreshCw size={14} />
+                </button>
             </div>
             <div className="divide-y divide-slate-800/50 font-mono text-[10px]">
-                {[
-                    { event: 'JWT_REFRESH', status: 'SUCCESS', ip: '127.0.0.1', time: '10:42:01' },
-                    { event: 'NODE_JOIN', status: 'AUTHENTICATED', ip: '192.168.1.15', time: '10:35:12' },
-                    { event: 'PQC_HANDSHAKE', status: 'PENDING', ip: '127.0.0.1', time: '10:30:00' },
-                ].map((log, i) => (
-                    <div key={i} className="px-6 py-4 flex items-center justify-between hover:bg-slate-800/20 transition-colors">
-                        <div className="flex items-center gap-4">
-                            <span className="text-slate-500 w-16">{log.time}</span>
-                            <span className="text-blue-400 font-bold">{log.event}</span>
-                            <span className="text-slate-600">{log.ip}</span>
+                {auditLog.length === 0 ? (
+                    <div className="px-6 py-8 text-center text-slate-600">No audit events yet</div>
+                ) : (
+                    auditLog.map((log, i) => (
+                        <div key={i} className="px-6 py-4 flex items-center justify-between hover:bg-slate-800/20 transition-colors">
+                            <div className="flex items-center gap-4">
+                                <span className="text-slate-500 w-16">{log.time}</span>
+                                <span className="text-blue-400 font-bold">{log.event}</span>
+                                <span className="text-slate-600">{log.ip}</span>
+                                {log.detail && <span className="text-slate-700">{log.detail}</span>}
+                            </div>
+                            <span className={`px-2 py-0.5 rounded ${
+                                log.status === 'SUCCESS' || log.status === 'AUTHENTICATED'
+                                    ? 'bg-green-500/10 text-green-500'
+                                    : 'bg-yellow-500/10 text-yellow-500'
+                            }`}>{log.status}</span>
                         </div>
-                        <span className={`px-2 py-0.5 rounded ${
-                            log.status === 'SUCCESS' || log.status === 'AUTHENTICATED'
-                                ? 'bg-green-500/10 text-green-500'
-                                : 'bg-yellow-500/10 text-yellow-500'
-                        }`}>{log.status}</span>
-                    </div>
-                ))}
+                    ))
+                )}
             </div>
           </div>
         </div>

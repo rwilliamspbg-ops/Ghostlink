@@ -82,3 +82,35 @@ func (r *Registry) Cleanup(timeout time.Duration) {
 		}
 	}
 }
+
+func (r *Registry) Deregister(id string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.workers[id]; ok {
+		delete(r.workers, id)
+		return true
+	}
+	return false
+}
+
+func (r *Registry) Summary() map[string]int {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	summary := map[string]int{
+		"total":   len(r.workers),
+		"online":  0,
+		"offline": 0,
+		"busy":    0,
+	}
+	for _, w := range r.workers {
+		switch w.Status {
+		case StatusOnline:
+			summary["online"]++
+		case StatusOffline:
+			summary["offline"]++
+		case StatusBusy:
+			summary["busy"]++
+		}
+	}
+	return summary
+}

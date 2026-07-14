@@ -1,0 +1,47 @@
+services:
+  llama-server:
+    build:
+      context: .
+      dockerfile: Dockerfile.ghostlink
+    command: ["llama-server", "-m", "/models/stories15M-q4_0.gguf", "--host", "0.0.0.0", "--port", "8080", "-ngl", "0"]
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./models:/models:ro
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+  ghostlink-backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.ghostlink
+    command: ["ghost-link", "serve", "0.0.0.0", "8003"]
+    ports:
+      - "8003:8003"
+    environment:
+      GHOSTLINK_INFERENCE_BACKEND: native
+      GHOSTLINK_NATIVE_ENGINE: llama_server
+      GHOSTLINK_LLAMA_SERVER_URL: http://llama-server:8080/completion
+    depends_on:
+      llama-server:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8003/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+  ghostlink-frontend:
+    build:
+      context: ./ghostlink_gui_modern
+      dockerfile: Dockerfile
+    ports:
+      - "5173:3000"
+    environment:
+      VITE_API_URL: http://ghostlink-backend:8003
+    depends_on:
+      ghostlink-backend:
+        condition: service_healthy

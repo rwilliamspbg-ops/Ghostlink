@@ -113,7 +113,9 @@ def main():
         basic_suite = unittest.TestSuite()
 
         for method_name in ['test_model_listing', 'test_model_loading',
-                            'test_chat_with_system_prompt', 'test_health_endpoints']:
+                            'test_chat_with_system_prompt', 'test_health_endpoints',
+                            'test_end_to_end_workflow', 'test_model_unload',
+                            'test_settings_roundtrip']:
             try:
                 basic_suite.addTest(test_gui_framework.TestGhostlinkGUI(methodName=method_name))
             except Exception as e:

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Real LLM Gateway Proxy
-Routes requests between Ollama, Model Manager, and Ghostlink Backend.
+Routes requests between Ollama and Ghostlink Backend.
 """
 import json
 import requests
@@ -11,7 +11,6 @@ import os
 from urllib.parse import urlparse
 
 OLLAMA_URL = os.getenv('GHOSTLINK_OLLAMA_URL', "http://127.0.0.1:11434").strip().rstrip('/')
-MODEL_MANAGER_URL = os.getenv('GHOSTLINK_MODEL_MANAGER_URL', "http://127.0.0.1:8001").strip().rstrip('/')
 BACKEND_URL = os.getenv('GHOSTLINK_BACKEND_URL', "http://127.0.0.1:8003").strip().rstrip('/')
 BIND_HOST = os.getenv('GHOSTLINK_PROXY_HOST', '127.0.0.1').strip() or '127.0.0.1'
 MODEL = "neural-chat"
@@ -67,11 +66,8 @@ class GatewayHandler(BaseHTTPRequestHandler):
     def route_request(self):
         if self.path == '/api/inference/chat':
             self.handle_chat()
-        elif self.path.startswith('/api/models/download/progress'):
-            # Keep optional progress endpoint backed by dedicated model manager.
-            self.handle_proxy(MODEL_MANAGER_URL)
         elif self.path.startswith('/api/models'):
-            # Use Rust backend model API contract for list/load/download/delete.
+            # Use Rust backend model API contract for list/load/download/progress/delete.
             self.handle_proxy(BACKEND_URL)
         else:
             # Default to Rust Backend
@@ -157,7 +153,6 @@ if __name__ == '__main__':
     else:
         print(f'  -> /api/inference/chat  => Rust Backend distributed chat ({BACKEND_URL})')
     print(f'  -> /api/models/*        => Rust Backend ({BACKEND_URL})')
-    print(f'  -> /api/models/download/progress => Model Manager ({MODEL_MANAGER_URL})')
     print(f'  -> *                    => Rust Backend ({BACKEND_URL})')
     try:
         server.serve_forever()

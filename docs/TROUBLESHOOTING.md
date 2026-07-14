@@ -484,3 +484,120 @@ Found a bug or have a feature request? Please open an issue on the repository wi
 - Environment details (OS, Rust version, dependencies)
 
 Thank you for using Ghost-Link!
+
+---
+
+## Launch Script Troubleshooting
+
+### Issue: `launch.bat` hangs waiting for llama-server health check
+
+**Symptoms:**
+```
+Waiting for llama-server health check...
+```
+Never proceeds past this message.
+
+**Causes:**
+- llama-server binary not found at expected path
+- Model file missing or corrupted
+- Port 8080 already in use by another process
+- GPU driver issue preventing llama-server startup
+
+**Solutions:**
+1. Verify the llama-server binary exists:
+   ```cmd
+   dir third_party\llama.cpp\build\bin\Release\llama-server.exe
+   ```
+2. If missing, run `launch.bat` which builds it automatically, or build manually:
+   ```cmd
+   cmake -S third_party\llama.cpp -B third_party\llama.cpp\build -DCMAKE_BUILD_TYPE=Release
+   cmake --build third_party\llama.cpp\build --config Release --target llama-server
+   ```
+3. Check if port 8080 is occupied:
+   ```cmd
+   netstat -ano | findstr :8080
+   ```
+4. Check llama-server logs for errors:
+   ```cmd
+   type %TEMP%\ghostlink_llama_server.log
+   ```
+
+### Issue: `launch.bat` hangs waiting for Ghostlink API health check
+
+**Symptoms:**
+```
+Waiting for Ghostlink API health check...
+```
+
+**Causes:**
+- Backend binary not built
+- Cargo build failed silently
+- Port 8003 already in use
+
+**Solutions:**
+1. Build the backend explicitly:
+   ```cmd
+   cargo build --release -p ghost-link
+   ```
+2. Check for port conflicts:
+   ```cmd
+   netstat -ano | findstr :8003
+   ```
+3. Verify the binary exists:
+   ```cmd
+   dir target\release\ghost-link.exe
+   ```
+
+### Issue: GUI shows "Connecting to backend..." indefinitely
+
+**Causes:**
+- Backend not running or not reachable at http://localhost:8003
+- Vite proxy not configured correctly
+- CORS issue
+
+**Solutions:**
+1. Verify backend is running:
+   ```bash
+   curl -s http://127.0.0.1:8003/health
+   ```
+2. Check Vite proxy config in `ghostlink_gui_modern/vite.config.ts`
+3. Create `ghostlink_gui_modern/.env` with:
+   ```
+   VITE_API_URL=http://localhost:8003
+   ```
+
+### Issue: Model load fails in the GUI
+
+**Symptoms:**
+- Clicking "Load" on Models tab shows an error
+- Backend logs show `failed to start llama-server`
+
+**Causes:**
+- llama-server binary not on PATH and not at the expected build path
+- Model `.gguf` file missing from `models/` directory
+
+**Solutions:**
+1. Verify llama-server binary exists at the expected path:
+   ```
+   third_party/llama.cpp/build/bin/Release/llama-server.exe  (Windows)
+   third_party/llama.cpp/build/bin/llama-server              (Linux/macOS)
+   ```
+2. Download a model:
+   ```bash
+   curl -L -o models/stories15M-q4_0.gguf https://huggingface.co/ggml-org/models/resolve/main/tinyllamas/stories15M-q4_0.gguf
+   ```
+
+### Issue: Chat returns "model cannot be empty" or simulated response
+
+**Causes:**
+- No model loaded (current_model is "none")
+- `GHOSTLINK_NATIVE_ENGINE` not set to `llama_server`
+- llama-server not running
+
+**Solutions:**
+1. Load a model from the Models tab first
+2. Verify environment variables are set (check the launch terminal output)
+3. Verify llama-server health:
+   ```bash
+   curl -s http://127.0.0.1:8080/health
+   ```

@@ -7,16 +7,33 @@ setlocal enabledelayedexpansion
 set "BACKEND_HOST=127.0.0.1"
 set "BACKEND_PORT=8003"
 set "GUI_PORT=5173"
+set "LLAMA_PORT=8080"
 set "PROJECT_ROOT=%~dp0"
 set "LLAMA_NGL=%GHOSTLINK_LLAMA_NGL%"
 if "%LLAMA_NGL%"=="" set "LLAMA_NGL=-1"
 
-REM Auto-detect GPU: NVIDIA -> AMD ROCm -> Windows WMI -> CPU
+set "MODEL_DIR=%PROJECT_ROOT%models"
+set "MODEL_FILE=%MODEL_DIR%\stories15M-q4_0.gguf"
+set "MODEL_URL=https://huggingface.co/ggml-org/models/resolve/main/tinyllamas/stories15M-q4_0.gguf"
+
+if exist "%PROJECT_ROOT%settings.json" (
+    for /f "usebackq tokens=*" %%a in (`powershell -NoProfile -Command "try { $s = Get-Content '%PROJECT_ROOT%settings.json' -Raw | ConvertFrom-Json; if ($s.model_path) { Write-Output $s.model_path } } catch {}"`) do (
+        set "MODEL_FILE=%%a"
+    )
+)
+
+set "LLAMA_SERVER=%PROJECT_ROOT%third_party\llama.cpp\build\bin\Release\llama-server.exe"
+set "LLAMA_SERVER_ALT=%PROJECT_ROOT%third_party\llama.cpp\build\bin\llama-server.exe"
+
+REM Auto-detect GPU
 set "GPU_VENDOR="
 where nvidia-smi >nul 2>&1
 if not errorlevel 1 (
     for /f "tokens=*" %%a in ('nvidia-smi --query-gpu=name --format=csv,noheader 2^>nul') do set "GPU_NAME=%%a"
-    if defined GPU_NAME echo [INFO] NVIDIA GPU: %%GPU_NAME%% & set "GPU_VENDOR=nvidia"
+    if defined GPU_NAME (
+        echo [INFO] NVIDIA GPU: !GPU_NAME!
+        set "GPU_VENDOR=nvidia"
+    )
 )
 if not defined GPU_VENDOR (
     where rocm-smi >nul 2>&1
@@ -27,8 +44,11 @@ if not defined GPU_VENDOR (
 )
 if not defined GPU_VENDOR (
     for /f "skip=1 tokens=2 delims=," %%a in ('wmic path Win32_VideoController get Name /format:csv 2^>nul') do (
-        echo %%a | findstr /i "amd radeon" >nul
-        if not errorlevel 1 echo [INFO] AMD GPU: %%a & set "GPU_VENDOR=amd"
+        echo %%a | findstr /i "amd radeon advanced.micro" >nul
+        if not errorlevel 1 (
+            echo [INFO] AMD GPU: %%a
+            set "GPU_VENDOR=amd"
+        )
     )
 )
 if not defined GPU_VENDOR (
@@ -37,114 +57,148 @@ if not defined GPU_VENDOR (
         set "LLAMA_NGL=0"
     )
 )
-set "LLAMA_SERVER_BIN=%PROJECT_ROOT%third_party\llama.cpp\build\bin\llama-server.exe"
-set "LLAMA_SERVER_BIN_ALT=%PROJECT_ROOT%third_party\llama.cpp\build\bin\llama-server"
-set "LLAMA_MODEL=%PROJECT_ROOT%tmp\models\model.gguf"
-set "LLAMA_SERVER_URL=http://127.0.0.1:8080/completion"
 
 echo.
-echo ════════════════════════════════════════════════════
+echo ================================================================================
 echo   Ghostlink Studio - Complete Launch
-echo ════════════════════════════════════════════════════
+echo ================================================================================
 
-REM Check for Cargo
 cargo --version >nul 2>&1
 if errorlevel 1 (
     echo [ERROR] Rust/Cargo not found. Install from https://rustup.rs/
     exit /b 1
 )
-echo [✓] Cargo verified
+echo [OK] Cargo verified
 
-REM Check for Node
 node --version >nul 2>&1
 if errorlevel 1 (
     echo [ERROR] Node.js not found. Install from https://nodejs.org/
     exit /b 1
 )
-echo [✓] Node.js verified
+echo [OK] Node.js verified
 
 echo.
-echo Building backend...
-cd "%PROJECT_ROOT%crates\ghost-link"
-call cargo build --release
-if errorlevel 1 (
-    echo [ERROR] Backend build failed
-    exit /b 1
+
+REM Ensure model directory exists
+if not exist "%MODEL_DIR%" mkdir "%MODEL_DIR%" 2>nul
+
+REM Download model if needed
+if not exist "!MODEL_FILE!" (
+    if "!MODEL_FILE!"=="%MODEL_DIR%\stories15M-q4_0.gguf" (
+        echo [INFO] Downloading model (stories15M-q4_0.gguf ~15MB)...
+        curl -L --fail -o "!MODEL_FILE!" "%MODEL_URL%" >nul 2>&1
+        if errorlevel 1 (
+            echo [ERROR] Model download failed
+            pause
+            exit /b 1
+        )
+        echo [OK] Model downloaded
+    ) else (
+        echo [WARN] Model not found: !MODEL_FILE!
+        echo [WARN] Using default model...
+        set "MODEL_FILE=%MODEL_DIR%\stories15M-q4_0.gguf"
+        if not exist "!MODEL_FILE!" (
+            curl -L --fail -o "!MODEL_FILE!" "%MODEL_URL%" >nul 2>&1
+        )
+    )
 )
-echo [✓] Backend built
-cd "%PROJECT_ROOT%"
+
+REM Determine llama-server binary
+set "ACTUAL_LLAMA_SERVER="
+if exist "%LLAMA_SERVER%" set "ACTUAL_LLAMA_SERVER=%LLAMA_SERVER%"
+if exist "%LLAMA_SERVER_ALT%" if "!ACTUAL_LLAMA_SERVER!"=="" set "ACTUAL_LLAMA_SERVER=%LLAMA_SERVER_ALT%"
 
 echo.
 echo Starting services...
 echo.
 
-if exist "%LLAMA_SERVER_BIN%" (
-    echo [INFO] Starting llama-server on http://127.0.0.1:8080 ...
-    if not exist "%LLAMA_MODEL%" (
-        echo [WARN] Model not found at %LLAMA_MODEL%
-        echo [WARN] Falling back to simulated native mode.
-        set "GHOSTLINK_NATIVE_ENGINE=simulated"
-    ) else (
-        start "llama-server" cmd /k ""%LLAMA_SERVER_BIN%" -m "%LLAMA_MODEL%" --host 127.0.0.1 --port 8080 -ngl %LLAMA_NGL%"
-        timeout /t 3 /nobreak >nul
-        set "GHOSTLINK_NATIVE_ENGINE=llama_server"
+REM Start llama-server if binary exists
+set "GHOSTLINK_NATIVE_ENGINE=simulated"
+if defined ACTUAL_LLAMA_SERVER (
+    echo [INFO] Starting llama-server on http://127.0.0.1:%LLAMA_PORT% ...
+    start "llama-server" cmd /k ""!ACTUAL_LLAMA_SERVER!" -m "!MODEL_FILE!" --host 127.0.0.1 --port %LLAMA_PORT% -ngl !LLAMA_NGL!"
+
+    echo [INFO] Waiting for llama-server health check...
+    :WAIT_LLAMA
+    curl -sf http://127.0.0.1:%LLAMA_PORT%/health >nul 2>&1
+    if errorlevel 1 (
+        ping -n 2 127.0.0.1 >nul
+        goto WAIT_LLAMA
     )
+    echo [OK] llama-server is healthy
+    set "GHOSTLINK_NATIVE_ENGINE=llama_server"
+) else (
+    echo [WARN] llama-server binary not found. Using simulated native mode.
+    echo [WARN] Run launch.bat first to build llama-server.
 )
-if not defined GHOSTLINK_NATIVE_ENGINE if exist "%LLAMA_SERVER_BIN_ALT%" (
-    echo [INFO] Starting llama-server on http://127.0.0.1:8080 ...
-    if not exist "%LLAMA_MODEL%" (
-        echo [WARN] Model not found at %LLAMA_MODEL%
-        echo [WARN] Falling back to simulated native mode.
-        set "GHOSTLINK_NATIVE_ENGINE=simulated"
-    ) else (
-        start "llama-server" cmd /k ""%LLAMA_SERVER_BIN_ALT%" -m "%LLAMA_MODEL%" --host 127.0.0.1 --port 8080 -ngl %LLAMA_NGL%"
-        timeout /t 3 /nobreak >nul
-        set "GHOSTLINK_NATIVE_ENGINE=llama_server"
-    )
-)
-if not defined GHOSTLINK_NATIVE_ENGINE (
-    echo [WARN] llama-server binary not found at %LLAMA_SERVER_BIN%
-    echo [WARN] Backend will run with simulated native mode unless env overrides are provided.
-    set "GHOSTLINK_NATIVE_ENGINE=simulated"
-)
+
 set "GHOSTLINK_INFERENCE_BACKEND=native"
-set "GHOSTLINK_LLAMA_SERVER_URL=%LLAMA_SERVER_URL%"
+set "GHOSTLINK_LLAMA_SERVER_URL=http://127.0.0.1:%LLAMA_PORT%/completion"
 
-REM Start backend in new window
+REM Start backend
 echo [INFO] Starting Backend API on http://%BACKEND_HOST%:%BACKEND_PORT%
-start "Ghostlink Backend API" cmd /k "cd /d "%PROJECT_ROOT%" && set GHOSTLINK_INFERENCE_BACKEND=%GHOSTLINK_INFERENCE_BACKEND% && set GHOSTLINK_NATIVE_ENGINE=%GHOSTLINK_NATIVE_ENGINE% && set GHOSTLINK_LLAMA_SERVER_URL=%GHOSTLINK_LLAMA_SERVER_URL% && cargo run -p ghost-link -- serve %BACKEND_HOST% %BACKEND_PORT%"
-timeout /t 3 /nobreak >nul
 
-REM Start GUI in new window
+set "GHOSTLINK_BINARY="
+if exist "%PROJECT_ROOT%target\release\ghost-link.exe" set "GHOSTLINK_BINARY=%PROJECT_ROOT%target\release\ghost-link.exe"
+if exist "%PROJECT_ROOT%target\debug\ghost-link.exe" if "!GHOSTLINK_BINARY!"=="" set "GHOSTLINK_BINARY=%PROJECT_ROOT%target\debug\ghost-link.exe"
+
+if defined GHOSTLINK_BINARY (
+    start "Ghostlink Backend API" cmd /k "cd /d "%PROJECT_ROOT%" && set GHOSTLINK_INFERENCE_BACKEND=%GHOSTLINK_INFERENCE_BACKEND% && set GHOSTLINK_NATIVE_ENGINE=%GHOSTLINK_NATIVE_ENGINE% && set GHOSTLINK_LLAMA_SERVER_URL=%GHOSTLINK_LLAMA_SERVER_URL% && "!GHOSTLINK_BINARY!" serve %BACKEND_HOST% %BACKEND_PORT%"
+) else (
+    echo [INFO] No pre-built binary, building with cargo...
+    start "Ghostlink Backend API" cmd /k "cd /d "%PROJECT_ROOT%" && set GHOSTLINK_INFERENCE_BACKEND=%GHOSTLINK_INFERENCE_BACKEND% && set GHOSTLINK_NATIVE_ENGINE=%GHOSTLINK_NATIVE_ENGINE% && set GHOSTLINK_LLAMA_SERVER_URL=%GHOSTLINK_LLAMA_SERVER_URL% && cargo run -p ghost-link -- serve %BACKEND_HOST% %BACKEND_PORT%"
+)
+
+echo [INFO] Waiting for Ghostlink API health check...
+:WAIT_API
+curl -sf http://%BACKEND_HOST%:%BACKEND_PORT%/health >nul 2>&1
+if errorlevel 1 (
+    ping -n 2 127.0.0.1 >nul
+    goto WAIT_API
+)
+echo [OK] Ghostlink API is healthy
+
+REM Start GUI
 echo [INFO] Starting GUI Frontend on http://127.0.0.1:%GUI_PORT%
-start "Ghostlink Studio GUI" cmd /k "cd /d \"%PROJECT_ROOT%ghostlink_gui_modern\" && (if not exist node_modules npm install --legacy-peer-deps) && npm run dev -- --host 127.0.0.1 --port %GUI_PORT%"
-timeout /t 3 /nobreak >nul
+cd "%PROJECT_ROOT%ghostlink_gui_modern"
+if not exist "node_modules" (
+    echo [INFO] Installing npm dependencies...
+    call npm install --legacy-peer-deps >nul 2>&1
+    if errorlevel 1 (
+        echo [ERROR] npm install failed
+        pause
+        exit /b 1
+    )
+    echo [OK] Dependencies installed
+)
+start "Ghostlink Studio GUI" cmd /k "npm run dev -- --host 127.0.0.1 --port %GUI_PORT%"
+cd "%PROJECT_ROOT%"
+
+echo [INFO] Waiting for Vite dev server...
+:WAIT_GUI
+curl -sf http://127.0.0.1:%GUI_PORT% >nul 2>&1
+if errorlevel 1 (
+    ping -n 2 127.0.0.1 >nul
+    goto WAIT_GUI
+)
+echo [OK] React Frontend is healthy
 
 echo.
-echo ════════════════════════════════════════════════════
-echo   Services Starting
-echo ════════════════════════════════════════════════════
+echo ================================================================================
+echo   Ghostlink Studio is Ready
+echo ================================================================================
 echo.
-echo Backend API:
-echo   URL: http://%BACKEND_HOST%:%BACKEND_PORT%
-echo   Status: ✓ Running in new window
+echo   Web Interface:     http://127.0.0.1:%GUI_PORT%
+echo   API Server:        http://%BACKEND_HOST%:%BACKEND_PORT%
+echo   Native Inference:  http://127.0.0.1:%LLAMA_PORT% (llama-server)
 echo.
-echo Runtime Detection Endpoints:
-echo   Detect:    GET /api/runtime/detect
-echo   Models:    GET /api/runtime/models?runtime=cpu
-echo   Recommend: GET /api/runtime/recommend?memory_gb=16
+echo   1. Open http://127.0.0.1:%GUI_PORT% in your browser
+echo   2. Go to Models tab - Select a model
+echo   3. Switch to Chat tab - Start talking!
 echo.
-echo GUI Frontend:
-echo   URL: http://127.0.0.1:%GUI_PORT%
-echo   Status: ✓ Running in new window
+echo ================================================================================
 echo.
-echo Test Commands:
-echo   Runtime:   curl http://%BACKEND_HOST%:%BACKEND_PORT%/api/runtime/detect
-echo   Models:    curl "http://%BACKEND_HOST%:%BACKEND_PORT%/api/runtime/models?runtime=cpu"
-echo   Recommend: curl "http://%BACKEND_HOST%:%BACKEND_PORT%/api/runtime/recommend?memory_gb=8"
-echo   Native:    curl -X POST http://%BACKEND_HOST%:%BACKEND_PORT%/api/inference/chat -H "content-type: application/json" -d "{\"message\":\"hello\"}"
-echo Open http://127.0.0.1:%GUI_PORT% in your browser
-echo ════════════════════════════════════════════════════
-echo.
+
+start "" "http://127.0.0.1:%GUI_PORT%"
 
 pause
