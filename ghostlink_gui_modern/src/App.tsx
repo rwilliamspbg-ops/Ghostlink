@@ -23,6 +23,7 @@ import { SessionsTab } from './components/SessionsTab';
 import { WorkersTab } from './components/WorkersTab';
 import { SecurityTab } from './components/SecurityTab';
 import { SettingsTab } from './components/SettingsTab';
+import { ErrorBoundary, OfflineBanner, useOnlineStatus } from './components/ErrorBoundary';
 
 const tabs = [
   { label: 'Chat', icon: MessageSquare, id: 0 },
@@ -127,6 +128,7 @@ function App() {
   const { currentModel, activeTab, setActiveTab, setModels, setApiBase, setMetrics, setWorkers, setSessions, setBackendOnline } = useAppStore();
   const [api, setApi] = useState<GhostlinkAPI | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const isOnline = useOnlineStatus();
 
   // CRITICAL FIX: Initialize API base on app load
   useEffect(() => {
@@ -224,8 +226,10 @@ function App() {
   };
 
   return (
-    <div className="flex h-screen bg-slate-950 text-slate-100 font-sans overflow-hidden">
-      {/* Sidebar */}
+    <ErrorBoundary>
+      <div className="flex h-screen bg-slate-950 text-slate-100 font-sans overflow-hidden relative">
+        <OfflineBanner isOnline={isOnline} />
+        {/* Sidebar */}
       <div
         className={`${
           sidebarOpen ? 'w-64' : 'w-0'
@@ -298,7 +302,7 @@ function App() {
         {sidebarOpen && (
             <button
                 onClick={() => setSidebarOpen(false)}
-                className="absolute left-[-12px] top-1/2 -translate-y-1/2 z-20 p-1 bg-slate-800 border border-slate-700 rounded-full text-slate-500 hover:text-white transition"
+                className="absolute left-[-12px] top-1/2 -translate_y-1/2 z-20 p-1 bg-slate-800 border border-slate-700 rounded-full text-slate-500 hover:text-white transition"
             >
                 <ChevronRight size={16} className="rotate-180" />
             </button>
@@ -310,7 +314,8 @@ function App() {
         </main>
       </div>
     </div>
-  );
+  </ErrorBoundary>
+);
 }
 
 export default App;

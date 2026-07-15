@@ -13,7 +13,7 @@
     "size_gb": 0.44993722,
     "model_type": "LLM",
     "quantization": "Q2_K",
-    "status": "Loaded",
+    "status": "Ready",
     "local_path": "models\\tinyllama-1.1b-chat-v1.0.Q2_K.gguf",
     "hf_model_id": ""
   },
@@ -22,8 +22,26 @@
     "size_gb": 0.31068078,
     "model_type": "LLM",
     "quantization": "Q8_0",
-    "status": "Ready",
+    "status": "Loaded",
     "local_path": "models\\embeddinggemma-300M-Q8_0.gguf",
     "hf_model_id": "ggml-org/embeddinggemma-300M-GGUF"
+  },
+  {
+    "name": "Qwen3.5-4B-BF16",
+    "size_gb": 1.5598311,
+    "model_type": "LLM",
+    "quantization": "F16",
+    "status": "Ready",
+    "local_path": "models\\Qwen3.5-4B-BF16.gguf",
+    "hf_model_id": ""
+  },
+  {
+    "name": "Qwen3.5-4B-BF16",
+    "size_gb": 1.5598311,
+    "model_type": "LLM",
+    "quantization": "F16",
+    "status": "Ready",
+    "local_path": "models\\Qwen3.5-4B-BF16.gguf",
+    "hf_model_id": "unsloth/Qwen3.5-4B-GGUF"
   }
 ]

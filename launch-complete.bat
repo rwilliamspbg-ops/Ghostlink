@@ -10,38 +10,41 @@ set "BACKEND="
 set "NPU_DETECTED="
 set "LLAMA_NGL="
 
-REM ==================== Configuration ====================
-set "BACKEND_HOST=127.0.0.1"
-set "BACKEND_PORT=8003"
-set "GUI_PORT=5173"
-set "LLAMA_PORT=8080"
-set "PROJECT_ROOT=%~dp0"
-
-REM ==================== Manual Overrides (set via env vars) ====================
-REM   GHOSTLINK_LLAMA_BACKEND  - Force backend: cuda, vulkan, rocm, metal, directml, cpu
-REM   GHOSTLINK_LLAMA_NGL      - Force GPU layers (0 = CPU, -1 = all)
-REM   GHOSTLINK_LLAMA_THREADS  - Force thread count
-REM   GHOSTLINK_GPU_NAME       - Override detected GPU name
-REM   GHOSTLINK_VRAM_GB        - Override detected VRAM in GB
-REM   GHOSTLINK_SKIP_BUILD     - Set to 1 to skip llama-server build step
-REM   GHOSTLINK_SKIP_MODEL     - Set to 1 to skip model download check
-REM   GHOSTLINK_MODEL_FILE     - Set custom model path
-REM   GHOSTLINK_LLAMA_PORT     - Override llama-server port
-
-if not "%GHOSTLINK_LLAMA_PORT%"=="" set "LLAMA_PORT=%GHOSTLINK_LLAMA_PORT%"
-
-set "MODEL_DIR=%PROJECT_ROOT%models"
-set "MODEL_FILE=%MODEL_DIR%\stories15M-q4_0.gguf"
-set "MODEL_URL=https://huggingface.co/ggml-org/models/resolve/main/tinyllamas/stories15M-q4_0.gguf"
-
-if not "%GHOSTLINK_MODEL_FILE%"=="" set "MODEL_FILE=%GHOSTLINK_MODEL_FILE%"
-
-set "LLAMA_SERVER=%PROJECT_ROOT%third_party\llama.cpp\build\bin\Release\llama-server.exe"
-set "LLAMA_SERVER_ALT=%PROJECT_ROOT%third_party\llama.cpp\build\bin\llama-server.exe"
-
-REM ==================== Hardware Detection ====================
+REM ==================== Pre-Flight Validation ====================
 echo.
-echo ====== Ghostlink Hardware Detection ======
+echo ====== Pre-Flight Validation ======
+echo.
+
+REM Validate VITE_GHOSTLINK_API_BASE if set
+if not "%VITE_GHOSTLINK_API_BASE%"=="" (
+    set "VITE_GHOSTLINK_API_BASE=%VITE_GHOSTLINK_API_BASE: =%"
+    echo [INFO] VITE_GHOSTLINK_API_BASE: %VITE_GHOSTLINK_API_BASE%
+    echo %VITE_GHOSTLINK_API_BASE% | findstr /r "^https\?://" >nul
+    if errorlevel 1 (
+        echo [ERROR] VITE_GHOSTLINK_API_BASE must be a valid http:// or https:// URL
+        pause
+        exit /b 1
+    )
+) else (
+    set "VITE_GHOSTLINK_API_BASE=http://127.0.0.1:8003"
+    echo [INFO] Using default VITE_GHOSTLINK_API_BASE: %VITE_GHOSTLINK_API_BASE%
+)
+
+REM Check for required commands
+for %%c in (curl cargo node) do (
+    where %%c >nul 2>&1
+    if errorlevel 1 (
+        echo [ERROR] %%c not found. Please install it.
+        echo.
+        pause
+        exit /b 1
+    ) else (
+        echo [OK] %%c verified
+    )
+)
+
+echo.
+echo ====== Configuration ======
 echo.
 
 set "GPU_COUNT=0"
@@ -409,6 +412,16 @@ if errorlevel 1 (
     goto WAIT_API
 )
 echo [OK] Backend API is healthy
+
+REM Wait for API endpoint to be fully ready
+echo [INFO] Waiting for API endpoint...
+:WAIT_API_V2
+curl -sf http://%BACKEND_HOST%:%BACKEND_PORT%/api/health >nul 2>&1
+if errorlevel 1 (
+    ping -n 2 127.0.0.1 >nul
+    goto WAIT_API_V2
+)
+echo [OK] API endpoint is ready
 
 REM ==================== Start GUI ====================
 echo [INFO] Starting GUI on http://127.0.0.1:%GUI_PORT%

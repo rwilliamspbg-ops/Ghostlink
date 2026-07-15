@@ -56,7 +56,15 @@ Default ports: API `8003`, GUI `5173`, llama-server `8080`.
 | `/api/runtime/detect` | GET | Detect available runtimes (CUDA/Metal/DirectML/NPU/CPU) |
 | `/api/security/audit-log` | GET | Audit trail |
 | `/api/security/pqc-state` | GET | PQC feature state |
-| `/health` | GET | Backend health |
+| `/health` | GET | Basic backend health |
+| `/api/health` | GET | Detailed health (GPU availability, inference config) |
+
+## Health Checks & Reliability
+
+- **`/health`**: Basic liveness — status, version, uptime, current model
+- **`/api/health`**: Readiness — includes `gpu_available`, `inference_backend`, `native_engine`
+- **Frontend**: Error boundaries with retry UI, offline detection banner, automatic retry with exponential backoff
+- **API Client**: Circuit breaker (5 failures → open, 30s timeout), request deduplication, URL validation (trims whitespace)
 
 ## Environment Variables
 

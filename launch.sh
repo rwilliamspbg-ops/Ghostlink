@@ -545,6 +545,9 @@ start_services() {
     API_PID=$!
     
     wait_for_http "http://127.0.0.1:8003/health" "Ghostlink API" 60
+    
+    # Wait for API endpoint to be fully ready
+    wait_for_http "http://127.0.0.1:8003/api/health" "API endpoint" 30
     echo ""
     
     # 3. React Frontend

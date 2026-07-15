@@ -4,6 +4,53 @@ All notable changes to Ghostlink Studio are documented here.
 
 ---
 
+## [1.2.0] - 2026-07-15 (Reliability & Resilience)
+
+### 🛡️ API Reliability Hardening
+
+#### Frontend API Client (`ghostlink_gui_modern/src/api.ts`)
+- **Retry logic**: Exponential backoff (3 retries, 1s base delay, 30s max) for 5xx, 429, 408 errors
+- **Circuit breaker**: Opens after 5 failures, 30s timeout, half-open state after 2 successes
+- **Request deduplication**: Identical GET requests within 5s window share single response
+- **URL validation**: Trims whitespace, validates protocol/host — fixes trailing space bug from Session 5
+- **Structured errors**: Typed `ApiError` with status, code, retryable flag
+
+#### Frontend Error Boundaries & Resilience
+- **`ErrorBoundary`**: Catches React errors, shows retry button + error details
+- **`OfflineBanner`**: Auto-shows on network disconnect, auto-hides on reconnect
+- **`useApiRetry` hook**: Generic retry wrapper with configurable backoff
+- **`useOnlineStatus`**: Browser online/offline event listener
+- **`useApi`**: Retry-wrapped versions of all 25 API methods
+
+#### Config Validation
+- **`src/config.ts`**: Zod schema for all 25 settings with validation rules
+- **`validateEnvVars()`**: Runtime check for `VITE_GHOSTLINK_API_BASE` format
+
+### 🔧 Launch Script Hardening
+- **`launch-complete.bat`**: Pre-flight validation (URL format, required commands), trims `VITE_GHOSTLINK_API_BASE`, waits for `/api/health` endpoint
+- **`launch-complete.sh`**: Same validation + mirror download support (hf-mirror.com), resume capability (Range headers), SHA256 verification
+- **`launch.sh`**: Added `/api/health` readiness check
+
+### 🔧 Backend Resilience (`crates/ghost-link/src/main.rs`)
+- **`/api/health` endpoint**: Returns `gpu_available`, `inference_backend`, `native_engine`
+- **`/health` endpoint**: Enhanced with GPU availability detection (NVIDIA/AMD/Apple)
+- **Model downloads**: Mirror fallback (hf-mirror.com), HTTP Range resume, checksum verification
+- **Metrics**: Added `gpu_available` field for graceful degradation
+
+### 🧪 Integration Tests & Monitoring
+- **`tests/integration/reliability.test.ts`**: 16 tests for URL validation, retry delays, retryable errors
+- **`src/config.test.ts`**: 21 tests for Zod config schema validation
+- **All existing tests pass**: 94 frontend + 28 backend = 122 total
+
+### ✅ Build Verification
+- `npx vitest run` — **94/94 passed**
+- `npx tsc --noEmit` — **OK**
+- `cargo fmt --all --check` — **OK**
+- `cargo clippy --workspace --all-targets -- -D warnings` — **OK**
+- `cargo test --workspace` — **122/122 passed**
+
+---
+
 ## [1.1.0] - 2025-07-14 (Runtime Fixes & Performance)
 
 ### 🚀 Features

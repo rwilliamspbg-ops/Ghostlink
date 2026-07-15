@@ -2446,29 +2446,45 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             msg
         })?;
 
-        let api_url = format!("https://huggingface.co/api/models/{}", model_id);
-        eprintln!("[download_hf_model] Fetching model info from {}", api_url);
-        let resp = client
-            .get(&api_url)
-            .send()
-            .await
-            .map_err(|e| {
+        // Try primary URL and mirrors
+        let mirrors = vec![
+            format!("https://huggingface.co/api/models/{}", model_id),
+            format!("https://hf-mirror.com/api/models/{}", model_id),
+        ];
+
+        let mut model_data = None;
+        let mut used_mirror = String::new();
+
+        for api_url in &mirrors {
+            eprintln!("[download_hf_model] Fetching model info from {}", api_url);
+            let resp = client.get(api_url).send().await.map_err(|e| {
                 let msg = format!("API error for '{}': {}", model_id, e);
                 eprintln!("[download_hf_model] {}", msg);
                 msg
             })?;
 
-        if !resp.status().is_success() {
-            eprintln!("[download_hf_model] Model '{}' returned HTTP {}", model_id, resp.status());
-            return Err(format!("Model '{}' not found on HuggingFace", model_id));
+            if resp.status().is_success() {
+                model_data = Some(
+                    resp.json::<serde_json::Value>()
+                        .await
+                        .map_err(|e| format!("Parse error: {}", e))?,
+                );
+                used_mirror = api_url.clone();
+                break;
+            }
+            eprintln!(
+                "[download_hf_model] Mirror {} returned HTTP {}",
+                api_url,
+                resp.status()
+            );
         }
 
-        eprintln!("[download_hf_model] Model info received successfully");
-
-        let data: serde_json::Value = resp
-            .json()
-            .await
-            .map_err(|e| format!("Parse error: {}", e))?;
+        let data = model_data
+            .ok_or_else(|| format!("Model '{}' not found on HuggingFace or mirrors", model_id))?;
+        eprintln!(
+            "[download_hf_model] Model info received successfully from {}",
+            used_mirror
+        );
 
         let gguf_files: Vec<String> = data
             .get("siblings")
@@ -2487,14 +2503,26 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         }
 
         let filename = &gguf_files[0];
-        let file_url = format!(
-            "https://huggingface.co/{}/resolve/main/{}",
-            model_id, filename
-        );
+        let file_mirrors = vec![
+            format!(
+                "https://huggingface.co/{}/resolve/main/{}",
+                model_id, filename
+            ),
+            format!(
+                "https://hf-mirror.com/{}/resolve/main/{}",
+                model_id, filename
+            ),
+        ];
+
         let dest_path = models_dir.join(filename);
 
+        // Check if file already exists and is complete
         if dest_path.exists() {
-            return Ok(dest_path.to_string_lossy().to_string());
+            if let Ok(metadata) = fs::metadata(&dest_path) {
+                if metadata.len() > 0 {
+                    return Ok(dest_path.to_string_lossy().to_string());
+                }
+            }
         }
 
         {
@@ -2512,82 +2540,153 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             eprintln!("[download_hf_model] Progress entry inserted with status 'starting'");
         }
 
-        let resp = client
-            .get(&file_url)
-            .send()
-            .await
-            .map_err(|e| format!("Download error: {}", e))?;
+        // Try mirrors with resume support
+        let mut last_error = String::new();
+        for file_url in &file_mirrors {
+            eprintln!("[download_hf_model] Attempting download from {}", file_url);
 
-        if !resp.status().is_success() {
-            let mut progress = progress_state.lock().await;
-            if let Some(p) = progress.get_mut(model_id) {
-                p.status = "failed".to_string();
-            }
-            return Err(format!("Failed to download file (HTTP {})", resp.status()));
-        }
+            // Check existing partial file for resume
+            let mut downloaded: u64 = 0;
+            let mut range_header = None;
 
-        let total_bytes = resp.content_length().unwrap_or(0);
-
-        {
-            let mut progress = progress_state.lock().await;
-            if let Some(p) = progress.get_mut(model_id) {
-                p.total_bytes = total_bytes;
-                p.status = "downloading".to_string();
-            }
-        }
-
-        if let Some(parent) = dest_path.parent() {
-            fs::create_dir_all(parent).map_err(|e| format!("Dir error: {}", e))?;
-        }
-        let mut file = tokio::fs::File::create(&dest_path)
-            .await
-            .map_err(|e| format!("File error: {}", e))?;
-        let mut stream = resp;
-        let mut downloaded: u64 = 0;
-
-        while let Some(chunk) = stream
-            .chunk()
-            .await
-            .map_err(|e| format!("Stream error: {}", e))?
-        {
-            file.write_all(&chunk)
-                .await
-                .map_err(|e| format!("Write error: {}", e))?;
-            downloaded += chunk.len() as u64;
-
-            if total_bytes > 0 {
-                let mut progress = progress_state.lock().await;
-                if let Some(p) = progress.get_mut(model_id) {
-                    p.downloaded_bytes = downloaded;
-                    p.progress = downloaded as f32 / total_bytes as f32;
+            if dest_path.exists() {
+                if let Ok(metadata) = fs::metadata(&dest_path) {
+                    downloaded = metadata.len();
+                    if downloaded > 0 {
+                        range_header = Some(format!("bytes={}-", downloaded));
+                    }
                 }
             }
-        }
-        file.flush().await.ok();
 
-        if total_bytes > 0 && downloaded < total_bytes {
-            let mut progress = progress_state.lock().await;
-            if let Some(p) = progress.get_mut(model_id) {
-                p.status = "failed".to_string();
+            let mut req = client.get(file_url);
+            if let Some(ref range) = range_header {
+                req = req.header("Range", range);
             }
-            tokio::fs::remove_file(&dest_path).await.ok();
-            return Err(format!(
-                "Download incomplete: got {:.1} MB of {:.1} MB",
-                downloaded as f64 / 1_048_576.0,
-                total_bytes as f64 / 1_048_576.0,
-            ));
-        }
 
-        {
-            let mut progress = progress_state.lock().await;
-            if let Some(p) = progress.get_mut(model_id) {
-                p.progress = 1.0;
-                p.downloaded_bytes = total_bytes;
-                p.status = "completed".to_string();
+            let resp = match req.send().await {
+                Ok(r) => r,
+                Err(e) => {
+                    last_error = format!("Download error from {}: {}", file_url, e);
+                    eprintln!("[download_hf_model] {}", last_error);
+                    continue;
+                }
+            };
+
+            if !resp.status().is_success() && resp.status() != reqwest::StatusCode::PARTIAL_CONTENT
+            {
+                let mut progress = progress_state.lock().await;
+                if let Some(p) = progress.get_mut(model_id) {
+                    p.status = "failed".to_string();
+                }
+                last_error = format!("Failed to download file (HTTP {})", resp.status());
+                eprintln!("[download_hf_model] {}", last_error);
+                continue;
             }
+
+            let total_bytes = resp.content_length().unwrap_or(0);
+            let expected_total =
+                if downloaded > 0 && resp.status() == reqwest::StatusCode::PARTIAL_CONTENT {
+                    downloaded + total_bytes
+                } else {
+                    total_bytes
+                };
+
+            if let Some(parent) = dest_path.parent() {
+                fs::create_dir_all(parent).map_err(|e| format!("Dir error: {}", e))?;
+            }
+
+            // Open file in append mode for resume, or create new
+            let file = if downloaded > 0 && resp.status() == reqwest::StatusCode::PARTIAL_CONTENT {
+                tokio::fs::OpenOptions::new()
+                    .append(true)
+                    .open(&dest_path)
+                    .await
+                    .map_err(|e| format!("File error: {}", e))?
+            } else {
+                tokio::fs::File::create(&dest_path)
+                    .await
+                    .map_err(|e| format!("File error: {}", e))?
+            };
+
+            let mut file = file;
+            let mut stream = resp;
+            let mut stream_downloaded: u64 = 0;
+
+            while let Some(chunk_result) = stream
+                .chunk()
+                .await
+                .map_err(|e| format!("Stream error: {}", e))?
+            {
+                file.write_all(&chunk_result)
+                    .await
+                    .map_err(|e| format!("Write error: {}", e))?;
+                stream_downloaded += chunk_result.len() as u64;
+
+                if expected_total > 0 {
+                    let mut progress = progress_state.lock().await;
+                    if let Some(p) = progress.get_mut(model_id) {
+                        p.downloaded_bytes = downloaded + stream_downloaded;
+                        p.total_bytes = expected_total;
+                        p.progress =
+                            (downloaded + stream_downloaded) as f32 / expected_total as f32;
+                        p.status = "downloading".to_string();
+                    }
+                }
+            }
+            file.flush().await.ok();
+
+            // Verify download completed
+            let final_size = fs::metadata(&dest_path).map(|m| m.len()).unwrap_or(0);
+            if expected_total > 0 && final_size >= expected_total {
+                eprintln!(
+                    "[download_hf_model] Download COMPLETED for '{}' at '{}' ({} bytes)",
+                    model_id,
+                    dest_path.display(),
+                    final_size
+                );
+
+                {
+                    let mut progress = progress_state.lock().await;
+                    progress.insert(
+                        model_id.to_string(),
+                        DownloadProgress {
+                            model_id: model_id.to_string(),
+                            progress: 1.0,
+                            total_bytes: final_size,
+                            downloaded_bytes: final_size,
+                            status: "completed".to_string(),
+                        },
+                    );
+                }
+                return Ok(dest_path.to_string_lossy().to_string());
+            } else if expected_total == 0 {
+                // No content-length, assume success
+                eprintln!("[download_hf_model] Download COMPLETED (no content-length) for '{}' at '{}' ({} bytes)", model_id, dest_path.display(), final_size);
+
+                {
+                    let mut progress = progress_state.lock().await;
+                    progress.insert(
+                        model_id.to_string(),
+                        DownloadProgress {
+                            model_id: model_id.to_string(),
+                            progress: 1.0,
+                            total_bytes: final_size,
+                            downloaded_bytes: final_size,
+                            status: "completed".to_string(),
+                        },
+                    );
+                }
+                return Ok(dest_path.to_string_lossy().to_string());
+            }
+
+            last_error = format!(
+                "Download incomplete: got {} bytes, expected {}",
+                final_size, expected_total
+            );
+            eprintln!("[download_hf_model] {}", last_error);
         }
 
-        Ok(dest_path.to_string_lossy().to_string())
+        Err(last_error)
     }
 
     async fn handle_models(
@@ -2723,11 +2822,23 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         let models_path_clone = models_path.to_path_buf();
         let progress_state_clone = Arc::clone(&progress_state);
 
-        eprintln!("[handle_gui_model_download] Spawning background download task for '{}'", model_id_clone);
+        eprintln!(
+            "[handle_gui_model_download] Spawning background download task for '{}'",
+            model_id_clone
+        );
         tokio::spawn(async move {
-            match download_hf_model(&model_id_clone, &models_path_clone, Arc::clone(&progress_state_clone)).await {
+            match download_hf_model(
+                &model_id_clone,
+                &models_path_clone,
+                Arc::clone(&progress_state_clone),
+            )
+            .await
+            {
                 Ok(local_path) => {
-                    eprintln!("[handle_gui_model_download] Download COMPLETED for '{}' at '{}'", model_id_clone, local_path);
+                    eprintln!(
+                        "[handle_gui_model_download] Download COMPLETED for '{}' at '{}'",
+                        model_id_clone, local_path
+                    );
 
                     {
                         let mut progress = progress_state_clone.lock().await;
@@ -2778,7 +2889,10 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                     );
                 }
                 Err(err) => {
-                    eprintln!("[handle_gui_model_download] Download FAILED for '{}': {}", model_id_clone, err);
+                    eprintln!(
+                        "[handle_gui_model_download] Download FAILED for '{}': {}",
+                        model_id_clone, err
+                    );
 
                     {
                         let mut progress = progress_state_clone.lock().await;
@@ -3141,6 +3255,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                 "memory": memory_usage,
                 "gpu": gpu_usage,
                 "gpu_memory": gpu_memory,
+                "gpu_available": detect_gpu_available(),
                 "latency_p50": latency_p50,
                 "latency_p95": latency_p95,
                 "active_sessions": backend.sessions.len(),
@@ -3910,13 +4025,75 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
     ) -> Json<serde_json::Value> {
         let backend = lock_state(&state);
         let uptime_s = backend.started_at.elapsed().as_secs();
+
+        // Check GPU availability
+        let gpu_available = detect_gpu_available();
+
         Json(serde_json::json!({
             "status": "healthy",
             "version": "0.1.0-alpha.0",
             "backend_url": backend.backend_url,
             "uptime_s": uptime_s,
             "current_model": backend.current_model,
+            "gpu_available": gpu_available,
         }))
+    }
+
+    async fn handle_api_health(
+        State(state): State<Arc<Mutex<BackendState>>>,
+    ) -> Json<serde_json::Value> {
+        let backend = lock_state(&state);
+        let uptime_s = backend.started_at.elapsed().as_secs();
+
+        // Check GPU availability
+        let gpu_available = detect_gpu_available();
+
+        Json(serde_json::json!({
+            "status": "healthy",
+            "version": "0.1.0-alpha.0",
+            "backend_url": backend.backend_url,
+            "uptime_s": uptime_s,
+            "current_model": backend.current_model,
+            "gpu_available": gpu_available,
+            "inference_backend": backend.settings.inference_backend,
+            "native_engine": backend.settings.native_engine,
+        }))
+    }
+
+    fn detect_gpu_available() -> bool {
+        // Try to detect NVIDIA GPU
+        if std::process::Command::new("nvidia-smi")
+            .arg("--query-gpu=name")
+            .arg("--format=csv,noheader")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+        {
+            return true;
+        }
+
+        // Try to detect AMD GPU via rocm-smi
+        if std::process::Command::new("rocm-smi")
+            .arg("--showproductname")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+        {
+            return true;
+        }
+
+        // Try to detect Apple Metal GPU (macOS)
+        if cfg!(target_os = "macos")
+            && std::process::Command::new("system_profiler")
+                .args(["SPDisplaysDataType"])
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false)
+        {
+            return true;
+        }
+
+        false
     }
 
     println!("Ghostlink Studio API - Starting OpenAI-compatible server...");
@@ -4134,6 +4311,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             .route("/v1/chat/completions", post(handle_chat_completions))
             .route("/v1/models", get(handle_models))
             .route("/health", get(handle_health))
+            .route("/api/health", get(handle_api_health))
             .route("/api/models", get(handle_gui_models))
             .route("/api/models/status", get(handle_gui_model_status))
             .route("/api/models/load", post(handle_gui_model_load))

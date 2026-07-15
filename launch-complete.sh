@@ -17,6 +17,41 @@ LLAMA_PID=""
 API_PID=""
 GUI_PID=""
 
+# Pre-flight validation
+validate_config() {
+    log "Running pre-flight validation..."
+    
+    # Validate VITE_GHOSTLINK_API_BASE
+    local api_base="${VITE_GHOSTLINK_API_BASE:-http://${BACKEND_HOST}:${BACKEND_PORT}}"
+    api_base="${api_base%% }"  # Trim trailing whitespace
+    api_base="${api_base## }"  # Trim leading whitespace
+    
+    if [[ ! "$api_base" =~ ^https?://[^[:space:]]+$ ]]; then
+        printf '[launch-complete] ERROR: Invalid API base URL: "%s"\n' "$api_base" >&2
+        printf '[launch-complete] Must be a valid http:// or https:// URL without whitespace\n' >&2
+        return 1
+    fi
+    export VITE_GHOSTLINK_API_BASE="$api_base"
+    log "API base validated: $VITE_GHOSTLINK_API_BASE"
+    
+    # Validate required directories
+    if [[ ! -d "$PROJECT_ROOT/ghostlink_gui_modern" ]]; then
+        printf '[launch-complete] ERROR: GUI directory not found: %s/ghostlink_gui_modern\n' "$PROJECT_ROOT" >&2
+        return 1
+    fi
+    
+    # Validate required commands
+    for cmd in cargo node curl; do
+        if ! command -v "$cmd" >/dev/null 2>&1; then
+            printf '[launch-complete] ERROR: Required command not found: %s\n' "$cmd" >&2
+            return 1
+        fi
+    done
+    
+    log "Pre-flight validation passed"
+    return 0
+}
+
 log() { printf '[launch-complete] %s\n' "$*"; }
 warn() { printf '[launch-complete] WARN: %s\n' "$*" >&2; }
 
@@ -332,6 +367,11 @@ main() {
         >/tmp/ghostlink_api.log 2>&1 &
     API_PID=$!
     wait_for_http "http://${BACKEND_HOST}:${BACKEND_PORT}/health" "Backend" 80
+    
+    # Wait for API endpoint to be fully ready
+    log "waiting for API endpoint..."
+    wait_for_http "http://${BACKEND_HOST}:${BACKEND_PORT}/api/health" "API endpoint" 30
+    wait_for_http "http://${BACKEND_HOST}:${BACKEND_PORT}/api/health" "Backend API" 30
 
     log "starting GUI on port $GUI_PORT"
     cd "$PROJECT_ROOT/ghostlink_gui_modern"
