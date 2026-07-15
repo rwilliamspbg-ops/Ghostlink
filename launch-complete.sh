@@ -251,9 +251,10 @@ main() {
         }
     fi
 
-    # Find llama-server binary
+    # Find llama-server binary (check pre-built cache first, then build dirs)
     local LLAMA_SERVER_BIN=""
     for candidate in \
+        "bin/llama-server" \
         "third_party/llama.cpp/build/bin/llama-server" \
         "third_party/llama.cpp/build/bin/Release/llama-server.exe" \
         "third_party/llama.cpp/build/bin/llama-server.exe"; do
@@ -279,11 +280,12 @@ main() {
                     metal)    CMAKE_FLAGS="$CMAKE_FLAGS -DLLAMA_METAL=ON" ;;
                 esac
                 log "Building llama-server with: $CMAKE_FLAGS"
-                cmake .. $CMAKE_FLAGS && cmake --build . --config Release --target llama-server --parallel
+                cmake .. $CMAKE_FLAGS && cmake --build . --config Release --target llama-server -j 2
                 popd >/dev/null
                 popd >/dev/null
                 # Re-check for binary
                 for candidate in \
+                    "bin/llama-server" \
                     "third_party/llama.cpp/build/bin/llama-server" \
                     "third_party/llama.cpp/build/bin/Release/llama-server.exe"; do
                     if [[ -f "$PROJECT_ROOT/$candidate" ]]; then

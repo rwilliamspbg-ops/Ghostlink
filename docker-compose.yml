@@ -54,6 +54,30 @@ services:
       start_period: 10s
     restart: unless-stopped
 
+  # ─── Ghostlink Control Plane (Go Worker Registry + Proxy) ───
+  control-plane:
+    build:
+      context: .
+      dockerfile: Dockerfile.control-plane
+    container_name: ghostlink-control-plane
+    ports:
+      - "8000:8000"
+    environment:
+      PORT: "8000"
+      GHOSTLINK_BACKEND_URL: http://ghostlink-api:8003
+    networks:
+      - ghostlink-network
+    depends_on:
+      ghostlink-api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+    restart: unless-stopped
+
   # ─── Ghostlink GUI (React + Vite) ───
   ghostlink-gui:
     build:

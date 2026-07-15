@@ -267,7 +267,7 @@ export class GhostlinkAPI {
 
   async addWorker(host: string, port: number): Promise<{ success: boolean; error?: string }> {
     try {
-      const response = await this.http.post('/api/workers/add', { host, port });
+      await this.http.post('/api/workers/add', { host, port });
       return { success: true };
     } catch (error: any) {
       return { success: false, error: error.response?.data?.error || error.message };
@@ -283,9 +283,18 @@ export class GhostlinkAPI {
     }
   }
 
+  async getPQCState(): Promise<{ enabled: boolean; error?: string }> {
+    try {
+      const response = await this.http.get('/api/security/pqc-state');
+      return { enabled: response.data?.enabled || false };
+    } catch (error: any) {
+      return { enabled: false, error: error.message };
+    }
+  }
+
   async enablePQC(): Promise<{ success: boolean; data?: any; error?: string }> {
     try {
-      const response = await this.http.post('/api/security/enable-pqc');
+      const response = await this.http.post('/api/security/pqc/enable');
       return { success: true, data: response.data };
     } catch (error: any) {
       return { success: false, error: error.response?.data?.error || error.message };

@@ -353,12 +353,13 @@ build_llama_cpp() {
             echo "  No GPU detected — building CPU-only llama.cpp"
         fi
         
+        local BUILD_JOBS="${CMAKE_BUILD_PARALLEL_LEVEL:-2}"
         if [ $IS_WINDOWS -eq 1 ]; then
             cmake -S . -B build -DCMAKE_BUILD_TYPE=Release $CMAKE_GPU_FLAGS >/dev/null 2>&1
-            cmake --build build --config Release --target llama-server --parallel >/dev/null 2>&1
+            cmake --build build --config Release --target llama-server -j "$BUILD_JOBS" >/dev/null 2>&1
         else
             cmake -S . -B build -DCMAKE_BUILD_TYPE=Release $CMAKE_GPU_FLAGS >/dev/null 2>&1
-            cmake --build build --config Release --target llama-server --parallel >/dev/null 2>&1
+            cmake --build build --config Release --target llama-server -j "$BUILD_JOBS" >/dev/null 2>&1
         fi
         
         local result=$?

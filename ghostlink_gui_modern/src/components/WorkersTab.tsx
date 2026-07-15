@@ -77,6 +77,13 @@ export const WorkersTab: React.FC<{ api: any }> = ({ api }) => {
                 <Plus size={14} /> Add Worker
             </button>
             <button
+                onClick={async () => { const r = await api.discoverPeers(); if (r.success) refreshWorkers(); }}
+                className="flex items-center gap-2 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-white text-xs font-bold rounded-lg transition"
+                title="Discover peers on network"
+            >
+                <RefreshCw size={14} /> Discover
+            </button>
+            <button
                 onClick={refreshWorkers}
                 className="p-2 rounded-lg hover:bg-slate-900 text-slate-400 hover:text-white transition"
             >

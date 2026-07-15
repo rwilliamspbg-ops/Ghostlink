@@ -17,12 +17,20 @@ export const SecurityTab: React.FC<{ api: any }> = ({ api }) => {
   const [auditLog, setAuditLog] = useState<AuditEntry[]>([]);
 
   useEffect(() => {
+    const fetchPqcState = async () => {
+      const result = await api.getPQCState();
+      if (result.enabled !== undefined) setPqcEnabled(result.enabled);
+    };
     const fetchAuditLog = async () => {
       const result = await api.getAuditLog();
       if (result.entries) {
-        setAuditLog(result.entries);
+        setAuditLog(result.entries.map((e: any) => ({
+          ...e,
+          time: e.time ? new Date(e.time).toLocaleString() : e.time,
+        })));
       }
     };
+    fetchPqcState();
     fetchAuditLog();
     const interval = setInterval(fetchAuditLog, 30000);
     return () => clearInterval(interval);

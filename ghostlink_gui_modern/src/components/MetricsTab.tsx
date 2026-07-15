@@ -75,7 +75,7 @@ export const MetricsTab: React.FC<{ api: any }> = React.memo(({ api }) => {
             <GaugeCard label="GPU Core Load" value={metrics?.gpu || 0} icon={ShieldCheck} color="text-blue-400" />
           </div>
 
-          {/* Fabric Status */}
+          {/* Fabric Status — now driven by real workers/metrics */}
           <div className="bg-slate-900/50 border border-slate-800 rounded-3xl p-8 relative overflow-hidden">
             <div className="absolute top-0 right-0 p-8 opacity-5">
                 <Zap size={120} />
@@ -88,22 +88,22 @@ export const MetricsTab: React.FC<{ api: any }> = React.memo(({ api }) => {
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-8">
                     <div className="space-y-4">
                         <div className="flex items-center gap-3">
-                            <div className="w-2 h-2 rounded-full bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.5)] animate-pulse" />
-                            <span className="text-sm font-medium text-slate-300">Discovery Protocol Active (UDP/8003)</span>
+                            <div className={`w-2 h-2 rounded-full shadow-[0_0_8px_rgba(34,197,94,0.5)] ${metrics ? 'bg-green-500 animate-pulse' : 'bg-slate-600'}`} />
+                            <span className="text-sm font-medium text-slate-300">API Server {metrics ? 'Connected' : 'Offline'}</span>
                         </div>
                         <div className="flex items-center gap-3">
-                            <div className="w-2 h-2 rounded-full bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.5)]" />
-                            <span className="text-sm font-medium text-slate-300">SPSC Zero-Copy Ring Buffers Initialized</span>
+                            <div className={`w-2 h-2 rounded-full shadow-[0_0_8px_rgba(34,197,94,0.5)] ${(metrics?.gpu ?? 0) > 0 ? 'bg-green-500' : 'bg-blue-500'}`} />
+                            <span className="text-sm font-medium text-slate-300">GPU Acceleration: {metrics?.gpu.toFixed(0) ?? '?'}% utilized</span>
                         </div>
                     </div>
                     <div className="space-y-4">
                         <div className="flex items-center gap-3">
-                            <div className="w-2 h-2 rounded-full bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.5)]" />
-                            <span className="text-sm font-medium text-slate-300">Post-Quantum Handshake Ready</span>
+                            <div className={`w-2 h-2 rounded-full shadow-[0_0_8px_rgba(34,197,94,0.5)] ${metrics && metrics.cpu > 0 ? 'bg-green-500' : 'bg-slate-600'}`} />
+                            <span className="text-sm font-medium text-slate-300">CPU Load: {metrics?.cpu.toFixed(1) ?? '?'}%</span>
                         </div>
                         <div className="flex items-center gap-3">
-                            <div className="w-2 h-2 rounded-full bg-blue-500 shadow-[0_0_8px_rgba(59,130,246,0.5)]" />
-                            <span className="text-sm font-medium text-slate-300">Auto-Scaling Group: Stable</span>
+                            <div className={`w-2 h-2 rounded-full shadow-[0_0_8px_rgba(59,130,246,0.5)] ${metrics && metrics.memory > 0 ? 'bg-blue-500' : 'bg-slate-600'}`} />
+                            <span className="text-sm font-medium text-slate-300">Memory: {metrics?.memory.toFixed(1) ?? '?'}% used</span>
                         </div>
                     </div>
                 </div>
@@ -158,4 +158,4 @@ const GaugeCard = ({ label, value, icon: Icon, color }: any) => (
         <p className="text-xs font-bold text-slate-300 mb-1">{label}</p>
         <p className="text-xl font-black text-white">{value.toFixed(1)}%</p>
     </div>
-)
+  );

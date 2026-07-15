@@ -77,7 +77,8 @@ fi
 if [[ ! -x "$LLAMA_CPP_DIR/build/bin/llama-server" ]]; then
   log "building llama-server"
   cmake -S "$LLAMA_CPP_DIR" -B "$LLAMA_CPP_DIR/build" -DCMAKE_BUILD_TYPE=Release
-  cmake --build "$LLAMA_CPP_DIR/build" -j "$(nproc)" --target llama-server
+  local BUILD_JOBS="${CMAKE_BUILD_PARALLEL_LEVEL:-2}"
+  cmake --build "$LLAMA_CPP_DIR/build" -j "$BUILD_JOBS" --target llama-server
 fi
 
 LLAMA_SERVER_BIN="$LLAMA_CPP_DIR/build/bin/llama-server"

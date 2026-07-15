@@ -1,0 +1,10 @@
+FROM golang:1.24-alpine AS builder
+WORKDIR /build
+COPY control-plane/ .
+RUN CGO_ENABLED=0 go build -o /control-plane .
+
+FROM alpine:3.19
+RUN apk add --no-cache ca-certificates
+COPY --from=builder /control-plane /usr/local/bin/
+EXPOSE 8000
+CMD ["control-plane"]

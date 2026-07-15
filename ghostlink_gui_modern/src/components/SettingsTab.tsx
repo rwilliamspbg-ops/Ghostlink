@@ -24,6 +24,36 @@ export const SettingsTab: React.FC<{ api: any }> = ({ api }) => {
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState('');
+  const [validationErrors, setValidationErrors] = useState<Record<string, string>>({});
+
+  const validate = () => {
+    if (!settings) return true;
+    const errs: Record<string, string> = {};
+    if (settings.api_port && (settings.api_port < 1024 || settings.api_port > 65535)) errs.api_port = 'Port must be 1024-65535';
+    if (settings.gui_port && (settings.gui_port < 1024 || settings.gui_port > 65535)) errs.gui_port = 'Port must be 1024-65535';
+    if (settings.llama_port && (settings.llama_port < 1024 || settings.llama_port > 65535)) errs.llama_port = 'Port must be 1024-65535';
+    if (settings.temperature !== undefined && (settings.temperature < 0 || settings.temperature > 2)) errs.temperature = 'Temperature must be 0-2';
+    if (settings.top_p !== undefined && (settings.top_p < 0 || settings.top_p > 1)) errs.top_p = 'Top P must be 0-1';
+    if (settings.ctx_size && (settings.ctx_size < 512 || settings.ctx_size > 32768)) errs.ctx_size = 'Context size must be 512-32768';
+    if (settings.llama_server_url && !/^https?:\/\/.+/.test(settings.llama_server_url)) errs.llama_server_url = 'Must be a valid URL (http://...)';
+    if (settings.api_host && !/^[\w.*:-]+$/.test(settings.api_host)) errs.api_host = 'Invalid host format';
+    setValidationErrors(errs);
+    return Object.keys(errs).length === 0;
+  };
+
+  const handleSave = async () => {
+    if (!settings || !validate()) return;
+    setSaving(true);
+    setSaved(false);
+    const result = await api.updateSettings(settings);
+    if (result.success) {
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2000);
+    } else {
+      setError(result.error || 'Save failed');
+    }
+    setSaving(false);
+  };
 
   const loadSettings = useCallback(async () => {
     setLoading(true);
@@ -68,20 +98,6 @@ export const SettingsTab: React.FC<{ api: any }> = ({ api }) => {
   const update = (key: string, value: any) => {
     if (!settings) return;
     setSettings({ ...settings, [key]: value });
-  };
-
-  const handleSave = async () => {
-    if (!settings) return;
-    setSaving(true);
-    setSaved(false);
-    const result = await api.updateSettings(settings);
-    if (result.success) {
-      setSaved(true);
-      setTimeout(() => setSaved(false), 2000);
-    } else {
-      setError(result.error || 'Save failed');
-    }
-    setSaving(false);
   };
 
   const handleReset = async () => {
@@ -196,6 +212,11 @@ export const SettingsTab: React.FC<{ api: any }> = ({ api }) => {
           <h2 className="text-xl font-bold text-white">Runtime Settings</h2>
         </div>
         <div className="flex items-center gap-2">
+          {Object.keys(validationErrors).length > 0 && (
+            <span className="flex items-center gap-1 text-xs text-orange-400 bg-orange-500/10 px-2 py-1 rounded-lg">
+              <AlertTriangle size={14} /> Fix validation errors
+            </span>
+          )}
           {saved && (
             <span className="flex items-center gap-1 text-xs text-green-400 bg-green-500/10 px-2 py-1 rounded-lg">
               <CheckCircle2 size={14} /> Saved

@@ -17,7 +17,17 @@ import {
 import { useAppStore } from '../store';
 import { GhostlinkAPI } from '../api';
 
-const POPULAR_MODELS: { id: string; name: string; downloads: number; likes: number }[] = [];
+// POPULAR_MODELS used as fallback when search fails; kept for reference
+const POPULAR_MODELS = [
+  { id: 'meta-llama/Llama-3.2-3B-Instruct-GGUF', name: 'Llama 3.2 3B Instruct (GGUF)', downloads: 2500000, likes: 120000 },
+  { id: 'meta-llama/Llama-3.2-1B-Instruct-GGUF', name: 'Llama 3.2 1B Instruct (GGUF)', downloads: 1800000, likes: 90000 },
+  { id: 'mistralai/Mistral-7B-Instruct-v0.3-GGUF', name: 'Mistral 7B v0.3 Instruct (GGUF)', downloads: 3200000, likes: 150000 },
+  { id: 'TheBloke/CodeLlama-7B-GGUF', name: 'CodeLlama 7B (GGUF)', downloads: 1500000, likes: 75000 },
+  { id: 'TheBloke/Llama-2-7B-Chat-GGUF', name: 'Llama 2 7B Chat (GGUF)', downloads: 4100000, likes: 200000 },
+  { id: 'TheBloke/Mistral-7B-Instruct-v0.2-GGUF', name: 'Mistral 7B v0.2 Instruct (GGUF)', downloads: 2800000, likes: 110000 },
+  { id: 'TheBloke/NeuralHermes-2.5-Mistral-7B-GGUF', name: 'NeuralHermes 2.5 Mistral 7B (GGUF)', downloads: 1200000, likes: 60000 },
+  { id: 'TheBloke/OpenHermes-2.5-Mistral-7B-GGUF', name: 'OpenHermes 2.5 Mistral 7B (GGUF)', downloads: 900000, likes: 45000 },
+];
 
 export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
   const { models, currentModel, setModels, setCurrentModel } = useAppStore();
@@ -26,19 +36,16 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
   const [hfSearch, setHfSearch] = useState('');
   const [message, setMessage] = useState<string | null>(null);
   const [pendingActions, setPendingActions] = useState<Record<string, string>>({});
-  const [hfResults, setHfResults] = useState<{ id: string; name: string; downloads: number; likes: number }[]>([]);
-  const [hfSearching, setHfSearching] = useState(false);
+  const [hfResults, setHfResults] = useState<{ id: string; name: string; downloads: number; likes: number }[]>(POPULAR_MODELS);
   const [downloadProgress, setDownloadProgress] = useState<Record<string, number>>({});
 
   const searchHF = useCallback(async (query: string) => {
-    setHfSearching(true);
     try {
       const result = await api.searchHuggingFace(query || 'llama');
       if (result.models) setHfResults(result.models);
     } catch {
       // silent
     }
-    setHfSearching(false);
   }, [api]);
 
   useEffect(() => {

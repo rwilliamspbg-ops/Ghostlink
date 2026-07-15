@@ -1,4 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import {
   Send,
   Loader,
@@ -29,6 +31,19 @@ interface Message {
   model?: string;
 }
 
+const STORAGE_KEY = 'ghostlink-chat-messages';
+
+function loadMessages(): Message[] {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch { return []; }
+}
+
+function saveMessages(messages: Message[]) {
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(messages.slice(-200))); } catch { /* quota */ }
+}
+
 interface Tool {
   name: string;
   description: string;
@@ -47,16 +62,18 @@ const AVAILABLE_TOOLS: Tool[] = [
 ];
 
 export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
-  const { currentModel, models, setCurrentModel, setModels } = useAppStore();
-  const [messages, setMessages] = useState<Message[]>([]);
+  const { currentModel, models, setCurrentModel, setModels, activeTab } = useAppStore();
+  const [messages, setMessages] = useState<Message[]>(loadMessages);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [streamingId, setStreamingId] = useState<string | null>(null);
+  const [copiedId, setCopiedId] = useState<string | null>(null);
 
   // Controls
-  const [temperature, setTemperature] = useState(0.7);
-  const [maxTokens, setMaxTokens] = useState(2048);
-  const [systemPrompt, setSystemPrompt] = useState('You are a production-grade, kernel-bypass-aware system orchestration co-pilot.');
+  const [temperature] = useState(0.7);
+  const [maxTokens] = useState(2048);
+  const [systemPrompt] = useState('You are a production-grade, kernel-bypass-aware system orchestration co-pilot.');
 
   // UI State
   const [showTools, setShowTools] = useState(false);
@@ -73,6 +90,17 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
   useEffect(() => {
     scrollToBottom();
   }, [messages, loading]);
+
+  useEffect(() => {
+    saveMessages(messages);
+  }, [messages]);
+
+  // Clear messages when switching to Chat tab (New Chat)
+  useEffect(() => {
+    if (activeTab === 0 && messages.length > 0 && !loading) {
+      setMessages([]);
+    }
+  }, [activeTab]);
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -99,39 +127,63 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
     };
 
     setMessages((prev) => [...prev, userMessage]);
-    setInput('');  // Clear AFTER capturing
+    setInput('');
     setLoading(true);
     setError(null);
+
+    const assistantId = (Date.now() + 1).toString();
+    setStreamingId(assistantId);
+    setMessages((prev) => [...prev, { role: 'assistant', content: '', id: assistantId, timestamp: '', model: currentModel || undefined }]);
 
     const enabledTools = tools.filter((t) => t.enabled).map((t) => t.name);
 
     const result = await api.sendMessage({
-      message: messageText,  // Use captured message
+      message: messageText,
       temperature,
       top_p: 0.9,
       top_k: 40,
       penalty: 1.1,
       max_tokens: maxTokens,
       system_prompt: systemPrompt,
-      mcp: {
-        tools: enabledTools,
-      },
-      stream: false,
+      mcp: { tools: enabledTools },
+      stream: true,
+    }, (token: string) => {
+      setMessages((prev) => prev.map(m =>
+        m.id === assistantId ? { ...m, content: m.content + token } : m
+      ));
     });
 
     setLoading(false);
+    setStreamingId(null);
 
     if (result.success) {
-      const assistantMessage: Message = {
-        role: 'assistant',
-        content: result.data.response,
-        id: (Date.now() + 1).toString(),
-        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        model: currentModel,
-      };
-      setMessages((prev) => [...prev, assistantMessage]);
+      setMessages((prev) => prev.map(m =>
+        m.id === assistantId
+          ? { ...m, timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) }
+          : m
+      ));
     } else {
+      setMessages((prev) => prev.filter(m => m.id !== assistantId));
       setError(result.error || 'Failed to send message');
+    }
+  };
+
+  const handleCopy = async (content: string, id: string) => {
+    try {
+      await navigator.clipboard.writeText(content);
+      setCopiedId(id);
+      setTimeout(() => setCopiedId(null), 2000);
+    } catch { /* noop */ }
+  };
+
+  const handleRegenerate = () => {
+    const lastUser = [...messages].reverse().find(m => m.role === 'user');
+    if (lastUser) {
+      setMessages((prev) => {
+        const idx = prev.findIndex(m => m.role === 'assistant' && m.id === streamingId);
+        return idx >= 0 ? prev.slice(0, idx) : prev;
+      });
+      setInput(lastUser.content);
     }
   };
 
@@ -197,7 +249,7 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                     </div>
                 )}
             </div>
-            <button className="p-1.5 rounded-lg hover:bg-slate-900 text-slate-500 hover:text-white transition">
+            <button onClick={() => { if (!loading) setMessages([]); }} className="p-1.5 rounded-lg hover:bg-slate-900 text-slate-500 hover:text-white transition">
                 <Plus size={16} />
             </button>
         </div>
@@ -245,24 +297,34 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                                 ? 'bg-slate-800 text-slate-100 rounded-tr-none'
                                 : 'text-slate-200 bg-transparent'
                         }`}>
-                            <div className="whitespace-pre-wrap break-words">{msg.content}</div>
+                            {msg.role === 'assistant' ? (
+                              <div className="prose prose-invert prose-sm max-w-none break-words">
+                                <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
+                              </div>
+                            ) : (
+                              <div className="whitespace-pre-wrap break-words">{msg.content}</div>
+                            )}
                         </div>
 
                         {msg.role === 'assistant' && (
                             <div className="flex items-center gap-1 mt-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                                <button className="p-1.5 rounded-lg hover:bg-slate-900 text-slate-500 hover:text-slate-300 transition" title="Copy">
-                                    <Copy size={14} />
+                                <button onClick={() => handleCopy(msg.content, msg.id)} className="p-1.5 rounded-lg hover:bg-slate-900 text-slate-500 hover:text-slate-300 transition" title="Copy">
+                                  {copiedId === msg.id ? <Check size={14} className="text-green-400" /> : <Copy size={14} />}
                                 </button>
-                                <button className="p-1.5 rounded-lg hover:bg-slate-900 text-slate-500 hover:text-slate-300 transition">
+                                <button className="p-1.5 rounded-lg hover:bg-slate-900 text-slate-500 hover:text-slate-300 transition" title="Good response">
                                     <ThumbsUp size={14} />
                                 </button>
-                                <button className="p-1.5 rounded-lg hover:bg-slate-900 text-slate-500 hover:text-slate-300 transition">
+                                <button className="p-1.5 rounded-lg hover:bg-slate-900 text-slate-500 hover:text-slate-300 transition" title="Bad response">
                                     <ThumbsDown size={14} />
                                 </button>
-                                <button className="p-1.5 rounded-lg hover:bg-slate-900 text-slate-500 hover:text-slate-300 transition">
+                                <button onClick={handleRegenerate} className="p-1.5 rounded-lg hover:bg-slate-900 text-slate-500 hover:text-slate-300 transition" title="Regenerate">
                                     <RotateCcw size={14} />
                                 </button>
-                                <button className="p-1.5 rounded-lg hover:bg-slate-900 text-slate-500 hover:text-slate-300 transition">
+                                <button
+                                  onClick={() => { try { speechSynthesis.speak(new SpeechSynthesisUtterance(msg.content)); } catch {} }}
+                                  className="p-1.5 rounded-lg hover:bg-slate-900 text-slate-500 hover:text-slate-300 transition"
+                                  title="Read aloud"
+                                >
                                     <Volume2 size={14} />
                                 </button>
                             </div>

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import {
   MessageSquare,
   Database,
@@ -7,9 +7,7 @@ import {
   Network,
   Shield,
   Plus,
-  Search,
   Settings,
-  User,
   ChevronRight,
   Menu,
   Cpu,
@@ -126,13 +124,13 @@ function SplashScreen() {
 }
 
 function App() {
-  const { currentModel, uptime, activeTab, setActiveTab, setModels, setUptime, setApiBase } = useAppStore();
+  const { currentModel, activeTab, setActiveTab, setModels, setApiBase, setMetrics, setWorkers, setSessions, setBackendOnline } = useAppStore();
   const [api, setApi] = useState<GhostlinkAPI | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
 
   // CRITICAL FIX: Initialize API base on app load
   useEffect(() => {
-    const detectedApiBase = import.meta.env.VITE_API_URL || 'http://localhost:8003';
+    const detectedApiBase = import.meta.env.VITE_GHOSTLINK_API_BASE || (window as any)._env_?.GHOSTLINK_API_BASE || 'http://localhost:8003';
     setApiBase(detectedApiBase);
     setApi(new GhostlinkAPI(detectedApiBase));
   }, [setApiBase]);
@@ -147,25 +145,58 @@ function App() {
         setModels(result.models);
       }
     };
+
+    const fetchMetrics = async () => {
+      const result = await api.getMetrics();
+      if (!result.error) {
+        setMetrics(result.metrics);
+      }
+    };
+
+    const fetchWorkers = async () => {
+      const result = await api.getWorkers();
+      if (!result.error) {
+        setWorkers(result.workers);
+      }
+    };
+
+    const fetchSessions = async () => {
+      const result = await api.getSessions();
+      if (!result.error) {
+        setSessions(result.sessions);
+      }
+    };
     
     fetchModels();
+    fetchMetrics();
+    fetchWorkers();
+    fetchSessions();
     
     // Poll for health check every 30s
-    const healthInterval = setInterval(() => {
-      api.getHealth().catch(() => {
-        // Silent fail - we're just checking connectivity
-      });
-    }, 30000);
+    const checkHealth = async () => {
+      const result = await api.getHealth();
+      setBackendOnline(result.success);
+    };
+    checkHealth();
+    const healthInterval = setInterval(checkHealth, 30000);
 
-    const uptimeInterval = setInterval(() => {
-        setUptime(prev => prev + 1);
-    }, 1000);
-    
+    // Poll for real-time metrics every 5s
+    const metricsInterval = setInterval(() => {
+      fetchMetrics();
+      fetchSessions();
+    }, 5000);
+
+    // Poll for workers every 15s
+    const workersInterval = setInterval(() => {
+      fetchWorkers();
+    }, 15000);
+
     return () => {
       clearInterval(healthInterval);
-      clearInterval(uptimeInterval);
+      clearInterval(metricsInterval);
+      clearInterval(workersInterval);
     };
-  }, [api, setModels, setUptime]);
+  }, [api, setModels, setMetrics, setWorkers, setSessions, setBackendOnline]);
 
   const renderTab = () => {
     if (!api) {
@@ -206,7 +237,10 @@ function App() {
             <h1 className="text-lg font-bold truncate">Ghostlink</h1>
           </div>
 
-          <button className="flex items-center justify-between w-full p-3 bg-slate-800 hover:bg-slate-700 rounded-xl transition mb-6 group">
+          <button
+            onClick={() => setActiveTab(0)}
+            className="flex items-center justify-between w-full p-3 bg-slate-800 hover:bg-slate-700 rounded-xl transition mb-6 group"
+          >
             <div className="flex items-center gap-3">
               <Plus size={18} className="text-slate-400 group-hover:text-white" />
               <span className="text-sm font-medium">New Chat</span>
