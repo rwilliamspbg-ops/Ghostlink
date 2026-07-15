@@ -1587,42 +1587,25 @@ fn load_persistent_models() -> Vec<ModelRecord> {
             }
         }
     }
+    // Small default models — avoids OOM on low-RAM Linux machines
     vec![
         ModelRecord {
-            name: "meta-llama/Llama-3-8B-Instruct".to_string(),
-            size_gb: 8.0,
+            name: "stories15M".to_string(),
+            size_gb: 0.008,
+            model_type: "LLM".to_string(),
+            quantization: "Q4_0".to_string(),
+            status: "Ready".to_string(),
+            local_path: String::new(),
+            hf_model_id: "ggml-org/models".to_string(),
+        },
+        ModelRecord {
+            name: "TinyLlama-1.1B-Chat".to_string(),
+            size_gb: 0.65,
             model_type: "LLM".to_string(),
             quantization: "Q4_K_M".to_string(),
             status: "Ready".to_string(),
             local_path: String::new(),
-            hf_model_id: String::new(),
-        },
-        ModelRecord {
-            name: "mistralai/Mistral-7B-Instruct-v0.2".to_string(),
-            size_gb: 7.2,
-            model_type: "LLM".to_string(),
-            quantization: "Q8_0".to_string(),
-            status: "Ready".to_string(),
-            local_path: String::new(),
-            hf_model_id: String::new(),
-        },
-        ModelRecord {
-            name: "google/gemma-7b-it".to_string(),
-            size_gb: 7.0,
-            model_type: "LLM".to_string(),
-            quantization: "BF16".to_string(),
-            status: "Ready".to_string(),
-            local_path: String::new(),
-            hf_model_id: String::new(),
-        },
-        ModelRecord {
-            name: "ghostlink-30b-v1".to_string(),
-            size_gb: 30.0,
-            model_type: "LLM".to_string(),
-            quantization: "Q4_K_M".to_string(),
-            status: "Ready".to_string(),
-            local_path: String::new(),
-            hf_model_id: String::new(),
+            hf_model_id: "TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF".to_string(),
         },
     ]
 }
@@ -2444,21 +2427,43 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         models_dir: &std::path::Path,
         progress_state: Arc<tokio::sync::Mutex<HashMap<String, DownloadProgress>>>,
     ) -> Result<String, String> {
-        let client = reqwest::Client::builder()
+        eprintln!("[download_hf_model] Starting download for '{}'", model_id);
+
+        let mut client_builder = reqwest::Client::builder()
             .user_agent("ghostlink/1.0")
-            .build()
-            .map_err(|e| format!("HTTP client error: {}", e))?;
+            .connect_timeout(std::time::Duration::from_secs(15))
+            .timeout(std::time::Duration::from_secs(7200))
+            .no_proxy();
+
+        if std::env::var("GHOSTLINK_INSECURE_TLS").is_ok() {
+            eprintln!("[download_hf_model] WARNING: TLS certificate validation DISABLED (GHOSTLINK_INSECURE_TLS is set)");
+            client_builder = client_builder.danger_accept_invalid_certs(true);
+        }
+
+        let client = client_builder.build().map_err(|e| {
+            let msg = format!("HTTP client error: {}", e);
+            eprintln!("[download_hf_model] Client build error: {}", msg);
+            msg
+        })?;
 
         let api_url = format!("https://huggingface.co/api/models/{}", model_id);
+        eprintln!("[download_hf_model] Fetching model info from {}", api_url);
         let resp = client
             .get(&api_url)
             .send()
             .await
-            .map_err(|e| format!("API error: {}", e))?;
+            .map_err(|e| {
+                let msg = format!("API error for '{}': {}", model_id, e);
+                eprintln!("[download_hf_model] {}", msg);
+                msg
+            })?;
 
         if !resp.status().is_success() {
+            eprintln!("[download_hf_model] Model '{}' returned HTTP {}", model_id, resp.status());
             return Err(format!("Model '{}' not found on HuggingFace", model_id));
         }
+
+        eprintln!("[download_hf_model] Model info received successfully");
 
         let data: serde_json::Value = resp
             .json()
@@ -2504,6 +2509,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                     status: "starting".to_string(),
                 },
             );
+            eprintln!("[download_hf_model] Progress entry inserted with status 'starting'");
         }
 
         let resp = client
@@ -2712,64 +2718,105 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             }
         }
 
-        let result = download_hf_model(&model_id, models_path, progress_state).await;
+        let state_clone = Arc::clone(&state);
+        let model_id_clone = model_id.clone();
+        let models_path_clone = models_path.to_path_buf();
+        let progress_state_clone = Arc::clone(&progress_state);
 
-        match result {
-            Ok(local_path) => {
-                let filename = std::path::Path::new(&local_path)
-                    .file_name()
-                    .unwrap()
-                    .to_string_lossy()
-                    .to_string();
-                let name = filename
-                    .strip_suffix(".gguf")
-                    .unwrap_or(&filename)
-                    .to_string();
-                let size_bytes = fs::metadata(&local_path).map(|m| m.len()).unwrap_or(0);
-                let size_gb = size_bytes as f32 / (1024.0 * 1024.0 * 1024.0);
+        eprintln!("[handle_gui_model_download] Spawning background download task for '{}'", model_id_clone);
+        tokio::spawn(async move {
+            match download_hf_model(&model_id_clone, &models_path_clone, Arc::clone(&progress_state_clone)).await {
+                Ok(local_path) => {
+                    eprintln!("[handle_gui_model_download] Download COMPLETED for '{}' at '{}'", model_id_clone, local_path);
 
-                let mut backend = lock_state(&state);
-                backend
-                    .models
-                    .retain(|m| m.name != model_id && m.hf_model_id != model_id);
-                backend.models.push(ModelRecord {
-                    name,
-                    size_gb,
-                    model_type: "LLM".to_string(),
-                    quantization: detect_quantization(&filename),
-                    status: "Ready".to_string(),
-                    local_path,
-                    hf_model_id: model_id.clone(),
-                });
-                save_persistent_models(&backend.models);
+                    {
+                        let mut progress = progress_state_clone.lock().await;
+                        progress.insert(
+                            model_id_clone.clone(),
+                            DownloadProgress {
+                                model_id: model_id_clone.clone(),
+                                progress: 1.0,
+                                total_bytes: 0,
+                                downloaded_bytes: 0,
+                                status: "completed".to_string(),
+                            },
+                        );
+                    }
 
-                push_audit_entry(
-                    &state,
-                    "MODEL_DOWNLOAD",
-                    "SUCCESS",
-                    &format!("Downloaded model '{}' ({:.2} GB)", model_id, size_gb),
-                );
+                    let filename = std::path::Path::new(&local_path)
+                        .file_name()
+                        .unwrap()
+                        .to_string_lossy()
+                        .to_string();
+                    let name = filename
+                        .strip_suffix(".gguf")
+                        .unwrap_or(&filename)
+                        .to_string();
+                    let size_bytes = fs::metadata(&local_path).map(|m| m.len()).unwrap_or(0);
+                    let size_gb = size_bytes as f32 / (1024.0 * 1024.0 * 1024.0);
 
-                (
-                    StatusCode::OK,
-                    Json(serde_json::json!({
-                        "status": "ok",
-                        "message": format!("model downloaded ({:.2} GB)", size_gb),
-                    })),
-                )
+                    let mut backend = lock_state(&state_clone);
+                    backend
+                        .models
+                        .retain(|m| m.name != model_id_clone && m.hf_model_id != model_id_clone);
+                    backend.models.push(ModelRecord {
+                        name,
+                        size_gb,
+                        model_type: "LLM".to_string(),
+                        quantization: detect_quantization(&filename),
+                        status: "Ready".to_string(),
+                        local_path,
+                        hf_model_id: model_id_clone.clone(),
+                    });
+                    save_persistent_models(&backend.models);
+
+                    push_audit_entry(
+                        &state_clone,
+                        "MODEL_DOWNLOAD",
+                        "SUCCESS",
+                        &format!("Downloaded model '{}' ({:.2} GB)", model_id_clone, size_gb),
+                    );
+                }
+                Err(err) => {
+                    eprintln!("[handle_gui_model_download] Download FAILED for '{}': {}", model_id_clone, err);
+
+                    {
+                        let mut progress = progress_state_clone.lock().await;
+                        progress.insert(
+                            model_id_clone.clone(),
+                            DownloadProgress {
+                                model_id: model_id_clone.clone(),
+                                progress: 0.0,
+                                total_bytes: 0,
+                                downloaded_bytes: 0,
+                                status: "failed".to_string(),
+                            },
+                        );
+                    }
+
+                    let mut backend = lock_state(&state_clone);
+                    backend
+                        .models
+                        .retain(|m| m.name != model_id_clone && m.hf_model_id != model_id_clone);
+                    save_persistent_models(&backend.models);
+
+                    push_audit_entry(
+                        &state_clone,
+                        "MODEL_DOWNLOAD",
+                        "FAILURE",
+                        &format!("Download failed for '{}': {}", model_id_clone, err),
+                    );
+                }
             }
-            Err(err) => {
-                let mut backend = lock_state(&state);
-                backend
-                    .models
-                    .retain(|m| m.name != model_id && m.hf_model_id != model_id);
-                save_persistent_models(&backend.models);
-                (
-                    StatusCode::BAD_REQUEST,
-                    Json(serde_json::json!({ "error": err })),
-                )
-            }
-        }
+        });
+
+        (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "status": "started",
+                "model_id": model_id,
+            })),
+        )
     }
 
     async fn handle_gui_model_download_progress(
@@ -3500,8 +3547,17 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
     ) -> Json<serde_json::Value> {
         use crate::runtime::RuntimeDetector;
 
-        let runtimes = RuntimeDetector::detect();
-        let primary = RuntimeDetector::detect_primary();
+        let (runtimes, primary) = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            tokio::task::spawn_blocking(|| {
+                let runtimes = RuntimeDetector::detect();
+                let primary = RuntimeDetector::detect_primary();
+                (runtimes, primary)
+            }),
+        )
+        .await
+        .unwrap_or(Ok((Vec::new(), runtime::Runtime::CPU)))
+        .unwrap_or((Vec::new(), runtime::Runtime::CPU));
 
         let runtime_data: Vec<_> = runtimes
             .iter()
@@ -3996,6 +4052,29 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         }
     }
 
+    {
+        use std::net::{TcpStream, ToSocketAddrs};
+        eprintln!("[startup] Testing DNS + TCP connectivity to huggingface.co:443...");
+        let addrs = match "huggingface.co:443".to_socket_addrs() {
+            Ok(a) => a.collect::<Vec<_>>(),
+            Err(e) => {
+                eprintln!("[startup] huggingface.co DNS resolution: FAILED ({})", e);
+                Vec::new()
+            }
+        };
+        if !addrs.is_empty() {
+            eprintln!("[startup] huggingface.co resolves to: {:?}", addrs);
+            let reachable = addrs.iter().any(|addr| {
+                TcpStream::connect_timeout(addr, std::time::Duration::from_secs(5)).is_ok()
+            });
+            if reachable {
+                eprintln!("[startup] TCP connectivity to huggingface.co: OK");
+            } else {
+                eprintln!("[startup] TCP connectivity to huggingface.co: FAILED (connection timeout/refused on all resolved addresses)");
+            }
+        }
+    }
+
     let ollama_url = std::env::var("OLLAMA_BASE_URL")
         .ok()
         .unwrap_or_else(|| "http://localhost:11434".to_string());
@@ -4012,7 +4091,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
     let state = Arc::new(Mutex::new(BackendState {
         llama_server_child: None,
         models,
-        current_model: "ghostlink-30b-v1".to_string(),
+        current_model: "stories15M".to_string(),
         workers: vec![WorkerRecord {
             id: profile.node_resources.id.clone(),
             host: host.to_string(),

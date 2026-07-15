@@ -102,6 +102,8 @@ export const WorkersTab: React.FC<{ api: any }> = ({ api }) => {
                 value={addHost}
                 onChange={(e) => setAddHost(e.target.value)}
                 placeholder="192.168.1.100"
+                name="host"
+                id="host"
                 className="w-full px-3 py-1.5 bg-slate-800 border border-slate-700 rounded-lg text-sm text-slate-200 placeholder-slate-500 focus:outline-none focus:border-blue-500"
               />
             </div>
@@ -112,6 +114,8 @@ export const WorkersTab: React.FC<{ api: any }> = ({ api }) => {
                 value={addPort}
                 onChange={(e) => setAddPort(e.target.value)}
                 placeholder="8003"
+                name="port"
+                id="port"
                 className="w-full px-3 py-1.5 bg-slate-800 border border-slate-700 rounded-lg text-sm text-slate-200 placeholder-slate-500 focus:outline-none focus:border-blue-500"
               />
             </div>

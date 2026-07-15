@@ -130,7 +130,7 @@ function App() {
 
   // CRITICAL FIX: Initialize API base on app load
   useEffect(() => {
-    const detectedApiBase = import.meta.env.VITE_GHOSTLINK_API_BASE || (window as any)._env_?.GHOSTLINK_API_BASE || 'http://localhost:8003';
+    const detectedApiBase = import.meta.env.VITE_GHOSTLINK_API_BASE || (window as any)._env_?.GHOSTLINK_API_BASE || 'http://127.0.0.1:8003';
     setApiBase(detectedApiBase);
     setApi(new GhostlinkAPI(detectedApiBase));
   }, [setApiBase]);

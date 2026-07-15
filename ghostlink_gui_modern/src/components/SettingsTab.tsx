@@ -147,62 +147,77 @@ export const SettingsTab: React.FC<{ api: any }> = ({ api }) => {
 
   const SliderField = ({ label, desc, value, min, max, step, onChange, unit }: {
     label: string; desc?: string; value: number; min: number; max: number; step?: number; onChange: (v: number) => void; unit?: string;
-  }) => (
-    <div className="space-y-1.5">
-      <div className="flex items-center justify-between">
-        <label className="text-sm font-medium text-slate-300">{label}</label>
-        <span className="text-xs font-mono text-blue-400 bg-blue-500/10 px-2 py-0.5 rounded-md">{value}{unit}</span>
+  }) => {
+    const fieldId = label.toLowerCase().replace(/\s+/g, '-');
+    return (
+      <div className="space-y-1.5">
+        <div className="flex items-center justify-between">
+          <label htmlFor={fieldId} className="text-sm font-medium text-slate-300">{label}</label>
+          <span className="text-xs font-mono text-blue-400 bg-blue-500/10 px-2 py-0.5 rounded-md">{value}{unit}</span>
+        </div>
+        {desc && <p className="text-[10px] text-slate-500">{desc}</p>}
+        <input
+          id={fieldId}
+          name={fieldId}
+          type="range"
+          min={min}
+          max={max}
+          step={step || 1}
+          value={value}
+          onChange={(e) => onChange(parseFloat(e.target.value))}
+          className="w-full h-1.5 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-blue-500"
+        />
+        <div className="flex justify-between text-[10px] text-slate-600">
+          <span>{min}</span>
+          <span>{max}</span>
+        </div>
       </div>
-      {desc && <p className="text-[10px] text-slate-500">{desc}</p>}
-      <input
-        type="range"
-        min={min}
-        max={max}
-        step={step || 1}
-        value={value}
-        onChange={(e) => onChange(parseFloat(e.target.value))}
-        className="w-full h-1.5 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-blue-500"
-      />
-      <div className="flex justify-between text-[10px] text-slate-600">
-        <span>{min}</span>
-        <span>{max}</span>
-      </div>
-    </div>
-  );
+    );
+  };
 
   const SelectField = ({ label, desc, value, options, onChange }: {
     label: string; desc?: string; value: string; options: { value: string; label: string }[]; onChange: (v: string) => void;
-  }) => (
-    <div className="space-y-1.5">
-      <label className="text-sm font-medium text-slate-300">{label}</label>
-      {desc && <p className="text-[10px] text-slate-500">{desc}</p>}
-      <select
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2.5 text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500/50"
-      >
-        {options.map((o) => (
-          <option key={o.value} value={o.value}>{o.label}</option>
-        ))}
-      </select>
-    </div>
-  );
+  }) => {
+    const fieldId = label.toLowerCase().replace(/\s+/g, '-');
+    return (
+      <div className="space-y-1.5">
+        <label htmlFor={fieldId} className="text-sm font-medium text-slate-300">{label}</label>
+        {desc && <p className="text-[10px] text-slate-500">{desc}</p>}
+        <select
+          id={fieldId}
+          name={fieldId}
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2.5 text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500/50"
+        >
+          {options.map((o) => (
+            <option key={o.value} value={o.value}>{o.label}</option>
+          ))}
+        </select>
+      </div>
+    );
+  };
 
   const InputField = ({ label, desc, value, onChange, type = 'text', placeholder }: {
     label: string; desc?: string; value: string; onChange: (v: string) => void; type?: string; placeholder?: string;
-  }) => (
-    <div className="space-y-1.5">
-      <label className="text-sm font-medium text-slate-300">{label}</label>
-      {desc && <p className="text-[10px] text-slate-500">{desc}</p>}
-      <input
-        type={type}
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        placeholder={placeholder}
-        className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2.5 text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500/50 font-mono"
-      />
-    </div>
-  );
+  }) => {
+    const fieldId = label.toLowerCase().replace(/\s+/g, '-');
+    return (
+      <div className="space-y-1.5">
+        <label htmlFor={fieldId} className="text-sm font-medium text-slate-300">{label}</label>
+        {desc && <p className="text-[10px] text-slate-500">{desc}</p>}
+        <input
+          id={fieldId}
+          name={fieldId}
+          type={type}
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          placeholder={placeholder}
+          className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2.5 text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500/50 font-mono"
+        />
+      </div>
+    );
+  };
 
   return (
     <div className="flex flex-col h-full bg-slate-950">

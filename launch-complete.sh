@@ -244,10 +244,9 @@ main() {
 
     # Model download
     if [[ "${GHOSTLINK_SKIP_MODEL:-0}" != "1" ]] && [[ ! -f "$MODEL_FILE" ]]; then
-        log "downloading model to $MODEL_FILE"
+        log "trying to download default model to $MODEL_FILE"
         curl -L --fail -o "$MODEL_FILE" "$MODEL_URL" || {
-            log "model download failed"
-            exit 1
+            log "WARNING: model download failed; starting without it (use Hugging Face tab to download)"
         }
     fi
 
@@ -321,11 +320,14 @@ main() {
         warn "llama-server binary not found, using simulated mode"
     fi
 
+    export VITE_GHOSTLINK_API_BASE="http://${BACKEND_HOST}:${BACKEND_PORT}"
+
     log "starting Ghostlink API on port $BACKEND_PORT"
     GHOSTLINK_INFERENCE_BACKEND=native \
     GHOSTLINK_NATIVE_ENGINE="$NATIVE_ENGINE" \
     GHOSTLINK_LLAMA_SERVER_URL="http://127.0.0.1:${LLAMA_PORT}/completion" \
     GHOSTLINK_LLAMA_NGL="$LLAMA_NGL" \
+    VITE_GHOSTLINK_API_BASE="$VITE_GHOSTLINK_API_BASE" \
     cargo run -p ghost-link -- serve "$BACKEND_HOST" "$BACKEND_PORT" \
         >/tmp/ghostlink_api.log 2>&1 &
     API_PID=$!

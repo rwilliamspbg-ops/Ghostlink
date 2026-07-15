@@ -42,7 +42,7 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
   const searchHF = useCallback(async (query: string) => {
     try {
       const result = await api.searchHuggingFace(query || 'llama');
-      if (result.models) setHfResults(result.models);
+      if (result.models && result.models.length > 0) setHfResults(result.models);
     } catch {
       // silent
     }
@@ -152,34 +152,61 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
     setMessage(`Downloading ${id}...`);
     setDownloadProgress(prev => ({ ...prev, [id]: 0 }));
 
-    // Poll progress every 2 seconds
-    const progressInterval = setInterval(async () => {
-      const result = await api.getDownloadProgress(id);
-      if (result.progress !== undefined) {
-        setDownloadProgress(prev => ({ ...prev, [id]: result.progress }));
-      }
-      if (result.status === 'completed' || result.status === 'failed') {
-        clearInterval(progressInterval);
-      }
-    }, 2000);
-
-    try {
-      const result = await api.downloadModel(id);
-      if (result.success) {
-        setDownloadProgress(prev => ({ ...prev, [id]: 1 }));
-        setMessage(`Downloaded ${id}`);
-        refreshModels();
-      } else {
-        setMessage(`Error: ${result.error}`);
-      }
-    } finally {
-      clearInterval(progressInterval);
+    const dlResult = await api.downloadModel(id);
+    if (!dlResult.success) {
+      setMessage(`Error: ${dlResult.error}`);
       setPendingActions(prev => {
         const newState = { ...prev };
         delete newState[id];
         return newState;
       });
+      return;
     }
+
+    refreshModels();
+
+    let pollsRemaining = 300;
+    const poll = async () => {
+      while (pollsRemaining > 0) {
+        pollsRemaining--;
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        const result = await api.getDownloadProgress(id);
+        const progress = result.progress ?? 0;
+        const status = result.status ?? 'unknown';
+        setDownloadProgress(prev => ({ ...prev, [id]: progress }));
+
+        if (status === 'completed') {
+          setDownloadProgress(prev => ({ ...prev, [id]: 1 }));
+          setMessage(`Downloaded ${id}`);
+          refreshModels();
+          setPendingActions(prev => {
+            const newState = { ...prev };
+            delete newState[id];
+            return newState;
+          });
+          return;
+        }
+
+        if (status === 'failed') {
+          setMessage(`Download failed: ${id}`);
+          refreshModels();
+          setPendingActions(prev => {
+            const newState = { ...prev };
+            delete newState[id];
+            return newState;
+          });
+          return;
+        }
+      }
+      setMessage(`Download timed out: ${id}`);
+      setPendingActions(prev => {
+        const newState = { ...prev };
+        delete newState[id];
+        return newState;
+      });
+    };
+
+    poll();
   };
 
   return (
@@ -212,6 +239,8 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                 value={hfSearch}
                 onChange={(e) => setHfSearch(e.target.value)}
                 placeholder="Search models..."
+                name="hf-search"
+                id="hf-search"
                 className="pl-8 pr-4 py-2 bg-slate-800 border border-slate-700 rounded-lg text-slate-200 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500"
               />
             </div>

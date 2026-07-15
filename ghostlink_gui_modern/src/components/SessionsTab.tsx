@@ -5,12 +5,16 @@ import { useAppStore } from '../store';
 export const SessionsTab: React.FC<{ api: any }> = ({ api }) => {
   const { sessions, setSessions } = useAppStore();
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
 
   const refreshSessions = async () => {
     setLoading(true);
+    setError('');
     const result = await api.getSessions();
     if (!result.error) {
       setSessions(result.sessions);
+    } else {
+      setError(result.error);
     }
     setLoading(false);
   };
@@ -38,7 +42,13 @@ export const SessionsTab: React.FC<{ api: any }> = ({ api }) => {
 
       <div className="flex-1 overflow-y-auto p-6">
         <div className="max-w-5xl mx-auto">
-          {sessions.length === 0 ? (
+          {error ? (
+            <div className="flex flex-col items-center justify-center py-20 text-slate-500 bg-slate-900/30 border border-red-800/50 border-dashed rounded-3xl">
+              <XCircle size={48} className="mb-4 opacity-40 text-red-400" />
+              <p className="text-lg font-medium text-red-400">Connection Error</p>
+              <p className="text-sm opacity-60">{error}</p>
+            </div>
+          ) : sessions.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-20 text-slate-500 bg-slate-900/30 border border-slate-800 border-dashed rounded-3xl">
                 <Clock size={48} className="mb-4 opacity-20" />
                 <p className="text-lg font-medium">No active inference sessions</p>

@@ -564,6 +564,7 @@ start_services() {
     
     progress_bar 2 3
     echo " ${DIM}Starting Vite dev server...${NC}"
+    export VITE_GHOSTLINK_API_BASE="http://127.0.0.1:8003"
     npm run dev -- --host 127.0.0.1 --port 5173 >/tmp/ghostlink_frontend.log 2>&1 &
     GUI_PID=$!
     cd ..

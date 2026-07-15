@@ -286,14 +286,10 @@ if not exist "%MODEL_DIR%" mkdir "%MODEL_DIR%" 2>nul
 if "%GHOSTLINK_SKIP_MODEL%"=="1" (
     echo [INFO] Skipping model check ^(GHOSTLINK_SKIP_MODEL=1^)
 ) else if not exist "!MODEL_FILE!" (
-    echo [INFO] Model not found. Downloading default model...
-    curl -L --fail -o "!MODEL_FILE!" "%MODEL_URL%"
-    if errorlevel 1 (
-        echo [ERROR] Failed to download model.
-        pause
-        exit /b 1
-    )
-    echo [OK] Model downloaded successfully.
+    echo [INFO] Default model not found. Starting without it ^(can download from Hugging Face tab^).
+    echo [INFO] To pre-download: set GHOSTLINK_SKIP_MODEL=0 and ensure internet access.
+) else (
+    echo [OK] Default model found: !MODEL_FILE!
 )
 
 REM ==================== Find or Build llama-server ====================
@@ -415,7 +411,7 @@ if errorlevel 1 (
 echo [OK] Backend API is healthy
 
 REM ==================== Start GUI ====================
-echo [INFO] Building and starting GUI on http://127.0.0.1:%GUI_PORT%
+echo [INFO] Starting GUI on http://127.0.0.1:%GUI_PORT%
 cd "%PROJECT_ROOT%ghostlink_gui_modern"
 
 if not exist "node_modules" (
@@ -428,17 +424,12 @@ if not exist "node_modules" (
     )
 )
 
-REM Build for production (served from dist/ via vite preview)
-echo [INFO] Building frontend for production...
-call npm run build
-if errorlevel 1 (
-    echo [WARN] Frontend build failed, falling back to dev server
-    start "Ghostlink Studio GUI" cmd /k "npm run dev -- --host 127.0.0.1 --port %GUI_PORT%"
-    goto WAIT_GUI
-)
-echo [OK] Frontend built successfully
+REM Set API base to match backend host — inherited by child cmd windows
+set "VITE_GHOSTLINK_API_BASE=http://%BACKEND_HOST%:%BACKEND_PORT%"
 
-start "Ghostlink Studio GUI" cmd /k "npm run preview -- --host 127.0.0.1 --port %GUI_PORT%"
+REM Start frontend dev server (with Vite proxy to backend)
+echo [INFO] Starting GUI dev server...
+start "Ghostlink Studio GUI" cmd /k "npm run dev -- --host 127.0.0.1 --port %GUI_PORT%"
 
 cd "%PROJECT_ROOT%"
 
