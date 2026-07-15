@@ -1,79 +1,50 @@
 # Quickstart
 
-This guide is the fastest path to a successful first run.
+## One-command launch
 
-## Goal
-
-Complete a local Ghostlink smoke run in under 5 minutes with one command.
-
-## 1) Clone and run
-
-```bash
-git clone https://github.com/rwilliamspbg-ops/Ghostlink.git
-cd Ghostlink
-bash scripts/quickstart.sh
+**Windows:**
+```powershell
+launch-complete.bat
 ```
 
-Expected success output includes:
-
-- `Smoke flow completed`
-- `Quickstart completed.`
-
-## 2) What quickstart does
-
-1. Checks required tools (`cargo`, `python3`).
-2. Creates `./ghostlink.toml` from `./ghostlink.example.toml` if missing.
-3. Builds `ghost-link`.
-4. Runs `cargo run -p ghost-link -- --config ./ghostlink.toml flow`.
-5. Prints next-step commands.
-
-## 3) Most common first-run fixes
-
-### Missing cargo
-
+**Linux/macOS:**
 ```bash
-curl https://sh.rustup.rs -sSf | sh -s -- -y
-. "$HOME/.cargo/env"
-bash scripts/quickstart.sh
+bash launch-complete.sh
 ```
 
-### Missing Python
+The script:
+1. Detects hardware (CUDA/Metal/DirectML/NPU/CPU)
+2. Builds the Rust backend (`cargo build`)
+3. Installs npm dependencies
+4. Starts the backend API on `http://127.0.0.1:8003`
+5. Starts Vite dev server on `http://127.0.0.1:5173`
+6. Opens the GUI
 
-Install Python 3.10+ using your OS package manager, then rerun:
+## What you can do
 
-```bash
-bash scripts/quickstart.sh
-```
+1. **Chat** — Select a model, send messages with SSE streaming
+2. **Download models** — Browse Hugging Face tab, click Download; progress shows in Library tab
+3. **Monitor metrics** — CPU/GPU/memory utilization, active sessions
+4. **Cluster workers** — Add remote workers, discover peers on LAN
+5. **Settings** — Configure ports, discovery, auth tokens
 
-### Smoke flow fails
+## Default models
 
-Use strict diagnostics and read troubleshooting:
+The backend starts with two tiny models (safe for low-RAM systems):
+- `stories15M` (15M params, ~8 MB)
+- `TinyLlama-1.1B-Chat` (1.1B params, ~650 MB)
 
-```bash
-cargo run -p ghost-link -- gui-check --strict
-cargo run -p ghost-link -- --config ./ghostlink.toml flow
-```
+Download larger models from the Hugging Face tab in the GUI.
 
-See `docs/TROUBLESHOOTING.md` for additional fix paths.
+## Environment shortcuts
 
-## 4) Next commands after quickstart
+```powershell
+# Skip model download
+set GHOSTLINK_SKIP_MODEL=1 && launch-complete.bat
 
-```bash
-# Start a local 3-node discovery validation cluster
-cargo run -p ghost-link -- cluster-start 3 46000
+# Skip Rust build
+set GHOSTLINK_SKIP_BUILD=1 && launch-complete.bat
 
-# Run one-shot doctor summary for troubleshooting and review areas
-cargo run -p ghost-link -- doctor --strict
-
-# Export doctor report JSON for CI or ticket attachments
-cargo run -p ghost-link -- doctor --strict --json ./tmp/doctor-report.json
-
-# Optional: check reachability to an endpoint
-cargo run -p ghost-link -- doctor --network-probe --network-target 127.0.0.1:8003
-
-# Run full local validation suite
-bash scripts/run_full_validation.sh
-
-# Read staged deployment guidance
-cat docs/DEPLOYMENT.md
+# Use ollama backend instead of native llama-server
+set GHOSTLINK_INFERENCE_BACKEND=ollama && launch-complete.bat
 ```
