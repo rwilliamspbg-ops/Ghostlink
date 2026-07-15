@@ -2021,6 +2021,8 @@ fn lock_state(state: &Arc<Mutex<BackendState>>) -> std::sync::MutexGuard<'_, Bac
 }
 
 fn push_audit_entry(state: &Arc<Mutex<BackendState>>, event: &str, status: &str, detail: &str) {
+    // Takes the state lock: callers holding a lock_state guard must drop it
+    // first (std::sync::Mutex is not reentrant; relocking self-deadlocks).
     if let Ok(mut backend) = state.lock() {
         backend.audit_log.push(AuditEntry {
             event: event.to_string(),
@@ -2927,6 +2929,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                         hf_model_id: model_id_clone.clone(),
                     });
                     save_persistent_models(&backend.models);
+                    drop(backend);
 
                     push_audit_entry(
                         &state_clone,
@@ -2960,6 +2963,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                         .models
                         .retain(|m| m.name != model_id_clone && m.hf_model_id != model_id_clone);
                     save_persistent_models(&backend.models);
+                    drop(backend);
 
                     push_audit_entry(
                         &state_clone,
