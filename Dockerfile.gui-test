@@ -1,31 +1,35 @@
-FROM python:3.9-slim
+FROM ubuntu:22.04
 
-# Install basic Python dependencies only (no GUI-specific packages)
+ENV DEBIAN_FRONTEND=noninteractive
+ENV QT_QPA_PLATFORM=offscreen
+
 RUN apt-get update && apt-get install -y \
-    wget \
-    gnupg \
+    python3 \
+    python3-pip \
+    libgl1-mesa-glx \
+    libglib2.0-0 \
+    libxkbcommon0 \
+    libdbus-1-3 \
+    libnss3 \
+    libxcomposite1 \
+    libxcursor1 \
+    libxdamage1 \
+    libxext6 \
+    libxfixes3 \
+    libxi6 \
+    libxrender1 \
+    libxtst6 \
+    libfontconfig1 \
+    libxrandr2 \
+    libasound2 \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# Copy requirements first to leverage Docker layer caching  
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+COPY third_party/mohawk_gui/requirements-runtime.txt .
+RUN pip3 install -r requirements-runtime.txt
 
-# Install test utilities
-RUN pip install pytest requests unittest-xml-reporter 
-
-# Create directory for test artifacts
-RUN mkdir -p /tmp/test_artifacts/
-
-# Add source code (this is the key difference)
 COPY . .
 
-# Set environment variables  
-ENV PYTHONPATH=/app:${PYTHONPATH}
-ENV DISPLAY=:99
-
-EXPOSE 8003
-
-# Simplified CMD that avoids problematic GUI dependencies
-CMD ["bash", "-c", "python -m pytest /app/test_gui_framework.py::TestGhostlinkGUI -v"]
+# Run tests by default
+CMD ["python3", "test_gui_framework.py", "--all"]

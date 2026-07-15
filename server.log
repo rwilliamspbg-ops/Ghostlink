@@ -1,0 +1,13 @@
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.20s
+     Running `target/debug/ghost-link serve 127.0.0.1 8099`
+Loaded config defaults from ./ghostlink.toml
+Ghostlink Studio API - Starting OpenAI-compatible server...
+Listening on http://127.0.0.1:8099
+Routes:
+  - POST /v1/chat/completions
+  - GET  /v1/models
+  - GET  /health
+Inference Core: 1 workers, AVX2 acceleration
+
+API Server Online. Ready for connections.
+[2m2026-06-30T18:18:59.945488Z[0m [32m INFO[0m [2mghost_link[0m[2m:[0m API: Received chat completion request for model: test

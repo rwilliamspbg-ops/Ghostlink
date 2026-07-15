@@ -112,7 +112,7 @@ The splash screen shows:
 - Component status (backend binary, llama-server, model)
 - Service URLs once ready
 
-Open http://127.0.0.1:5173 → **Models tab** → pick a model → **Chat tab** → start chatting.
+Open http://127.0.0.1:5173 ΓåÆ **Models tab** ΓåÆ pick a model ΓåÆ **Chat tab** ΓåÆ start chatting.
 
 ## Quick Start (Linux / macOS)
 
@@ -147,11 +147,11 @@ $env:GHOSTLINK_COMPUTE_CAPABILITY="gpu"
 
 | Script | Description |
 |--------|-------------|
-| `launch.bat` | Full cinematic launcher — builds llama.cpp, downloads model, starts all services |
-| `launch-fast.bat` | Fast launcher — uses pre-built binary, skips cargo build |
+| `launch.bat` | Full cinematic launcher ΓÇö builds llama.cpp, downloads model, starts all services |
+| `launch-fast.bat` | Fast launcher ΓÇö uses pre-built binary, skips cargo build |
 | `launch-splash.bat` | Hardware detection splash + delegates to `launch-complete.bat` |
 | `launch-complete.bat` | Starts backend, llama-server, and React GUI |
-| `check_hardware.ps1` | Diagnostic — shows detected GPU, NPU, and component status |
+| `check_hardware.ps1` | Diagnostic ΓÇö shows detected GPU, NPU, and component status |
 
 ## Usage (Developer)
 
@@ -217,9 +217,9 @@ cargo run -p ghost-link -- dashboard
 | `GHOSTLINK_INFERENCE_BACKEND` | `native` | `native` or `ollama` |
 | `GHOSTLINK_NATIVE_ENGINE` | `llama_server` | `llama_server` or `llama_cpp` |
 | `GHOSTLINK_LLAMA_SERVER_URL` | `http://127.0.0.1:8080/completion` | llama-server URL |
-| `GHOSTLINK_GPU_NAME` | — | Override detected GPU name |
-| `GHOSTLINK_VRAM_GB` | — | Override detected VRAM |
-| `GHOSTLINK_COMPUTE_CAPABILITY` | — | Override compute capability |
+| `GHOSTLINK_GPU_NAME` | ΓÇö | Override detected GPU name |
+| `GHOSTLINK_VRAM_GB` | ΓÇö | Override detected VRAM |
+| `GHOSTLINK_COMPUTE_CAPABILITY` | ΓÇö | Override compute capability |
 | `GHOSTLINK_LLAMA_NGL` | `0` | GPU layers to offload (`-1` = all layers) |
 
 ### Config File (TOML)
@@ -234,15 +234,15 @@ See `ghostlink.toml` for all settings:
 
 ```
 crates/
-├── ghostlink-core/     # Shared runtime primitives
-│   ├── host.rs          # GPU/NPU/CPU auto-detection
-│   ├── runtime.rs       # Pipeline execution (in-memory, TCP, AF_XDP)
-│   ├── planning.rs      # Layer assignment & quantization
-│   ├── discovery.rs     # UDP broadcast cluster discovery
-│   ├── cluster.rs       # Thread-safe node state & metrics
-│   ├── health.rs        # Network health & fault detection
-│   └── load_balance.rs  # Tensor distribution across nodes
-├── ghost-link/          # CLI demo & API server
+Γö£ΓöÇΓöÇ ghostlink-core/     # Shared runtime primitives
+Γöé   Γö£ΓöÇΓöÇ host.rs          # GPU/NPU/CPU auto-detection
+Γöé   Γö£ΓöÇΓöÇ runtime.rs       # Pipeline execution (in-memory, TCP, AF_XDP)
+Γöé   Γö£ΓöÇΓöÇ planning.rs      # Layer assignment & quantization
+Γöé   Γö£ΓöÇΓöÇ discovery.rs     # UDP broadcast cluster discovery
+Γöé   Γö£ΓöÇΓöÇ cluster.rs       # Thread-safe node state & metrics
+Γöé   Γö£ΓöÇΓöÇ health.rs        # Network health & fault detection
+Γöé   ΓööΓöÇΓöÇ load_balance.rs  # Tensor distribution across nodes
+Γö£ΓöÇΓöÇ ghost-link/          # CLI demo & API server
 ghostlink_gui_modern/    # React frontend (Vite + Tailwind)
 ```
 

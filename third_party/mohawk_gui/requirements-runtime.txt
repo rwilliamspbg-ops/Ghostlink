@@ -7,9 +7,4 @@ requests
 pyqtgraph
 certifi
 huggingface_hub
-transformers
-torch
-safetensors
-accelerate
-sentencepiece
-tokenizers
+

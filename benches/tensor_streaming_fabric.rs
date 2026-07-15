@@ -19,7 +19,7 @@ fn benchmark_inmem_baseline(c: &mut Criterion) {
 
     c.bench_function("fabric_inmem_single_gpu", |b| {
         b.iter(|| {
-            let result = execute_pipeline(&plan, black_box(128), 4);
+            let result = execute_pipeline(&plan, black_box(128), 4).unwrap();
             (
                 result.throughput_tokens_per_sec,
                 result.avg_token_latency_ms,

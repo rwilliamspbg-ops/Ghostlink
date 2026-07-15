@@ -20,7 +20,6 @@ use std::time::Instant;
 pub enum DeviceKind {
     Npu,
     Gpu,
-    RocmGpu,
     Cpu,
 }
 
@@ -30,7 +29,6 @@ impl DeviceKind {
         match self {
             Self::Npu => "NPU",
             Self::Gpu => "GPU",
-            Self::RocmGpu => "ROCm GPU",
             Self::Cpu => "CPU",
         }
     }
@@ -111,7 +109,6 @@ impl PipelinePlan {
         match device {
             DeviceKind::Npu => 0.42,
             DeviceKind::Gpu => 0.55,
-            DeviceKind::RocmGpu => 0.58,
             DeviceKind::Cpu => 1.25,
         }
     }
@@ -150,42 +147,20 @@ fn run_stage_compute(payload: &mut [f32], stage: &StagePlacement) {
     let rounds = match stage.device {
         DeviceKind::Npu => base_rounds,
         DeviceKind::Gpu => base_rounds * 2,
-        DeviceKind::RocmGpu => (base_rounds as f32 * 2.1) as usize,
         DeviceKind::Cpu => base_rounds * 3,
     };
 
     let alpha = match stage.device {
         DeviceKind::Npu => 1.001_f32,
         DeviceKind::Gpu => 1.003_f32,
-        DeviceKind::RocmGpu => 1.0035_f32,
         DeviceKind::Cpu => 1.005_f32,
     };
 
-    #[inline]
-    fn fast_bounded_transform(x: f32) -> f32 {
-        // Fast odd rational approximation that keeps values in a stable range.
-        x / (1.0 + x.abs())
-    }
-
     for _ in 0..rounds {
         for value in payload.iter_mut() {
-            *value = fast_bounded_transform((*value * alpha) + 0.125);
+            *value = ((*value * alpha) + 0.125).sin();
         }
     }
-}
-
-fn avg_and_p95_token_latency_ms(token_latencies: &mut [f32]) -> (f32, f32) {
-    if token_latencies.is_empty() {
-        return (0.0, 0.0);
-    }
-
-    let avg_token_latency_ms =
-        token_latencies.iter().copied().sum::<f32>() / token_latencies.len() as f32;
-    let p95_idx = ((token_latencies.len().saturating_sub(1)) as f32 * 0.95).round() as usize;
-    token_latencies.select_nth_unstable_by(p95_idx, |a, b| {
-        a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)
-    });
-    (avg_token_latency_ms, token_latencies[p95_idx])
 }
 
 /// Per-stage runtime telemetry captured from real in-process execution.
@@ -228,8 +203,7 @@ pub struct TcpTransportConfig {
 impl Default for TcpTransportConfig {
     fn default() -> Self {
         Self {
-            // Lower default queue depth reduces latency variance on shared CI/desktop hosts.
-            max_inflight_batches: 256,
+            max_inflight_batches: 512,
             reconnect_attempts: 3,
             reconnect_backoff_ms: 25,
             auth_token: None,
@@ -309,7 +283,7 @@ pub fn execute_pipeline(
     plan: &PipelinePlan,
     token_count: usize,
     micro_batch: usize,
-) -> ExecutionResult {
+) -> Result<ExecutionResult, String> {
     execute_pipeline_with_rebalance(plan, token_count, micro_batch, None)
 }
 
@@ -318,7 +292,7 @@ pub fn execute_pipeline_with_rebalance(
     token_count: usize,
     micro_batch: usize,
     rebalance: Option<&crate::planning::RebalanceTrigger>,
-) -> ExecutionResult {
+) -> Result<ExecutionResult, String> {
     execute_pipeline_with_rebalance_and_measured(
         plan,
         token_count,
@@ -336,12 +310,12 @@ pub fn execute_pipeline_with_rebalance_and_measured(
     rebalance: Option<&crate::planning::RebalanceTrigger>,
     cluster: Option<&crate::cluster::ClusterState>,
     placement_context: Option<&crate::planning::PlacementPlan>,
-) -> ExecutionResult {
+) -> Result<ExecutionResult, String> {
     let stage_count = plan.stages.len();
     let micro_batch = micro_batch.max(1);
     let batch_count = token_count.div_ceil(micro_batch);
     if stage_count == 0 || token_count == 0 {
-        return ExecutionResult {
+        return Ok(ExecutionResult {
             token_count,
             micro_batch,
             batch_count,
@@ -351,7 +325,7 @@ pub fn execute_pipeline_with_rebalance_and_measured(
             avg_token_latency_ms: 0.0,
             p95_token_latency_ms: 0.0,
             stage_stats: Vec::new(),
-        };
+        });
     }
 
     #[derive(Debug)]
@@ -376,8 +350,7 @@ pub fn execute_pipeline_with_rebalance_and_measured(
     // Use zero-copy SPSC ring buffers for high-throughput in-memory execution.
     let ring_cfg = RingConfig {
         capacity: 512,
-        // Keep backpressure near capacity so stage handoff can utilize the ring depth.
-        backpressure_threshold: 510,
+        backpressure_threshold: 400,
     };
 
     let mut rings = Vec::with_capacity(stage_count + 1);
@@ -402,12 +375,8 @@ pub fn execute_pipeline_with_rebalance_and_measured(
 
             loop {
                 let recv_start = Instant::now();
-                let mut spins = 0usize;
-                let mut batch = loop {
-                    if let Some(batch) = rx_ring.pop() {
-                        break batch;
-                    }
-                    if spins > 0 && spins.is_multiple_of(256) && Arc::strong_count(&rx_ring) <= 1 {
+                while rx_ring.is_empty() {
+                    if Arc::strong_count(&rx_ring) <= 1 {
                         return StageAccumulator {
                             stage_idx,
                             processed_batches,
@@ -416,12 +385,10 @@ pub fn execute_pipeline_with_rebalance_and_measured(
                             total_send_wait_ms,
                         };
                     }
-                    if spins < 100 {
-                        core::hint::spin_loop();
-                    } else {
-                        thread::yield_now();
-                    }
-                    spins += 1;
+                    thread::yield_now();
+                }
+                let Some(mut batch) = rx_ring.pop() else {
+                    continue;
                 };
                 total_recv_wait_ms += recv_start.elapsed().as_secs_f32() * 1000.0;
 
@@ -506,7 +473,7 @@ pub fn execute_pipeline_with_rebalance_and_measured(
     // Drop entry ring to signal completion to stage threads
     drop(entry_ring);
 
-    let mut token_latencies = latencies_handle.join().unwrap_or_default();
+    let token_latencies = latencies_handle.join().unwrap_or_default();
     let total_time_ms = exec_start.elapsed().as_secs_f32() * 1000.0;
 
     let mut stage_stats = Vec::with_capacity(stage_count);
@@ -544,10 +511,18 @@ pub fn execute_pipeline_with_rebalance_and_measured(
         0.0
     };
 
-    let (avg_token_latency_ms, p95_token_latency_ms) =
-        avg_and_p95_token_latency_ms(&mut token_latencies);
+    let avg_token_latency_ms = if token_latencies.is_empty() {
+        0.0
+    } else {
+        token_latencies.iter().sum::<f32>() / token_latencies.len() as f32
+    };
 
-    ExecutionResult {
+    let mut sorted = token_latencies.clone();
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let p95_idx = ((sorted.len() - 1) as f32 * 0.95).round() as usize;
+    let p95_token_latency_ms = sorted.get(p95_idx).copied().unwrap_or(0.0);
+
+    Ok(ExecutionResult {
         token_count,
         micro_batch,
         batch_count,
@@ -557,7 +532,7 @@ pub fn execute_pipeline_with_rebalance_and_measured(
         avg_token_latency_ms,
         p95_token_latency_ms,
         stage_stats,
-    }
+    })
 }
 
 #[derive(Debug, Clone)]
@@ -585,26 +560,6 @@ fn auth_tag(
     mac.finalize().into_bytes().into()
 }
 
-fn verify_auth_tag(
-    source_stage: usize,
-    batch_id: usize,
-    tokens_in_batch: usize,
-    payload: &[f32],
-    token: &str,
-    received_tag: &[u8],
-) -> io::Result<()> {
-    let mut mac = Hmac::<Sha256>::new_from_slice(token.as_bytes())
-        .expect("HMAC key setup for transport auth failed");
-    mac.update(&(source_stage as u32).to_le_bytes());
-    mac.update(&(batch_id as u64).to_le_bytes());
-    mac.update(&(tokens_in_batch as u32).to_le_bytes());
-    mac.update(&(payload.len() as u32).to_le_bytes());
-    let payload_bytes = payload_as_le_bytes(payload);
-    mac.update(payload_bytes.as_ref());
-    mac.verify_slice(received_tag)
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "transport auth tag mismatch"))
-}
-
 fn payload_as_le_bytes(payload: &[f32]) -> std::borrow::Cow<'_, [u8]> {
     if cfg!(target_endian = "little") {
         // SAFETY: f32 is POD; casting [f32] to its contiguous byte representation is valid.
@@ -629,29 +584,29 @@ fn write_transport_batch(
     batch: &TransportBatch,
     source_stage: usize,
     token: Option<&str>,
+    frame_buf: &mut Vec<u8>,
 ) -> io::Result<()> {
     let batch_id = batch.batch_id as u64;
     let tokens = batch.tokens_in_batch as u32;
     let payload_len = batch.payload.len() as u32;
     let source_stage_u16 = source_stage as u16;
 
-    // Use a stack-allocated header to avoid large intermediate vector copies.
+    // Reuse frame buffer to minimize allocations.
+    frame_buf.clear();
     // Header size: source_stage(2) + batch_id(8) + tokens(4) + payload_len(4) + tag_present(1) + [tag(32) if present]
-    let mut header = [0u8; 51];
-    let mut offset = 0;
-
-    header[offset..offset + 2].copy_from_slice(&source_stage_u16.to_le_bytes());
-    offset += 2;
-    header[offset..offset + 8].copy_from_slice(&batch_id.to_le_bytes());
-    offset += 8;
-    header[offset..offset + 4].copy_from_slice(&tokens.to_le_bytes());
-    offset += 4;
-    header[offset..offset + 4].copy_from_slice(&payload_len.to_le_bytes());
-    offset += 4;
+    let header_capacity = if token.is_some() {
+        2 + 8 + 4 + 4 + 1 + 32
+    } else {
+        2 + 8 + 4 + 4 + 1
+    };
+    frame_buf.reserve(header_capacity + batch.payload.len() * 4);
+    frame_buf.extend_from_slice(&source_stage_u16.to_le_bytes());
+    frame_buf.extend_from_slice(&batch_id.to_le_bytes());
+    frame_buf.extend_from_slice(&tokens.to_le_bytes());
+    frame_buf.extend_from_slice(&payload_len.to_le_bytes());
 
     if let Some(t) = token {
-        header[offset] = 1; // Tag present
-        offset += 1;
+        frame_buf.push(1); // Tag present
         let tag = auth_tag(
             source_stage,
             batch.batch_id,
@@ -659,17 +614,14 @@ fn write_transport_batch(
             &batch.payload,
             t,
         );
-        header[offset..offset + 32].copy_from_slice(&tag);
-        offset += 32;
+        frame_buf.extend_from_slice(&tag);
     } else {
-        header[offset] = 0; // Tag absent
-        offset += 1;
+        frame_buf.push(0); // Tag absent
     }
 
-    writer.write_all(&header[..offset])?;
-
     let payload_bytes = payload_as_le_bytes(&batch.payload);
-    writer.write_all(payload_bytes.as_ref())?;
+    frame_buf.extend_from_slice(payload_bytes.as_ref());
+    writer.write_all(frame_buf)?;
 
     Ok(())
 }
@@ -678,6 +630,7 @@ fn read_transport_batch(
     reader: &mut impl Read,
     expected_source_stage: usize,
     token: Option<&str>,
+    payload_buf: &mut Vec<f32>,
 ) -> io::Result<Option<TransportBatch>> {
     let mut source_stage_bytes = [0u8; 2];
     match reader.read_exact(&mut source_stage_bytes) {
@@ -711,30 +664,23 @@ fn read_transport_batch(
     if tag_present {
         reader.read_exact(&mut received_tag)?;
     }
+    payload_buf.resize(payload_len, 0.0);
 
-    let payload = if cfg!(target_endian = "little") {
-        // SAFETY: We allocate a vector of MaybeUninit to avoid zero-initialization.
-        // We then read directly into its backing buffer. This is safe because
-        // we only set the length after a successful read_exact.
-        let mut payload_uninit = Vec::<std::mem::MaybeUninit<f32>>::with_capacity(payload_len);
-        unsafe {
-            let payload_bytes = std::slice::from_raw_parts_mut(
-                payload_uninit.as_mut_ptr() as *mut u8,
+    if cfg!(target_endian = "little") {
+        // SAFETY: payload_buf points to initialized contiguous f32 memory; we reinterpret as bytes for I/O.
+        let payload_bytes = unsafe {
+            slice::from_raw_parts_mut(
+                payload_buf.as_mut_ptr() as *mut u8,
                 payload_len * std::mem::size_of::<f32>(),
-            );
-            reader.read_exact(payload_bytes)?;
-            payload_uninit.set_len(payload_len);
-            // Safety: f32 does not have any invalid bit patterns and we just initialized it.
-            std::mem::transmute::<Vec<std::mem::MaybeUninit<f32>>, Vec<f32>>(payload_uninit)
-        }
+            )
+        };
+        reader.read_exact(payload_bytes)?;
     } else {
-        let mut payload = vec![0.0_f32; payload_len];
         let mut payload_bytes = vec![0u8; payload_len * 4];
         reader.read_exact(&mut payload_bytes)?;
         for (i, chunk) in payload_bytes.chunks_exact(4).enumerate() {
-            payload[i] = f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+            payload_buf[i] = f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
         }
-        payload
     };
 
     let batch_id = u64::from_le_bytes(batch_id_bytes) as usize;
@@ -747,20 +693,19 @@ fn read_transport_batch(
                 "transport authentication required but tag missing",
             ));
         }
-        verify_auth_tag(
-            source_stage,
-            batch_id,
-            tokens_in_batch,
-            &payload,
-            t,
-            &received_tag,
-        )?;
+        let expected_tag = auth_tag(source_stage, batch_id, tokens_in_batch, payload_buf, t);
+        if received_tag != expected_tag {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "transport auth tag mismatch",
+            ));
+        }
     }
 
     Ok(Some(TransportBatch {
         batch_id,
         tokens_in_batch,
-        payload,
+        payload: payload_buf.clone(),
     }))
 }
 
@@ -783,7 +728,6 @@ pub fn spawn_tcp_bridge(
             for attempt in 0..attempts {
                 match TcpStream::connect_timeout(&connect_addr, Duration::from_secs(1)) {
                     Ok(stream) => {
-                        let _ = stream.set_nodelay(true);
                         connected = Some(stream);
                         break;
                     }
@@ -818,10 +762,7 @@ pub fn spawn_tcp_bridge(
         };
 
         let (server_stream, _) = match listener.accept() {
-            Ok((stream, addr)) => {
-                let _ = stream.set_nodelay(true);
-                (stream, addr)
-            }
+            Ok(parts) => parts,
             Err(_) => {
                 for batch in input_rx {
                     if output_tx.send(batch).is_err() {
@@ -839,6 +780,7 @@ pub fn spawn_tcp_bridge(
             let mut writer = BufWriter::with_capacity(64 * 1024, client_stream);
             let mut processed_batches = 0usize;
             let mut total_write_ms = 0.0_f32;
+            let mut frame_buf = Vec::with_capacity(64 * 1024);
             for batch in input_rx {
                 let write_start = Instant::now();
                 if write_transport_batch(
@@ -846,6 +788,7 @@ pub fn spawn_tcp_bridge(
                     &batch,
                     source_stage,
                     writer_auth_token.as_deref(),
+                    &mut frame_buf,
                 )
                 .is_err()
                 {
@@ -862,10 +805,16 @@ pub fn spawn_tcp_bridge(
         let mut reader = BufReader::with_capacity(64 * 1024, server_stream);
         let mut read_batches = 0usize;
         let mut total_read_ms = 0.0_f32;
+        let mut payload_buf = Vec::with_capacity(16 * 1024);
 
         loop {
             let read_start = Instant::now();
-            match read_transport_batch(&mut reader, source_stage, reader_auth_token.as_deref()) {
+            match read_transport_batch(
+                &mut reader,
+                source_stage,
+                reader_auth_token.as_deref(),
+                &mut payload_buf,
+            ) {
                 Ok(Some(batch)) => {
                     total_read_ms += read_start.elapsed().as_secs_f32() * 1000.0;
                     if output_tx.send(batch).is_err() {
@@ -886,69 +835,6 @@ pub fn spawn_tcp_bridge(
             total_read_ms,
         }
     })
-}
-
-/// Spawn an AF_XDP-preferred bridge. If AF_XDP is unavailable, falls back to TCP bridge.
-pub fn spawn_xdp_bridge(
-    source_stage: usize,
-    input_rx: mpsc::Receiver<TransportBatch>,
-    output_tx: mpsc::SyncSender<TransportBatch>,
-    config: TcpTransportConfig,
-    listener: TcpListener,
-    connect_addr: SocketAddr,
-    interface_name: String,
-) -> thread::JoinHandle<BridgeAccumulator> {
-    let mut manager = crate::xdp::TransportSocketManager::new(&interface_name);
-    match manager.init() {
-        Ok(()) => {
-            manager.close();
-            tracing::info!(
-                "XDP Bridge stage {}: AF_XDP available on '{}', using low-overhead bridge path",
-                source_stage,
-                interface_name
-            );
-            thread::spawn(move || {
-                let mut processed_batches = 0usize;
-                let mut total_write_ms = 0.0_f32;
-                let mut total_read_ms = 0.0_f32;
-
-                for batch in input_rx {
-                    let write_start = Instant::now();
-                    total_write_ms += write_start.elapsed().as_secs_f32() * 1000.0;
-
-                    let read_start = Instant::now();
-                    if output_tx.send(batch).is_err() {
-                        break;
-                    }
-                    total_read_ms += read_start.elapsed().as_secs_f32() * 1000.0;
-                    processed_batches += 1;
-                }
-
-                BridgeAccumulator {
-                    source_stage,
-                    processed_batches,
-                    total_write_ms,
-                    total_read_ms,
-                }
-            })
-        }
-        Err(err) => {
-            tracing::warn!(
-                "XDP Bridge stage {}: AF_XDP unavailable on '{}': {}. Falling back to TCP.",
-                source_stage,
-                interface_name,
-                err
-            );
-            spawn_tcp_bridge(
-                source_stage,
-                input_rx,
-                output_tx,
-                config,
-                listener,
-                connect_addr,
-            )
-        }
-    }
 }
 
 #[derive(Debug)]
@@ -1116,11 +1002,9 @@ pub fn execute_pipeline_distributed(
         let batch_start_token = batch_idx * micro_batch;
         let tokens_in_batch = (token_count - batch_start_token).min(micro_batch);
         let payload_len = (tokens_in_batch.max(1) * 16).max(32);
-        let mut payload = vec![0.0_f32; payload_len];
-        let batch_term = batch_idx as f32 * 0.01;
-        for (idx, value) in payload.iter_mut().enumerate() {
-            *value = batch_term + (idx as f32 * 0.0001);
-        }
+        let payload = (0..payload_len)
+            .map(|idx| (batch_idx as f32 * 0.01) + (idx as f32 * 0.0001))
+            .collect();
 
         *batch_started_slot = Instant::now();
         let _ = entry_tx.send(TransportBatch {
@@ -1207,8 +1091,16 @@ pub fn execute_pipeline_distributed(
         0.0
     };
 
-    let (avg_token_latency_ms, p95_token_latency_ms) =
-        avg_and_p95_token_latency_ms(&mut token_latencies);
+    let avg_token_latency_ms = if token_latencies.is_empty() {
+        0.0
+    } else {
+        token_latencies.iter().sum::<f32>() / token_latencies.len() as f32
+    };
+
+    let mut sorted = token_latencies.clone();
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let p95_idx = ((sorted.len().saturating_sub(1)) as f32 * 0.95).round() as usize;
+    let p95_token_latency_ms = sorted.get(p95_idx).copied().unwrap_or(0.0);
 
     Ok(ExecutionResult {
         token_count,
@@ -1236,42 +1128,12 @@ pub fn execute_pipeline_tcp_loopback(
     )
 }
 
-/// Execute pipeline stages with AF_XDP-preferred inter-stage bridges.
-///
-/// Each bridge attempts AF_XDP initialization on `xdp_interface`; if unavailable,
-/// transport automatically falls back to TCP bridge semantics.
-pub fn execute_pipeline_xdp_loopback_with_config(
-    plan: &PipelinePlan,
-    token_count: usize,
-    micro_batch: usize,
-    config: TcpTransportConfig,
-    xdp_interface: &str,
-) -> Result<ExecutionResult, String> {
-    execute_pipeline_loopback_with_config(
-        plan,
-        token_count,
-        micro_batch,
-        config,
-        Some(xdp_interface),
-    )
-}
-
 /// Execute pipeline stages with real TCP loopback transport bridges and explicit transport config.
 pub fn execute_pipeline_tcp_loopback_with_config(
     plan: &PipelinePlan,
     token_count: usize,
     micro_batch: usize,
     config: TcpTransportConfig,
-) -> Result<ExecutionResult, String> {
-    execute_pipeline_loopback_with_config(plan, token_count, micro_batch, config, None)
-}
-
-fn execute_pipeline_loopback_with_config(
-    plan: &PipelinePlan,
-    token_count: usize,
-    micro_batch: usize,
-    config: TcpTransportConfig,
-    xdp_interface: Option<&str>,
 ) -> Result<ExecutionResult, String> {
     let stage_count = plan.stages.len();
     let micro_batch = micro_batch.max(1);
@@ -1325,26 +1187,14 @@ fn execute_pipeline_loopback_with_config(
             .local_addr()
             .map_err(|e| format!("failed to get loopback local addr: {}", e))?;
 
-        if let Some(interface) = xdp_interface {
-            bridge_handles.push(spawn_xdp_bridge(
-                source_stage,
-                bridge_in_rx,
-                bridge_out_tx,
-                config.clone(),
-                listener,
-                actual_addr,
-                interface.to_string(),
-            ));
-        } else {
-            bridge_handles.push(spawn_tcp_bridge(
-                source_stage,
-                bridge_in_rx,
-                bridge_out_tx,
-                config.clone(),
-                listener,
-                actual_addr,
-            ));
-        }
+        bridge_handles.push(spawn_tcp_bridge(
+            source_stage,
+            bridge_in_rx,
+            bridge_out_tx,
+            config.clone(),
+            listener,
+            actual_addr,
+        ));
     }
 
     let (completion_tx, completion_rx) = mpsc::sync_channel::<TransportBatch>(bridge_capacity);
@@ -1405,11 +1255,9 @@ fn execute_pipeline_loopback_with_config(
         let batch_start_token = batch_idx * micro_batch;
         let tokens_in_batch = (token_count - batch_start_token).min(micro_batch);
         let payload_len = (tokens_in_batch.max(1) * 16).max(32);
-        let mut payload = vec![0.0_f32; payload_len];
-        let batch_term = batch_idx as f32 * 0.01;
-        for (idx, value) in payload.iter_mut().enumerate() {
-            *value = batch_term + (idx as f32 * 0.0001);
-        }
+        let payload = (0..payload_len)
+            .map(|idx| (batch_idx as f32 * 0.01) + (idx as f32 * 0.0001))
+            .collect();
 
         *batch_started_slot = Instant::now();
         if entry_tx
@@ -1484,8 +1332,16 @@ fn execute_pipeline_loopback_with_config(
         0.0
     };
 
-    let (avg_token_latency_ms, p95_token_latency_ms) =
-        avg_and_p95_token_latency_ms(&mut token_latencies);
+    let avg_token_latency_ms = if token_latencies.is_empty() {
+        0.0
+    } else {
+        token_latencies.iter().sum::<f32>() / token_latencies.len() as f32
+    };
+
+    let mut sorted = token_latencies.clone();
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let p95_idx = ((sorted.len().saturating_sub(1)) as f32 * 0.95).round() as usize;
+    let p95_token_latency_ms = sorted.get(p95_idx).copied().unwrap_or(0.0);
 
     Ok(ExecutionResult {
         token_count,
@@ -1567,7 +1423,7 @@ mod tests {
             ],
         };
 
-        let result = execute_pipeline(&plan, 8, 1);
+        let result = execute_pipeline(&plan, 8, 1).expect("failed");
         assert_eq!(result.stage_count, 2);
         assert_eq!(result.token_count, 8);
         assert_eq!(result.micro_batch, 1);
@@ -1599,8 +1455,8 @@ mod tests {
             ],
         };
 
-        let mb1 = execute_pipeline(&plan, 32, 1);
-        let mb4 = execute_pipeline(&plan, 32, 4);
+        let mb1 = execute_pipeline(&plan, 32, 1).expect("failed");
+        let mb4 = execute_pipeline(&plan, 32, 4).expect("failed");
 
         assert_eq!(mb1.batch_count, 32);
         assert_eq!(mb4.batch_count, 8);
@@ -1628,7 +1484,7 @@ mod tests {
             ],
         };
 
-        let result = execute_pipeline(&plan, 12, 3);
+        let result = execute_pipeline(&plan, 12, 3).expect("failed");
         assert_eq!(result.stage_count, 2);
         assert_eq!(result.batch_count, 4);
         assert_eq!(result.stage_stats.len(), 2);
@@ -1658,7 +1514,7 @@ mod tests {
             ],
         };
 
-        let result = execute_pipeline_tcp_loopback(&plan, 16, 2).expect("loopback failed");
+        let result = execute_pipeline_tcp_loopback(&plan, 16, 2).expect("failed");
         assert_eq!(result.token_count, 16);
         assert_eq!(result.batch_count, 8);
         assert_eq!(result.stage_stats.len(), 2);
@@ -1716,10 +1572,13 @@ mod tests {
             payload: vec![0.1, 0.2, 0.3, 0.4],
         };
         let mut encoded = Vec::new();
-        write_transport_batch(&mut encoded, &batch, 0, Some("token-a")).expect("encode frame");
+        let mut frame_buf = Vec::new();
+        write_transport_batch(&mut encoded, &batch, 0, Some("token-a"), &mut frame_buf)
+            .expect("encode frame");
 
         let mut cursor = Cursor::new(encoded);
-        let err = read_transport_batch(&mut cursor, 0, Some("token-b"))
+        let mut payload_buf = Vec::new();
+        let err = read_transport_batch(&mut cursor, 0, Some("token-b"), &mut payload_buf)
             .expect_err("mismatched token should fail");
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
     }
@@ -1732,10 +1591,13 @@ mod tests {
             payload: vec![1.0, 2.0],
         };
         let mut encoded = Vec::new();
-        write_transport_batch(&mut encoded, &batch, 1, Some("token")).expect("encode frame");
+        let mut frame_buf = Vec::new();
+        write_transport_batch(&mut encoded, &batch, 1, Some("token"), &mut frame_buf)
+            .expect("encode frame");
 
         let mut cursor = Cursor::new(encoded);
-        let err = read_transport_batch(&mut cursor, 0, Some("token"))
+        let mut payload_buf = Vec::new();
+        let err = read_transport_batch(&mut cursor, 0, Some("token"), &mut payload_buf)
             .expect_err("source-stage mismatch should fail");
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
     }

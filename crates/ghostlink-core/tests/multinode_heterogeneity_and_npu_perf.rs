@@ -53,7 +53,6 @@ fn build_heterogeneous_device_map(
     let remote_device = match local_device {
         DeviceKind::Npu => DeviceKind::Gpu,
         DeviceKind::Gpu => DeviceKind::Gpu,
-        DeviceKind::RocmGpu => DeviceKind::Gpu,
         DeviceKind::Cpu => DeviceKind::Gpu,
     };
 
@@ -476,7 +475,7 @@ fn test_rocm_gpu_device_kind_in_pipeline() {
         node_id: "node-rocm".to_string(),
         start_layer: 0,
         end_layer: 12,
-        device: DeviceKind::RocmGpu,
+        device: DeviceKind::Gpu,
         est_latency_ms: 0.58 * 12.0, // 6.96ms for 12 layers
     };
 
@@ -507,7 +506,7 @@ fn test_rocm_gpu_in_heterogeneous_device_map() {
     let _gpu_profile = create_profile_for_device(AccelerationMode::Gpu);
     let mut device_map = HashMap::new();
     device_map.insert("local-gpu".to_string(), DeviceKind::Gpu);
-    device_map.insert("rocm-node".to_string(), DeviceKind::RocmGpu);
+    device_map.insert("rocm-node".to_string(), DeviceKind::Gpu);
     device_map.insert("fallback-cpu".to_string(), DeviceKind::Cpu);
 
     let assignments = vec![
@@ -519,11 +518,11 @@ fn test_rocm_gpu_in_heterogeneous_device_map() {
     let plan = PipelinePlan::from_assignments(&assignments, &device_map);
     assert_eq!(plan.stages.len(), 3);
     assert_eq!(plan.stages[0].device, DeviceKind::Gpu);
-    assert_eq!(plan.stages[1].device, DeviceKind::RocmGpu);
+    assert_eq!(plan.stages[1].device, DeviceKind::Gpu);
     assert_eq!(plan.stages[2].device, DeviceKind::Cpu);
 
-    // ROCm GPU stages should have distinct cost from generic GPU stages
-    assert_ne!(plan.stages[0].est_latency_ms, plan.stages[1].est_latency_ms);
+    // ROCm now maps to Gpu; both stages share the same default cost
+    assert_eq!(plan.stages[0].est_latency_ms, plan.stages[1].est_latency_ms);
 }
 
 #[test]
@@ -532,12 +531,12 @@ fn test_rocm_gpu_stage_compute_simulation() {
 
     let assignments = vec![LayerAssignment::new("rocm-node".to_string(), 0, 8, 8.0)];
     let mut device_map = HashMap::new();
-    device_map.insert("rocm-node".to_string(), DeviceKind::RocmGpu);
+    device_map.insert("rocm-node".to_string(), DeviceKind::Gpu);
 
     let plan = PipelinePlan::from_assignments(&assignments, &device_map);
-    assert_eq!(plan.stages[0].device, DeviceKind::RocmGpu);
+    assert_eq!(plan.stages[0].device, DeviceKind::Gpu);
 
-    let result = execute_pipeline(&plan, 32, 4);
+    let result = execute_pipeline(&plan, 32, 4).expect("pipeline should succeed");
     assert_eq!(result.stage_count, 1);
     assert!(result.total_time_ms > 0.0);
     assert!(result.throughput_tokens_per_sec > 0.0);

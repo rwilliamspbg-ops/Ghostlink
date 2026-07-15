@@ -33,9 +33,90 @@ jobs:
     
     steps:
       - uses: actions/checkout@v4
-      
-      - name: Install Rust 1.89.0
-        uses: dtolnay/rust-toolchain@1.89.0
-      
-      - name: Verify MSRV
-        run: cargo check --workspace
+      - name: Validate workspace/crate license alignment
+        run: bash scripts/check_license_consistency.sh
+
+  docs:
+    name: Docs
+    uses: ./.github/workflows/docs.yml
+
+  perf-tooling-smoke:
+    name: Perf Tooling Smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Drift Checker Schema Smoke
+        run: |
+          mkdir -p ./tmp
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          baseline = json.loads(Path("./docs/PERF_BASELINE.json").read_text(encoding="utf-8"))
+          modes = baseline.get("modes", {})
+          summary = {
+              mode: {
+                  "throughput_avg": float(values["throughput_avg"]),
+                  "p95_avg": float(values["p95_avg"]),
+              }
+              for mode, values in modes.items()
+          }
+
+          Path("./tmp/perf-summary-smoke.json").write_text(
+              json.dumps(summary, indent=2),
+              encoding="utf-8",
+          )
+          PY
+
+          python3 scripts/check_perf_drift.py \
+            --baseline ./docs/PERF_BASELINE.json \
+            --current ./tmp/perf-summary-smoke.json
+
+  production-gate:
+    name: Production Gate
+    uses: ./.github/workflows/production-gate.yml
+
+  security:
+    name: Security
+    uses: ./.github/workflows/security.yml
+
+  coverage:
+    name: Code Coverage
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install tarpaulin
+        run: cargo install cargo-tarpaulin --version 0.31.5 --locked
+
+      - name: Generate coverage report
+        run: |
+          cargo tarpaulin --workspace --out Lcov --output-dir coverage \
+            --timeout 300 --exclude-files benches/* --fail-under 35
+
+      - name: Verify coverage artifact
+        run: |
+          test -s ./coverage/lcov.info
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          files: ./coverage/lcov.info
+          token: ${{ secrets.CODECOV_TOKEN }}
+          use_oidc: true
+          fail_ci_if_error: false
+          verbose: true
+
+      - name: Upload coverage artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage/
+          retention-days: 30
