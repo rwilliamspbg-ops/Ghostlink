@@ -19,9 +19,12 @@ import { GhostlinkAPI } from '../api';
 
 // POPULAR_MODELS used as fallback when search fails; kept for reference
 const POPULAR_MODELS = [
-  { id: 'meta-llama/Llama-3.2-3B-Instruct-GGUF', name: 'Llama 3.2 3B Instruct (GGUF)', downloads: 2500000, likes: 120000 },
-  { id: 'meta-llama/Llama-3.2-1B-Instruct-GGUF', name: 'Llama 3.2 1B Instruct (GGUF)', downloads: 1800000, likes: 90000 },
-  { id: 'mistralai/Mistral-7B-Instruct-v0.3-GGUF', name: 'Mistral 7B v0.3 Instruct (GGUF)', downloads: 3200000, likes: 150000 },
+  // Community GGUF mirrors: the upstream meta-llama/mistralai repos are gated
+  // (401 without an accepted license + HF token), so they fail as one-click
+  // downloads. These bartowski repos are public quantizations of the same models.
+  { id: 'bartowski/Llama-3.2-3B-Instruct-GGUF', name: 'Llama 3.2 3B Instruct (GGUF)', downloads: 2500000, likes: 120000 },
+  { id: 'bartowski/Llama-3.2-1B-Instruct-GGUF', name: 'Llama 3.2 1B Instruct (GGUF)', downloads: 1800000, likes: 90000 },
+  { id: 'bartowski/Mistral-7B-Instruct-v0.3-GGUF', name: 'Mistral 7B v0.3 Instruct (GGUF)', downloads: 3200000, likes: 150000 },
   { id: 'TheBloke/CodeLlama-7B-GGUF', name: 'CodeLlama 7B (GGUF)', downloads: 1500000, likes: 75000 },
   { id: 'TheBloke/Llama-2-7B-Chat-GGUF', name: 'Llama 2 7B Chat (GGUF)', downloads: 4100000, likes: 200000 },
   { id: 'TheBloke/Mistral-7B-Instruct-v0.2-GGUF', name: 'Mistral 7B v0.2 Instruct (GGUF)', downloads: 2800000, likes: 110000 },
