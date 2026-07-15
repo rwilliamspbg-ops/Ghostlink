@@ -11,6 +11,7 @@ keywords = ["networking", "xdp", "zero-copy", "async"]
 categories = ["asynchronous", "network-programming"]
 
 [dependencies]
+serde = { version = "1.0", features = ["derive"] }
 # Zero-copy pinned allocations
 pin-utils = "0.1"
 
@@ -40,6 +41,7 @@ crossterm = "0.29.0"
 arc-swap = "1"
 
 [dev-dependencies]
+tempfile = "3"
 tokio-test = "0.4"
 criterion = "0.5"
 proptest = "1.4"

@@ -26,6 +26,6 @@ echo "[validate] perf drift check"
 "$VENV_PYTHON" scripts/check_perf_drift.py --baseline ./docs/PERF_BASELINE.json --current ./tmp/perf_snapshot_full_validation/summary.json
 
 echo "[validate] GUI strict readiness"
-GHOSTLINK_PYTHON="$VENV_PYTHON" cargo run -p ghost-link -- gui-check --strict
+GHOSTLINK_PYTHON="$VENV_PYTHON" cargo run --release -p ghost-link -- gui-check --strict
 
 echo "[validate] all checks passed"

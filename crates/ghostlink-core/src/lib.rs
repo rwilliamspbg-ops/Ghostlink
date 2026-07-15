@@ -34,6 +34,7 @@ pub mod discovery;
 pub mod health;
 pub mod host;
 pub mod load_balance;
+pub mod models;
 pub mod planning;
 pub mod protocol;
 pub mod ring;
