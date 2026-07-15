@@ -2446,6 +2446,15 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             msg
         })?;
 
+        // Optional token for gated/private repos (both common env names accepted)
+        let hf_token = std::env::var("HF_TOKEN")
+            .or_else(|_| std::env::var("HUGGING_FACE_HUB_TOKEN"))
+            .ok()
+            .filter(|t| !t.trim().is_empty());
+        if hf_token.is_some() {
+            eprintln!("[download_hf_model] Using HF token from environment");
+        }
+
         // Try primary URL and mirrors
         let mirrors = vec![
             format!("https://huggingface.co/api/models/{}", model_id),
@@ -2454,10 +2463,15 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
 
         let mut model_data = None;
         let mut used_mirror = String::new();
+        let mut auth_blocked = false;
 
         for api_url in &mirrors {
             eprintln!("[download_hf_model] Fetching model info from {}", api_url);
-            let resp = client.get(api_url).send().await.map_err(|e| {
+            let mut req = client.get(api_url);
+            if let Some(t) = &hf_token {
+                req = req.bearer_auth(t);
+            }
+            let resp = req.send().await.map_err(|e| {
                 let msg = format!("API error for '{}': {}", model_id, e);
                 eprintln!("[download_hf_model] {}", msg);
                 msg
@@ -2472,6 +2486,11 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                 used_mirror = api_url.clone();
                 break;
             }
+            if resp.status() == reqwest::StatusCode::UNAUTHORIZED
+                || resp.status() == reqwest::StatusCode::FORBIDDEN
+            {
+                auth_blocked = true;
+            }
             eprintln!(
                 "[download_hf_model] Mirror {} returned HTTP {}",
                 api_url,
@@ -2479,8 +2498,16 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             );
         }
 
-        let data = model_data
-            .ok_or_else(|| format!("Model '{}' not found on HuggingFace or mirrors", model_id))?;
+        let data = model_data.ok_or_else(|| {
+            if auth_blocked {
+                format!(
+                    "Model '{}' is gated or private. Set HF_TOKEN to a HuggingFace access token and accept the model's license on huggingface.co, then retry.",
+                    model_id
+                )
+            } else {
+                format!("Model '{}' not found on HuggingFace or mirrors", model_id)
+            }
+        })?;
         eprintln!(
             "[download_hf_model] Model info received successfully from {}",
             used_mirror
@@ -2515,6 +2542,10 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         ];
 
         let dest_path = models_dir.join(filename);
+        // In-progress downloads are written to a .part file and only renamed to
+        // dest_path after size verification, so dest_path existing means a
+        // previous download actually completed.
+        let part_path = models_dir.join(format!("{}.part", filename));
 
         // Check if file already exists and is complete
         if dest_path.exists() {
@@ -2549,8 +2580,8 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             let mut downloaded: u64 = 0;
             let mut range_header = None;
 
-            if dest_path.exists() {
-                if let Ok(metadata) = fs::metadata(&dest_path) {
+            if part_path.exists() {
+                if let Ok(metadata) = fs::metadata(&part_path) {
                     downloaded = metadata.len();
                     if downloaded > 0 {
                         range_header = Some(format!("bytes={}-", downloaded));
@@ -2559,6 +2590,9 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             }
 
             let mut req = client.get(file_url);
+            if let Some(t) = &hf_token {
+                req = req.bearer_auth(t);
+            }
             if let Some(ref range) = range_header {
                 req = req.header("Range", range);
             }
@@ -2578,7 +2612,16 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                 if let Some(p) = progress.get_mut(model_id) {
                     p.status = "failed".to_string();
                 }
-                last_error = format!("Failed to download file (HTTP {})", resp.status());
+                last_error = if resp.status() == reqwest::StatusCode::UNAUTHORIZED
+                    || resp.status() == reqwest::StatusCode::FORBIDDEN
+                {
+                    format!(
+                        "Failed to download file (HTTP {}). The repo may be gated - set HF_TOKEN and accept the license on huggingface.co.",
+                        resp.status()
+                    )
+                } else {
+                    format!("Failed to download file (HTTP {})", resp.status())
+                };
                 eprintln!("[download_hf_model] {}", last_error);
                 continue;
             }
@@ -2599,11 +2642,11 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             let file = if downloaded > 0 && resp.status() == reqwest::StatusCode::PARTIAL_CONTENT {
                 tokio::fs::OpenOptions::new()
                     .append(true)
-                    .open(&dest_path)
+                    .open(&part_path)
                     .await
                     .map_err(|e| format!("File error: {}", e))?
             } else {
-                tokio::fs::File::create(&dest_path)
+                tokio::fs::File::create(&part_path)
                     .await
                     .map_err(|e| format!("File error: {}", e))?
             };
@@ -2634,10 +2677,13 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                 }
             }
             file.flush().await.ok();
+            // Close the handle before rename (required on Windows)
+            drop(file);
 
-            // Verify download completed
-            let final_size = fs::metadata(&dest_path).map(|m| m.len()).unwrap_or(0);
+            // Verify download completed before promoting the .part file
+            let final_size = fs::metadata(&part_path).map(|m| m.len()).unwrap_or(0);
             if expected_total > 0 && final_size >= expected_total {
+                fs::rename(&part_path, &dest_path).map_err(|e| format!("Rename error: {}", e))?;
                 eprintln!(
                     "[download_hf_model] Download COMPLETED for '{}' at '{}' ({} bytes)",
                     model_id,
@@ -2661,6 +2707,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                 return Ok(dest_path.to_string_lossy().to_string());
             } else if expected_total == 0 {
                 // No content-length, assume success
+                fs::rename(&part_path, &dest_path).map_err(|e| format!("Rename error: {}", e))?;
                 eprintln!("[download_hf_model] Download COMPLETED (no content-length) for '{}' at '{}' ({} bytes)", model_id, dest_path.display(), final_size);
 
                 {
