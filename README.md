@@ -252,8 +252,14 @@ ghostlink_gui_modern/    # React frontend (Vite + Tailwind)
 # Full test suite
 cargo test --workspace
 
+# Lint and style
+cargo clippy --workspace --all-targets -- -D warnings
+
 # With ROCm feature
 cargo test --workspace --features rocm
+
+# HF model verification
+python3 scripts/verify_hf_models.py
 ```
 
 ## Comparison Snapshot
