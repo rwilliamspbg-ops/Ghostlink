@@ -10,10 +10,17 @@ set "BACKEND="
 set "NPU_DETECTED="
 set "LLAMA_NGL="
 
-REM ==================== Pre-Flight Validation ====================
-echo.
-echo ====== Pre-Flight Validation ======
-echo.
+REM ==================== Configuration ====================
+set "BACKEND_HOST=127.0.0.1"
+set "BACKEND_PORT=8003"
+set "GUI_PORT=5173"
+set "LLAMA_PORT=8080"
+set "MODEL_DIR=%PROJECT_ROOT%models"
+set "MODEL_FILE=%MODEL_DIR%\stories15M-q4_0.gguf"
+set "MODEL_URL=https://huggingface.co/ggml-org/models/resolve/main/tinyllamas/stories15M-q4_0.gguf"
+set "PROJECT_ROOT=%~dp0"
+
+REM ==================== Manual Overrides (set via env vars) ====================
 
 REM Validate VITE_GHOSTLINK_API_BASE if set
 if not "%VITE_GHOSTLINK_API_BASE%"=="" (
@@ -254,7 +261,7 @@ echo.
 
 REM ==================== Dependency Checks ====================
 set "NEED_BUILD=0"
-if not exist "%LLAMA_SERVER%" if not exist "%LLAMA_SERVER_ALT%" set "NEED_BUILD=1"
+if not exist "%LLAMA_SERVER_EXPECTED%" if not exist "%LLAMA_SERVER_ALT_EXPECTED%" set "NEED_BUILD=1"
 
 for %%c in (curl cargo node) do (
     where %%c >nul 2>&1
@@ -299,9 +306,13 @@ REM ==================== Find or Build llama-server ====================
 set "ACTUAL_LLAMA_SERVER="
 set "LLAMA_BUILT=0"
 
+REM Pre-compute the expected binary path (absolute)
+set "LLAMA_SERVER_EXPECTED=%PROJECT_ROOT%third_party\llama.cpp\build\bin\Release\llama-server.exe"
+set "LLAMA_SERVER_ALT_EXPECTED=%PROJECT_ROOT%third_party\llama.cpp\build\bin\llama-server.exe"
+
 if "%GHOSTLINK_SKIP_BUILD%"=="1" (
     echo [INFO] Skipping build ^(GHOSTLINK_SKIP_BUILD=1^)
-) else if not exist "%LLAMA_SERVER%" if not exist "%LLAMA_SERVER_ALT%" (
+) else if not exist "%LLAMA_SERVER_EXPECTED%" if not exist "%LLAMA_SERVER_ALT_EXPECTED%" (
     echo [INFO] llama-server binary not found. Attempting to build from source...
     if not exist "%PROJECT_ROOT%third_party\llama.cpp" (
         echo [ERROR] Source directory not found: "%PROJECT_ROOT%third_party\llama.cpp"
@@ -351,12 +362,19 @@ if "%GHOSTLINK_SKIP_BUILD%"=="1" (
     popd
 )
 
-if "%LLAMA_BUILT%"=="1" (
-    if exist "%LLAMA_SERVER%" set "ACTUAL_LLAMA_SERVER=%LLAMA_SERVER%"
-    if exist "%LLAMA_SERVER_ALT%" if "!ACTUAL_LLAMA_SERVER!"=="" set "ACTUAL_LLAMA_SERVER=%LLAMA_SERVER_ALT%"
+REM Post-build: verify binary exists at expected location
+echo [INFO] Verifying llama-server binary...
+if exist "%LLAMA_SERVER_EXPECTED%" (
+    set "ACTUAL_LLAMA_SERVER=%LLAMA_SERVER_EXPECTED%"
+    echo [OK] Found llama-server at %ACTUAL_LLAMA_SERVER%
+) else if exist "%LLAMA_SERVER_ALT_EXPECTED%" (
+    set "ACTUAL_LLAMA_SERVER=%LLAMA_SERVER_ALT_EXPECTED%"
+    echo [OK] Found llama-server at %ACTUAL_LLAMA_SERVER%
 ) else (
-    if exist "%LLAMA_SERVER%" set "ACTUAL_LLAMA_SERVER=%LLAMA_SERVER%"
-    if exist "%LLAMA_SERVER_ALT%" if "!ACTUAL_LLAMA_SERVER!"=="" set "ACTUAL_LLAMA_SERVER=%LLAMA_SERVER_ALT%"
+    echo [WARN] llama-server binary not found at expected locations
+    echo        Expected: %LLAMA_SERVER_EXPECTED%
+    echo        Alt:      %LLAMA_SERVER_ALT_EXPECTED%
+    set "ACTUAL_LLAMA_SERVER="
 )
 
 echo.
@@ -397,11 +415,16 @@ if exist "%PROJECT_ROOT%target\release\ghost-link.exe" set "GHOSTLINK_BINARY=%PR
 if exist "%PROJECT_ROOT%target\debug\ghost-link.exe" if "!GHOSTLINK_BINARY!"=="" set "GHOSTLINK_BINARY=%PROJECT_ROOT%target\debug\ghost-link.exe"
 
 if defined GHOSTLINK_BINARY (
-    start "Ghostlink Backend API" cmd /k ""!GHOSTLINK_BINARY!" serve %BACKEND_HOST% %BACKEND_PORT%"
+    echo [INFO] Starting backend binary: !GHOSTLINK_BINARY!
+    start "Ghostlink Backend API" cmd /c ""!GHOSTLINK_BINARY!" serve %BACKEND_HOST% %BACKEND_PORT%"
 ) else (
     echo [INFO] Building backend with Cargo...
-    start "Ghostlink Backend API" cmd /k "cd /d "%PROJECT_ROOT%" && cargo run -p ghost-link -- serve %BACKEND_HOST% %BACKEND_PORT%"
+    start "Ghostlink Backend API" cmd /c "cd /d "%PROJECT_ROOT%" && cargo run -p ghost-link -- serve %BACKEND_HOST% %BACKEND_PORT%"
 )
+
+REM Give backend a moment to fully initialize routes
+echo [INFO] Waiting for backend to fully initialize...
+ping -n 3 127.0.0.1 >nul
 
 REM Wait for backend
 echo [INFO] Waiting for API...
@@ -413,12 +436,13 @@ if errorlevel 1 (
 )
 echo [OK] Backend API is healthy
 
-REM Wait for API endpoint to be fully ready
+REM Wait for API endpoint to be fully ready - give backend extra time to register all routes
 echo [INFO] Waiting for API endpoint...
+ping -n 4 127.0.0.1 >nul
 :WAIT_API_V2
 curl -sf http://%BACKEND_HOST%:%BACKEND_PORT%/api/health >nul 2>&1
 if errorlevel 1 (
-    ping -n 2 127.0.0.1 >nul
+    ping -n 4 127.0.0.1 >nul
     goto WAIT_API_V2
 )
 echo [OK] API endpoint is ready
