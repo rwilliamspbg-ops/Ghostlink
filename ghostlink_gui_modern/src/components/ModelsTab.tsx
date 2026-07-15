@@ -322,23 +322,21 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
             </div>
             <div className="space-y-2">
               {filteredHfResults.map((m) => (
-                <tr key={m.id} className="hover:bg-slate-800/50 transition">
-                  <td className="px-6 py-4">
-                    <div className="flex items-center gap-3">
-                      <div className="flex items-center justify-center text-orange-500 bg-orange-500/10 h-10 w-10 rounded-lg">
-                        <ChevronRight size={14} />
-                      </div>
-                      <div>
-                        <div className="font-bold text-slate-200 group-hover:text-white transition">{m.name}</div>
-                        <div className="text-[10px] text-slate-500 font-mono">{m.id}</div>
-                      </div>
+                <div key={m.id} className="flex items-center justify-between px-4 py-3 hover:bg-slate-800/50 rounded-lg transition">
+                  <div className="flex items-center gap-3 min-w-0">
+                    <div className="flex items-center justify-center text-orange-500 bg-orange-500/10 h-10 w-10 rounded-lg shrink-0">
+                      <ChevronRight size={14} />
                     </div>
-                  </td>
-                  <td className="px-6 py-4 text-xs text-slate-400">
-                    <span className="mr-3">📥 {(m.downloads / 1000).toFixed(0)}K</span>
-                    <span>👍 {(m.likes / 1000).toFixed(1)}K</span>
-                  </td>
-                  <td className="px-6 py-4 text-right">
+                    <div className="min-w-0">
+                      <div className="font-bold text-slate-200 truncate">{m.name}</div>
+                      <div className="text-[10px] text-slate-500 font-mono truncate">{m.id}</div>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-4 shrink-0">
+                    <div className="text-xs text-slate-400">
+                      <span className="mr-3">📥 {(m.downloads / 1000).toFixed(0)}K</span>
+                      <span>👍 {(m.likes / 1000).toFixed(1)}K</span>
+                    </div>
                     <button
                       onClick={() => handleDownloadModel(m.id)}
                       disabled={pendingActions[m.id] === 'downloading' || loading}
@@ -354,8 +352,8 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                       )}
                       {pendingActions[m.id] === 'downloading' ? '' : 'Download'}
                     </button>
-                  </td>
-                </tr>
+                  </div>
+                </div>
               ))}
             </div>
           </div>

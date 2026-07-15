@@ -6,7 +6,7 @@
 //! - `dashboard` - Display ASCII cluster dashboard
 
 use anyhow::Result;
-use axum::{extract::State, Json};
+use axum::{extract::State, http::StatusCode, Json};
 use ghostlink_core::cluster::{ClusterState, NodeMetrics};
 use ghostlink_core::dashboard::Dashboard;
 use ghostlink_core::discovery::{
@@ -1979,6 +1979,19 @@ fn collect_system_metrics() -> (f32, f32, f32, f32) {
     }
 }
 
+fn is_valid_gguf(path: &std::path::Path) -> bool {
+    use std::io::Read;
+    let mut file = match fs::File::open(path) {
+        Ok(f) => f,
+        Err(_) => return false,
+    };
+    let mut magic = [0u8; 4];
+    if file.read_exact(&mut magic).is_err() {
+        return false;
+    }
+    magic == *b"GGUF"
+}
+
 fn scan_local_models_dir(models_dir: &str) -> Vec<ModelRecord> {
     let dir = std::path::Path::new(models_dir);
     if !dir.exists() {
@@ -1988,7 +2001,7 @@ fn scan_local_models_dir(models_dir: &str) -> Vec<ModelRecord> {
     if let Ok(entries) = fs::read_dir(dir) {
         for entry in entries.flatten() {
             let path = entry.path();
-            if path.extension().map(|e| e == "gguf").unwrap_or(false) {
+            if path.extension().map(|e| e == "gguf").unwrap_or(false) && is_valid_gguf(&path) {
                 let filename = path.file_name().unwrap().to_string_lossy().to_string();
                 let size_bytes = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
                 let size_gb = size_bytes as f32 / (1024.0 * 1024.0 * 1024.0);
@@ -2504,6 +2517,19 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         }
         file.flush().await.ok();
 
+        if total_bytes > 0 && downloaded < total_bytes {
+            let mut progress = progress_state.lock().await;
+            if let Some(p) = progress.get_mut(model_id) {
+                p.status = "failed".to_string();
+            }
+            tokio::fs::remove_file(&dest_path).await.ok();
+            return Err(format!(
+                "Download incomplete: got {:.1} MB of {:.1} MB",
+                downloaded as f64 / 1_048_576.0,
+                total_bytes as f64 / 1_048_576.0,
+            ));
+        }
+
         {
             let mut progress = progress_state.lock().await;
             if let Some(p) = progress.get_mut(model_id) {
@@ -2604,10 +2630,13 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
     async fn handle_gui_model_download(
         State(state): State<Arc<Mutex<BackendState>>>,
         Json(req): Json<ModelDownloadRequest>,
-    ) -> Json<serde_json::Value> {
+    ) -> (StatusCode, Json<serde_json::Value>) {
         let model_id = req.model_id.trim().to_string();
         if model_id.is_empty() {
-            return Json(serde_json::json!({ "error": "model_id cannot be empty" }));
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": "model_id cannot be empty" })),
+            );
         }
 
         let models_dir = {
@@ -2672,10 +2701,13 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                 });
                 save_persistent_models(&backend.models);
 
-                Json(serde_json::json!({
-                    "status": "ok",
-                    "message": format!("model downloaded ({:.2} GB)", size_gb),
-                }))
+                (
+                    StatusCode::OK,
+                    Json(serde_json::json!({
+                        "status": "ok",
+                        "message": format!("model downloaded ({:.2} GB)", size_gb),
+                    })),
+                )
             }
             Err(err) => {
                 let mut backend = lock_state(&state);
@@ -2683,7 +2715,10 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                     .models
                     .retain(|m| m.name != model_id && m.hf_model_id != model_id);
                 save_persistent_models(&backend.models);
-                Json(serde_json::json!({ "error": err }))
+                (
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({ "error": err })),
+                )
             }
         }
     }
@@ -2834,8 +2869,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                         .map(|arr| {
                             arr.iter()
                                 .map(|m| {
-                                    let id =
-                                        m.get("modelId").and_then(|v| v.as_str()).unwrap_or("");
+                                    let id = m.get("id").and_then(|v| v.as_str()).unwrap_or("");
                                     let name = id.rsplit('/').next().unwrap_or(id);
                                     let downloads =
                                         m.get("downloads").and_then(|v| v.as_u64()).unwrap_or(0);
