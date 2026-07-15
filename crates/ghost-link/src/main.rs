@@ -3985,13 +3985,7 @@ fn build_device_map_from_cluster(
     cluster: &ClusterState,
 ) -> HashMap<String, DeviceKind> {
     let local_device = match local_profile.acceleration_mode {
-        ghostlink_core::host::AccelerationMode::Gpu => {
-            if local_profile.node_resources.compute_capability == "rocm" {
-                DeviceKind::Gpu
-            } else {
-                DeviceKind::Gpu
-            }
-        }
+        ghostlink_core::host::AccelerationMode::Gpu => DeviceKind::Gpu,
         ghostlink_core::host::AccelerationMode::Neon => DeviceKind::Npu,
         _ => DeviceKind::Cpu,
     };
@@ -4002,11 +3996,7 @@ fn build_device_map_from_cluster(
             map.insert(node.id, local_device);
         } else {
             let device = if node.vram_gb > 0.0 {
-                if node.compute_capability == "rocm" {
-                    DeviceKind::Gpu
-                } else {
-                    DeviceKind::Gpu
-                }
+                DeviceKind::Gpu
             } else {
                 DeviceKind::Cpu
             };
@@ -4022,13 +4012,7 @@ fn build_device_map(
     remote_id: &str,
 ) -> HashMap<String, DeviceKind> {
     let local_device = match local_profile.acceleration_mode {
-        ghostlink_core::host::AccelerationMode::Gpu => {
-            if local_profile.node_resources.compute_capability == "rocm" {
-                DeviceKind::Gpu
-            } else {
-                DeviceKind::Gpu
-            }
-        }
+        ghostlink_core::host::AccelerationMode::Gpu => DeviceKind::Gpu,
         ghostlink_core::host::AccelerationMode::Neon => DeviceKind::Npu,
         _ => DeviceKind::Cpu,
     };
