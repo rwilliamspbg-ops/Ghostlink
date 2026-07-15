@@ -1,51 +1,46 @@
-# Ghostlink State — July 14, 2026
+# Ghostlink State — July 14, 2026 (Session 3)
 
 ## Last Commit
-`4660270` — "fix: hardware detection, GPU metrics, frontend bugs, and download progress"
+`fa991e6` — "fix: prevent OOM on integrated GPUs, use CPU-safe default NGL"
 
-## What Was Fixed (Session 2 — July 14)
+## What Was Fixed (Session 3 — July 14)
 
-### P2P Networking (`crates/ghost-link/src/main.rs`)
-- **`/api/workers/add`** — Now performs TCP health check (`GET /health`) before adding; rejects duplicates; returns `reachable` status.
-- **`/api/workers/discover`** — Now reads from `ClusterState.nodes()` (populated by background UDP discovery thread) instead of hardcoded `{ count: 2 }`.
-- **`/api/workers/:worker_id/disconnect`** — Now actually removes the worker from `backend.workers` vec instead of no-op.
+### OOM on Integrated GPUs (`crates/ghost-link/src/main.rs`)
+- **Default `ngl`** changed from `-1` (all layers GPU) → `0` (CPU-only) — prevents out-of-memory on systems with 16GB shared RAM / integrated GPUs.
+- **`GHOSTLINK_LLAMA_NGL` env var** now read in `handle_gui_model_load()` so launch scripts can override the default at runtime.
+- Updated `README.md` default for `GHOSTLINK_LLAMA_NGL`.
 
-### AMD GPU Metrics (`crates/ghost-link/src/main.rs`)
-- **`collect_system_metrics()`** — Replaced `CurrentRefreshRate` fallback with two PowerShell Performance Counter queries:
-  1. `Get-Counter "\GPU Engine(*eng_ver*)\Utilization Percentage"` (primary)
-  2. `Get-CimInstance Win32_PerfFormattedData_GPUPerformanceCounters_GPUEngine` (fallback)
+### Linux Launch Scripts (`launch-complete.sh`, `launch.sh`)
+- Both scripts now export `GHOSTLINK_LLAMA_NGL` to the Rust backend, making hardware-detected GPU layer count respected when loading models via the UI.
+- `launch-fast.sh` and `launch-splash.sh` delegate to `launch-complete.sh` automatically.
 
-### Runtime Selector (`ghostlink_gui_modern/src/components/SettingsTab.tsx`)
-- Hardware detection cards now **clickable** — tapping an available runtime calls `/api/runtime/select` and shows "Active" state.
-- Added `selectRuntime()` method to `api.ts`.
-- Real-time status feedback on runtime switch.
+### Download Flow (Session 2 continued)
+- **`<tr>`/`<td>` → `<div>` layout** in `ModelsTab.tsx` — the `<tr>` was oustide `<table>`, making the download button unclickable.
+- **HF API field** `modelId` → `id` — the upstream HuggingFace API returns the model ID under `"id"`, not `"modelId"`.
+- **GGUF magic-byte validation** — rejects non-GGUF files before download.
+- **Partial download detection** — existing `.gguf` files smaller than Content-Length are redownloaded instead of reused.
 
-### Production Build (`launch-complete.bat`)
-- GUI now builds with `npm run build` and serves from `dist/` via `vite preview`.
-- Falls back to dev server only if build fails.
+### Earlier Fixes (Sessions 1 & 2)
+- P2P networking endpoints (`/api/workers/add`, `discover`, `disconnect`)
+- AMD GPU metrics via PowerShell Performance Counters
+- Runtime selector clickable cards in SettingsTab
+- Production build in `launch-complete.bat`
+- `cargo fmt`, clippy, tests — all green after each session
 
-### Build Verification
-- Rust: `cargo build -p ghost-link --release` — **OK**
-- Frontend: `npm run build` — **OK** (267 KB gzip)
-- Core tests: `cargo test -p ghostlink-core --release` — **141/141 passed**
-
-## Hardware Detected
-- CPU Cores: 16 (Ryzen AI 7 350 has 8 cores / 16 threads)
-- System RAM: 28 GB
-- GPU: AMD Radeon™ 860M Graphics (DirectML backend)
-- NPU: AMD Ryzen AI 7 350 w/ Radeon 860M
-
-## Current Services
-- llama-server: `http://127.0.0.1:8080`
-- Backend API: `http://127.0.0.1:8003`
-- Frontend GUI: `http://127.0.0.1:5173`
+## Build Verification
+- `cargo fmt --all --check` — **OK**
+- `cargo clippy --workspace --all-targets -- -D warnings` — **OK**
+- `cargo test --workspace` — **169/169 passed** (28 ghost-link + 87 ghostlink-core unit + 7 common + 28 integration + 19 multinode)
+- `python3 scripts/validate_gui_api_contract.py` — **passed** (13 endpoints, 18 routes)
 
 ## Known Issues (Not Fixed Yet)
-1. **Model lifecycle test** — Download → load → unload pipeline is wired end-to-end but has not been integration-tested on this hardware.
-2. **Worker networking is local-only** — Background discovery only detects nodes on the same LAN segment. WAN/mesh networking requires the TCP transport layer.
-3. **No auth enforcement** — Discovery auth token is configured but not enforced by default (`enforce_auth: false`).
+1. **Worker networking is local-only** — Background discovery only detects nodes on the same LAN segment. WAN/mesh networking requires the TCP transport layer.
+2. **No auth enforcement** — Discovery auth token is configured but not enforced by default (`enforce_auth: false`).
+3. **`production-gate-verdict.json`** missing locally — `validate_production_gate_verdict.py` skipped; needs CI-generated artifact.
+4. **`cargo audit` / `pip-audit`** — Not run (tools not installed on this machine).
+5. **License consistency script** — Fails on Windows bash (`set -o pipefail` unsupported).
 
-## To Restart Tomorrow
+## To Restart
 ```powershell
 cd C:\Users\rwill\Ghostlink
 
@@ -58,6 +53,12 @@ npm run dev -- --host 127.0.0.1 --port 5173
 
 # Or use the all-in-one script:
 $env:GHOSTLINK_SKIP_BUILD=1; $env:GHOSTLINK_SKIP_MODEL=1; .\launch-complete.bat
+```
+
+For Linux:
+```bash
+cd ~/Ghostlink
+GHOSTLINK_SKIP_BUILD=1 GHOSTLINK_SKIP_MODEL=1 bash launch-complete.sh
 ```
 
 ## Models on Disk
