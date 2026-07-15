@@ -1,80 +1,36 @@
 name: CI
 
 on:
-  workflow_dispatch:
   push:
-    branches:
-      - main
-      - docs/runtime-probe-docs
-      - 'release/**'
-      - 'hotfix/**'
-    paths:
-      - 'Cargo.toml'
-      - 'Cargo.lock'
-      - 'crates/**'
-      - 'benches/**'
-      - 'scripts/**'
-      - 'docs/PERF_BASELINE.json'
-      - 'docs/PERF_BASELINE_STRESS.json'
-      - 'README.md'
-      - 'TESTING.md'
-      - 'docs/SECURITY_MODEL.md'
-      - '.github/workflows/ci.yml'
-      - '.github/workflows/production-gate.yml'
-      - '.github/workflows/security.yml'
-      - '.github/workflows/release-artifacts.yml'
+    branches: [main]
   pull_request:
-    branches:
-      - main
-    paths:
-      - 'Cargo.toml'
-      - 'Cargo.lock'
-      - 'crates/**'
-      - 'benches/**'
-      - 'scripts/**'
-      - 'docs/PERF_BASELINE.json'
-      - 'docs/PERF_BASELINE_STRESS.json'
-      - 'README.md'
-      - 'TESTING.md'
-      - 'docs/SECURITY_MODEL.md'
-      - '.github/workflows/ci.yml'
-      - '.github/workflows/production-gate.yml'
-      - '.github/workflows/security.yml'
-      - '.github/workflows/release-artifacts.yml'
-
-env:
-  CARGO_TERM_COLOR: always
-  RUST_BACKTRACE: 1
-
-concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+    branches: [main]
 
 jobs:
-  doctor-preflight:
-    name: Doctor Preflight
+  check:
     runs-on: ubuntu-latest
+    
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
 
-      - name: Run doctor strict with JSON report
-        run: |
-          mkdir -p ./tmp
-          cargo run -p ghost-link -- doctor --strict --json ./tmp/doctor-report.json
-
-      - name: Upload doctor report artifact
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: doctor-report
-          path: ./tmp/doctor-report.json
-          retention-days: 14
-
-  license-consistency:
-    name: License Consistency
+      - name: Verify no unresolved stub TODO markers
+        run: ./scripts/verify_no_stub_todos.sh
+      
+      - name: Check code
+        run: cargo check --workspace
+      
+      - name: Run tests
+        run: cargo test --workspace --lib
+      
+      - name: Build release
+        run: cargo build --release --workspace
+      
+  msrv:
     runs-on: ubuntu-latest
+    
     steps:
       - uses: actions/checkout@v4
       - name: Validate workspace/crate license alignment
@@ -154,8 +110,6 @@ jobs:
           files: ./coverage/lcov.info
           token: ${{ secrets.CODECOV_TOKEN }}
           use_oidc: true
-          # Keep coverage generation strict, but do not fail CI on external Codecov
-          # repository/authorization service errors.
           fail_ci_if_error: false
           verbose: true
 

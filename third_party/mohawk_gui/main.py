@@ -17,6 +17,7 @@ import sys
 import argparse
 import os
 from pathlib import Path
+from urllib.parse import urlparse
 
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -48,14 +49,20 @@ The dashboard includes:
     parser.add_argument(
         "--host",
         default="localhost",
-        help="Host to bind to (default: localhost)"
+        help="Ghostlink backend host (default: localhost)"
     )
     
     parser.add_argument(
         "--port",
         type=int,
         default=8003,
-        help="Port to listen on (default: 8003)"
+        help="Ghostlink backend port (default: 8003)"
+    )
+
+    parser.add_argument(
+        "--backend-url",
+        default=None,
+        help="Full backend base URL (overrides --host/--port), e.g. http://127.0.0.1:8003"
     )
     
     parser.add_argument(
@@ -82,8 +89,18 @@ The dashboard includes:
     print("=" * 60)
     print("[MOHAWK] Inference Engine GUI v2.1.0")
     print("=" * 60)
-    print(f"Host: {args.host}")
-    print(f"Port: {args.port}")
+    backend_url = args.backend_url
+    if not backend_url:
+        backend_url = f"http://{args.host}:{args.port}"
+    backend_url = backend_url.rstrip("/")
+
+    # Ensure backend URL is usable before constructing the UI.
+    parsed = urlparse(backend_url)
+    if not parsed.scheme or not parsed.netloc:
+        print(f"\n[ERROR] Invalid backend URL: {backend_url}")
+        sys.exit(2)
+
+    print(f"Backend: {backend_url}")
     if args.key_file:
         print(f"Auth Key: {args.key_file}")
     print("=" * 60)
@@ -95,11 +112,11 @@ The dashboard includes:
         
         # NOW create and show the main window
         from main_window import MohawkGUI
-        
-        window = MohawkGUI()
+
+        window = MohawkGUI(base_url=backend_url)
         window.show()
         print("\n[INFO] GUI window opened successfully")
-        print("[INFO] Connecting to Docker backend services...")
+        print("[INFO] Connecting to Ghostlink backend services...")
         
         # Run event loop
         sys.exit(app.exec())

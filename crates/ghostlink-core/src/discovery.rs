@@ -398,7 +398,10 @@ fn decode_datagram_with_options(
         }
 
         if allow_legacy_crc32 {
-            return decode_legacy_crc32_datagram(datagram, token);
+            tracing::warn!(
+                "Discovery auth fallback enabled: accepting legacy CRC32 checksum mode; this mode is compatibility-only and does not provide cryptographic authentication"
+            );
+            return decode_legacy_crc32_checksum_datagram(datagram, token);
         }
 
         v2_result
@@ -453,15 +456,12 @@ fn decode_v2_auth_datagram(
     let received_tag = trailer
         .get(27..)
         .ok_or(DatagramDecodeError::InvalidAuthTrailerLength)?;
-    let expected_tag = auth_tag_v2(frame_bytes, token, timestamp_secs, nonce);
-    if received_tag != expected_tag.as_slice() {
-        return Err(DatagramDecodeError::AuthTagMismatch);
-    }
+    verify_auth_tag_v2(frame_bytes, token, timestamp_secs, nonce, received_tag)?;
 
     DiscoveryFrame::decode(frame_bytes).map_err(DatagramDecodeError::FrameDecode)
 }
 
-fn decode_legacy_crc32_datagram(
+fn decode_legacy_crc32_checksum_datagram(
     datagram: &[u8],
     token: &str,
 ) -> Result<DiscoveryFrame, DatagramDecodeError> {
@@ -470,7 +470,7 @@ fn decode_legacy_crc32_datagram(
     }
 
     let (frame_bytes, tag_bytes) = datagram.split_at(datagram.len() - 4);
-    let expected = legacy_auth_tag(frame_bytes, token);
+    let expected = legacy_crc32_checksum_tag(frame_bytes, token);
     let received = u32::from_le_bytes(
         tag_bytes
             .try_into()
@@ -482,11 +482,31 @@ fn decode_legacy_crc32_datagram(
     DiscoveryFrame::decode(frame_bytes).map_err(DatagramDecodeError::FrameDecode)
 }
 
-fn legacy_auth_tag(frame_bytes: &[u8], token: &str) -> u32 {
+fn legacy_crc32_checksum_tag(frame_bytes: &[u8], token: &str) -> u32 {
+    // Compatibility-only checksum mode for migration windows.
+    // This is not a cryptographic MAC and should not be treated as strong auth.
     let mut hasher = Hasher::new();
     hasher.update(frame_bytes);
     hasher.update(token.as_bytes());
     hasher.finalize()
+}
+
+fn verify_auth_tag_v2(
+    frame_bytes: &[u8],
+    token: &str,
+    timestamp_secs: u64,
+    nonce: u128,
+    received_tag: &[u8],
+) -> Result<(), DatagramDecodeError> {
+    let mut mac = HmacSha256::new_from_slice(token.as_bytes())
+        .expect("HMAC key setup for discovery auth failed");
+    mac.update(frame_bytes);
+    mac.update(&DISCOVERY_AUTH_MARKER);
+    mac.update(&[DISCOVERY_AUTH_PROTOCOL_VERSION]);
+    mac.update(&timestamp_secs.to_le_bytes());
+    mac.update(&nonce.to_le_bytes());
+    mac.verify_slice(received_tag)
+        .map_err(|_| DatagramDecodeError::AuthTagMismatch)
 }
 
 fn auth_tag_v2(frame_bytes: &[u8], token: &str, timestamp_secs: u64, nonce: u128) -> [u8; 32] {

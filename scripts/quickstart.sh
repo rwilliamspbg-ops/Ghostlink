@@ -90,6 +90,21 @@ main() {
 
   run_step "Building ghost-link binary (dev profile)" cargo build -p ghost-link
 
+  local model_dir="$ROOT_DIR/models"
+  local model_file="$model_dir/stories15M-q4_0.gguf"
+  local model_url="https://huggingface.co/ggml-org/models/resolve/main/tinyllamas/stories15M-q4_0.gguf"
+  mkdir -p "$model_dir"
+  if [[ ! -f "$model_file" ]]; then
+    log_info "Downloading bootstrap model (~15 MB): $model_file"
+    if curl -L --fail --progress-bar -o "$model_file" "$model_url"; then
+      log_ok "Model downloaded: $model_file"
+    else
+      log_warn "Model download failed — chat will use simulated backend until a model is available"
+    fi
+  else
+    log_ok "Model already present: $model_file"
+  fi
+
   log_info "Running quick smoke flow with local config"
   if ! cargo run -p ghost-link -- --config "$CONFIG_FILE" flow; then
     log_fail "Smoke flow failed"

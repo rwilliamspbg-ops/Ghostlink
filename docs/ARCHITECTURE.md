@@ -34,6 +34,16 @@ Ghostlink/
 
 ## Main Components
 
+## Command Architecture Decision
+
+Ghost-Link uses `crates/ghost-link/src/main.rs` as the single source of truth for CLI command parsing and execution.
+
+- Legacy duplicate command modules under `crates/ghost-link/src/cli/` were retired.
+- Legacy duplicate API stub handlers under `crates/ghost-link/src/api/` were retired.
+- This avoids drift between parallel command surfaces and keeps behavior and tests aligned to one execution path.
+
+To prevent regressions, CI runs `scripts/verify_no_stub_todos.sh` and fails if unresolved `TODO: Implement actual` markers are reintroduced in `crates/ghost-link/src`.
+
 ### `host.rs`
 
 Builds a `RuntimeProfile` for the current machine.

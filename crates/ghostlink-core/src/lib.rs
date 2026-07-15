@@ -8,7 +8,7 @@
 //! - Binary protocol with CRC32 checksums for frame integrity
 //! - Thread-safe cluster state with metrics collection
 //! - Greedy layer assignment with fault tolerance
-//! - AF_XDP/eBPF socket integration (Linux)
+//! - Experimental XDP scaffolding (currently unavailable in this build)
 //! - Network health monitoring
 //! - Load balancing and tensor distribution
 //!
@@ -22,7 +22,7 @@
 //! │   ├── planning.rs      # Layer assignment + fault tolerance
 //! │   ├── health.rs        # Network health monitoring
 //! │   ├── load_balance.rs  # Tensor distribution
-//! │   ├── xdp.rs           # AF_XDP/eBPF integration (Linux)
+//! │   ├── xdp.rs           # Experimental XDP scaffolding (stubbed)
 //! │   └── dashboard.rs     # Terminal UI with ratatui
 //! └── ghost-link/          # CLI demo entrypoint
 //! ```
@@ -39,6 +39,7 @@ pub mod planning;
 pub mod protocol;
 pub mod ring;
 pub mod runtime;
+#[doc(hidden)]
 pub mod xdp;
 
 // Re-export common types for convenience
@@ -47,7 +48,7 @@ pub use cluster::{ClusterState, NodeMetrics, NodeStatus};
 pub use discovery::{broadcast_and_collect, UdpDiscoveryConfig, DEFAULT_DISCOVERY_PORT};
 pub use host::{
     detect_local_node_resources, detect_runtime_profile, detect_runtime_profile_full,
-    detect_runtime_profile_with_mode, AccelerationMode, ProbeMode, RuntimeProfile,
+    detect_runtime_profile_with_mode, AccelerationMode, GpuBackend, ProbeMode, RuntimeProfile,
 };
 pub use planning::{
     assign_layers_sequentially, assign_layers_with_fault_tolerance_and_runtime,

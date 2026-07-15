@@ -3,12 +3,22 @@ name = "ghost-link"
 version = "0.1.0-alpha.0"
 edition = "2021"
 authors = ["Ryan K Williams"]
-description = "High-performance, low-level network fabric utilizing zero-copy SPSC buffers and AF_XDP kernel bypass."
+description = "CLI and API runtime for Ghostlink, a distributed inference fabric for routing and scheduling custom LLM workloads across heterogeneous hardware."
+homepage = "https://rwilliamspbg-ops.github.io/Ghostlink/"
+documentation = "https://rwilliamspbg-ops.github.io/Ghostlink/"
 repository = "https://github.com/rwilliamspbg-ops/Ghostlink"
 readme = "../../README.md"
 license = "MIT"
-keywords = ["networking", "xdp", "zero-copy", "async"]
-categories = ["asynchronous", "network-programming"]
+keywords = ["networking", "spsc", "zero-copy", "async", "distributed-inference", "llm", "inference"]
+categories = ["asynchronous", "network-programming", "command-line-utilities"]
+
+# Minimum Supported Rust Version (MSRV)
+  rust-version = "1.85.0"
+
+[features]
+default = []
+cuda = []
+rocm = ["ghostlink-core/rocm"]
 
 [dependencies]
 ghostlink-core = { path = "../ghostlink-core", version = "0.1.0-alpha.0" }
@@ -19,12 +29,19 @@ anyhow = "1"
 # Logging
 tracing = "0.1"
 tracing-subscriber = "0.3"
+
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.8"
 
 # API Server
-axum = "0.7"
+axum = { version = "0.7", features = ["macros"] }
+futures = "0.3"
 tokio = { version = "1", features = ["full"] }
 tower-http = { version = "0.5", features = ["cors"] }
 rand = "0.8"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+tokio-util = "0.7"
+
+# UUID for chat completions
+uuid = { version = "1", features = ["v4"] }

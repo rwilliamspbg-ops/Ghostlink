@@ -514,3 +514,69 @@ fn cluster_scales_to_multiple_nodes() {
     let total_vram = cluster.total_vram_gb();
     assert!(total_vram > 1200.0, "Should aggregate large total VRAM");
 }
+
+#[test]
+fn test_distributed_execution_stress() {
+    use ghostlink_core::cluster::ClusterState;
+    use ghostlink_core::protocol::NodeResources;
+    use ghostlink_core::runtime::{
+        execute_pipeline_distributed, DeviceKind, PipelinePlan, StagePlacement, TcpTransportConfig,
+    };
+
+    let cluster = ClusterState::new();
+    let node_a_id = "node-a";
+    let node_b_id = "node-b";
+
+    cluster.register(NodeResources::new(node_a_id, 24.0, 64.0, "8.9", None));
+    cluster.register(NodeResources::new(node_b_id, 24.0, 64.0, "8.9", None));
+
+    // Seed IP addresses for simulated nodes
+    cluster.get_metrics_mut(node_a_id, |m| {
+        m.ip_address = Some("127.0.0.1:0".parse().unwrap());
+    });
+    cluster.get_metrics_mut(node_b_id, |m| {
+        m.ip_address = Some("127.0.0.1:0".parse().unwrap());
+    });
+
+    let plan = PipelinePlan {
+        stages: vec![
+            StagePlacement {
+                node_id: node_a_id.to_string(),
+                start_layer: 0,
+                end_layer: 16,
+                device: DeviceKind::Gpu,
+                est_latency_ms: 1.0,
+            },
+            StagePlacement {
+                node_id: node_b_id.to_string(),
+                start_layer: 16,
+                end_layer: 32,
+                device: DeviceKind::Gpu,
+                est_latency_ms: 1.0,
+            },
+        ],
+    };
+
+    let config = TcpTransportConfig {
+        max_inflight_batches: 64,
+        ..Default::default()
+    };
+
+    let result = execute_pipeline_distributed(
+        &plan, 128, // tokens
+        8,   // micro_batch
+        config, &cluster, None, None,
+    )
+    .expect("distributed execution failed");
+
+    assert_eq!(result.token_count, 128);
+    assert_eq!(result.batch_count, 16);
+    assert_eq!(result.stage_count, 2);
+    assert!(result.throughput_tokens_per_sec > 0.0);
+    assert!(result.total_time_ms > 0.0);
+
+    for stage in result.stage_stats {
+        assert_eq!(stage.processed_batches, 16);
+        assert!(stage.avg_compute_ms > 0.0);
+    }
+}

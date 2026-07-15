@@ -48,10 +48,16 @@ impl FrameHeader {
     /// Encode header as bytes (little-endian)
     pub fn encode(&self) -> [u8; Self::HEADER_SIZE] {
         let mut header = [0u8; Self::HEADER_SIZE];
-        header[0..2].copy_from_slice(&self.ether_type.to_le_bytes());
+        let et_bytes = self.ether_type.to_le_bytes();
+        header[0] = et_bytes[0];
+        header[1] = et_bytes[1];
         header[2] = self.kind;
         header[3] = self.version;
-        header[4..].copy_from_slice(&self.crc.to_le_bytes());
+        let crc_bytes = self.crc.to_le_bytes();
+        header[4] = crc_bytes[0];
+        header[5] = crc_bytes[1];
+        header[6] = crc_bytes[2];
+        header[7] = crc_bytes[3];
         header
     }
 }
@@ -131,47 +137,75 @@ impl NodeResources {
         }
     }
 
-    /// Serialize node resources to fixed-width binary payload
+    /// Serialize node resources into an existing binary buffer.
     ///
-    /// Format: [id_len(1) + id + vram_f32_le + mem_f32_le + cc_len(1) + cc]
+    /// Returns the length of the written payload on success, or an Error on validation failure.
     #[inline]
-    pub fn encode_payload(&self, max_size: usize) -> Vec<u8> {
+    pub fn encode_payload_into(
+        &self,
+        buffer: &mut Vec<u8>,
+        max_size: usize,
+    ) -> Result<usize, &'static str> {
         let id_bytes = self.id.as_bytes();
         let cc_bytes = self.compute_capability.as_bytes();
         let gpu_bytes = self.gpu_name.as_ref().map(|name| name.as_bytes());
 
         if id_bytes.len() > u8::MAX as usize || cc_bytes.len() > u8::MAX as usize {
-            return Vec::new();
+            return Err("field length exceeds u8::MAX");
         }
         if let Some(gpu_bytes) = gpu_bytes {
             if gpu_bytes.len() > u8::MAX as usize {
-                return Vec::new();
+                return Err("GPU name length exceeds u8::MAX");
             }
         }
 
         let payload_len =
             11 + id_bytes.len() + cc_bytes.len() + gpu_bytes.map_or(0, |bytes| 2 + bytes.len());
         if payload_len > max_size {
-            return Vec::new();
+            return Err("payload length exceeds max_size");
         }
 
-        let mut payload = Vec::with_capacity(payload_len);
-        payload.push(id_bytes.len() as u8);
-        payload.extend_from_slice(id_bytes);
-        payload.extend_from_slice(&self.vram_gb.to_le_bytes());
-        payload.extend_from_slice(&self.system_memory_gb.to_le_bytes());
-        payload.push(cc_bytes.len() as u8);
-        payload.extend_from_slice(cc_bytes);
+        buffer.push(id_bytes.len() as u8);
+        buffer.extend_from_slice(id_bytes);
+        buffer.extend_from_slice(&self.vram_gb.to_le_bytes());
+        buffer.extend_from_slice(&self.system_memory_gb.to_le_bytes());
+        buffer.push(cc_bytes.len() as u8);
+        buffer.extend_from_slice(cc_bytes);
 
         if let Some(gpu_bytes) = gpu_bytes {
-            payload.push(1);
-            payload.push(gpu_bytes.len() as u8);
-            payload.extend_from_slice(gpu_bytes);
+            buffer.push(1);
+            buffer.push(gpu_bytes.len() as u8);
+            buffer.extend_from_slice(gpu_bytes);
         } else {
-            payload.push(0);
+            buffer.push(0);
         }
 
-        payload
+        Ok(payload_len)
+    }
+
+    /// Serialize node resources to fixed-width binary payload
+    ///
+    /// Format: [id_len(1) + id + vram_f32_le + mem_f32_le + cc_len(1) + cc]
+    #[inline]
+    pub fn encode_payload(&self, max_size: usize) -> Vec<u8> {
+        let id_bytes_len = self.id.len();
+        let cc_bytes_len = self.compute_capability.len();
+        let gpu_bytes_len = self.gpu_name.as_ref().map_or(0, |name| name.len());
+        let est_len = 11
+            + id_bytes_len
+            + cc_bytes_len
+            + if gpu_bytes_len > 0 {
+                2 + gpu_bytes_len
+            } else {
+                0
+            };
+
+        let mut payload = Vec::with_capacity(est_len);
+        if self.encode_payload_into(&mut payload, max_size).is_ok() {
+            payload
+        } else {
+            Vec::new()
+        }
     }
 
     /// Deserialize node resources from binary payload
@@ -276,14 +310,52 @@ impl DiscoveryFrame {
     /// Encode discovery frame to bytes (header + payload)
     #[inline]
     pub fn encode(&self) -> Vec<u8> {
-        let payload = self.node.encode_payload(MAX_PAYLOAD_SIZE);
+        let id_bytes_len = self.node.id.len();
+        let cc_bytes_len = self.node.compute_capability.len();
+        let payload_len = 11
+            + id_bytes_len
+            + cc_bytes_len
+            + self.node.gpu_name.as_ref().map_or(0, |name| 2 + name.len());
 
-        // Compute CRC32 over payload
+        let mut frame = Vec::with_capacity(8 + payload_len);
+        // Reserve the first 8 bytes for the header with a fast slice extension
+        frame.extend_from_slice(&[0u8; 8]);
+
+        if self
+            .node
+            .encode_payload_into(&mut frame, MAX_PAYLOAD_SIZE)
+            .is_ok()
+        {
+            // Compute CRC32 over payload
+            let mut hasher = Hasher::new();
+            hasher.update(&frame[8..]);
+            let crc = hasher.finalize();
+
+            // Build header
+            let header = FrameHeader {
+                ether_type: GHOSTLINK_ETHERTYPE,
+                kind: self.kind.as_u8(),
+                version: PROTOCOL_VERSION,
+                crc,
+            };
+            let header_bytes = header.encode();
+
+            // Write header to first 8 bytes
+            frame[0..8].copy_from_slice(&header_bytes);
+
+            frame
+        } else {
+            self.encode_fallback_or_empty()
+        }
+    }
+
+    #[inline(never)]
+    fn encode_fallback_or_empty(&self) -> Vec<u8> {
+        // Fallback for empty payload
         let mut hasher = Hasher::new();
-        hasher.update(&payload);
+        hasher.update(&[]);
         let crc = hasher.finalize();
 
-        // Build header
         let header = FrameHeader {
             ether_type: GHOSTLINK_ETHERTYPE,
             kind: self.kind.as_u8(),
@@ -292,11 +364,8 @@ impl DiscoveryFrame {
         };
         let header_bytes = header.encode();
 
-        // Combine header and payload
-        let mut frame = Vec::with_capacity(header_bytes.len() + payload.len());
+        let mut frame = Vec::with_capacity(header_bytes.len());
         frame.extend_from_slice(&header_bytes);
-        frame.extend_from_slice(&payload);
-
         frame
     }
 

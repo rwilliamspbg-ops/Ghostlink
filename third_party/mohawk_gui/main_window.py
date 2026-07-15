@@ -268,7 +268,7 @@ class MohawkGUI(QMainWindow):
         layout = QHBoxLayout(widget)
         layout.setContentsMargins(0, 0, 0, 20)
 
-        self.health_status_icon = QLabel("●")
+        self.health_status_icon = QLabel("ΓùÅ")
         self.health_status_icon.setStyleSheet("color: #f59e0b; font-size: 20px;")
         layout.addWidget(self.health_status_icon)
 

@@ -1,0 +1,176 @@
+# Ghostlink
+
+A high-performance distributed LLM inference fabric that turns spare local GPUs into a shared execution surface. Zero-config discovery, hardware-aware pipeline planning, and multi-transport execution across heterogeneous devices.
+
+## Quick Start (Windows)
+
+### Prerequisites
+
+| Tool | Required | How to Install |
+|------|----------|---------------|
+| **Rust** | Yes | `winget install Rustlang.Rustup` or https://rustup.rs |
+| **Node.js** | Yes | `winget install OpenJS.NodeJS.LTS` or https://nodejs.org (LTS) |
+| **CMake** | For llama.cpp | `winget install Kitware.CMake` or https://cmake.org/download/ |
+| **Git** | For llama.cpp | `winget install Git.Git` |
+
+### Launch
+
+```powershell
+# 1. Clone or open the Ghostlink directory
+cd C:\Users\rwill\Ghostlink
+
+# 2. Build the backend (one time)
+cargo build --release -p ghost-link
+
+# 3. Launch (cinematic splash + services)
+.\launch.bat
+
+# Or fast launch (skips build, uses existing binary)
+.\launch-fast.bat
+```
+
+This starts three services:
+- **llama-server** (inference engine, port 8080)
+- **Ghostlink API** backend (port 8003)
+- **React frontend** at http://127.0.0.1:5173
+
+### What to Expect
+
+The splash screen shows:
+- GPU/CPU/NPU hardware detected
+- Component status (backend binary, llama-server, model)
+- Service URLs once ready
+
+Open http://127.0.0.1:5173 → **Models tab** → pick a model → **Chat tab** → start chatting.
+
+## Quick Start (Linux / macOS)
+
+```bash
+# Prerequisites: Rust, Node.js, CMake, make
+# Install Rust: curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+
+cargo build --release -p ghost-link
+./launch.sh
+```
+
+## Hardware Detection
+
+Ghostlink auto-detects available accelerators at startup:
+
+| Runtime | Detection |
+|---------|-----------|
+| **CUDA** (NVIDIA) | `nvidia-smi`, `CUDA_PATH` |
+| **DirectML** (AMD iGPU, Intel ARC, any DX12 GPU) | WMI on Windows |
+| **ROCm** (AMD discrete) | `rocm-smi`, `hipconfig` (requires `--features rocm`) |
+| **Metal** (Apple Silicon) | `sysctl hw.optional.arm64` |
+| **NPU** (AMD XDNA, Intel NPU, Qualcomm) | WMI on Windows, sysfs on Linux |
+| **CPU** | Always available |
+
+If your GPU isn't detected, set env vars manually:
+```powershell
+$env:GHOSTLINK_GPU_NAME="AMD Radeon 860M"
+$env:GHOSTLINK_VRAM_GB=8
+$env:GHOSTLINK_COMPUTE_CAPABILITY="gpu"
+```
+
+## Launch Scripts
+
+| Script | Description |
+|--------|-------------|
+| `launch.bat` | Full cinematic launcher — builds llama.cpp, downloads model, starts all services |
+| `launch-fast.bat` | Fast launcher — uses pre-built binary, skips cargo build |
+| `launch-splash.bat` | Hardware detection splash + delegates to `launch-complete.bat` |
+| `launch-complete.bat` | Starts backend, llama-server, and React GUI |
+| `check_hardware.ps1` | Diagnostic — shows detected GPU, NPU, and component status |
+
+## Usage (Developer)
+
+### CLI Commands
+
+```bash
+# Build
+cargo build --release -p ghost-link
+
+# With AMD ROCm support
+cargo build --release -p ghost-link --features rocm
+
+# Generate a placement plan for your hardware
+cargo run -p ghost-link -- plan
+
+# Probe local hardware profile
+cargo run -p ghost-link -- probe my-node
+cargo run -p ghost-link -- probe my-node --full
+
+# Start the OpenAI-compatible API server
+cargo run -p ghost-link -- serve 127.0.0.1 8003
+
+# Unified troubleshooting
+cargo run -p ghost-link -- doctor --strict
+
+# Run the full 30B planning flow
+cargo run -p ghost-link -- flow iprada-16gb zenbook-32gb 32 32 64 4 tcp
+
+# Launch the ASCII cluster dashboard
+cargo run -p ghost-link -- dashboard
+```
+
+### API Endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/health` | GET | Health check |
+| `/api/models` | GET | List available models |
+| `/api/models/status` | GET | Loaded model status |
+| `/api/runtime/detect` | GET | Available runtimes (GPU, NPU, CPU) |
+| `/api/runtime/models?runtime=directml` | GET | Models filtered by runtime |
+| `/api/metrics` | GET | Performance metrics |
+| `/api/inference/chat` | POST | Chat completion |
+
+### Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `GHOSTLINK_INFERENCE_BACKEND` | `native` | `native` or `ollama` |
+| `GHOSTLINK_NATIVE_ENGINE` | `llama_server` | `llama_server` or `llama_cpp` |
+| `GHOSTLINK_LLAMA_SERVER_URL` | `http://127.0.0.1:8080/completion` | llama-server URL |
+| `GHOSTLINK_GPU_NAME` | — | Override detected GPU name |
+| `GHOSTLINK_VRAM_GB` | — | Override detected VRAM |
+| `GHOSTLINK_COMPUTE_CAPABILITY` | — | Override compute capability |
+
+### Config File (TOML)
+
+See `ghostlink.toml` for all settings:
+- Node identities and resource overrides
+- Discovery broadcast configuration
+- TCP transport tuning
+- GUI Python path
+
+## Architecture
+
+```
+crates/
+├── ghostlink-core/     # Shared runtime primitives
+│   ├── host.rs          # GPU/NPU/CPU auto-detection
+│   ├── runtime.rs       # Pipeline execution (in-memory, TCP, AF_XDP)
+│   ├── planning.rs      # Layer assignment & quantization
+│   ├── discovery.rs     # UDP broadcast cluster discovery
+│   ├── cluster.rs       # Thread-safe node state & metrics
+│   ├── health.rs        # Network health & fault detection
+│   └── load_balance.rs  # Tensor distribution across nodes
+├── ghost-link/          # CLI demo & API server
+ghostlink_gui_modern/    # React frontend (Vite + Tailwind)
+```
+
+## Testing
+
+```bash
+# Full test suite
+cargo test --workspace
+
+# With ROCm feature
+cargo test --workspace --features rocm
+```
+
+## License
+
+MIT

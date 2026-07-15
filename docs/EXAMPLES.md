@@ -44,7 +44,7 @@ cargo test -p ghostlink-core --test integration
 # Criterion benchmarks
 cargo bench -p ghostlink-core --bench criterion
 
-# Validate GUI endpoint contract drift against mock backend
+# Validate GUI endpoint contract drift against real-stack
 python3 scripts/validate_gui_api_contract.py
 ```
 

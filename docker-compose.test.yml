@@ -1,0 +1,45 @@
+version: '3.8'
+
+services:
+  gui_test_runner:
+    build: 
+      context: .
+      dockerfile: Dockerfile.gui-test
+    container_name: ghostlink_gui_tests
+    user: "${RUN_USER:-0}"
+    volumes:
+      - .:/app/ghostlink
+      - /tmp/test_reports
+    environment:
+      - PYTHONPATH=/app/ghostlink
+      - DISPLAY=:0
+      - TEST_ENV=gui_test
+    networks:
+      test_network:
+        aliases:
+          - guitest.local
+
+  backend_test_server:
+    image: python:3.9-slim
+    container_name: ghostlink_backend_test
+    working_dir: /app/test
+    command: |
+      bash -c "
+        pip install flask requests &&
+        echo 'Backend test server ready'
+      "
+    networks:
+      test_network:
+
+  gui_headless_test:
+    image: selenium/standalone-debug-hub:latest
+    container_name: ghostlink_gui_selenium_grid
+    privileged: true  
+    ports:
+      - "4444:4444"
+    networks:
+      test_network:
+
+networks:
+  test_network:
+    driver: bridge

@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <script src="/env-config.js"></script>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Ghostlink Studio</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      :root {
+        --bg: #0a0e17;
+        --fg: #e2e8f0;
+        --muted: #64748b;
+        --accent: #3b82f6;
+        --accent-glow: rgba(59, 130, 246, 0.4);
+        --card: #111827;
+        --border: #1f2937;
+      }
+      body {
+        font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+        background: var(--bg);
+        color: var(--fg);
+        min-height: 100vh;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        overflow: hidden;
+      }
+      /* Animated background */
+      .bg-grid {
+        position: fixed;
+        inset: 0;
+        background-image: 
+          linear-gradient(rgba(59, 130, 246, 0.03) 1px, transparent 1px),
+          linear-gradient(90deg, rgba(59, 130, 246, 0.03) 1px, transparent 1px);
+        background-size: 60px 60px;
+        animation: gridMove 20s linear infinite;
+      }
+      @keyframes gridMove {
+        0% { transform: translate(0, 0); }
+        100% { transform: translate(60px, 60px); }
+      }
+      .bg-glow {
+        position: fixed;
+        width: 600px;
+        height: 600px;
+        border-radius: 50%;
+        filter: blur(120px);
+        opacity: 0.15;
+        animation: pulse 4s ease-in-out infinite;
+      }
+      .glow-1 { top: -200px; right: -200px; background: var(--accent); }
+      .glow-2 { bottom: -200px; left: -200px; background: #8b5cf6; animation-delay: 2s; }
+      @keyframes pulse { 0%, 100% { opacity: 0.1; transform: scale(1); } 50% { opacity: 0.2; transform: scale(1.1); } }
+      /* Splash container */
+      .splash {
+        position: relative;
+        z-index: 10;
+        text-align: center;
+        padding: 2rem;
+        max-width: 480px;
+        width: 100%;
+      }
+      .logo {
+        width: 80px;
+        height: 80px;
+        margin: 0 auto 1.5rem;
+        background: linear-gradient(135deg, var(--accent), #8b5cf6);
+        border-radius: 20px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        box-shadow: 0 0 40px var(--accent-glow);
+        animation: logoFloat 3s ease-in-out infinite;
+      }
+      @keyframes logoFloat { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-8px); } }
+      .logo svg { width: 48px; height: 48px; stroke: white; }
+      .title { font-size: 1.75rem; font-weight: 700; letter-spacing: -0.02em; margin-bottom: 0.5rem; }
+      .subtitle { color: var(--muted); font-size: 0.95rem; margin-bottom: 2.5rem; }
+      /* Progress bar */
+      .progress-container { height: 4px; background: var(--border); border-radius: 2px; overflow: hidden; margin-bottom: 1rem; }
+      .progress-bar { height: 100%; width: 0%; background: linear-gradient(90deg, var(--accent), #8b5cf6); border-radius: 2px; transition: width 0.3s ease; }
+      .progress-text { font-size: 0.8rem; color: var(--muted); text-align: left; }
+      /* Spinner dots */
+      .spinner { display: flex; gap: 6px; justify-content: center; margin-top: 1rem; }
+      .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); animation: dotPulse 1.2s ease-in-out infinite; }
+      .dot:nth-child(2) { animation-delay: 0.2s; }
+      .dot:nth-child(3) { animation-delay: 0.4s; }
+      @keyframes dotPulse { 0%, 100% { transform: scale(1); opacity: 1; } 50% { transform: scale(1.5); opacity: 0.5; } }
+      /* Status messages */
+      .status { font-size: 0.75rem; color: var(--muted); margin-top: 1rem; min-height: 1.2rem; }
+      /* Fade out animation for smooth transition */
+      .splash.fade-out { animation: fadeOut 0.5s ease forwards; }
+      @keyframes fadeOut { to { opacity: 0; visibility: hidden; } }
+    </style>
+  </head>
+  <body>
+    <div class="bg-grid"></div>
+    <div class="bg-glow glow-1"></div>
+    <div class="bg-glow glow-2"></div>
+    
+    <!-- Splash Screen (shown before React hydrates) -->
+    <div class="splash" id="splash">
+      <div class="logo">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 2L2 7l10 5 10-5-10-5z"/>
+          <path d="M2 17l10 5 10-5"/>
+          <path d="M2 12l10 5 10-5"/>
+        </svg>
+      </div>
+      <h1 class="title">Ghostlink Studio</h1>
+      <p class="subtitle">Distributed LLM Inference Fabric</p>
+      <div class="progress-container">
+        <div class="progress-bar" id="progressBar"></div>
+      </div>
+      <div class="progress-text" id="progressText">Initializing...</div>
+      <div class="spinner">
+        <div class="dot"></div>
+        <div class="dot"></div>
+        <div class="dot"></div>
+      </div>
+      <div class="status" id="statusText">Connecting to inference fabric...</div>
+    </div>
+
+    <!-- React App Root -->
+    <div id="root"></div>
+
+    <script>
+      // Splash screen controller
+      (function() {
+        const splash = document.getElementById('splash');
+        const progressBar = document.getElementById('progressBar');
+        const progressText = document.getElementById('progressText');
+        const statusText = document.getElementById('statusText');
+        
+        const steps = [
+          { pct: 10, text: 'Initializing neural pathways...', status: 'Loading core modules...' },
+          { pct: 30, text: 'Loading tensor cores...', status: 'Initializing inference engine...' },
+          { pct: 50, text: 'Calibrating distributed fabric...', status: 'Connecting to backend...' },
+          { pct: 70, text: 'Establishing model registry...', status: 'Fetching available models...' },
+          { pct: 85, text: 'Finalizing inference pipeline...', status: 'Almost ready...' },
+          { pct: 100, text: 'Ghostlink Studio ready!', status: 'Launching interface...' }
+        ];
+        
+        let currentStep = 0;
+        const stepDelay = 600;
+        
+        function advanceStep() {
+          if (currentStep >= steps.length) return;
+          const step = steps[currentStep];
+          progressBar.style.width = step.pct + '%';
+          progressText.textContent = step.text;
+          statusText.textContent = step.status;
+          currentStep++;
+          if (currentStep < steps.length) {
+            setTimeout(advanceStep, stepDelay);
+          } else {
+            // Wait for React to hydrate, then fade out
+            setTimeout(() => {
+              splash.classList.add('fade-out');
+              setTimeout(() => splash.remove(), 500);
+            }, 500);
+          }
+        }
+        
+        // Start animation
+        setTimeout(advanceStep, 200);
+        
+        // Fallback: remove splash after 10s max
+        setTimeout(() => {
+          if (document.body.contains(splash)) {
+            splash.classList.add('fade-out');
+          }
+        }, 10000);
+      })();
+    </script>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

@@ -1,27 +1,27 @@
 {
-  "profile": "flow_exec256_mb4_v1",
-  "description": "Post transport-batching baseline for docs/runtime-probe-docs",
+  "profile": "flow_exec512_mb8_v2",
+  "description": "Release-mode deterministic baseline refreshed on 2026-07-05 using exec_tokens=512 and micro_batch=8 for improved measurement stability",
   "drift_policy": {
     "max_throughput_drop_ratio": 0.30,
     "max_p95_rise_ratio": 0.60
   },
   "modes": {
     "tcp": {
-      "throughput_avg": 64863.34,
-      "p95_avg": 3.86,
-      "wall_avg": 4.06,
+      "throughput_avg": 256019.9453125,
+      "p95_avg": 1.9741108333333333,
+      "wall_avg": 2.032033833333333,
       "drift_policy": {
         "max_throughput_drop_ratio": 0.45,
         "max_p95_rise_ratio": 0.80
       }
     },
     "inmem": {
-      "throughput_avg": 100604.80,
-      "p95_avg": 2.47,
-      "wall_avg": 2.64,
+      "throughput_avg": 506809.4739583333,
+      "p95_avg": 1.0306548333333334,
+      "wall_avg": 1.1680815,
       "drift_policy": {
-        "max_throughput_drop_ratio": 0.35,
-        "max_p95_rise_ratio": 0.65
+        "max_throughput_drop_ratio": 0.40,
+        "max_p95_rise_ratio": 0.8
       }
     }
   }

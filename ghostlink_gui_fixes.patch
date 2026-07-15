@@ -1,0 +1,372 @@
+diff --git a/crates/ghost-link/src/main.rs b/crates/ghost-link/src/main.rs
+index ce1bc5a..ffe5d48 100644
+--- a/crates/ghost-link/src/main.rs
++++ b/crates/ghost-link/src/main.rs
+@@ -2200,7 +2200,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
+         cluster,
+     }));
+ 
+-    rt.block_on(async {
++    rt.block_on(async move {
+         let app = Router::new()
+             .route("/v1/chat/completions", post(handle_chat_completions))
+             .route("/v1/models", get(handle_models))
+@@ -2224,12 +2224,31 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
+             .with_state(state)
+             .layer(CorsLayer::permissive());
+ 
+-        let addr: SocketAddr = format!("{}:{}", host, port).parse().unwrap();
+-        let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
++        // `host` may be a literal IP ("127.0.0.1") or a hostname ("localhost").
++        // `SocketAddr::from_str` only accepts IP literals, so resolve via
++        // `ToSocketAddrs` (which also handles hostnames) instead of parsing
++        // directly. Previously this used `.parse::<SocketAddr>().unwrap()`,
++        // which panicked immediately whenever `host` was a non-IP hostname
++        // such as the CLI's own "localhost" default, silently killing the
++        // auto-started backend before it ever bound a port.
++        let addr = format!("{}:{}", host, port)
++            .to_socket_addrs()
++            .map_err(|err| anyhow::anyhow!("invalid serve address '{}:{}': {}", host, port, err))?
++            .next()
++            .ok_or_else(|| {
++                anyhow::anyhow!("could not resolve serve address '{}:{}'", host, port)
++            })?;
++        let listener = tokio::net::TcpListener::bind(addr)
++            .await
++            .map_err(|err| anyhow::anyhow!("failed to bind {}: {}", addr, err))?;
+         println!("\nAPI Server Online. Ready for connections.");
+ 
+-        axum::serve(listener, app).await.unwrap();
+-    });
++        axum::serve(listener, app)
++            .await
++            .map_err(|err| anyhow::anyhow!("API server error: {}", err))?;
++
++        Ok::<(), anyhow::Error>(())
++    })?;
+ 
+     Ok(())
+ }
+@@ -2784,7 +2803,17 @@ fn resolve_python_for_root(repo_root: &Path, configured: Option<String>) -> Pyth
+         };
+     }
+ 
++    // Virtualenvs lay out their interpreter differently per platform:
++    // POSIX uses `<venv>/bin/python`, Windows uses `<venv>\Scripts\python.exe`.
++    // Previously only the POSIX path was checked, so a `.venv` created on
++    // Windows (e.g. by scripts/setup_full_test_env.sh) was never found here,
++    // silently falling through to a bare `python3` that frequently doesn't
++    // exist on Windows either.
++    #[cfg(windows)]
++    let venv_python = repo_root.join(".venv").join("Scripts").join("python.exe");
++    #[cfg(not(windows))]
+     let venv_python = repo_root.join(".venv").join("bin").join("python");
++
+     if venv_python.is_file() {
+         return PythonResolution {
+             executable: venv_python.display().to_string(),
+@@ -2792,6 +2821,24 @@ fn resolve_python_for_root(repo_root: &Path, configured: Option<String>) -> Pyth
+         };
+     }
+ 
++    // `python3` is the standard name on Linux/macOS but is frequently absent
++    // on Windows, where the launcher is usually just `python`. Probe both
++    // and fall back to whichever actually runs.
++    #[cfg(windows)]
++    {
++        if Command::new("python3").arg("--version").output().is_ok() {
++            return PythonResolution {
++                executable: "python3".to_string(),
++                source: PythonResolutionSource::SystemFallback,
++            };
++        }
++        return PythonResolution {
++            executable: "python".to_string(),
++            source: PythonResolutionSource::SystemFallback,
++        };
++    }
++
++    #[cfg(not(windows))]
+     PythonResolution {
+         executable: "python3".to_string(),
+         source: PythonResolutionSource::SystemFallback,
+@@ -3560,7 +3607,12 @@ fn launch_mohawk_gui(args: &[String]) -> Result<()> {
+ }
+ 
+ fn parse_gui_backend_target(args: &[String]) -> (String, u16) {
+-    let mut host = "localhost".to_string();
++    // Default to the literal loopback IP rather than the hostname
++    // "localhost". The GUI's own default (DEFAULT_API_BASE in
++    // ghostlink_gui_tkinter.py) already uses 127.0.0.1, and using a literal
++    // IP here sidesteps any hostname-resolution edge cases across
++    // platforms/DNS configs for the auto-managed backend.
++    let mut host = "127.0.0.1".to_string();
+     let mut port = 8003_u16;
+     let mut i = 0_usize;
+ 
+@@ -3717,12 +3769,22 @@ fn run_gui_python_preflight(python: &str) -> Result<()> {
+     let missing = detect_missing_gui_python_modules(python)?;
+     if !missing.is_empty() {
+         anyhow::bail!(
+-            "GUI preflight failed: required Python GUI modules are missing: {}. Install with: {} -m pip install -r third_party/mohawk_gui/requirements-runtime.txt",
++            "GUI preflight failed: required Python GUI modules are missing: {}. Install with: {} -m pip install -r requirements-gui.txt",
+             missing.join(", "),
+             python,
+         );
+     }
+ 
++    if let Ok(optional_missing) = detect_missing_optional_gui_python_modules(python) {
++        if !optional_missing.is_empty() {
++            println!(
++                "Note: optional Python modules not found ({}). Related features (e.g. Hugging Face search) will be unavailable. Install with: {} -m pip install -r requirements-gui.txt",
++                optional_missing.join(", "),
++                python,
++            );
++        }
++    }
++
+     Ok(())
+ }
+ 
+@@ -3735,9 +3797,7 @@ fn print_gui_diagnostics(strict: bool) -> Result<()> {
+     let requirements = crate_root
+         .join("..")
+         .join("..")
+-        .join("third_party")
+-        .join("mohawk_gui")
+-        .join("requirements-runtime.txt");
++        .join("requirements-gui.txt");
+     let repo_root = crate_root.join("..").join("..");
+     let python_resolution =
+         resolve_python_for_root(&repo_root, std::env::var("GHOSTLINK_PYTHON").ok());
+@@ -3783,25 +3843,12 @@ fn print_gui_diagnostics(strict: bool) -> Result<()> {
+         _ => {}
+     }
+ 
+-    #[cfg(target_os = "linux")]
+-    let has_libgl = has_linux_libgl();
+-    #[cfg(target_os = "linux")]
+-    let has_libxkb = has_linux_libxkbcommon();
+-    #[cfg(target_os = "linux")]
+-    {
+-        if !has_libgl {
+-            categories.push((
+-                "system_libs".to_string(),
+-                "Missing libGL.so.1 (install libgl1)".to_string(),
+-            ));
+-        }
+-        if !has_libxkb {
+-            categories.push((
+-                "system_libs".to_string(),
+-                "Missing libxkbcommon.so.0 (install libxkbcommon0)".to_string(),
+-            ));
+-        }
+-    }
++    // Note: this GUI is Tkinter-based (Tk/X11), not Qt, so it has no
++    // dependency on libGL or libxkbcommon (those only matter for the
++    // separate PyQt6-based third_party/mohawk_gui frontend). Those checks
++    // used to run here and would fail this diagnostic - and, in strict mode,
++    // block the GUI from launching at all - on any minimal/headless Linux
++    // box that lacked OpenGL libraries it never needed in the first place.
+ 
+     let has_display = std::env::var("DISPLAY")
+         .ok()
+@@ -3854,12 +3901,14 @@ fn print_gui_diagnostics(strict: bool) -> Result<()> {
+             })
+             .collect::<Vec<_>>()
+             .join(",");
++        // Reported for informational purposes only (e.g. relevant to the
++        // separate PyQt6 mohawk_gui frontend) - never gates the Tkinter GUI.
+         #[cfg(target_os = "linux")]
+-        let linux_libgl_json = if has_libgl { "true" } else { "false" };
++        let linux_libgl_json = if has_linux_libgl() { "true" } else { "false" };
+         #[cfg(not(target_os = "linux"))]
+         let linux_libgl_json = "null";
+         #[cfg(target_os = "linux")]
+-        let linux_libxkb_json = if has_libxkb { "true" } else { "false" };
++        let linux_libxkb_json = if has_linux_libxkbcommon() { "true" } else { "false" };
+         #[cfg(not(target_os = "linux"))]
+         let linux_libxkb_json = "null";
+         let payload = format!(
+@@ -3906,9 +3955,7 @@ fn print_gui_readiness(strict: bool) -> Result<()> {
+     let requirements = crate_root
+         .join("..")
+         .join("..")
+-        .join("third_party")
+-        .join("mohawk_gui")
+-        .join("requirements-runtime.txt");
++        .join("requirements-gui.txt");
+     let repo_root = crate_root.join("..").join("..");
+     let python =
+         resolve_python_executable_for_root(&repo_root, std::env::var("GHOSTLINK_PYTHON").ok());
+@@ -3948,9 +3995,7 @@ fn print_gui_readiness(strict: bool) -> Result<()> {
+ 
+     match detect_missing_gui_python_modules(&python) {
+         Ok(missing) if missing.is_empty() => {
+-            println!(
+-                "Python modules: OK (tkinter, requests, huggingface_hub, transformers, torch)"
+-            );
++            println!("Python modules: OK (tkinter, requests)");
+         }
+         Ok(missing) => {
+             issues.push(format!("Missing Python modules: {}", missing.join(", ")));
+@@ -3960,26 +4005,35 @@ fn print_gui_readiness(strict: bool) -> Result<()> {
+         }
+     }
+ 
++    match detect_missing_optional_gui_python_modules(&python) {
++        Ok(missing) if missing.is_empty() => {
++            println!("Optional Python modules: OK (huggingface_hub)");
++        }
++        Ok(missing) => {
++            println!(
++                "Note: optional Python modules missing ({}); related features will be unavailable but the GUI will still run.",
++                missing.join(", ")
++            );
++        }
++        Err(_) => {}
++    }
++
++    // These libraries only matter for the separate PyQt6-based
++    // third_party/mohawk_gui frontend. The Tkinter Studio GUI here uses
++    // Tk/X11, not Qt/OpenGL, so their absence is reported for information
++    // only and never counted as a readiness issue.
+     #[cfg(target_os = "linux")]
+     {
+         let has_libgl = has_linux_libgl();
+         let has_libxkb = has_linux_libxkbcommon();
+         println!(
+-            "Linux OpenGL runtime (libGL.so.1): {}",
++            "Linux OpenGL runtime (libGL.so.1, only needed by third_party/mohawk_gui): {}",
+             if has_libgl { "present" } else { "missing" }
+         );
+         println!(
+-            "Linux XKB runtime (libxkbcommon.so.0): {}",
++            "Linux XKB runtime (libxkbcommon.so.0, only needed by third_party/mohawk_gui): {}",
+             if has_libxkb { "present" } else { "missing" }
+         );
+-        if !has_libgl {
+-            issues.push("Missing libGL.so.1 system dependency (install `libgl1`)".to_string());
+-        }
+-        if !has_libxkb {
+-            issues.push(
+-                "Missing libxkbcommon.so.0 system dependency (install `libxkbcommon0`)".to_string(),
+-            );
+-        }
+     }
+ 
+     let has_display = std::env::var("DISPLAY")
+@@ -4016,10 +4070,6 @@ fn print_gui_readiness(strict: bool) -> Result<()> {
+         python,
+         requirements.display()
+     );
+-    #[cfg(target_os = "linux")]
+-    println!(
+-        "- Install system libs: sudo apt-get update && sudo apt-get install -y libgl1 libxkbcommon0"
+-    );
+ 
+     if strict {
+         anyhow::bail!("GUI readiness check failed in strict mode");
+@@ -4028,12 +4078,38 @@ fn print_gui_readiness(strict: bool) -> Result<()> {
+     Ok(())
+ }
+ 
++/// Hard requirements for `ghostlink_gui_tkinter.py`. The GUI only ever
++/// imports `tkinter` (for the UI) and `requests` (to talk to the Rust
++/// backend's HTTP API) unconditionally; everything else it uses is either
++/// guarded by a try/except (`huggingface_hub`) or not imported at all.
++const REQUIRED_GUI_PYTHON_MODULES: &[&str] = &["tkinter", "requests"];
++
++/// Optional modules: the GUI degrades gracefully without these (e.g. the
++/// Hugging Face search box just shows an error dialog instead of crashing),
++/// so their absence should be surfaced as a warning, never as a blocking
++/// preflight failure.
++const OPTIONAL_GUI_PYTHON_MODULES: &[&str] = &["huggingface_hub"];
++
+ fn detect_missing_gui_python_modules(python: &str) -> Result<Vec<String>> {
++    detect_missing_python_modules(python, REQUIRED_GUI_PYTHON_MODULES)
++}
++
++fn detect_missing_optional_gui_python_modules(python: &str) -> Result<Vec<String>> {
++    detect_missing_python_modules(python, OPTIONAL_GUI_PYTHON_MODULES)
++}
++
++fn detect_missing_python_modules(python: &str, modules: &[&str]) -> Result<Vec<String>> {
++    let module_list = modules
++        .iter()
++        .map(|m| format!("'{}'", m))
++        .collect::<Vec<_>>()
++        .join(",");
++    let script = format!(
++        "import importlib.util as u;mods=[{}];missing=[m for m in mods if u.find_spec(m) is None];print(','.join(missing))",
++        module_list
++    );
+     let output = Command::new(python)
+-        .args([
+-            "-c",
+-            "import importlib.util as u;mods=['tkinter','requests','huggingface_hub','transformers','torch'];missing=[m for m in mods if u.find_spec(m) is None];print(','.join(missing))",
+-        ])
++        .args(["-c", &script])
+         .output()
+         .map_err(|err| anyhow::anyhow!("unable to execute Python '{}': {}", python, err))?;
+ 
+@@ -4399,7 +4475,7 @@ mod tests {
+     #[test]
+     fn parse_gui_backend_target_uses_defaults_and_parses_equals_form() {
+         let (default_host, default_port) = parse_gui_backend_target(&[]);
+-        assert_eq!(default_host, "localhost");
++        assert_eq!(default_host, "127.0.0.1");
+         assert_eq!(default_port, 8003);
+ 
+         let (host, port) =
+diff --git a/ghostlink_gui_tkinter.py b/ghostlink_gui_tkinter.py
+index 6b6d622..a3cfab7 100644
+--- a/ghostlink_gui_tkinter.py
++++ b/ghostlink_gui_tkinter.py
+@@ -28,6 +28,14 @@ except ImportError:  # pragma: no cover
+ 
+ DEFAULT_API_BASE = "http://127.0.0.1:8003"
+ 
++# Assets are shipped next to this script (repo_root/assets/...). Resolve
++# relative to the script's own location rather than the process's current
++# working directory: the Rust launcher (`ghost-link gui`) runs this script
++# via an absolute path but inherits whatever directory the user happened to
++# invoke `ghost-link` from, so a bare relative path like "assets/icons/x.png"
++# only worked by coincidence when launched from the repo root.
++SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
++
+ 
+ class ChatResponseStream:
+     def __init__(self, response_queue: queue.Queue):
+@@ -127,7 +135,7 @@ class GhostlinkGUI:
+         self.sidebar_buttons: list[tk.Button] = []
+         self.sidebar_icons = {}
+         for index, text in enumerate(["Chat", "Models", "Metrics", "Sessions", "Workers", "Security"]):
+-            icon = self.load_icon(f"assets/icons/{text.lower()}.png")
++            icon = self.load_icon(os.path.join(SCRIPT_DIR, "assets", "icons", f"{text.lower()}.png"))
+             button = tk.Button(sidebar, text=text, command=lambda idx=index: self.switch_tab(idx), relief="flat", bg="#151922", fg="#e5e7eb", activebackground="#2b3442", activeforeground="#ffffff", padx=14, pady=10)
+             if icon:
+                 button.configure(image=icon, compound="left", padx=10)
+@@ -310,7 +318,7 @@ class GhostlinkGUI:
+ 
+         button_row = tk.Frame(left, bg="#111318")
+         button_row.pack(fill="x")
+-        self.send_icon = self.load_icon("assets/icons/send.png")
++        self.send_icon = self.load_icon(os.path.join(SCRIPT_DIR, "assets", "icons", "send.png"))
+         self.send_btn = tk.Button(button_row, text="Send", command=self.send_message, bg="#3b82f6", fg="#ffffff", relief="flat", padx=16, pady=8)
+         if self.send_icon:
+             self.send_btn.configure(image=self.send_icon, compound="left")
+diff --git a/scripts/setup_full_test_env.sh b/scripts/setup_full_test_env.sh
+index 9c2a7a1..0f0b93a 100755
+--- a/scripts/setup_full_test_env.sh
++++ b/scripts/setup_full_test_env.sh
+@@ -33,6 +33,9 @@ VENV_PYTHON="${VENV_PATH}/bin/python"
+ log "Upgrading pip/setuptools/wheel"
+ "$VENV_PYTHON" -m pip install --upgrade pip setuptools wheel
+ 
++log "Installing Ghostlink Studio (Tkinter GUI) Python dependencies"
++"$VENV_PYTHON" -m pip install -r "${ROOT_DIR}/requirements-gui.txt"
++
+ log "Installing Mohawk GUI Python dependencies"
+ "$VENV_PYTHON" -m pip install -r "${ROOT_DIR}/third_party/mohawk_gui/requirements-runtime.txt"
+ 

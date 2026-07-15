@@ -1,0 +1,32 @@
+# Multi-stage Ghostlink production-ready build
+# Optimized for layer caching and minimal final image size
+
+# Build stage
+FROM rust:1.88-bookworm as builder
+WORKDIR /build
+
+# Copy workspace manifests and source
+COPY Cargo.toml Cargo.lock ./
+COPY crates ./crates
+
+# Build application
+RUN cargo build --release -p ghost-link -p ghostlink-core
+
+# Runtime stage
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y \
+    ca-certificates \
+    curl \
+    net-tools \
+    iproute2 \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /build/target/release/ghost-link /usr/local/bin/
+WORKDIR /app
+COPY . .
+
+# Default to no special role; accept role via environment or CLI args
+ENV GHOSTLINK_TCP_AUTH_TOKEN=""
+ENV GHOSTLINK_ROLE="worker"
+ENTRYPOINT ["ghost-link"]
+CMD ["--help"]

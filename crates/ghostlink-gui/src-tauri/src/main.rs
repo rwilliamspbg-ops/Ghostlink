@@ -3,9 +3,10 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::fs;
+use std::net::{TcpStream, ToSocketAddrs};
 use std::path::PathBuf;
 use std::process::Command;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 #[derive(Serialize)]
 struct StudioStatus {
@@ -31,7 +32,18 @@ fn main() {
             studio_status,
             studio_snapshot,
             cluster_preview,
+            discover_workers,
+            load_flow_defaults,
             list_model_presets,
+            list_hf_models,
+            list_backend_models,
+            list_backend_model_status,
+            list_backend_metrics,
+            list_backend_workers,
+            ollama_health,
+            download_backend_model,
+            delete_backend_model,
+            load_backend_model,
             run_validation_tier,
             load_ghostlink_config,
             save_ghostlink_config,
@@ -39,8 +51,10 @@ fn main() {
             import_studio_profile,
             run_doctor,
             run_doctor_with_json,
+            quick_tcp_probe,
             run_probe,
             run_flow_quick,
+            run_flow_between,
             run_cluster_start,
             verify_hf_repo,
             chat_infer
@@ -225,6 +239,36 @@ struct ClusterPreview {
 }
 
 #[derive(Serialize)]
+struct WorkerDiscoveryCard {
+    id: String,
+    available: bool,
+    workers: usize,
+    system_memory_gb: f32,
+    gpu_vram_gb: f32,
+    acceleration: String,
+    health: String,
+    probe_mode: String,
+    error: Option<String>,
+}
+
+#[derive(Serialize)]
+struct WorkerDiscoveryResult {
+    query: Vec<String>,
+    available_count: usize,
+    workers: Vec<WorkerDiscoveryCard>,
+    summary: String,
+}
+
+#[derive(Serialize)]
+struct FlowDefaults {
+    local_id: String,
+    remote_id: String,
+    execution_tokens: u32,
+    micro_batch: u32,
+    transport: String,
+}
+
+#[derive(Serialize)]
 struct ModelPreset {
     name: String,
     repo: String,
@@ -243,7 +287,40 @@ struct StudioProfile {
     model_file: String,
     chat_model: String,
     chat_distributed: bool,
+    #[serde(default)]
+    ollama_url: String,
+    #[serde(default)]
+    ollama_model: String,
     config_content: String,
+    #[serde(default)]
+    worker_probe_hints: String,
+    #[serde(default)]
+    worker_probe_full: bool,
+    #[serde(default)]
+    local_node_id: String,
+    #[serde(default)]
+    remote_node_id: String,
+    #[serde(default)]
+    flow_transport: String,
+    #[serde(default)]
+    flow_execution_tokens: u32,
+    #[serde(default)]
+    flow_micro_batch: u32,
+    #[serde(default)]
+    start_node_count: u32,
+    #[serde(default)]
+    start_base_port: u16,
+    #[serde(default)]
+    show_advanced_cluster_buttons: bool,
+}
+
+#[derive(Serialize)]
+struct TcpProbeResult {
+    host: String,
+    port: u16,
+    reachable: bool,
+    latency_ms: Option<u128>,
+    error: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -266,8 +343,13 @@ fn cluster_preview(node_id: String, full: bool) -> Result<ClusterPreview, String
         ));
     }
 
-    let nodes = vec![parse_probe_to_node(command.stdout.as_str())
-        .unwrap_or_else(|| fallback_node(node_id.as_str()))];
+    let parsed = parse_probe_to_node(command.stdout.as_str()).ok_or_else(|| {
+        format!(
+            "failed to parse live probe output for node '{}'",
+            node_id.as_str()
+        )
+    })?;
+    let nodes = vec![parsed];
     let healthy = nodes.iter().filter(|node| node.health == "healthy").count();
     let degraded = nodes.len().saturating_sub(healthy);
 
@@ -280,6 +362,92 @@ fn cluster_preview(node_id: String, full: bool) -> Result<ClusterPreview, String
         ),
         nodes,
     })
+}
+
+#[tauri::command]
+fn discover_workers(node_ids: Vec<String>, full: bool) -> Result<WorkerDiscoveryResult, String> {
+    let mut query = merge_worker_discovery_ids(node_ids);
+    if query.is_empty() {
+        query = vec!["studio-local".to_string(), "studio-remote".to_string()];
+    }
+
+    let probe_mode = if full { "full" } else { "fast" };
+    let mut workers = Vec::with_capacity(query.len());
+    let mut available_count = 0usize;
+
+    for node_id in &query {
+        let command = run_ghostlink_command(if full {
+            vec!["probe", node_id.as_str(), "full"]
+        } else {
+            vec!["probe", node_id.as_str(), "fast"]
+        })?;
+
+        if command.ok {
+            if let Some(parsed) = parse_probe_to_node(command.stdout.as_str()) {
+                available_count = available_count.saturating_add(1);
+                workers.push(WorkerDiscoveryCard {
+                    id: parsed.id,
+                    available: true,
+                    workers: parsed.workers,
+                    system_memory_gb: parsed.system_memory_gb,
+                    gpu_vram_gb: parsed.gpu_vram_gb,
+                    acceleration: parsed.acceleration,
+                    health: parsed.health,
+                    probe_mode: probe_mode.to_string(),
+                    error: None,
+                });
+                continue;
+            }
+        }
+
+        let stderr = command.stderr.trim();
+        let stdout = command.stdout.trim();
+        let detail = if !stderr.is_empty() {
+            stderr
+        } else if !stdout.is_empty() {
+            stdout
+        } else {
+            "probe command produced no details"
+        };
+
+        workers.push(WorkerDiscoveryCard {
+            id: node_id.clone(),
+            available: false,
+            workers: 0,
+            system_memory_gb: 0.0,
+            gpu_vram_gb: 0.0,
+            acceleration: "unknown".to_string(),
+            health: "unreachable".to_string(),
+            probe_mode: probe_mode.to_string(),
+            error: Some(detail.to_string()),
+        });
+    }
+
+    Ok(WorkerDiscoveryResult {
+        summary: format!("{} of {} workers reachable", available_count, workers.len()),
+        query,
+        available_count,
+        workers,
+    })
+}
+
+#[tauri::command]
+fn load_flow_defaults() -> FlowDefaults {
+    let defaults = parse_flow_config_defaults().unwrap_or(FlowDefaults {
+        local_id: "studio-local".to_string(),
+        remote_id: "studio-remote".to_string(),
+        execution_tokens: 64,
+        micro_batch: 2,
+        transport: "tcp".to_string(),
+    });
+
+    FlowDefaults {
+        local_id: sanitize_node_id(defaults.local_id.as_str(), "studio-local"),
+        remote_id: sanitize_node_id(defaults.remote_id.as_str(), "studio-remote"),
+        execution_tokens: defaults.execution_tokens.clamp(16, 512),
+        micro_batch: defaults.micro_batch.clamp(1, 16),
+        transport: sanitize_transport(defaults.transport.as_str()),
+    }
 }
 
 #[tauri::command]
@@ -304,6 +472,96 @@ fn list_model_presets() -> Vec<ModelPreset> {
             quant: "Int4".to_string(),
         },
     ]
+}
+
+#[tauri::command]
+fn list_hf_models(query: Option<String>, limit: Option<usize>) -> Result<Value, String> {
+    let mut url = reqwest::Url::parse("https://huggingface.co/api/models")
+        .map_err(|err| format!("failed to build Hugging Face URL: {}", err))?;
+    let normalized_query = query.unwrap_or_default().trim().to_string();
+    let capped_limit = limit.unwrap_or(12).clamp(1, 50);
+
+    {
+        let mut params = url.query_pairs_mut();
+        if !normalized_query.is_empty() {
+            params.append_pair("search", normalized_query.as_str());
+        }
+        params.append_pair("limit", capped_limit.to_string().as_str());
+        params.append_pair("sort", "downloads");
+        params.append_pair("direction", "-1");
+        params.append_pair("full", "true");
+    }
+
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(20))
+        .build()
+        .map_err(|err| format!("failed to build Hugging Face HTTP client: {}", err))?;
+
+    let response = client
+        .get(url)
+        .send()
+        .map_err(|err| format!("failed to query Hugging Face model API: {}", err))?;
+    let status = response.status();
+    let body = response
+        .text()
+        .map_err(|err| format!("failed to read Hugging Face model API response: {}", err))?;
+
+    if !status.is_success() {
+        return Err(format!(
+            "Hugging Face model API returned {}: {}",
+            status,
+            body.trim()
+        ));
+    }
+
+    let parsed: Value = serde_json::from_str(&body)
+        .map_err(|err| format!("invalid Hugging Face model API JSON: {}", err))?;
+    let models = parsed
+        .as_array()
+        .ok_or_else(|| "unexpected Hugging Face model API response shape".to_string())?;
+
+    let summarized = models
+        .iter()
+        .map(|entry| {
+            let siblings = entry
+                .get("siblings")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+
+            let has_config = siblings.iter().any(|item| {
+                item.get("rfilename")
+                    .and_then(Value::as_str)
+                    .map(|name| name == "config.json")
+                    .unwrap_or(false)
+            });
+
+            let has_tokenizer = siblings.iter().any(|item| {
+                item.get("rfilename")
+                    .and_then(Value::as_str)
+                    .map(|name| name == "tokenizer.json" || name == "tokenizer_config.json")
+                    .unwrap_or(false)
+            });
+
+            serde_json::json!({
+                "id": entry.get("id").and_then(Value::as_str).unwrap_or(""),
+                "pipeline_tag": entry.get("pipeline_tag").and_then(Value::as_str).unwrap_or("unknown"),
+                "downloads": entry.get("downloads").and_then(Value::as_u64).unwrap_or(0),
+                "likes": entry.get("likes").and_then(Value::as_u64).unwrap_or(0),
+                "last_modified": entry.get("lastModified").and_then(Value::as_str).unwrap_or(""),
+                "private": entry.get("private").and_then(Value::as_bool).unwrap_or(false),
+                "gated": entry.get("gated").and_then(Value::as_str).unwrap_or("false"),
+                "has_config": has_config,
+                "has_tokenizer": has_tokenizer,
+            })
+        })
+        .collect::<Vec<_>>();
+
+    Ok(serde_json::json!({
+        "models": summarized,
+        "query": normalized_query,
+        "limit": capped_limit,
+    }))
 }
 
 #[tauri::command]
@@ -414,7 +672,19 @@ fn export_studio_profile(
     model_file: String,
     chat_model: String,
     chat_distributed: bool,
+    ollama_url: String,
+    ollama_model: String,
     config_content: String,
+    worker_probe_hints: String,
+    worker_probe_full: bool,
+    local_node_id: String,
+    remote_node_id: String,
+    flow_transport: String,
+    flow_execution_tokens: u32,
+    flow_micro_batch: u32,
+    start_node_count: u32,
+    start_base_port: u16,
+    show_advanced_cluster_buttons: bool,
 ) -> Result<StudioProfileExportResult, String> {
     let root = repo_root();
     let sanitized = sanitize_profile_name(profile_name.as_str());
@@ -437,7 +707,19 @@ fn export_studio_profile(
         model_file,
         chat_model,
         chat_distributed,
+        ollama_url,
+        ollama_model,
         config_content,
+        worker_probe_hints,
+        worker_probe_full,
+        local_node_id,
+        remote_node_id,
+        flow_transport,
+        flow_execution_tokens,
+        flow_micro_batch,
+        start_node_count,
+        start_base_port,
+        show_advanced_cluster_buttons,
     };
 
     let out_path = profile_dir.join(format!("{}.json", sanitized));
@@ -571,6 +853,43 @@ fn run_doctor_with_json(strict: bool) -> Result<DoctorJsonSummary, String> {
 }
 
 #[tauri::command]
+fn quick_tcp_probe(host: String, port: u16, timeout_ms: u64) -> Result<TcpProbeResult, String> {
+    let host_trimmed = host.trim();
+    if host_trimmed.is_empty() {
+        return Err("host cannot be empty".to_string());
+    }
+    if port == 0 {
+        return Err("port must be > 0".to_string());
+    }
+
+    let timeout = Duration::from_millis(timeout_ms.clamp(50, 10_000));
+    let address = format!("{}:{}", host_trimmed, port);
+    let socket = address
+        .to_socket_addrs()
+        .map_err(|err| format!("failed to resolve {}: {}", address, err))?
+        .next()
+        .ok_or_else(|| format!("failed to resolve {}", address))?;
+
+    let start = Instant::now();
+    match TcpStream::connect_timeout(&socket, timeout) {
+        Ok(_) => Ok(TcpProbeResult {
+            host: host_trimmed.to_string(),
+            port,
+            reachable: true,
+            latency_ms: Some(start.elapsed().as_millis()),
+            error: None,
+        }),
+        Err(err) => Ok(TcpProbeResult {
+            host: host_trimmed.to_string(),
+            port,
+            reachable: false,
+            latency_ms: None,
+            error: Some(err.to_string()),
+        }),
+    }
+}
+
+#[tauri::command]
 fn run_probe(node_id: String, full: bool) -> Result<CommandResult, String> {
     run_ghostlink_command(if full {
         vec!["probe", node_id.as_str(), "full"]
@@ -594,6 +913,32 @@ fn run_flow_quick() -> Result<CommandResult, String> {
 }
 
 #[tauri::command]
+fn run_flow_between(
+    local_id: String,
+    remote_id: String,
+    execution_tokens: u32,
+    micro_batch: u32,
+    transport: String,
+) -> Result<CommandResult, String> {
+    let local = sanitize_node_id(local_id.as_str(), "studio-local");
+    let remote = sanitize_node_id(remote_id.as_str(), "studio-remote");
+    let transport = sanitize_transport(transport.as_str());
+    let tokens_arg = execution_tokens.clamp(16, 512).to_string();
+    let micro_batch_arg = micro_batch.clamp(1, 16).to_string();
+
+    run_ghostlink_command(vec![
+        "flow",
+        local.as_str(),
+        remote.as_str(),
+        "32",
+        "32",
+        tokens_arg.as_str(),
+        micro_batch_arg.as_str(),
+        transport.as_str(),
+    ])
+}
+
+#[tauri::command]
 fn run_cluster_start(node_count: usize, base_port: u16) -> Result<CommandResult, String> {
     run_ghostlink_command(vec![
         "cluster-start",
@@ -603,26 +948,171 @@ fn run_cluster_start(node_count: usize, base_port: u16) -> Result<CommandResult,
 }
 
 #[tauri::command]
-fn verify_hf_repo(repo: String, file: String) -> Result<ModelVerifyResult, String> {
+fn verify_hf_repo(repo: String, file: Option<String>) -> Result<ModelVerifyResult, String> {
     let root = repo_root();
     let python = preferred_python();
+    let resolved_file = file
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("config.json")
+        .to_string();
     let output = Command::new(&python)
         .arg("scripts/verify_hf_models.py")
         .arg("--repo")
         .arg(repo.as_str())
         .arg("--file")
-        .arg(file.as_str())
+        .arg(resolved_file.as_str())
         .current_dir(&root)
         .output()
         .map_err(|err| format!("failed to execute verify_hf_models.py: {}", err))?;
 
     Ok(ModelVerifyResult {
         repo,
-        file,
+        file: resolved_file,
         ok: output.status.success(),
         stdout: String::from_utf8_lossy(&output.stdout).to_string(),
         stderr: String::from_utf8_lossy(&output.stderr).to_string(),
     })
+}
+
+fn studio_backend_url() -> String {
+    std::env::var("GHOSTLINK_BACKEND_URL")
+        .unwrap_or_else(|_| "http://127.0.0.1:9999".to_string())
+        .trim_end_matches('/')
+        .to_string()
+}
+
+fn backend_get_json(path: &str) -> Result<Value, String> {
+    let backend_url = studio_backend_url();
+    let target = format!("{}{}", backend_url, path);
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .build()
+        .map_err(|err| format!("failed to build backend HTTP client for {}: {}", path, err))?;
+    let response = client
+        .get(target.as_str())
+        .send()
+        .map_err(|err| format!("failed to query backend endpoint {}: {}", path, err))?;
+    let status = response.status();
+    let body = response
+        .text()
+        .map_err(|err| format!("failed to read backend response {}: {}", path, err))?;
+
+    if !status.is_success() {
+        let detail = if body.trim().is_empty() {
+            format!("HTTP {}", status)
+        } else {
+            body.trim().to_string()
+        };
+        return Err(format!(
+            "backend endpoint {} returned non-zero status: {}",
+            path, detail
+        ));
+    }
+
+    serde_json::from_str::<Value>(&body)
+        .map_err(|err| format!("invalid JSON from backend endpoint {}: {}", path, err))
+}
+
+fn backend_post_json(path: &str, payload: &Value) -> Result<Value, String> {
+    let backend_url = studio_backend_url();
+    let target = format!("{}{}", backend_url, path);
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(120))
+        .build()
+        .map_err(|err| format!("failed to build backend HTTP client for {}: {}", path, err))?;
+    let response = client
+        .post(target.as_str())
+        .json(payload)
+        .send()
+        .map_err(|err| format!("failed to post backend endpoint {}: {}", path, err))?;
+    let status = response.status();
+    let body = response
+        .text()
+        .map_err(|err| format!("failed to read backend response {}: {}", path, err))?;
+
+    if !status.is_success() {
+        let detail = if body.trim().is_empty() {
+            format!("HTTP {}", status)
+        } else {
+            body.trim().to_string()
+        };
+        return Err(format!(
+            "backend endpoint {} returned non-zero status: {}",
+            path, detail
+        ));
+    }
+
+    serde_json::from_str::<Value>(&body)
+        .map_err(|err| format!("invalid JSON from backend endpoint {}: {}", path, err))
+}
+
+#[tauri::command]
+fn list_backend_models() -> Result<Value, String> {
+    backend_get_json("/api/models")
+}
+
+#[tauri::command]
+fn list_backend_model_status() -> Result<Value, String> {
+    backend_get_json("/api/models/status")
+}
+
+#[tauri::command]
+fn list_backend_metrics() -> Result<Value, String> {
+    backend_get_json("/api/metrics")
+}
+
+#[tauri::command]
+fn list_backend_workers() -> Result<Value, String> {
+    backend_get_json("/api/workers")
+}
+
+#[tauri::command]
+fn ollama_health() -> Result<Value, String> {
+    backend_get_json("/api/ollama/health")
+}
+
+#[tauri::command]
+fn download_backend_model(model_id: String) -> Result<Value, String> {
+    let normalized = model_id.trim().to_string();
+    if normalized.is_empty() {
+        return Err("model_id cannot be empty".to_string());
+    }
+    backend_post_json(
+        "/api/models/download",
+        &serde_json::json!({
+            "model_id": normalized
+        }),
+    )
+}
+
+#[tauri::command]
+fn delete_backend_model(model: String) -> Result<Value, String> {
+    let normalized = model.trim().to_string();
+    if normalized.is_empty() {
+        return Err("model cannot be empty".to_string());
+    }
+    backend_post_json(
+        "/api/models/delete",
+        &serde_json::json!({
+            "model": normalized
+        }),
+    )
+}
+
+#[tauri::command]
+fn load_backend_model(model: String) -> Result<Value, String> {
+    let normalized = model.trim().to_string();
+    if normalized.is_empty() {
+        return Err("model cannot be empty".to_string());
+    }
+    backend_post_json(
+        "/api/models/load",
+        &serde_json::json!({
+            "model": normalized
+        }),
+    )
 }
 
 #[tauri::command]
@@ -632,99 +1122,68 @@ fn chat_infer(
     temperature: f32,
     max_tokens: u32,
     distributed: bool,
+    ollama_url: Option<String>,
+    ollama_model: Option<String>,
 ) -> Result<ChatResult, String> {
     let concise_prompt = prompt.trim();
     if concise_prompt.is_empty() {
         return Err("prompt cannot be empty".to_string());
     }
 
-    let backend = if distributed {
-        "distributed-flow"
-    } else {
-        "single-node-flow"
-    };
-    let transport = if distributed { "tcp" } else { "inmem" };
-    let execution_tokens = max_tokens.clamp(16, 512);
-    let execution_tokens_arg = execution_tokens.to_string();
-
-    let command_result = run_ghostlink_command(vec![
-        "flow",
-        "studio-local",
-        "studio-remote",
-        "32",
-        "32",
-        execution_tokens_arg.as_str(),
-        "1",
-        transport,
-    ])?;
-
-    if !command_result.ok {
-        let stderr = command_result.stderr.trim();
-        let stdout = command_result.stdout.trim();
-        let detail = if !stderr.is_empty() { stderr } else { stdout };
-        return Err(format!(
-            "live flow execution failed (exit code {:?}): {}",
-            command_result.exit_code, detail
-        ));
+    let requested_model = model.trim();
+    if requested_model.is_empty() {
+        return Err("model cannot be empty".to_string());
     }
 
-    let throughput = extract_metric(command_result.stdout.as_str(), "Throughput:", "tokens/sec")
-        .unwrap_or_else(|| "unknown".to_string());
-    let avg_latency = extract_metric(command_result.stdout.as_str(), "Avg token latency:", "ms")
-        .unwrap_or_else(|| "unknown".to_string());
-    let p95_latency = extract_metric(command_result.stdout.as_str(), "P95:", "ms")
-        .unwrap_or_else(|| "unknown".to_string());
+    let resolved_ollama_url = ollama_url.unwrap_or_else(|| {
+        std::env::var("GHOSTLINK_OLLAMA_URL")
+            .unwrap_or_else(|_| "http://127.0.0.1:11434".to_string())
+    });
+    let resolved_ollama_model = ollama_model
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| requested_model.to_string());
 
-    let response = format!(
-        "Live runtime completed for prompt '{}' using model '{}'. Backend={} transport={} temp={:.2}. Metrics: throughput={} tokens/sec, avg_latency={} ms, p95={} ms.",
-        concise_prompt,
-        model,
-        backend,
-        transport,
-        temperature,
-        throughput,
-        avg_latency,
-        p95_latency
-    );
+    let payload = serde_json::json!({
+        "message": concise_prompt,
+        "model": requested_model,
+        "ollama_model": resolved_ollama_model,
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+        "ollama_url": resolved_ollama_url,
+        "distributed": distributed,
+    });
+
+    let response = backend_post_json("/api/inference/chat", &payload)?;
+    if let Some(error) = response.get("error").and_then(|value| value.as_str()) {
+        return Err(error.to_string());
+    }
+
+    let response_text = response
+        .get("response")
+        .and_then(|value| value.as_str())
+        .unwrap_or("")
+        .to_string();
 
     let trace = format!(
-        "{}\n\n{}\n{}",
-        command_result.command,
-        format!(
-            "prompt_len={} requested_max_tokens={} execution_tokens={} distributed={}",
-            concise_prompt.len(),
-            max_tokens,
-            execution_tokens,
-            distributed
-        ),
-        command_result.stdout.trim()
+        "POST /api/inference/chat\nprompt_len={} requested_max_tokens={} distributed={}\nrequest_id={} exec_tokens={} micro_batch={}",
+        concise_prompt.len(),
+        max_tokens,
+        distributed,
+        response.get("request_id").and_then(|value| value.as_str()).unwrap_or("n/a"),
+        response.get("exec_tokens").and_then(|value| value.as_u64()).map(|value| value.to_string()).unwrap_or_else(|| "n/a".to_string()),
+        response.get("exec_micro_batch").and_then(|value| value.as_u64()).map(|value| value.to_string()).unwrap_or_else(|| "n/a".to_string()),
     );
 
     Ok(ChatResult {
-        backend: backend.to_string(),
-        model,
-        response,
+        backend: "http-backend-api".to_string(),
+        model: response
+            .get("model")
+            .and_then(|value| value.as_str())
+            .unwrap_or(requested_model)
+            .to_string(),
+        response: response_text,
         trace,
     })
-}
-
-fn extract_metric(output: &str, prefix: &str, suffix: &str) -> Option<String> {
-    let line = output
-        .lines()
-        .map(str::trim)
-        .find(|line| line.contains(prefix))?;
-    let marker_idx = line.find(prefix)?;
-    let raw = line[(marker_idx + prefix.len())..].trim();
-    let value = if suffix.is_empty() {
-        raw
-    } else {
-        raw.split(suffix).next()?.trim()
-    };
-    if value.is_empty() {
-        None
-    } else {
-        Some(value.to_string())
-    }
 }
 
 fn repo_root() -> PathBuf {
@@ -736,19 +1195,64 @@ fn repo_root() -> PathBuf {
 
 fn run_ghostlink_command(args: Vec<&str>) -> Result<CommandResult, String> {
     let root = repo_root();
+    let executable_name = if cfg!(windows) {
+        "ghost-link.exe"
+    } else {
+        "ghost-link"
+    };
+
+    // Prefer direct binary execution to avoid `cargo run` rebuilds that can
+    // fail on Windows when another ghost-link process already has the exe open.
+    let binary_candidates = [
+        root.join("target").join("release").join(executable_name),
+        root.join("target").join("debug").join(executable_name),
+    ];
+
+    for binary in binary_candidates {
+        if !binary.exists() {
+            continue;
+        }
+
+        let output = Command::new(&binary)
+            .args(&args)
+            .current_dir(&root)
+            .output()
+            .map_err(|err| {
+                format!(
+                    "failed to execute ghost-link binary {}: {}",
+                    binary.display(),
+                    err
+                )
+            })?;
+
+        return Ok(CommandResult {
+            command: format!("{} {}", binary.display(), args.join(" ")),
+            ok: output.status.success(),
+            exit_code: output.status.code(),
+            stdout: String::from_utf8_lossy(&output.stdout).to_string(),
+            stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+        });
+    }
+
     let rendered = format!("cargo run -p ghost-link -- {}", args.join(" "));
+    let isolated_target_dir = root.join("target").join("gui-command-run");
+    let isolated_target_dir_display = isolated_target_dir.display().to_string();
     let output = Command::new("cargo")
         .arg("run")
         .arg("-p")
         .arg("ghost-link")
         .arg("--")
         .args(args)
+        .env("CARGO_TARGET_DIR", &isolated_target_dir)
         .current_dir(&root)
         .output()
         .map_err(|err| format!("failed to execute ghost-link command: {}", err))?;
 
     Ok(CommandResult {
-        command: rendered,
+        command: format!(
+            "CARGO_TARGET_DIR={} {}",
+            isolated_target_dir_display, rendered
+        ),
         ok: output.status.success(),
         exit_code: output.status.code(),
         stdout: String::from_utf8_lossy(&output.stdout).to_string(),
@@ -806,17 +1310,6 @@ fn command_version(program: &str, args: &[&str]) -> Option<String> {
     None
 }
 
-fn fallback_node(node_id: &str) -> ClusterNodeCard {
-    ClusterNodeCard {
-        id: node_id.to_string(),
-        acceleration: "unknown".to_string(),
-        workers: 1,
-        system_memory_gb: 0.0,
-        gpu_vram_gb: 0.0,
-        health: "degraded".to_string(),
-    }
-}
-
 fn parse_probe_to_node(output: &str) -> Option<ClusterNodeCard> {
     let mut id = None;
     let mut workers = None;
@@ -831,9 +1324,9 @@ fn parse_probe_to_node(output: &str) -> Option<ClusterNodeCard> {
         } else if let Some(value) = trimmed.strip_prefix("Recommended workers:") {
             workers = value.trim().parse::<usize>().ok();
         } else if let Some(value) = trimmed.strip_prefix("System memory:") {
-            system_memory_gb = value.trim().split_whitespace().next()?.parse::<f32>().ok();
+            system_memory_gb = value.split_whitespace().next()?.parse::<f32>().ok();
         } else if let Some(value) = trimmed.strip_prefix("GPU VRAM:") {
-            gpu_vram_gb = value.trim().split_whitespace().next()?.parse::<f32>().ok();
+            gpu_vram_gb = value.split_whitespace().next()?.parse::<f32>().ok();
         } else if let Some(value) = trimmed.strip_prefix("Acceleration:") {
             acceleration = Some(value.trim().to_string());
         }
@@ -853,6 +1346,136 @@ fn parse_probe_to_node(output: &str) -> Option<ClusterNodeCard> {
         gpu_vram_gb: vram,
         health: if vram > 0.0 { "healthy" } else { "degraded" }.to_string(),
     })
+}
+
+fn merge_worker_discovery_ids(mut requested: Vec<String>) -> Vec<String> {
+    requested.extend(node_ids_from_config());
+    requested.push("studio-local".to_string());
+    requested.push("studio-remote".to_string());
+    requested.push("local-node".to_string());
+
+    let mut merged = Vec::new();
+    for candidate in requested {
+        let trimmed = candidate.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if merged.iter().any(|known| known == trimmed) {
+            continue;
+        }
+        merged.push(trimmed.to_string());
+    }
+    merged
+}
+
+fn node_ids_from_config() -> Vec<String> {
+    let defaults = parse_flow_config_defaults();
+    let mut ids = Vec::new();
+    if let Some(flow) = defaults {
+        if !flow.local_id.trim().is_empty() {
+            ids.push(flow.local_id);
+        }
+        if !flow.remote_id.trim().is_empty() {
+            ids.push(flow.remote_id);
+        }
+    }
+    ids
+}
+
+fn parse_flow_config_defaults() -> Option<FlowDefaults> {
+    let root = repo_root();
+    let local = root.join("ghostlink.toml");
+    let example = root.join("ghostlink.example.toml");
+    let source = if local.exists() { local } else { example };
+    let raw = fs::read_to_string(source).ok()?;
+
+    let mut in_flow = false;
+    let mut local_id = None;
+    let mut remote_id = None;
+    let mut execution_tokens = None;
+    let mut micro_batch = None;
+    let mut transport = None;
+
+    for line in raw.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+
+        if trimmed.starts_with('[') && trimmed.ends_with(']') {
+            in_flow = trimmed == "[flow]";
+            continue;
+        }
+
+        if !in_flow {
+            continue;
+        }
+
+        if let Some(value) = parse_toml_string_value(trimmed, "local_id") {
+            local_id = Some(value);
+        } else if let Some(value) = parse_toml_string_value(trimmed, "remote_id") {
+            remote_id = Some(value);
+        } else if let Some(value) = parse_toml_u32_value(trimmed, "execution_tokens") {
+            execution_tokens = Some(value);
+        } else if let Some(value) = parse_toml_u32_value(trimmed, "micro_batch") {
+            micro_batch = Some(value);
+        } else if let Some(value) = parse_toml_string_value(trimmed, "transport") {
+            transport = Some(value);
+        }
+    }
+
+    Some(FlowDefaults {
+        local_id: local_id.unwrap_or_else(|| "studio-local".to_string()),
+        remote_id: remote_id.unwrap_or_else(|| "studio-remote".to_string()),
+        execution_tokens: execution_tokens.unwrap_or(64),
+        micro_batch: micro_batch.unwrap_or(2),
+        transport: transport.unwrap_or_else(|| "tcp".to_string()),
+    })
+}
+
+fn parse_toml_string_value(line: &str, key: &str) -> Option<String> {
+    let mut parts = line.splitn(2, '=');
+    let lhs = parts.next()?.trim();
+    if lhs != key {
+        return None;
+    }
+    let rhs = parts.next()?.trim();
+    if !rhs.starts_with('"') {
+        return None;
+    }
+    let value = rhs.trim_matches('"').trim();
+    if value.is_empty() {
+        None
+    } else {
+        Some(value.to_string())
+    }
+}
+
+fn parse_toml_u32_value(line: &str, key: &str) -> Option<u32> {
+    let mut parts = line.splitn(2, '=');
+    let lhs = parts.next()?.trim();
+    if lhs != key {
+        return None;
+    }
+    let rhs = parts.next()?.trim();
+    rhs.parse::<u32>().ok()
+}
+
+fn sanitize_node_id(value: &str, fallback: &str) -> String {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        fallback.to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+fn sanitize_transport(value: &str) -> String {
+    let candidate = value.trim().to_ascii_lowercase();
+    match candidate.as_str() {
+        "tcp" | "inmem" | "ibverbs" | "ucx" => candidate,
+        _ => "tcp".to_string(),
+    }
 }
 
 fn sanitize_profile_name(value: &str) -> String {

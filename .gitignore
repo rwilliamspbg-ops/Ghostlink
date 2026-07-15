@@ -7,6 +7,8 @@
 .venv/
 __pycache__/
 *.pyc
+crates/ghostlink-gui/frontend/node_modules/
+crates/ghostlink-gui/frontend/dist/
 
 # Vendored GUI local runtime artifacts
 third_party/mohawk_gui/__pycache__/
@@ -14,6 +16,48 @@ third_party/mohawk_gui/certs/
 
 # Local runtime output and diagnostics artifacts
 tmp/
+artifacts/release/
+crates/ghostlink-gui/src-tauri/target/
+crates/ghostlink-gui/src-tauri/gen/schemas/
 
 # Local quickstart config bootstrap artifact
 ghostlink.toml
+
+# Runtime settings persisted by the API (auto-generated, machine-specific)
+settings.json
+
+# Local scratch / runtime artifacts that should never be committed
+.git_commit_msg
+server.log
+.github_pr_template.md
+
+# Local native-runtime bootstrap artifacts
+third_party/llama.cpp/
+stories15M-q4_0.gguf
+
+# Binary executables and installers (never track these)
+*.exe
+*.msi
+*.dmg
+*.pkg
+*.deb
+*.rpm
+*.AppImage
+*.bin
+
+# Temporary report and working files (never commit session artifacts)
+REPORT_*.md
+*_REPORT.md
+*_SUMMARY.md
+*_READINESS.md
+*_READY.md
+OUTPUT.md
+
+# Generated files
+ghostlink_backend.log
+ghostlink_frontend.log
+$null
+opencode.json
+launch-fast.sh
+models/*.gguf
+ghostlink_gui_modern/dist/

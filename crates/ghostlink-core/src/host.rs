@@ -12,6 +12,32 @@ use std::time::{Duration, Instant};
 
 use crate::protocol::NodeResources;
 
+/// Backend technology hint for the detected GPU.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GpuBackend {
+    Cuda,
+    Rocm,
+    Vulkan,
+    Directml,
+    Metal,
+    Npu,
+    Cpu,
+}
+
+impl GpuBackend {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Cuda => "cuda",
+            Self::Rocm => "rocm",
+            Self::Vulkan => "vulkan",
+            Self::Directml => "directml",
+            Self::Metal => "metal",
+            Self::Npu => "npu",
+            Self::Cpu => "cpu",
+        }
+    }
+}
+
 const FULL_PROBE_CACHE_TTL: Duration = Duration::from_secs(30);
 const FAST_PROFILE_CACHE_TTL: Duration = Duration::from_secs(5);
 
@@ -76,6 +102,8 @@ pub struct RuntimeProfile {
     pub recommended_workers: usize,
     /// Preferred acceleration path.
     pub acceleration_mode: AccelerationMode,
+    /// Detected GPU backend technology.
+    pub gpu_backend: GpuBackend,
     /// Whether AF_XDP can plausibly be used on this host.
     pub xdp_supported: bool,
     /// Best-effort hardware probe source.
@@ -97,6 +125,7 @@ impl RuntimeProfile {
              GPU VRAM: {:.1} GB\n\
              Compute capability: {}\n\
              GPU: {}\n\
+             GPU Backend: {}\n\
              Acceleration: {}\n\
              XDP support: {}\n\
              Detection source: {}\n\
@@ -115,6 +144,7 @@ impl RuntimeProfile {
                 .gpu_name
                 .as_deref()
                 .unwrap_or("Not detected"),
+            self.gpu_backend.as_str(),
             self.acceleration_mode.as_str(),
             if self.xdp_supported {
                 "available"
@@ -133,6 +163,12 @@ struct GpuProbeResult {
     vram_gb: Option<f32>,
     compute_capability: Option<String>,
     detection_source: Option<String>,
+    backend: Option<GpuBackend>,
+}
+
+fn result_with_backend(mut result: GpuProbeResult, backend: GpuBackend) -> GpuProbeResult {
+    result.backend.get_or_insert(backend);
+    result
 }
 
 #[derive(Clone, Debug)]
@@ -173,6 +209,7 @@ pub fn detect_runtime_profile_with_mode(
     let gpu_name = detect_gpu_name(gpu_probe.gpu_name.clone());
     let compute_capability = detect_compute_capability(gpu_probe.compute_capability.clone());
     let acceleration_mode = detect_acceleration_mode(vram_gb, gpu_name.as_deref());
+    let gpu_backend = gpu_probe.backend.unwrap_or(GpuBackend::Cpu);
     let xdp_supported = cfg!(target_os = "linux");
     let detection_source = gpu_probe
         .detection_source
@@ -198,6 +235,7 @@ pub fn detect_runtime_profile_with_mode(
         logical_cores,
         recommended_workers,
         acceleration_mode,
+        gpu_backend,
         xdp_supported,
         detection_source,
         probe_mode,
@@ -273,6 +311,7 @@ fn detect_env_probe() -> Option<GpuProbeResult> {
         vram_gb,
         compute_capability,
         detection_source: Some(String::from("env")),
+        backend: None,
     })
 }
 
@@ -313,6 +352,7 @@ fn detect_sysfs_gpu() -> Option<GpuProbeResult> {
                 vram_gb,
                 compute_capability,
                 detection_source: Some(String::from("sysfs")),
+                backend: None,
             });
         }
     }
@@ -336,6 +376,7 @@ fn detect_visible_hint_probe() -> Option<GpuProbeResult> {
         vram_gb: None,
         compute_capability: Some(String::from("gpu")),
         detection_source: Some(String::from("visible-device")),
+        backend: None,
     })
 }
 
@@ -343,7 +384,7 @@ fn detect_full_gpu_probe_cached() -> Option<GpuProbeResult> {
     let cache = FULL_PROBE_CACHE.get_or_init(|| Mutex::new(None));
     if let Some(probe) = cache
         .lock()
-        .unwrap()
+        .unwrap_or_else(|poison| poison.into_inner())
         .as_ref()
         .filter(|entry| entry.captured_at.elapsed() < FULL_PROBE_CACHE_TTL)
         .map(|entry| entry.probe.clone())
@@ -351,12 +392,145 @@ fn detect_full_gpu_probe_cached() -> Option<GpuProbeResult> {
         return Some(probe);
     }
 
-    let probe = detect_nvidia_smi().or_else(detect_lspci_gpu)?;
-    *cache.lock().unwrap() = Some(CachedProbeEntry {
+    // Probe chain: NVIDIA SMI -> [AMD ROCm SMI] -> Windows WMI -> Vulkan -> lspci -> NPU
+    #[allow(unused_mut)]
+    let mut probe = detect_nvidia_smi().map(|r| result_with_backend(r, GpuBackend::Cuda));
+    #[cfg(feature = "rocm")]
+    {
+        probe =
+            probe.or_else(|| detect_rocm_smi().map(|r| result_with_backend(r, GpuBackend::Rocm)));
+    }
+    let probe = probe
+        .or_else(|| detect_windows_any_gpu().map(|r| result_with_backend(r, GpuBackend::Directml)))
+        .or_else(|| detect_vulkan_gpu().map(|r| result_with_backend(r, GpuBackend::Vulkan)))
+        .or_else(|| detect_lspci_gpu().map(|r| result_with_backend(r, GpuBackend::Vulkan)))
+        .or_else(|| detect_npu_device().map(|r| result_with_backend(r, GpuBackend::Npu)))?;
+    *cache.lock().unwrap_or_else(|poison| poison.into_inner()) = Some(CachedProbeEntry {
         captured_at: Instant::now(),
         probe: probe.clone(),
     });
     Some(probe)
+}
+
+/// Detect AMD GPU via `rocm-smi` (Linux, ROCm stack).
+#[cfg(feature = "rocm")]
+fn detect_rocm_smi() -> Option<GpuProbeResult> {
+    let output = Command::new("rocm-smi")
+        .args(["--showproductname"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // rocm-smi output: "GPU[0]: Card model: AMD Radeon RX 7900 XTX"
+    let gpu_name = stdout
+        .lines()
+        .find(|line| line.contains("Card model:"))
+        .and_then(|line| line.split(':').nth(2))
+        .map(|s| s.trim().to_string());
+
+    let vram = {
+        // Try rocm-smi --showmeminfo vram
+        let mem_output = Command::new("rocm-smi")
+            .args(["--showmeminfo", "vram"])
+            .output()
+            .ok()?;
+        let mem_stdout = String::from_utf8_lossy(&mem_output.stdout);
+        mem_stdout
+            .lines()
+            .find(|line| line.contains("Total Memory"))
+            .and_then(|line| {
+                let val = line.split(':').nth(1)?.trim().to_lowercase();
+                let num: f32 = val.split_whitespace().next()?.parse().ok()?;
+                if val.contains("gb") {
+                    Some(num)
+                } else if val.contains("mb") {
+                    Some(num / 1024.0)
+                } else {
+                    None
+                }
+            })
+    };
+
+    let name = gpu_name
+        .clone()
+        .unwrap_or_else(|| String::from("AMD GPU (rocm-smi)"));
+    let compute_capability = infer_compute_capability_from_name(&name);
+
+    Some(GpuProbeResult {
+        gpu_name: Some(name),
+        vram_gb: vram,
+        compute_capability: Some(compute_capability),
+        detection_source: Some(String::from("rocm-smi")),
+        backend: Some(GpuBackend::Rocm),
+    })
+}
+
+/// Detect AMD GPU on Windows via WMI (Win32_VideoController) — requires `rocm` feature.
+#[cfg(feature = "rocm")]
+fn detect_windows_amd_gpu() -> Option<GpuProbeResult> {
+    detect_windows_any_gpu()
+}
+
+/// Detect any GPU on Windows via WMI (Win32_VideoController).
+/// Not gated behind `rocm` feature — works for AMD, Intel, and any D3D-capable GPU.
+fn detect_windows_any_gpu() -> Option<GpuProbeResult> {
+    #[cfg(target_os = "windows")]
+    {
+        let output = Command::new("wmic")
+            .args([
+                "path",
+                "Win32_VideoController",
+                "get",
+                "Name,AdapterRAM",
+                "/format:csv",
+            ])
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        for line in stdout.lines().skip(1) {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            let lower = trimmed.to_ascii_lowercase();
+            // Skip Microsoft Basic Display Adapter (no real GPU)
+            if lower.contains("microsoft basic display") {
+                continue;
+            }
+            let mut parts = trimmed.split(',').map(str::trim);
+            let _node = parts.next()?; // CSV node column
+            let gpu_name = parts.next()?.to_string();
+            if gpu_name.is_empty() {
+                continue;
+            }
+            let vram_bytes: Option<f32> = parts
+                .next()
+                .and_then(|v| v.parse::<f32>().ok())
+                .filter(|&b| b > 0.0);
+            let vram_gb = vram_bytes.map(|b| b / 1073741824.0);
+            let compute = infer_compute_capability_from_name(&gpu_name);
+            return Some(GpuProbeResult {
+                gpu_name: Some(gpu_name),
+                vram_gb,
+                compute_capability: Some(compute),
+                detection_source: Some(String::from("wmi")),
+                backend: Some(GpuBackend::Directml),
+            });
+        }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = (); // no-op on non-Windows
+    }
+
+    None
 }
 
 fn load_cached_runtime_profile(probe_mode: ProbeMode) -> Option<RuntimeProfile> {
@@ -418,6 +592,67 @@ fn detect_lspci_gpu() -> Option<GpuProbeResult> {
     })
 }
 
+/// Detect GPU via Vulkan's `vulkaninfo` command.
+fn detect_vulkan_gpu() -> Option<GpuProbeResult> {
+    let output = Command::new("vulkaninfo")
+        .args(["--summary"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // Look for "GPU id" or device name lines
+    let gpu_name = stdout
+        .lines()
+        .find(|line| line.contains("deviceName") || line.contains("GPU id"))
+        .and_then(|line| line.split(':').nth(1).map(|val| val.trim().to_string()))
+        .or_else(|| {
+            stdout
+                .lines()
+                .find(|line| line.trim().contains("Vulkan"))
+                .map(|l| l.trim().to_string())
+        })
+        .filter(|n| !n.is_empty())?;
+
+    Some(GpuProbeResult {
+        gpu_name: Some(gpu_name),
+        vram_gb: None,
+        compute_capability: Some(String::from("gpu")),
+        detection_source: Some(String::from("vulkaninfo")),
+        backend: Some(GpuBackend::Vulkan),
+    })
+}
+
+/// Detect NPU (Neural Processing Unit) on Linux via sysfs `/sys/class/accel/`.
+fn detect_npu_device() -> Option<GpuProbeResult> {
+    let accel_dir = Path::new("/sys/class/accel");
+    if !accel_dir.exists() {
+        return None;
+    }
+    for entry in fs::read_dir(accel_dir).ok()? {
+        let entry = entry.ok()?;
+        let device_path = entry.path().join("device");
+        if !device_path.exists() {
+            continue;
+        }
+        let npu_name = fs::read_to_string(device_path.join("product_name"))
+            .ok()
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty());
+        if let Some(name) = npu_name {
+            return Some(GpuProbeResult {
+                gpu_name: Some(format!("NPU: {name}")),
+                vram_gb: None,
+                compute_capability: Some(String::from("npu")),
+                detection_source: Some(String::from("sysfs-npu")),
+                backend: Some(GpuBackend::Npu),
+            });
+        }
+    }
+    None
+}
+
 fn parse_nvidia_smi_csv(stdout: &str) -> Option<GpuProbeResult> {
     let line = stdout.lines().find(|line| !line.trim().is_empty())?;
     let mut parts = line.split(',').map(str::trim);
@@ -430,6 +665,7 @@ fn parse_nvidia_smi_csv(stdout: &str) -> Option<GpuProbeResult> {
         vram_gb: Some(memory_mib / 1024.0),
         compute_capability,
         detection_source: None,
+        backend: None,
     })
 }
 
@@ -461,6 +697,7 @@ fn parse_lspci_gpu(stdout: &str) -> Option<GpuProbeResult> {
         vram_gb: None,
         compute_capability: Some(String::from("gpu")),
         detection_source: None,
+        backend: None,
     })
 }
 
@@ -474,8 +711,21 @@ fn infer_compute_capability_from_name(name: &str) -> String {
         String::from("8.6")
     } else if lowered.contains("arc") {
         String::from("xe")
-    } else if lowered.contains("radeon") || lowered.contains("amd") {
+    } else if cfg!(feature = "rocm")
+        && (lowered.contains("radeon")
+            || lowered.contains("amd")
+            || lowered.contains("advanced micro")
+            || lowered.contains("rx ")
+            || lowered.contains("w7900")
+            || lowered.contains("w6800")
+            || lowered.contains("mi250")
+            || lowered.contains("mi300")
+            || lowered.contains("mi350")
+            || lowered.contains("instinct"))
+    {
         String::from("rocm")
+    } else if lowered.contains("intel") || lowered.contains("iris") || lowered.contains("uhd") {
+        String::from("xe")
     } else {
         String::from("gpu")
     }
@@ -588,6 +838,7 @@ mod tests {
             logical_cores: 16,
             recommended_workers: 10,
             acceleration_mode: AccelerationMode::Gpu,
+            gpu_backend: GpuBackend::Cuda,
             xdp_supported: true,
             detection_source: String::from("test"),
             probe_mode: ProbeMode::Fast,
@@ -620,6 +871,44 @@ mod tests {
     fn infers_compute_capability_from_gpu_name() {
         assert_eq!(infer_compute_capability_from_name("RTX 4090"), "8.9");
         assert_eq!(infer_compute_capability_from_name("Arc A770"), "xe");
+        #[cfg(feature = "rocm")]
+        {
+            assert_eq!(
+                infer_compute_capability_from_name("AMD Radeon RX 7900 XTX"),
+                "rocm"
+            );
+            assert_eq!(
+                infer_compute_capability_from_name("AMD Instinct MI250"),
+                "rocm"
+            );
+            assert_eq!(
+                infer_compute_capability_from_name("Radeon Pro W7900"),
+                "rocm"
+            );
+            assert_eq!(
+                infer_compute_capability_from_name("Advanced Micro Devices Radeon RX 6800"),
+                "rocm"
+            );
+        }
+        #[cfg(not(feature = "rocm"))]
+        {
+            assert_eq!(
+                infer_compute_capability_from_name("AMD Radeon RX 7900 XTX"),
+                "gpu"
+            );
+            assert_eq!(
+                infer_compute_capability_from_name("AMD Instinct MI250"),
+                "gpu"
+            );
+            assert_eq!(
+                infer_compute_capability_from_name("Radeon Pro W7900"),
+                "gpu"
+            );
+            assert_eq!(
+                infer_compute_capability_from_name("Advanced Micro Devices Radeon RX 6800"),
+                "gpu"
+            );
+        }
     }
 
     #[test]

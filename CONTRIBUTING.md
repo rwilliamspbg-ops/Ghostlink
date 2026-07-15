@@ -21,7 +21,45 @@ cargo fmt
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 python3 scripts/validate_gui_api_contract.py
+python3 scripts/validate_flow_canary.py --summary ./tmp/perf_snapshot/summary.json --profile production
 ```
+
+## Pre-Push Checklist (Required)
+
+Run these before pushing branch updates:
+
+```bash
+# 1) Rust correctness and style
+cargo fmt --all --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+
+# 2) Core Python contract checks
+python3 scripts/validate_gui_api_contract.py
+python3 scripts/validate_flow_metrics_schema_contract.py --tcp-file ./tmp/flow-metrics-tcp.json --inmem-file ./tmp/flow-metrics-inmem.json
+python3 scripts/validate_production_gate_verdict.py --file ./tmp/production-gate-verdict.json
+
+# 3) Security and dependency checks
+cargo audit
+python3 -m pip install --upgrade pip-audit
+pip-audit -r third_party/mohawk_gui/requirements-runtime.txt
+
+# 4) Workflow consistency sanity checks
+bash scripts/check_license_consistency.sh
+```
+
+When perf/runtime code changes, also run gate-like performance checks and include the artifact paths and canary results in the PR body:
+
+```bash
+python3 scripts/flow_perf_snapshot.py --release --runs 3 --warmup-runs 1 --modes tcp inmem --output-dir ./tmp/perf_snapshot_gate
+python3 scripts/flow_perf_snapshot.py --release --runs 4 --warmup-runs 1 --modes tcp inmem --exec-tokens 512 --micro-batch 8 --output-dir ./tmp/perf_snapshot_stress_gate
+python3 scripts/perf_maturity_profile.py --summary ./tmp/perf_snapshot_gate/summary.json --baseline ./docs/PERF_BASELINE.json --stage-glob-template './tmp/perf_snapshot_gate/{mode}-*.json' --output-json ./tmp/perf_snapshot_gate/maturity_scorecard.json
+python3 scripts/perf_maturity_profile.py --summary ./tmp/perf_snapshot_stress_gate/summary.json --baseline ./docs/PERF_BASELINE_STRESS.json --stage-glob-template './tmp/perf_snapshot_stress_gate/{mode}-*.json' --output-json ./tmp/perf_snapshot_stress_gate/maturity_scorecard.json
+python3 scripts/validate_flow_canary.py --summary ./tmp/perf_snapshot_gate/summary.json --profile production
+python3 scripts/validate_flow_canary.py --summary ./tmp/perf_snapshot_stress_gate/summary.json --profile stress
+```
+
+Include both `maturity_scorecard.json` artifact paths in the PR body when perf/runtime behavior changes.
 
 If you touch integration behavior, also run:
 
@@ -78,3 +116,32 @@ Recommended rubric reporting format:
 1. Hard gates (must pass)
 2. Weighted score (for readiness trend tracking)
 3. Final recommendation (GO / Conditional GO / NO-GO)
+
+## Code of Conduct
+
+### Our Pledge
+
+We pledge to make participation in this project a harassment-free experience for everyone, regardless of age, body size, disability, ethnicity, gender identity, level of experience, nationality, personal appearance, race, religion, or sexual identity and orientation.
+
+### Our Standards
+
+Examples of behavior that contributes to a positive environment:
+
+- Using welcoming and inclusive language
+- Being respectful of differing viewpoints and experiences
+- Gracefully accepting constructive criticism
+- Focusing on what is best for the community
+- Showing empathy towards other community members
+
+Examples of unacceptable behavior:
+
+- Trolling, insulting/derogatory comments, and personal or political attacks
+- Public or private harassment
+- Publishing others' private information without explicit permission
+- Other conduct which could reasonably be considered inappropriate
+
+### Enforcement
+
+Project maintainers are responsible for clarifying standards of acceptable behavior and will take appropriate and fair corrective action in response to any instances of unacceptable behavior.
+
+Instances of abusive, harassing, or otherwise unacceptable behavior may be reported by opening an issue or contacting the project maintainers directly.

@@ -3,12 +3,8 @@ PyQt6
 cryptography
 PyJWT
 psutil
-httpx
-loguru
-pydantic
-netifaces
 requests
-tomli
 pyqtgraph
 certifi
 huggingface_hub
+

@@ -252,8 +252,14 @@ impl ClusterState {
 
     /// Register a new node with a specific socket address
     pub fn register_with_addr(&self, node: NodeResources, addr: Option<SocketAddr>) {
-        let mut nodes = self.nodes.lock().unwrap();
-        let mut metrics = self.metrics.lock().unwrap();
+        let mut nodes = self
+            .nodes
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let mut metrics = self
+            .metrics
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
 
         let id = node.id.clone();
         let gpu_name = node.gpu_name.clone();
@@ -328,9 +334,14 @@ impl ClusterState {
         if self.nodes_snapshot_dirty.load(Ordering::Acquire)
             && self.nodes_snapshot_dirty.swap(false, Ordering::AcqRel)
         {
-            let nodes = self.nodes.lock().unwrap();
-            self.nodes_snapshot
-                .store(Arc::new(nodes.values().cloned().collect::<Vec<_>>()));
+            let nodes_map = self
+                .nodes
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner());
+            let mut nodes: Vec<_> = nodes_map.values().cloned().collect();
+            // Sort by ID to ensure deterministic layer assignment across runs
+            nodes.sort_by(|a, b| a.id.cmp(&b.id));
+            self.nodes_snapshot.store(Arc::new(nodes));
         }
 
         self.nodes_snapshot.load_full()
@@ -338,7 +349,10 @@ impl ClusterState {
 
     /// Get metrics for a specific node
     pub fn get_metrics(&self, node_id: &str) -> Option<NodeMetrics> {
-        let metrics = self.metrics.lock().unwrap();
+        let metrics = self
+            .metrics
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
         metrics.get(node_id).cloned()
     }
 
@@ -354,7 +368,10 @@ impl ClusterState {
     where
         F: FnOnce(&mut NodeMetrics) -> R,
     {
-        let mut metrics = self.metrics.lock().unwrap();
+        let mut metrics = self
+            .metrics
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
         metrics.get_mut(node_id).map(f)
     }
 
@@ -384,7 +401,10 @@ impl ClusterState {
 
     /// Get all active nodes
     pub fn active_nodes(&self) -> Vec<NodeMetrics> {
-        let metrics = self.metrics.lock().unwrap();
+        let metrics = self
+            .metrics
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
         metrics
             .values()
             .filter(|m| m.status == NodeStatus::Active)
@@ -399,7 +419,10 @@ impl ClusterState {
 
     /// Get total system memory
     pub fn total_system_memory_gb(&self) -> f32 {
-        let nodes = self.nodes.lock().unwrap();
+        let nodes = self
+            .nodes
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
         nodes.values().map(|n| n.system_memory_gb).sum()
     }
 }

@@ -1,0 +1,36 @@
+services:
+  model-manager:
+    build:
+      context: .
+      dockerfile: Dockerfile.demo
+    command: ["python3", "model_manager.py"]
+    environment:
+      GHOSTLINK_MODEL_MANAGER_HOST: 0.0.0.0
+      GHOSTLINK_MODEL_MANAGER_PORT: "8001"
+      GHOSTLINK_OLLAMA_URL: http://ollama:11434
+    ports:
+      - "8001:8001"
+    restart: unless-stopped
+
+  gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile.demo
+    command: ["python3", "real_llm_proxy.py", "backend"]
+    environment:
+      GHOSTLINK_PROXY_HOST: 0.0.0.0
+      GHOSTLINK_PROXY_PORT: "9999"
+      GHOSTLINK_MODEL_MANAGER_URL: http://model-manager:8001
+      GHOSTLINK_BACKEND_URL: http://model-manager:8001
+      GHOSTLINK_OLLAMA_URL: http://ollama:11434
+    ports:
+      - "9999:9999"
+    depends_on:
+      - model-manager
+    restart: unless-stopped
+
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    restart: unless-stopped

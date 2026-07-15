@@ -1,0 +1,36 @@
+version: '3.8'
+
+services:
+  # Override for local development - use host network for llama-server
+  llama-server:
+    environment:
+      LLAMA_ARG_HOST: 127.0.0.1
+    ports:
+      - "8080:8080"
+    # Uncomment below to build llama.cpp locally instead of using prebuilt image
+    # build:
+    #   context: ./third_party/llama.cpp
+    #   dockerfile: Dockerfile
+
+  ghostlink-api:
+    environment:
+      GHOSTLINK_LLAMA_SERVER_URL: http://127.0.0.1:8080/completion
+    # For local development with volume mounting:
+    # volumes:
+    #   - ./crates:/app/crates
+    #   - ./Cargo.toml:/app/Cargo.toml
+    #   - ./Cargo.lock:/app/Cargo.lock
+
+  ghostlink-gui:
+    environment:
+      GHOSTLINK_API_BASE: http://127.0.0.1:8003
+    # For hot-reload development:
+    # volumes:
+    #   - ./ghostlink_gui_modern:/app
+    #   - /app/node_modules
+    # command: npm run dev -- --host 127.0.0.1 --port 3000
+
+  mcp-gateway:
+    # For local development, you may want to run MCP gateway separately
+    # profiles:
+    #   - mcp

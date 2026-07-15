@@ -7,3 +7,5 @@ mypy
 bandit
 safety
 python-dotenv
+fastapi
+uvicorn

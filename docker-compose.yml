@@ -1,0 +1,76 @@
+version: '3.8'
+
+services:
+  # ─── Native LLM Inference (llama.cpp server) ───
+  llama-server:
+    image: ghcr.io/ggml-org/llama.cpp:server
+    container_name: ghostlink-llama-server
+    ports:
+      - "8080:8080"
+    environment:
+      LLAMA_ARG_HOST: 0.0.0.0
+      LLAMA_ARG_PORT: 8080
+      # Use conservative default of 20 GPU layers to prevent OOM (can be overridden)
+      LLAMA_ARG_NGL: ${LLAMA_ARG_NGL:-20}
+      LLAMA_ARG_MODEL: /models/model.gguf
+    volumes:
+      - ./models/stories15M-q4_0.gguf:/models/model.gguf:ro
+    networks:
+      - ghostlink-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+    restart: unless-stopped
+
+  # ─── Ghostlink API Server ───
+  ghostlink-api:
+    build:
+      context: .
+      dockerfile: Dockerfile.ghostlink
+    container_name: ghostlink-api
+    ports:
+      - "8003:8003"
+    environment:
+      RUST_LOG: info
+      GHOSTLINK_HOST: 0.0.0.0
+      GHOSTLINK_PORT: 8003
+      GHOSTLINK_INFERENCE_BACKEND: native
+      GHOSTLINK_NATIVE_ENGINE: llama_server
+      GHOSTLINK_LLAMA_SERVER_URL: http://llama-server:8080/completion
+    networks:
+      - ghostlink-network
+    depends_on:
+      llama-server:
+        condition: service_healthy
+    command: serve 0.0.0.0 8003
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8003/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+
+  # ─── Ghostlink GUI (React + Vite) ───
+  ghostlink-gui:
+    build:
+      context: ./ghostlink_gui_modern
+      dockerfile: Dockerfile
+    container_name: ghostlink-gui
+    ports:
+      - "5173:3000"
+    environment:
+      GHOSTLINK_API_BASE: http://ghostlink-api:8003
+    networks:
+      - ghostlink-network
+    depends_on:
+      ghostlink-api:
+        condition: service_healthy
+    restart: unless-stopped
+
+networks:
+  ghostlink-network:
+    driver: bridge

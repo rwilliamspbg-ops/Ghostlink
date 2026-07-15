@@ -1,0 +1,20 @@
+[
+  {
+    "name": "stories15M-q4_0",
+    "size_gb": 0.017767161,
+    "model_type": "LLM",
+    "quantization": "Q4_0",
+    "status": "Ready",
+    "local_path": "models\\stories15M-q4_0.gguf",
+    "hf_model_id": ""
+  },
+  {
+    "name": "tinyllama-1.1b-chat-v1.0.Q2_K",
+    "size_gb": 0.44993722,
+    "model_type": "LLM",
+    "quantization": "Q2_K",
+    "status": "Ready",
+    "local_path": "models\\tinyllama-1.1b-chat-v1.0.Q2_K.gguf",
+    "hf_model_id": ""
+  }
+]

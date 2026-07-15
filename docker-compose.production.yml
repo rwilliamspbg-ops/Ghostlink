@@ -1,0 +1,70 @@
+version: '3.8'
+
+services:
+  llama-server:
+    image: ghcr.io/ggml-org/llama.cpp:server
+    container_name: ghostlink-llama-server
+    ports:
+      - "8080:8080"
+    environment:
+      - LLAMA_ARG_HOST=0.0.0.0
+      - LLAMA_ARG_PORT=8080
+      - LLAMA_ARG_NGL=${LLAMA_ARG_NGL:- -1}
+      - LLAMA_ARG_MODEL=/models/model.gguf
+    volumes:
+      - ${GHOSTLINK_MODEL_PATH:-/tmp/ghostlink-models/stories15M-q4_0.gguf}:/models/model.gguf:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    pull_policy: if_not_present
+
+  ghostlink-backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.ghostlink
+    container_name: ghostlink-backend
+    ports:
+      - "8003:8003"
+    environment:
+      - GHOSTLINK_INFERENCE_BACKEND=native
+      - GHOSTLINK_NATIVE_ENGINE=llama_server
+      - GHOSTLINK_LLAMA_SERVER_URL=http://llama-server:8080/completion
+      - GHOSTLINK_HOST=0.0.0.0
+      - GHOSTLINK_PORT=8003
+      - RUST_LOG=debug
+    depends_on:
+      llama-server:
+        condition: service_healthy
+    volumes:
+      - ./models.json:/app/models.json
+    command: serve 0.0.0.0 8003
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8003/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  ghostlink-frontend:
+    build:
+      context: ./ghostlink_gui_modern
+      dockerfile: Dockerfile
+    container_name: ghostlink-frontend
+    ports:
+      - "5173:3000"
+    environment:
+      - GHOSTLINK_API_BASE=http://127.0.0.1:8003
+    depends_on:
+      ghostlink-backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+networks:
+  default:
+    name: ghostlink-network
+    driver: bridge

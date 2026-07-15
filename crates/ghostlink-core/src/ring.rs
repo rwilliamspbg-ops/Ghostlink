@@ -39,14 +39,25 @@ const RING_CAPACITY: usize = 1024;
 pub struct SpscRingBuffer<T> {
     /// Buffer of uninitialized elements
     buffer: UnsafeCell<[MaybeUninit<T>; RING_CAPACITY]>,
+
+    /// Padding to prevent false sharing between buffer and head
+    _pad1: [u8; 64],
     /// Current head position (consumer reads here)
     head: AtomicUsize,
+    /// Cached tail for consumer to avoid reading shared tail
+    cached_tail: AtomicUsize,
+
+    /// Padding to prevent false sharing between head and tail
+    _pad2: [u8; 64],
     /// Current tail position (producer writes here)
     tail: AtomicUsize,
+    /// Cached head for producer to avoid reading shared head
+    cached_head: AtomicUsize,
+
+    /// Padding to prevent false sharing between tail and other counters
+    _pad3: [u8; 64],
     /// Overflow counter for backpressure monitoring
     overflow_count: AtomicUsize,
-    /// Empty count for backpressure monitoring
-    empty_count: AtomicUsize,
     /// Configuration for this ring buffer
     config: RingConfig,
 }
@@ -68,10 +79,14 @@ impl<T> SpscRingBuffer<T> {
 
         Self {
             buffer,
+            _pad1: [0; 64],
             head: AtomicUsize::new(0),
+            cached_tail: AtomicUsize::new(0),
+            _pad2: [0; 64],
             tail: AtomicUsize::new(0),
+            cached_head: AtomicUsize::new(0),
+            _pad3: [0; 64],
             overflow_count: AtomicUsize::new(0),
-            empty_count: AtomicUsize::new(Self::CAPACITY - config.capacity),
             config,
         }
     }
@@ -81,19 +96,23 @@ impl<T> SpscRingBuffer<T> {
     /// Returns `Ok(())` on success, or `Err(value)` if the ring is full.
     /// When full, the producer should wait/backpressure until space is available.
     pub fn push(&self, value: T) -> Result<(), T> {
-        let tail = self.tail.load(Ordering::Acquire);
-        let head = self.head.load(Ordering::Acquire);
+        // Producer loads its own tail with Relaxed.
+        let tail = self.tail.load(Ordering::Relaxed);
 
-        // Check if ring is full using count (respects config.capacity)
-        let current_len = if tail >= head {
-            tail - head
-        } else {
-            Self::CAPACITY - head + tail
-        };
+        // First check against cached head to avoid atomic contention.
+        let mut head = self.cached_head.load(Ordering::Relaxed);
+        let mut current_len = tail.wrapping_sub(head) & (Self::CAPACITY - 1);
 
         if current_len >= self.config.capacity {
-            self.overflow_count.fetch_add(1, Ordering::Relaxed);
-            return Err(value);
+            // Only if cached head suggests we are full, refresh from shared head.
+            head = self.head.load(Ordering::Acquire);
+            self.cached_head.store(head, Ordering::Relaxed);
+            current_len = tail.wrapping_sub(head) & (Self::CAPACITY - 1);
+
+            if current_len >= self.config.capacity {
+                self.overflow_count.fetch_add(1, Ordering::Relaxed);
+                return Err(value);
+            }
         }
 
         let next_tail = Self::increment(tail);
@@ -114,14 +133,20 @@ impl<T> SpscRingBuffer<T> {
     ///
     /// Returns `Some(value)` on success, or `None` if the ring is empty.
     pub fn pop(&self) -> Option<T> {
-        let head = self.head.load(Ordering::Acquire);
-        let tail = self.tail.load(Ordering::Acquire);
+        // Consumer loads its own head with Relaxed.
+        let head = self.head.load(Ordering::Relaxed);
 
-        // Check if ring is empty (with wrap-around handling)
-        let is_empty = if head >= tail { head == tail } else { false };
+        // First check against cached tail to avoid atomic contention.
+        let mut tail = self.cached_tail.load(Ordering::Relaxed);
 
-        if is_empty {
-            return None;
+        if head == tail {
+            // Only if cached tail suggests we are empty, refresh from shared tail.
+            tail = self.tail.load(Ordering::Acquire);
+            self.cached_tail.store(tail, Ordering::Relaxed);
+
+            if head == tail {
+                return None;
+            }
         }
 
         // Read the value at head position
@@ -148,7 +173,15 @@ impl<T> SpscRingBuffer<T> {
 
     /// Check if the ring is empty
     pub fn is_empty(&self) -> bool {
-        self.head.load(Ordering::Acquire) == self.tail.load(Ordering::Acquire)
+        let head = self.head.load(Ordering::Relaxed);
+        let mut tail = self.cached_tail.load(Ordering::Relaxed);
+
+        if head == tail {
+            tail = self.tail.load(Ordering::Acquire);
+            self.cached_tail.store(tail, Ordering::Relaxed);
+        }
+
+        head == tail
     }
 
     /// Get the configured capacity
@@ -163,12 +196,21 @@ impl<T> SpscRingBuffer<T> {
 
     /// Get empty count for backpressure monitoring
     pub fn empty_count(&self) -> usize {
-        self.empty_count.load(Ordering::Relaxed)
+        self.config.capacity.saturating_sub(self.len())
     }
 
     /// Check if backpressure should be applied (ring >= threshold)
     pub fn should_backpressure(&self) -> bool {
-        let len = self.len();
+        let tail = self.tail.load(Ordering::Relaxed);
+        let mut head = self.cached_head.load(Ordering::Relaxed);
+        let mut len = tail.wrapping_sub(head) & (Self::CAPACITY - 1);
+
+        if len >= self.config.backpressure_threshold {
+            head = self.head.load(Ordering::Acquire);
+            self.cached_head.store(head, Ordering::Relaxed);
+            len = tail.wrapping_sub(head) & (Self::CAPACITY - 1);
+        }
+
         len >= self.config.backpressure_threshold
     }
 
@@ -176,9 +218,15 @@ impl<T> SpscRingBuffer<T> {
     ///
     /// Spins until there's room in the ring buffer.
     pub fn wait_for_space(&self) {
+        let mut spins = 0;
         while self.should_backpressure() {
-            // Yield to allow consumer to make progress
-            std::thread::yield_now();
+            if spins < 100 {
+                core::hint::spin_loop();
+                spins += 1;
+            } else {
+                // Yield to allow consumer to make progress
+                std::thread::yield_now();
+            }
         }
     }
 
@@ -186,9 +234,15 @@ impl<T> SpscRingBuffer<T> {
     ///
     /// Spins until there's data in the ring buffer.
     pub fn wait_for_data(&self) {
+        let mut spins = 0;
         while self.is_empty() {
-            // Yield to allow producer to make progress
-            std::thread::yield_now();
+            if spins < 100 {
+                core::hint::spin_loop();
+                spins += 1;
+            } else {
+                // Yield to allow producer to make progress
+                std::thread::yield_now();
+            }
         }
     }
 
