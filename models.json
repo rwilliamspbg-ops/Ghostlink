@@ -18,21 +18,12 @@
     "hf_model_id": ""
   },
   {
-    "name": "Qwen3.5-4B-BF16",
-    "size_gb": 0.5767407,
+    "name": "embeddinggemma-300M-Q8_0",
+    "size_gb": 0.31068078,
     "model_type": "LLM",
-    "quantization": "F16",
+    "quantization": "Q8_0",
     "status": "Ready",
-    "local_path": "models\\Qwen3.5-4B-BF16.gguf",
-    "hf_model_id": ""
-  },
-  {
-    "name": "Qwythos-9B-Claude-Mythos-5-1M-BF16",
-    "size_gb": 0.6877862,
-    "model_type": "LLM",
-    "quantization": "F16",
-    "status": "Ready",
-    "local_path": "models\\Qwythos-9B-Claude-Mythos-5-1M-BF16.gguf",
-    "hf_model_id": ""
+    "local_path": "models\\embeddinggemma-300M-Q8_0.gguf",
+    "hf_model_id": "ggml-org/embeddinggemma-300M-GGUF"
   }
 ]
