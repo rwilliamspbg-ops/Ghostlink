@@ -33,8 +33,8 @@ if not "%VITE_GHOSTLINK_API_BASE%"=="" (
         exit /b 1
     )
 ) else (
-    set "VITE_GHOSTLINK_API_BASE=http://127.0.0.1:8003"
-    echo [INFO] Using default VITE_GHOSTLINK_API_BASE: %VITE_GHOSTLINK_API_BASE%
+    set "VITE_GHOSTLINK_API_BASE=http://%BACKEND_HOST%:%BACKEND_PORT%"
+    echo [INFO] Using default VITE_GHOSTLINK_API_BASE: !VITE_GHOSTLINK_API_BASE!
 )
 
 REM Check for required commands
@@ -384,25 +384,38 @@ echo.
 
 REM ==================== Start llama-server ====================
 set "GHOSTLINK_NATIVE_ENGINE=simulated"
-if defined ACTUAL_LLAMA_SERVER (
-    echo [INFO] Starting llama-server on http://127.0.0.1:%LLAMA_PORT%
-    echo [INFO] Flags: -ngl !LLAMA_NGL! -t !THREADS! !MLOCK_FLAG! !BACKEND_FLAGS!
-
-    start "llama-server" cmd /k ""!ACTUAL_LLAMA_SERVER!" -m "!MODEL_FILE!" --host 127.0.0.1 --port !LLAMA_PORT! -ngl !LLAMA_NGL! -t !THREADS! !MLOCK_FLAG! !BACKEND_FLAGS!"
-
-    echo [INFO] Waiting for llama-server...
-    :WAIT_LLAMA
-    curl -sf http://127.0.0.1:!LLAMA_PORT!/health >nul 2>&1
-    if errorlevel 1 (
-        ping -n 2 127.0.0.1 >nul
-        goto WAIT_LLAMA
-    )
-    echo [OK] llama-server is ready
-    set "GHOSTLINK_NATIVE_ENGINE=llama_server"
-) else (
+if not defined ACTUAL_LLAMA_SERVER (
     echo [WARN] llama-server binary not found. Using simulated mode.
     echo [WARN] Run build first if you want native acceleration.
+    goto LLAMA_DONE
 )
+if not exist "%MODEL_FILE%" (
+    echo [WARN] Model file not found: "%MODEL_FILE%"
+    echo [WARN] Skipping llama-server ^(download a model from the Hugging Face tab, then relaunch^). Using simulated mode.
+    goto LLAMA_DONE
+)
+echo [INFO] Starting llama-server on http://127.0.0.1:%LLAMA_PORT%
+echo [INFO] Flags: -ngl !LLAMA_NGL! -t !THREADS! !MLOCK_FLAG! !BACKEND_FLAGS!
+
+start "llama-server" cmd /k ""%ACTUAL_LLAMA_SERVER%" -m "%MODEL_FILE%" --host 127.0.0.1 --port %LLAMA_PORT% -ngl !LLAMA_NGL! -t !THREADS! !MLOCK_FLAG! !BACKEND_FLAGS!"
+
+echo [INFO] Waiting for llama-server...
+set /a "LLAMA_WAIT=0"
+:WAIT_LLAMA
+curl -sf http://127.0.0.1:%LLAMA_PORT%/health >nul 2>&1
+if not errorlevel 1 goto LLAMA_READY
+set /a "LLAMA_WAIT+=1"
+if %LLAMA_WAIT% GEQ 60 (
+    echo [WARN] llama-server not healthy after ~60s. Continuing in simulated mode.
+    echo [WARN] Check the llama-server window for errors.
+    goto LLAMA_DONE
+)
+ping -n 2 127.0.0.1 >nul
+goto WAIT_LLAMA
+:LLAMA_READY
+echo [OK] llama-server is ready
+set "GHOSTLINK_NATIVE_ENGINE=llama_server"
+:LLAMA_DONE
 
 set "GHOSTLINK_INFERENCE_BACKEND=native"
 set "GHOSTLINK_LLAMA_SERVER_URL=http://127.0.0.1:!LLAMA_PORT!/completion"
@@ -426,26 +439,41 @@ REM Give backend a moment to fully initialize routes
 echo [INFO] Waiting for backend to fully initialize...
 ping -n 3 127.0.0.1 >nul
 
-REM Wait for backend
+REM Wait for backend (first launch may compile with Cargo, allow up to ~10 min)
 echo [INFO] Waiting for API...
+set /a "API_WAIT=0"
 :WAIT_API
 curl -sf http://%BACKEND_HOST%:%BACKEND_PORT%/health >nul 2>&1
-if errorlevel 1 (
-    ping -n 2 127.0.0.1 >nul
-    goto WAIT_API
+if not errorlevel 1 goto API_HEALTHY
+set /a "API_WAIT+=1"
+if %API_WAIT% GEQ 600 (
+    echo [ERROR] Backend API did not respond within ~10 minutes.
+    echo         Check the "Ghostlink Backend API" window for build or startup errors.
+    pause
+    exit /b 1
 )
+ping -n 2 127.0.0.1 >nul
+goto WAIT_API
+:API_HEALTHY
 echo [OK] Backend API is healthy
 
 REM Wait for API endpoint to be fully ready - give backend extra time to register all routes
 echo [INFO] Waiting for API endpoint...
 ping -n 4 127.0.0.1 >nul
+set /a "API_V2_WAIT=0"
 :WAIT_API_V2
 curl -sf http://%BACKEND_HOST%:%BACKEND_PORT%/api/health >nul 2>&1
-if errorlevel 1 (
-    ping -n 4 127.0.0.1 >nul
-    goto WAIT_API_V2
+if not errorlevel 1 goto API_V2_READY
+set /a "API_V2_WAIT+=1"
+if %API_V2_WAIT% GEQ 20 (
+    echo [WARN] /api/health not responding after ~60s. Continuing anyway.
+    goto API_V2_DONE
 )
+ping -n 4 127.0.0.1 >nul
+goto WAIT_API_V2
+:API_V2_READY
 echo [OK] API endpoint is ready
+:API_V2_DONE
 
 REM ==================== Start GUI ====================
 echo [INFO] Starting GUI on http://127.0.0.1:%GUI_PORT%
@@ -470,15 +498,23 @@ start "Ghostlink Studio GUI" cmd /k "npm run dev -- --host 127.0.0.1 --port %GUI
 
 cd "%PROJECT_ROOT%"
 
-:WAIT_GUI
 REM Wait for GUI
 echo [INFO] Waiting for frontend...
+set /a "GUI_WAIT=0"
+:WAIT_GUI
 curl -sf http://127.0.0.1:%GUI_PORT% >nul 2>&1
-if errorlevel 1 (
-    ping -n 2 127.0.0.1 >nul
-    goto WAIT_GUI
+if not errorlevel 1 goto GUI_READY
+set /a "GUI_WAIT+=1"
+if %GUI_WAIT% GEQ 120 (
+    echo [WARN] Frontend not responding after ~2 minutes. Continuing anyway.
+    echo [WARN] Check the "Ghostlink Studio GUI" window for errors.
+    goto GUI_DONE
 )
+ping -n 2 127.0.0.1 >nul
+goto WAIT_GUI
+:GUI_READY
 echo [OK] GUI is ready
+:GUI_DONE
 
 echo.
 echo ========================================================================
