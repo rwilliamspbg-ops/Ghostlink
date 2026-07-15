@@ -10,7 +10,7 @@
 
 Ghostlink is a high-performance distributed inference fabric for teams building custom LLM systems. It combines hardware-aware planning, flexible routing, and model-management workflows so inference workloads can be distributed across heterogeneous devices with explicit control.
 
-### What Ghostlink brings
+## What Ghostlink brings
 - Clear routing and scheduling for custom inference topologies
 - Hardware-aware placement across mixed compute environments
 - A strong open-source foundation with a commercial support path
