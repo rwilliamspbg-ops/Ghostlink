@@ -24,8 +24,7 @@ use ghostlink_core::protocol::NodeResources;
 use ghostlink_core::protocol::{DiscoveryFrame, FrameKind};
 use ghostlink_core::runtime::{
     build_token_schedule, execute_pipeline_tcp_loopback, execute_pipeline_tcp_loopback_with_config,
-    execute_pipeline_with_rebalance_and_measured,
-    DeviceKind, PipelinePlan, TcpTransportConfig,
+    execute_pipeline_with_rebalance_and_measured, DeviceKind, PipelinePlan, TcpTransportConfig,
 };
 use ghostlink_core::xdp::probe_xdp_support;
 use serde::{Deserialize, Serialize};
