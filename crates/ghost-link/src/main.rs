@@ -1507,7 +1507,7 @@ impl Default for RuntimeSettings {
         Self {
             inference_backend: "native".to_string(),
             native_engine: "llama_server".to_string(),
-            ngl: -1,
+            ngl: 0,
             model_path: String::new(),
             models_dir: "models".to_string(),
             llama_server_url: "http://127.0.0.1:8080/completion".to_string(),
@@ -2095,7 +2095,10 @@ async fn handle_gui_model_load(
 
         backend.current_model = requested_model.clone();
 
-        let ngl = backend.settings.ngl;
+        let ngl = std::env::var("GHOSTLINK_LLAMA_NGL")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(backend.settings.ngl);
         let port = std::env::var("GHOSTLINK_LLAMA_SERVER_PORT")
             .ok()
             .and_then(|p| p.parse().ok())

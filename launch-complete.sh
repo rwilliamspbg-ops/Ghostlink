@@ -323,6 +323,7 @@ main() {
     GHOSTLINK_INFERENCE_BACKEND=native \
     GHOSTLINK_NATIVE_ENGINE="$NATIVE_ENGINE" \
     GHOSTLINK_LLAMA_SERVER_URL="http://127.0.0.1:${LLAMA_PORT}/completion" \
+    GHOSTLINK_LLAMA_NGL="$LLAMA_NGL" \
     cargo run -p ghost-link -- serve "$BACKEND_HOST" "$BACKEND_PORT" \
         >/tmp/ghostlink_api.log 2>&1 &
     API_PID=$!

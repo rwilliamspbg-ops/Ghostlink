@@ -220,7 +220,7 @@ cargo run -p ghost-link -- dashboard
 | `GHOSTLINK_GPU_NAME` | — | Override detected GPU name |
 | `GHOSTLINK_VRAM_GB` | — | Override detected VRAM |
 | `GHOSTLINK_COMPUTE_CAPABILITY` | — | Override compute capability |
-| `GHOSTLINK_LLAMA_NGL` | `-1` | GPU layers to offload (`0` = CPU only) |
+| `GHOSTLINK_LLAMA_NGL` | `0` | GPU layers to offload (`-1` = all layers) |
 
 ### Config File (TOML)
 

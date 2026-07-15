@@ -530,6 +530,7 @@ start_services() {
     GHOSTLINK_INFERENCE_BACKEND=native \
     GHOSTLINK_NATIVE_ENGINE=llama_server \
     GHOSTLINK_LLAMA_SERVER_URL="http://127.0.0.1:8080/completion" \
+    GHOSTLINK_LLAMA_NGL="${LLAMA_NGL:-0}" \
     bash -c "
         if [ -f '$PROJECT_ROOT/target/release/ghost-link' ]; then
             '$PROJECT_ROOT/target/release/ghost-link' serve 127.0.0.1 8003
