@@ -761,6 +761,13 @@ pub fn spawn_tcp_bridge(
             }
         };
 
+        // Inter-stage frames are small and latency-sensitive. With Nagle's
+        // algorithm enabled these coalesce and stall on peer delayed-ACKs
+        // (~40ms), which compounds across hops and dominates multi-stage paths.
+        if let Err(e) = client_stream.set_nodelay(true) {
+            tracing::debug!("TCP Bridge: failed to set TCP_NODELAY on client: {}", e);
+        }
+
         let (server_stream, _) = match listener.accept() {
             Ok(parts) => parts,
             Err(_) => {
@@ -772,6 +779,10 @@ pub fn spawn_tcp_bridge(
                 return BridgeAccumulator::default_with_stage(source_stage);
             }
         };
+
+        if let Err(e) = server_stream.set_nodelay(true) {
+            tracing::debug!("TCP Bridge: failed to set TCP_NODELAY on server: {}", e);
+        }
 
         let writer_auth_token = config.auth_token.clone();
         let reader_auth_token = config.auth_token.clone();
