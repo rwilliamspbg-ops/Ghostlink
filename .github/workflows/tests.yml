@@ -36,7 +36,7 @@ jobs:
     name: Rust Quality
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Verify no unresolved stub TODO markers
         run: ./scripts/verify_no_stub_todos.sh
       - uses: dtolnay/rust-toolchain@stable
@@ -61,7 +61,7 @@ jobs:
     name: Workspace Tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --workspace --verbose
@@ -71,7 +71,7 @@ jobs:
     name: Frontend Build Smoke
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
@@ -87,7 +87,7 @@ jobs:
     name: GUI Backend Smoke
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Run backend API smoke
