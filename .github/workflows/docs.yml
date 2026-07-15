@@ -35,21 +35,24 @@ jobs:
           set -euo pipefail
           test -f README.md
           test -f TESTING.md
-          test -f docs/INDEX.md
-          test -f docs/PRODUCTION_READINESS.md
+          test -f docs/ARCHITECTURE.md
+          test -f docs/BENCHMARKS.md
+          test -f docs/DEPLOYMENT.md
+          test -f docs/EXAMPLES.md
+          test -f docs/QUICKSTART.md
+          test -f docs/SECURITY_MODEL.md
+          test -f docs/TROUBLESHOOTING.md
+          # Perf gate artifacts consumed by production-gate.yml from docs/
+          test -f docs/FLOW_PERF_TUNING.json
+          test -f docs/PERF_BASELINE.json
+          test -f docs/PERF_BASELINE_STRESS.json
           test -f docs/archive/INDEX.md
           test -f docs/archive/VERIFICATION.md
-          test -f docs/ARCHITECTURE.md
-          test -f docs/EXAMPLES.md
-          test -f docs/TROUBLESHOOTING.md
-          test -f docs/SECURITY_SECRETS_REMEDIATION.md
-          test -f docs/GHOSTLINK_STUDIO_PRODUCT_VISION.md
-          test -f docs/GHOSTLINK_STUDIO_EXECUTION_PLAN.md
 
-      - name: Verify README references key checks
+      - name: Verify TESTING.md references key checks
         shell: bash
         run: |
           set -euo pipefail
-          grep -q "cargo test --workspace" README.md
-          grep -q "cargo clippy --workspace --all-targets -- -D warnings" README.md
-          grep -q "scripts/verify_hf_models.py" README.md
+          grep -q "cargo test --workspace" TESTING.md
+          grep -q "cargo clippy --workspace --all-targets -- -D warnings" TESTING.md
+          grep -q "scripts/verify_hf_models.py" TESTING.md
