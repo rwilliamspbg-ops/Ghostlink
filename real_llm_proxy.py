@@ -64,6 +64,12 @@ class GatewayHandler(BaseHTTPRequestHandler):
         self.route_request()
 
     def route_request(self):
+        if self.path == '/health':
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps({'status': 'ok'}).encode())
+            return
         if self.path == '/api/inference/chat':
             self.handle_chat()
         elif self.path.startswith('/api/models'):

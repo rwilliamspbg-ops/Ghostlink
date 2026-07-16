@@ -5,8 +5,8 @@
 //! - `join` - Broadcast discovery frame to join cluster
 //! - `dashboard` - Display ASCII cluster dashboard
 
+use crate::runtime::Runtime;
 use anyhow::Result;
-use axum::{extract::State, http::StatusCode, Json};
 use ghostlink_core::cluster::{ClusterState, NodeMetrics};
 use ghostlink_core::dashboard::Dashboard;
 use ghostlink_core::discovery::{
@@ -24,21 +24,22 @@ use ghostlink_core::protocol::NodeResources;
 use ghostlink_core::protocol::{DiscoveryFrame, FrameKind};
 use ghostlink_core::runtime::{
     build_token_schedule, execute_pipeline_tcp_loopback, execute_pipeline_tcp_loopback_with_config,
-    execute_pipeline_with_rebalance_and_measured, DeviceKind, PipelinePlan, TcpTransportConfig,
+    execute_pipeline_with_rebalance_and_measured, execute_pipeline_xdp_loopback_with_config,
+    DeviceKind, PipelinePlan, TcpTransportConfig,
 };
 use ghostlink_core::xdp::probe_xdp_support;
 use serde::{Deserialize, Serialize};
-use std::path::Path;
-use std::sync::{Arc, Mutex};
 
 use std::collections::HashMap;
 use std::fs;
 use std::hash::{Hash, Hasher};
 use std::net::{Shutdown, SocketAddr, TcpStream, ToSocketAddrs};
+use std::path::Path;
 use std::path::PathBuf;
 use std::process::{Child, Command};
+use std::sync::Arc;
 use std::thread;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use tokio::io::AsyncWriteExt;
 
@@ -1251,21 +1252,21 @@ fn print_flow(opts: FlowOptions) -> Result<()> {
                 None
             };
 
-            execute_pipeline_with_rebalance_and_measured(
+            Ok(execute_pipeline_with_rebalance_and_measured(
                 &pipeline_plan,
                 opts.execution_tokens,
                 opts.micro_batch,
                 rebalance,
                 cluster_feedback,
                 placement_feedback,
-            )
+            ))
         }
         FlowTransportMode::Xdp => {
             let interface = xdp_interface_from_env();
             match probe_xdp_support(&interface) {
                 Ok(()) => {
                     println!(
-                        "AF_XDP probe succeeded on interface '{}'; using TCP loopback (XDP pipeline pending refactor).",
+                        "AF_XDP probe succeeded on interface '{}'; using xdp-optimized runtime settings.",
                         interface
                     );
                     let base_tcp_cfg = xdp_optimized_tcp_config();
@@ -1280,11 +1281,12 @@ fn print_flow(opts: FlowOptions) -> Result<()> {
                         base_tcp_cfg
                     };
                     selected_tcp_cfg = Some(tcp_cfg.clone());
-                    execute_pipeline_tcp_loopback_with_config(
+                    execute_pipeline_xdp_loopback_with_config(
                         &pipeline_plan,
                         opts.execution_tokens,
                         opts.micro_batch,
                         tcp_cfg,
+                        &interface,
                     )
                 }
                 Err(reason) => {
@@ -1442,7 +1444,6 @@ Distribution Summary:"
 
 #[derive(Debug)]
 struct BackendState {
-    llama_server_child: Option<Child>,
     models: Vec<ModelRecord>,
     current_model: String,
     workers: Vec<WorkerRecord>,
@@ -1459,27 +1460,6 @@ struct BackendState {
     ollama_client: ollama::OllamaClient,
     ollama_available: Arc<tokio::sync::Mutex<bool>>,
     settings: RuntimeSettings,
-    download_progress: Arc<tokio::sync::Mutex<HashMap<String, DownloadProgress>>>,
-    jwt_token: String,
-    pqc_enabled: bool,
-    audit_log: Vec<AuditEntry>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct DownloadProgress {
-    model_id: String,
-    progress: f32,
-    total_bytes: u64,
-    downloaded_bytes: u64,
-    status: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-struct AuditEntry {
-    event: String,
-    status: String,
-    detail: String,
-    timestamp: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1516,7 +1496,7 @@ impl Default for RuntimeSettings {
         Self {
             inference_backend: "native".to_string(),
             native_engine: "llama_server".to_string(),
-            ngl: 0,
+            ngl: -1,
             model_path: String::new(),
             models_dir: "models".to_string(),
             llama_server_url: "http://127.0.0.1:8080/completion".to_string(),
@@ -1587,25 +1567,38 @@ fn load_persistent_models() -> Vec<ModelRecord> {
             }
         }
     }
-    // Small default models — avoids OOM on low-RAM Linux machines
     vec![
         ModelRecord {
-            name: "stories15M".to_string(),
-            size_gb: 0.008,
-            model_type: "LLM".to_string(),
-            quantization: "Q4_0".to_string(),
-            status: "Ready".to_string(),
-            local_path: String::new(),
-            hf_model_id: "ggml-org/models".to_string(),
-        },
-        ModelRecord {
-            name: "TinyLlama-1.1B-Chat".to_string(),
-            size_gb: 0.65,
+            name: "meta-llama/Llama-3-8B-Instruct".to_string(),
+            size_gb: 8.0,
             model_type: "LLM".to_string(),
             quantization: "Q4_K_M".to_string(),
             status: "Ready".to_string(),
             local_path: String::new(),
-            hf_model_id: "TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF".to_string(),
+        },
+        ModelRecord {
+            name: "mistralai/Mistral-7B-Instruct-v0.2".to_string(),
+            size_gb: 7.2,
+            model_type: "LLM".to_string(),
+            quantization: "Q8_0".to_string(),
+            status: "Ready".to_string(),
+            local_path: String::new(),
+        },
+        ModelRecord {
+            name: "google/gemma-7b-it".to_string(),
+            size_gb: 7.0,
+            model_type: "LLM".to_string(),
+            quantization: "BF16".to_string(),
+            status: "Ready".to_string(),
+            local_path: String::new(),
+        },
+        ModelRecord {
+            name: "ghostlink-30b-v1".to_string(),
+            size_gb: 30.0,
+            model_type: "LLM".to_string(),
+            quantization: "Q4_K_M".to_string(),
+            status: "Ready".to_string(),
+            local_path: String::new(),
         },
     ]
 }
@@ -1692,8 +1685,6 @@ struct ModelRecord {
     status: String,
     #[serde(default)]
     local_path: String,
-    #[serde(default)]
-    hf_model_id: String,
 }
 #[derive(Debug, Clone, Serialize)]
 struct WorkerRecord {
@@ -1735,493 +1726,6 @@ struct ToolResult {
     success: bool,
 }
 
-fn detect_quantization(filename: &str) -> String {
-    let upper = filename.to_uppercase();
-    let quants = [
-        "Q2_K", "Q3_K", "Q4_K", "Q5_K", "Q6_K", "Q8_0", "Q4_0", "Q4_1", "Q5_0", "Q5_1", "F16",
-        "BF16",
-    ];
-    for q in &quants {
-        if upper.contains(q) {
-            return q.to_string();
-        }
-    }
-    "unknown".to_string()
-}
-
-fn collect_system_metrics() -> (f32, f32, f32, f32) {
-    #[cfg(windows)]
-    {
-        let mut cpu_usage = 0.0;
-        let mut memory_usage = 0.0;
-        let mut gpu_usage = 0.0;
-        let mut gpu_memory = 0.0;
-
-        // CPU usage via PowerShell (wmic is deprecated on modern Windows)
-        if let Ok(output) = Command::new("powershell")
-            .args([
-                "-NoProfile",
-                "-Command",
-                "(Get-CimInstance Win32_Processor).LoadPercentage",
-            ])
-            .output()
-        {
-            if output.status.success() {
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                if let Ok(val) = stdout.trim().parse::<f32>() {
-                    cpu_usage = val;
-                }
-            }
-        }
-
-        // Memory usage via PowerShell
-        if let Ok(output) = Command::new("powershell")
-            .args([
-                "-NoProfile",
-                "-Command",
-                "$os = Get-CimInstance Win32_OperatingSystem; $used = $os.TotalVisibleMemorySize - $os.FreePhysicalMemory; [math]::Round(($used / $os.TotalVisibleMemorySize) * 100, 2)"
-            ])
-            .output()
-        {
-            if output.status.success() {
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                if let Ok(val) = stdout.trim().parse::<f64>() {
-                    memory_usage = val;
-                }
-            }
-        }
-
-        // GPU metrics via nvidia-smi
-        if let Ok(output) = Command::new("nvidia-smi")
-            .args([
-                "--query-gpu=utilization.gpu,memory.used,memory.total",
-                "--format=csv,noheader,nounits",
-            ])
-            .output()
-        {
-            if output.status.success() {
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                if let Some(line) = stdout.lines().next() {
-                    let parts: Vec<&str> = line.split(',').map(|s| s.trim()).collect();
-                    if parts.len() >= 3 {
-                        if let Ok(val) = parts[0].parse::<f32>() {
-                            gpu_usage = val;
-                        }
-                        if let Ok(used) = parts[1].parse::<f32>() {
-                            if let Ok(total) = parts[2].parse::<f32>() {
-                                if total > 0.0 {
-                                    gpu_memory = (used / total) * 100.0;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        if gpu_usage == 0.0 {
-            if let Ok(output) = Command::new("rocm-smi")
-                .args(["--showuse", "--showmeminfo", "vram"])
-                .output()
-            {
-                if output.status.success() {
-                    let stdout = String::from_utf8_lossy(&output.stdout);
-                    for line in stdout.lines() {
-                        if line.contains("GPU use:") {
-                            if let Some(val) = line.split(':').nth(1) {
-                                if let Ok(val) = val.trim().trim_end_matches('%').parse::<f32>() {
-                                    gpu_usage = val;
-                                }
-                            }
-                        } else if line.contains("Total Memory") {
-                            if let Some(val) = line.split(':').nth(1) {
-                                let val = val.trim().to_lowercase();
-                                if let Ok(num) =
-                                    val.split_whitespace().next().unwrap_or("0").parse::<f32>()
-                                {
-                                    if val.contains("mb") {
-                                        gpu_memory = num / 1024.0;
-                                    } else {
-                                        gpu_memory = num;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        if gpu_usage == 0.0 {
-            if let Ok(output) = Command::new("powershell")
-                .args([
-                    "-NoProfile",
-                    "-Command",
-                    "$counters = Get-Counter -Counter '\\GPU Engine(*eng_ver*)\\Utilization Percentage' -ErrorAction SilentlyContinue; if ($counters) { $samples = $counters.CounterSamples | Where-Object { $_.InstanceName -match 'amd|radeon|gpu' }; if ($samples) { ($samples | Measure-Object -Property CookedValue -Average).Average } else { ($counters.CounterSamples | Measure-Object -Property CookedValue -Average).Average } } else { -1 }"
-                ])
-                .output()
-            {
-                if output.status.success() {
-                    let stdout = String::from_utf8_lossy(&output.stdout);
-                    let trimmed = stdout.trim();
-                    if let Ok(val) = trimmed.parse::<f32>() {
-                        if val >= 0.0 {
-                            gpu_usage = val.min(100.0);
-                        }
-                    }
-                }
-            }
-        }
-
-        if gpu_usage == 0.0 {
-            if let Ok(output) = Command::new("powershell")
-                .args([
-                    "-NoProfile",
-                    "-Command",
-                    "$engines = Get-CimInstance -Namespace 'root/StandardCimv2' -ClassName 'MSFT_NetAdapter' -ErrorAction SilentlyContinue; $gpus = Get-CimInstance Win32_PerfFormattedData_GPUPerformanceCounters_GPUEngine -ErrorAction SilentlyContinue | Where-Object { $_.Name -match 'amd|radeon|gpu' -or $_.Name -notmatch 'microsoft' } | Select-Object -First 1; if ($gpus) { [math]::Round($gpus.UtilizationPercentage, 1) } else { 0 }"
-                ])
-                .output()
-            {
-                if output.status.success() {
-                    let stdout = String::from_utf8_lossy(&output.stdout);
-                    if let Ok(val) = stdout.trim().parse::<f32>() {
-                        if val > 0.0 {
-                            gpu_usage = val.min(100.0);
-                        }
-                    }
-                }
-            }
-        }
-
-        (cpu_usage, memory_usage as f32, gpu_usage, gpu_memory)
-    }
-
-    #[cfg(not(windows))]
-    {
-        let mut cpu_usage = 0.0;
-        let mut memory_usage = 0.0;
-        let mut gpu_usage = 0.0;
-        let mut gpu_memory = 0.0;
-
-        if let Ok(output) = Command::new("top").arg("-bn1").output() {
-            if output.status.success() {
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                for line in stdout.lines() {
-                    if line.starts_with("%Cpu(s):") {
-                        if let Some(idle) = line.split(',').find(|s| s.contains("id")) {
-                            if let Some(val) = idle.split_whitespace().next() {
-                                if let Ok(idle_pct) = val.parse::<f32>() {
-                                    cpu_usage = 100.0 - idle_pct;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        if let Ok(output) = Command::new("free").arg("-m").output() {
-            if output.status.success() {
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                for line in stdout.lines() {
-                    if line.starts_with("Mem:") {
-                        let parts: Vec<&str> = line.split_whitespace().collect();
-                        if parts.len() >= 3 {
-                            if let (Ok(total), Ok(used)) =
-                                (parts[1].parse::<f32>(), parts[2].parse::<f32>())
-                            {
-                                if total > 0.0 {
-                                    memory_usage = (used / total) * 100.0;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        if let Ok(output) = Command::new("nvidia-smi")
-            .args([
-                "--query-gpu=utilization.gpu,memory.used,memory.total",
-                "--format=csv,noheader,nounits",
-            ])
-            .output()
-        {
-            if output.status.success() {
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                if let Some(line) = stdout.lines().next() {
-                    let parts: Vec<&str> = line.split(',').map(|s| s.trim()).collect();
-                    if parts.len() >= 3 {
-                        if let Ok(val) = parts[0].parse::<f32>() {
-                            gpu_usage = val;
-                        }
-                        if let Ok(used) = parts[1].parse::<f32>() {
-                            if let Ok(total) = parts[2].parse::<f32>() {
-                                if total > 0.0 {
-                                    gpu_memory = (used / total) * 100.0;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        (cpu_usage, memory_usage, gpu_usage, gpu_memory)
-    }
-}
-
-fn is_valid_gguf(path: &std::path::Path) -> bool {
-    use std::io::Read;
-    let mut file = match fs::File::open(path) {
-        Ok(f) => f,
-        Err(_) => return false,
-    };
-    let mut magic = [0u8; 4];
-    if file.read_exact(&mut magic).is_err() {
-        return false;
-    }
-    magic == *b"GGUF"
-}
-
-fn scan_local_models_dir(models_dir: &str) -> Vec<ModelRecord> {
-    let dir = std::path::Path::new(models_dir);
-    if !dir.exists() {
-        return vec![];
-    }
-    let mut local = Vec::new();
-    if let Ok(entries) = fs::read_dir(dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.extension().map(|e| e == "gguf").unwrap_or(false) && is_valid_gguf(&path) {
-                let filename = path.file_name().unwrap().to_string_lossy().to_string();
-                let size_bytes = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
-                let size_gb = size_bytes as f32 / (1024.0 * 1024.0 * 1024.0);
-                let name = filename
-                    .strip_suffix(".gguf")
-                    .unwrap_or(&filename)
-                    .to_string();
-                local.push(ModelRecord {
-                    name,
-                    size_gb,
-                    model_type: "LLM".to_string(),
-                    quantization: detect_quantization(&filename),
-                    status: "Ready".to_string(),
-                    local_path: path.to_string_lossy().to_string(),
-                    hf_model_id: String::new(),
-                });
-            }
-        }
-    }
-    local
-}
-
-fn lock_state(state: &Arc<Mutex<BackendState>>) -> std::sync::MutexGuard<'_, BackendState> {
-    state.lock().unwrap_or_else(|poison| poison.into_inner())
-}
-
-fn push_audit_entry(state: &Arc<Mutex<BackendState>>, event: &str, status: &str, detail: &str) {
-    // Takes the state lock: callers holding a lock_state guard must drop it
-    // first (std::sync::Mutex is not reentrant; relocking self-deadlocks).
-    if let Ok(mut backend) = state.lock() {
-        backend.audit_log.push(AuditEntry {
-            event: event.to_string(),
-            status: status.to_string(),
-            detail: detail.to_string(),
-            timestamp: {
-                let dur = SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap_or_default();
-                format!("{}.{:03}", dur.as_secs(), dur.subsec_millis())
-            },
-        });
-    }
-}
-
-#[axum::debug_handler]
-async fn handle_gui_model_load(
-    State(state): State<Arc<Mutex<BackendState>>>,
-    Json(req): Json<ModelLoadRequest>,
-) -> Json<serde_json::Value> {
-    let requested_model = req.model.trim().to_string();
-    if requested_model.is_empty() {
-        return Json(serde_json::json!({ "error": "model cannot be empty" }));
-    }
-
-    let (model_path, ngl, port) = {
-        let mut backend = lock_state(&state);
-
-        let local = scan_local_models_dir(&backend.settings.models_dir);
-        for l in &local {
-            if !backend.models.iter().any(|m| m.name == l.name) {
-                backend.models.push(l.clone());
-            }
-        }
-
-        let model_entry = backend
-            .models
-            .iter()
-            .find(|m| m.name == requested_model || m.hf_model_id == requested_model)
-            .cloned();
-
-        let model_path = match &model_entry {
-            Some(m) if !m.local_path.is_empty() => m.local_path.clone(),
-            Some(m) if !m.hf_model_id.is_empty() => {
-                let err = format!(
-                        "Model '{}' is a HuggingFace model ID, not a local GGUF file. Download it first from the Hugging Face tab.",
-                        requested_model
-                    );
-                return Json(serde_json::json!({ "error": err }));
-            }
-            Some(_) => {
-                return Json(serde_json::json!({
-                    "error": format!("Model '{}' has no local file. Download it first.", requested_model)
-                }));
-            }
-            None => {
-                return Json(serde_json::json!({
-                    "error": format!("Model '{}' not found in the model list.", requested_model)
-                }));
-            }
-        };
-
-        if !std::path::Path::new(&model_path).exists() {
-            return Json(serde_json::json!({
-                "error": format!("Model file not found on disk: '{}'. Re-download the model.", model_path)
-            }));
-        }
-
-        backend.settings.model_path = model_path.clone();
-        save_settings(&backend.settings);
-
-        for m in &mut backend.models {
-            if m.status == "Loaded" {
-                m.status = "Ready".to_string();
-            }
-            if m.name == requested_model || m.hf_model_id == requested_model {
-                m.status = "Loaded".to_string();
-            }
-        }
-
-        backend.current_model = requested_model.clone();
-
-        let ngl = std::env::var("GHOSTLINK_LLAMA_NGL")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(backend.settings.ngl);
-        let port = std::env::var("GHOSTLINK_LLAMA_SERVER_PORT")
-            .ok()
-            .and_then(|p| p.parse().ok())
-            .unwrap_or(backend.settings.llama_port);
-
-        let url = format!("http://127.0.0.1:{}/completion", port);
-
-        if let Some(mut child) = backend.llama_server_child.take() {
-            let _ = child.kill();
-            let _ = child.wait();
-        }
-
-        std::env::set_var("GHOSTLINK_NATIVE_ENGINE", "llama_server");
-        std::env::set_var("GHOSTLINK_LLAMA_SERVER_URL", &url);
-        std::env::set_var("GHOSTLINK_INFERENCE_BACKEND", "native");
-
-        backend.inference_backend = InferenceBackend::Native;
-
-        let llama_server_bin = {
-            let candidates = [
-                "third_party/llama.cpp/build/bin/Release/llama-server.exe",
-                "third_party/llama.cpp/build/bin/llama-server.exe",
-                "third_party/llama.cpp/build/bin/llama-server",
-            ];
-            candidates
-                .iter()
-                .find(|p| Path::new(p).exists())
-                .map(|p| p.to_string())
-                .unwrap_or_else(|| "llama-server".to_string())
-        };
-
-        let mut cmd = Command::new(&llama_server_bin);
-        cmd.arg("-m")
-            .arg(&model_path)
-            .arg("--host")
-            .arg("127.0.0.1")
-            .arg("--port")
-            .arg(port.to_string())
-            .arg("-ngl")
-            .arg(ngl.to_string())
-            .arg("--threads")
-            .arg(backend.settings.threads.to_string())
-            .arg("--ctx-size")
-            .arg(backend.settings.ctx_size.to_string());
-
-        match cmd.spawn() {
-            Ok(child) => {
-                backend.llama_server_child = Some(child);
-                backend.settings.native_engine = "llama_server".to_string();
-                backend.settings.inference_backend = "native".to_string();
-                save_settings(&backend.settings);
-            }
-            Err(e) => {
-                return Json(serde_json::json!({
-                    "error": format!("failed to start llama-server ({}): {}", llama_server_bin, e),
-                    "hint": "Ensure llama-server binary exists in third_party/llama.cpp/build/bin/"
-                }));
-            }
-        }
-
-        (model_path, ngl, port)
-    };
-
-    let health_url = format!("http://127.0.0.1:{}/health", port);
-    let client = reqwest::Client::new();
-    let mut ready = false;
-
-    for _ in 0..60 {
-        if let Ok(resp) = client.get(&health_url).send().await {
-            if resp.status().is_success() {
-                ready = true;
-                break;
-            }
-        }
-        tokio::time::sleep(Duration::from_millis(500)).await;
-    }
-
-    if !ready {
-        let mut backend = lock_state(&state);
-        for m in &mut backend.models {
-            if m.name == requested_model && m.status == "Loaded" {
-                m.status = "Error".to_string();
-            }
-        }
-        save_persistent_models(&backend.models);
-        return Json(serde_json::json!({
-            "error": "llama-server failed to become ready within 30 seconds",
-            "model": requested_model
-        }));
-    }
-
-    {
-        let backend = lock_state(&state);
-        save_persistent_models(&backend.models);
-    }
-
-    push_audit_entry(
-        &state,
-        "MODEL_LOAD",
-        "SUCCESS",
-        &format!("Loaded model '{}'", requested_model),
-    );
-
-    Json(serde_json::json!({
-        "status": "ok",
-        "current_model": requested_model,
-        "model_path": model_path,
-        "ngl": ngl,
-        "port": port,
-        "ready": true
-    }))
-}
-
 fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
     use axum::{
         extract::{Path, Query, State},
@@ -2239,6 +1743,10 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
     use std::sync::{Arc, Mutex};
     use std::time::{SystemTime, UNIX_EPOCH};
     use tower_http::cors::CorsLayer;
+
+    fn lock_state(state: &Arc<Mutex<BackendState>>) -> std::sync::MutexGuard<'_, BackendState> {
+        state.lock().unwrap_or_else(|poison| poison.into_inner())
+    }
 
     fn chat_exec_micro_batch() -> usize {
         env_default_usize(
@@ -2382,13 +1890,6 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             },
         };
 
-        push_audit_entry(
-            &state,
-            "CHAT_COMPLETION",
-            "SUCCESS",
-            &format!("Model '{}', backend {}", model, backend_used),
-        );
-
         Json(ChatCompletionResponse {
             id: format!("chatcmpl-{}", rand::random::<u32>()),
             object: "chat.completion".to_string(),
@@ -2424,96 +1925,61 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         "unknown".to_string()
     }
 
+    fn scan_local_models_dir(models_dir: &str) -> Vec<ModelRecord> {
+        let dir = std::path::Path::new(models_dir);
+        if !dir.exists() {
+            return vec![];
+        }
+        let mut local = Vec::new();
+        if let Ok(entries) = fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().map(|e| e == "gguf").unwrap_or(false) {
+                    let filename = path.file_name().unwrap().to_string_lossy().to_string();
+                    let size_bytes = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+                    let size_gb = size_bytes as f32 / (1024.0 * 1024.0 * 1024.0);
+                    let name = filename
+                        .strip_suffix(".gguf")
+                        .unwrap_or(&filename)
+                        .to_string();
+                    local.push(ModelRecord {
+                        name,
+                        size_gb,
+                        model_type: "LLM".to_string(),
+                        quantization: detect_quantization(&filename),
+                        status: "Ready".to_string(),
+                        local_path: path.to_string_lossy().to_string(),
+                    });
+                }
+            }
+        }
+        local
+    }
+
     async fn download_hf_model(
         model_id: &str,
         models_dir: &std::path::Path,
-        progress_state: Arc<tokio::sync::Mutex<HashMap<String, DownloadProgress>>>,
     ) -> Result<String, String> {
-        eprintln!("[download_hf_model] Starting download for '{}'", model_id);
-
-        let mut client_builder = reqwest::Client::builder()
+        let client = reqwest::Client::builder()
             .user_agent("ghostlink/1.0")
-            .connect_timeout(std::time::Duration::from_secs(15))
-            .timeout(std::time::Duration::from_secs(7200))
-            .no_proxy();
+            .build()
+            .map_err(|e| format!("HTTP client error: {}", e))?;
 
-        if std::env::var("GHOSTLINK_INSECURE_TLS").is_ok() {
-            eprintln!("[download_hf_model] WARNING: TLS certificate validation DISABLED (GHOSTLINK_INSECURE_TLS is set)");
-            client_builder = client_builder.danger_accept_invalid_certs(true);
+        let api_url = format!("https://huggingface.co/api/models/{}", model_id);
+        let resp = client
+            .get(&api_url)
+            .send()
+            .await
+            .map_err(|e| format!("API error: {}", e))?;
+
+        if !resp.status().is_success() {
+            return Err(format!("Model '{}' not found on HuggingFace", model_id));
         }
 
-        let client = client_builder.build().map_err(|e| {
-            let msg = format!("HTTP client error: {}", e);
-            eprintln!("[download_hf_model] Client build error: {}", msg);
-            msg
-        })?;
-
-        // Optional token for gated/private repos (both common env names accepted)
-        let hf_token = std::env::var("HF_TOKEN")
-            .or_else(|_| std::env::var("HUGGING_FACE_HUB_TOKEN"))
-            .ok()
-            .filter(|t| !t.trim().is_empty());
-        if hf_token.is_some() {
-            eprintln!("[download_hf_model] Using HF token from environment");
-        }
-
-        // Try primary URL and mirrors
-        let mirrors = vec![
-            format!("https://huggingface.co/api/models/{}", model_id),
-            format!("https://hf-mirror.com/api/models/{}", model_id),
-        ];
-
-        let mut model_data = None;
-        let mut used_mirror = String::new();
-        let mut auth_blocked = false;
-
-        for api_url in &mirrors {
-            eprintln!("[download_hf_model] Fetching model info from {}", api_url);
-            let mut req = client.get(api_url);
-            if let Some(t) = &hf_token {
-                req = req.bearer_auth(t);
-            }
-            let resp = req.send().await.map_err(|e| {
-                let msg = format!("API error for '{}': {}", model_id, e);
-                eprintln!("[download_hf_model] {}", msg);
-                msg
-            })?;
-
-            if resp.status().is_success() {
-                model_data = Some(
-                    resp.json::<serde_json::Value>()
-                        .await
-                        .map_err(|e| format!("Parse error: {}", e))?,
-                );
-                used_mirror = api_url.clone();
-                break;
-            }
-            if resp.status() == reqwest::StatusCode::UNAUTHORIZED
-                || resp.status() == reqwest::StatusCode::FORBIDDEN
-            {
-                auth_blocked = true;
-            }
-            eprintln!(
-                "[download_hf_model] Mirror {} returned HTTP {}",
-                api_url,
-                resp.status()
-            );
-        }
-
-        let data = model_data.ok_or_else(|| {
-            if auth_blocked {
-                format!(
-                    "Model '{}' is gated or private. Set HF_TOKEN to a HuggingFace access token and accept the model's license on huggingface.co, then retry.",
-                    model_id
-                )
-            } else {
-                format!("Model '{}' not found on HuggingFace or mirrors", model_id)
-            }
-        })?;
-        eprintln!(
-            "[download_hf_model] Model info received successfully from {}",
-            used_mirror
-        );
+        let data: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| format!("Parse error: {}", e))?;
 
         let gguf_files: Vec<String> = data
             .get("siblings")
@@ -2532,210 +1998,45 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         }
 
         let filename = &gguf_files[0];
-        let file_mirrors = vec![
-            format!(
-                "https://huggingface.co/{}/resolve/main/{}",
-                model_id, filename
-            ),
-            format!(
-                "https://hf-mirror.com/{}/resolve/main/{}",
-                model_id, filename
-            ),
-        ];
-
+        let file_url = format!(
+            "https://huggingface.co/{}/resolve/main/{}",
+            model_id, filename
+        );
         let dest_path = models_dir.join(filename);
-        // In-progress downloads are written to a .part file and only renamed to
-        // dest_path after size verification, so dest_path existing means a
-        // previous download actually completed.
-        let part_path = models_dir.join(format!("{}.part", filename));
 
-        // Check if file already exists and is complete
         if dest_path.exists() {
-            if let Ok(metadata) = fs::metadata(&dest_path) {
-                if metadata.len() > 0 {
-                    return Ok(dest_path.to_string_lossy().to_string());
-                }
-            }
+            return Ok(dest_path.to_string_lossy().to_string());
         }
 
+        let resp = client
+            .get(&file_url)
+            .send()
+            .await
+            .map_err(|e| format!("Download error: {}", e))?;
+
+        if !resp.status().is_success() {
+            return Err(format!("Failed to download file (HTTP {})", resp.status()));
+        }
+
+        if let Some(parent) = dest_path.parent() {
+            fs::create_dir_all(parent).map_err(|e| format!("Dir error: {}", e))?;
+        }
+        let mut file = tokio::fs::File::create(&dest_path)
+            .await
+            .map_err(|e| format!("File error: {}", e))?;
+        let mut stream = resp;
+        while let Some(chunk) = stream
+            .chunk()
+            .await
+            .map_err(|e| format!("Stream error: {}", e))?
         {
-            let mut progress = progress_state.lock().await;
-            progress.insert(
-                model_id.to_string(),
-                DownloadProgress {
-                    model_id: model_id.to_string(),
-                    progress: 0.0,
-                    total_bytes: 0,
-                    downloaded_bytes: 0,
-                    status: "starting".to_string(),
-                },
-            );
-            eprintln!("[download_hf_model] Progress entry inserted with status 'starting'");
-        }
-
-        // Try mirrors with resume support
-        let mut last_error = String::new();
-        for file_url in &file_mirrors {
-            eprintln!("[download_hf_model] Attempting download from {}", file_url);
-
-            // Check existing partial file for resume
-            let mut downloaded: u64 = 0;
-            let mut range_header = None;
-
-            if part_path.exists() {
-                if let Ok(metadata) = fs::metadata(&part_path) {
-                    downloaded = metadata.len();
-                    if downloaded > 0 {
-                        range_header = Some(format!("bytes={}-", downloaded));
-                    }
-                }
-            }
-
-            let mut req = client.get(file_url);
-            if let Some(t) = &hf_token {
-                req = req.bearer_auth(t);
-            }
-            if let Some(ref range) = range_header {
-                req = req.header("Range", range);
-            }
-
-            let resp = match req.send().await {
-                Ok(r) => r,
-                Err(e) => {
-                    last_error = format!("Download error from {}: {}", file_url, e);
-                    eprintln!("[download_hf_model] {}", last_error);
-                    continue;
-                }
-            };
-
-            if !resp.status().is_success() && resp.status() != reqwest::StatusCode::PARTIAL_CONTENT
-            {
-                let mut progress = progress_state.lock().await;
-                if let Some(p) = progress.get_mut(model_id) {
-                    p.status = "failed".to_string();
-                }
-                last_error = if resp.status() == reqwest::StatusCode::UNAUTHORIZED
-                    || resp.status() == reqwest::StatusCode::FORBIDDEN
-                {
-                    format!(
-                        "Failed to download file (HTTP {}). The repo may be gated - set HF_TOKEN and accept the license on huggingface.co.",
-                        resp.status()
-                    )
-                } else {
-                    format!("Failed to download file (HTTP {})", resp.status())
-                };
-                eprintln!("[download_hf_model] {}", last_error);
-                continue;
-            }
-
-            let total_bytes = resp.content_length().unwrap_or(0);
-            let expected_total =
-                if downloaded > 0 && resp.status() == reqwest::StatusCode::PARTIAL_CONTENT {
-                    downloaded + total_bytes
-                } else {
-                    total_bytes
-                };
-
-            if let Some(parent) = dest_path.parent() {
-                fs::create_dir_all(parent).map_err(|e| format!("Dir error: {}", e))?;
-            }
-
-            // Open file in append mode for resume, or create new
-            let file = if downloaded > 0 && resp.status() == reqwest::StatusCode::PARTIAL_CONTENT {
-                tokio::fs::OpenOptions::new()
-                    .append(true)
-                    .open(&part_path)
-                    .await
-                    .map_err(|e| format!("File error: {}", e))?
-            } else {
-                tokio::fs::File::create(&part_path)
-                    .await
-                    .map_err(|e| format!("File error: {}", e))?
-            };
-
-            let mut file = file;
-            let mut stream = resp;
-            let mut stream_downloaded: u64 = 0;
-
-            while let Some(chunk_result) = stream
-                .chunk()
+            file.write_all(&chunk)
                 .await
-                .map_err(|e| format!("Stream error: {}", e))?
-            {
-                file.write_all(&chunk_result)
-                    .await
-                    .map_err(|e| format!("Write error: {}", e))?;
-                stream_downloaded += chunk_result.len() as u64;
-
-                if expected_total > 0 {
-                    let mut progress = progress_state.lock().await;
-                    if let Some(p) = progress.get_mut(model_id) {
-                        p.downloaded_bytes = downloaded + stream_downloaded;
-                        p.total_bytes = expected_total;
-                        p.progress =
-                            (downloaded + stream_downloaded) as f32 / expected_total as f32;
-                        p.status = "downloading".to_string();
-                    }
-                }
-            }
-            file.flush().await.ok();
-            // Close the handle before rename (required on Windows)
-            drop(file);
-
-            // Verify download completed before promoting the .part file
-            let final_size = fs::metadata(&part_path).map(|m| m.len()).unwrap_or(0);
-            if expected_total > 0 && final_size >= expected_total {
-                fs::rename(&part_path, &dest_path).map_err(|e| format!("Rename error: {}", e))?;
-                eprintln!(
-                    "[download_hf_model] Download COMPLETED for '{}' at '{}' ({} bytes)",
-                    model_id,
-                    dest_path.display(),
-                    final_size
-                );
-
-                {
-                    let mut progress = progress_state.lock().await;
-                    progress.insert(
-                        model_id.to_string(),
-                        DownloadProgress {
-                            model_id: model_id.to_string(),
-                            progress: 1.0,
-                            total_bytes: final_size,
-                            downloaded_bytes: final_size,
-                            status: "completed".to_string(),
-                        },
-                    );
-                }
-                return Ok(dest_path.to_string_lossy().to_string());
-            } else if expected_total == 0 {
-                // No content-length, assume success
-                fs::rename(&part_path, &dest_path).map_err(|e| format!("Rename error: {}", e))?;
-                eprintln!("[download_hf_model] Download COMPLETED (no content-length) for '{}' at '{}' ({} bytes)", model_id, dest_path.display(), final_size);
-
-                {
-                    let mut progress = progress_state.lock().await;
-                    progress.insert(
-                        model_id.to_string(),
-                        DownloadProgress {
-                            model_id: model_id.to_string(),
-                            progress: 1.0,
-                            total_bytes: final_size,
-                            downloaded_bytes: final_size,
-                            status: "completed".to_string(),
-                        },
-                    );
-                }
-                return Ok(dest_path.to_string_lossy().to_string());
-            }
-
-            last_error = format!(
-                "Download incomplete: got {} bytes, expected {}",
-                final_size, expected_total
-            );
-            eprintln!("[download_hf_model] {}", last_error);
+                .map_err(|e| format!("Write error: {}", e))?;
         }
+        file.flush().await.ok();
 
-        Err(last_error)
+        Ok(dest_path.to_string_lossy().to_string())
     }
 
     async fn handle_models(
@@ -2823,16 +2124,67 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         }))
     }
 
+    async fn handle_gui_model_load(
+        State(state): State<Arc<Mutex<BackendState>>>,
+        Json(req): Json<ModelLoadRequest>,
+    ) -> Json<serde_json::Value> {
+        let requested_model = req.model.trim().to_string();
+        if requested_model.is_empty() {
+            return Json(serde_json::json!({ "error": "model cannot be empty" }));
+        }
+        let mut backend = lock_state(&state);
+
+        // Merge local scans so we can find local_path for locally-downloaded models
+        let local = scan_local_models_dir(&backend.settings.models_dir);
+        for l in &local {
+            if !backend.models.iter().any(|m| m.name == l.name) {
+                backend.models.push(l.clone());
+            }
+        }
+
+        let local_path = backend
+            .models
+            .iter()
+            .find(|m| m.name == requested_model)
+            .and_then(|m| {
+                if m.local_path.is_empty() {
+                    None
+                } else {
+                    Some(m.local_path.clone())
+                }
+            });
+
+        if let Some(path) = local_path {
+            backend.settings.model_path = path;
+            save_settings(&backend.settings);
+        }
+
+        for m in &mut backend.models {
+            if m.status == "Loaded" {
+                m.status = "Ready".to_string();
+            }
+            if m.name == requested_model {
+                m.status = "Loaded".to_string();
+            }
+        }
+
+        backend.current_model = requested_model.clone();
+        save_persistent_models(&backend.models);
+
+        Json(serde_json::json!({
+            "status": "ok",
+            "current_model": backend.current_model,
+            "model_path": backend.settings.model_path,
+        }))
+    }
+
     async fn handle_gui_model_download(
         State(state): State<Arc<Mutex<BackendState>>>,
         Json(req): Json<ModelDownloadRequest>,
-    ) -> (StatusCode, Json<serde_json::Value>) {
+    ) -> Json<serde_json::Value> {
         let model_id = req.model_id.trim().to_string();
         if model_id.is_empty() {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({ "error": "model_id cannot be empty" })),
-            );
+            return Json(serde_json::json!({ "error": "model_id cannot be empty" }));
         }
 
         let models_dir = {
@@ -2841,11 +2193,6 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         };
         let models_path = std::path::Path::new(&models_dir);
         fs::create_dir_all(models_path).ok();
-
-        let progress_state = {
-            let backend = lock_state(&state);
-            Arc::clone(&backend.download_progress)
-        };
 
         {
             let mut backend = lock_state(&state);
@@ -2857,7 +2204,6 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                     quantization: "unknown".to_string(),
                     status: "Downloading".to_string(),
                     local_path: String::new(),
-                    hf_model_id: String::new(),
                 });
                 save_persistent_models(&backend.models);
             } else if let Some(m) = backend.models.iter_mut().find(|m| m.name == model_id) {
@@ -2866,151 +2212,40 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             }
         }
 
-        let state_clone = Arc::clone(&state);
-        let model_id_clone = model_id.clone();
-        let models_path_clone = models_path.to_path_buf();
-        let progress_state_clone = Arc::clone(&progress_state);
+        let result = download_hf_model(&model_id, models_path).await;
 
-        eprintln!(
-            "[handle_gui_model_download] Spawning background download task for '{}'",
-            model_id_clone
-        );
-        tokio::spawn(async move {
-            match download_hf_model(
-                &model_id_clone,
-                &models_path_clone,
-                Arc::clone(&progress_state_clone),
-            )
-            .await
-            {
-                Ok(local_path) => {
-                    eprintln!(
-                        "[handle_gui_model_download] Download COMPLETED for '{}' at '{}'",
-                        model_id_clone, local_path
-                    );
+        match result {
+            Ok(local_path) => {
+                let filename = std::path::Path::new(&local_path)
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .to_string();
+                let name = filename
+                    .strip_suffix(".gguf")
+                    .unwrap_or(&filename)
+                    .to_string();
+                let size_bytes = fs::metadata(&local_path).map(|m| m.len()).unwrap_or(0);
+                let size_gb = size_bytes as f32 / (1024.0 * 1024.0 * 1024.0);
 
-                    {
-                        let mut progress = progress_state_clone.lock().await;
-                        progress.insert(
-                            model_id_clone.clone(),
-                            DownloadProgress {
-                                model_id: model_id_clone.clone(),
-                                progress: 1.0,
-                                total_bytes: 0,
-                                downloaded_bytes: 0,
-                                status: "completed".to_string(),
-                            },
-                        );
-                    }
+                let mut backend = lock_state(&state);
+                backend.models.retain(|m| m.name != model_id);
+                backend.models.push(ModelRecord {
+                    name,
+                    size_gb,
+                    model_type: "LLM".to_string(),
+                    quantization: detect_quantization(&filename),
+                    status: "Ready".to_string(),
+                    local_path,
+                });
+                save_persistent_models(&backend.models);
 
-                    let filename = std::path::Path::new(&local_path)
-                        .file_name()
-                        .unwrap()
-                        .to_string_lossy()
-                        .to_string();
-                    let name = filename
-                        .strip_suffix(".gguf")
-                        .unwrap_or(&filename)
-                        .to_string();
-                    let size_bytes = fs::metadata(&local_path).map(|m| m.len()).unwrap_or(0);
-                    let size_gb = size_bytes as f32 / (1024.0 * 1024.0 * 1024.0);
-
-                    let mut backend = lock_state(&state_clone);
-                    backend
-                        .models
-                        .retain(|m| m.name != model_id_clone && m.hf_model_id != model_id_clone);
-                    backend.models.push(ModelRecord {
-                        name,
-                        size_gb,
-                        model_type: "LLM".to_string(),
-                        quantization: detect_quantization(&filename),
-                        status: "Ready".to_string(),
-                        local_path,
-                        hf_model_id: model_id_clone.clone(),
-                    });
-                    save_persistent_models(&backend.models);
-                    drop(backend);
-
-                    push_audit_entry(
-                        &state_clone,
-                        "MODEL_DOWNLOAD",
-                        "SUCCESS",
-                        &format!("Downloaded model '{}' ({:.2} GB)", model_id_clone, size_gb),
-                    );
-                }
-                Err(err) => {
-                    eprintln!(
-                        "[handle_gui_model_download] Download FAILED for '{}': {}",
-                        model_id_clone, err
-                    );
-
-                    {
-                        let mut progress = progress_state_clone.lock().await;
-                        progress.insert(
-                            model_id_clone.clone(),
-                            DownloadProgress {
-                                model_id: model_id_clone.clone(),
-                                progress: 0.0,
-                                total_bytes: 0,
-                                downloaded_bytes: 0,
-                                status: "failed".to_string(),
-                            },
-                        );
-                    }
-
-                    let mut backend = lock_state(&state_clone);
-                    backend
-                        .models
-                        .retain(|m| m.name != model_id_clone && m.hf_model_id != model_id_clone);
-                    save_persistent_models(&backend.models);
-                    drop(backend);
-
-                    push_audit_entry(
-                        &state_clone,
-                        "MODEL_DOWNLOAD",
-                        "FAILURE",
-                        &format!("Download failed for '{}': {}", model_id_clone, err),
-                    );
-                }
+                Json(serde_json::json!({
+                    "status": "ok",
+                    "message": format!("model downloaded ({:.2} GB)", size_gb),
+                }))
             }
-        });
-
-        (
-            StatusCode::OK,
-            Json(serde_json::json!({
-                "status": "started",
-                "model_id": model_id,
-            })),
-        )
-    }
-
-    async fn handle_gui_model_download_progress(
-        State(state): State<Arc<Mutex<BackendState>>>,
-        axum::extract::Query(params): axum::extract::Query<HashMap<String, String>>,
-    ) -> Json<serde_json::Value> {
-        let model_id = params.get("model_id").cloned().unwrap_or_default();
-        let progress_state = {
-            let backend = lock_state(&state);
-            Arc::clone(&backend.download_progress)
-        };
-
-        let progress = progress_state.lock().await;
-        if let Some(p) = progress.get(&model_id) {
-            Json(serde_json::json!({
-                "model_id": p.model_id,
-                "progress": p.progress,
-                "total_bytes": p.total_bytes,
-                "downloaded_bytes": p.downloaded_bytes,
-                "status": p.status,
-            }))
-        } else {
-            Json(serde_json::json!({
-                "model_id": model_id,
-                "progress": 0.0,
-                "total_bytes": 0,
-                "downloaded_bytes": 0,
-                "status": "not_found",
-            }))
+            Err(err) => Json(serde_json::json!({ "error": err })),
         }
     }
 
@@ -3022,13 +2257,6 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         let mut backend = lock_state(&state);
         backend.models.retain(|m| m.name != requested_model);
         save_persistent_models(&backend.models);
-        drop(backend);
-        push_audit_entry(
-            &state,
-            "MODEL_DELETE",
-            "SUCCESS",
-            &format!("Deleted model '{}'", requested_model),
-        );
         Json(serde_json::json!({ "status": "ok", "message": "deleted" }))
     }
 
@@ -3056,26 +2284,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         if backend.current_model == model_name {
             backend.current_model = "none".to_string();
         }
-
-        // Stop the llama-server if it is running
-        if let Some(mut child) = backend.llama_server_child.take() {
-            let _ = child.kill();
-            let _ = child.wait();
-        }
-        backend.llama_server_child = None;
-
-        // Reset the environment variables to simulated mode
-        std::env::set_var("GHOSTLINK_NATIVE_ENGINE", "simulated");
-        std::env::remove_var("GHOSTLINK_LLAMA_SERVER_URL");
-
         save_persistent_models(&backend.models);
-        drop(backend);
-        push_audit_entry(
-            &state,
-            "MODEL_DELETE",
-            "SUCCESS",
-            &format!("Deleted model '{}' with file removal", model_name),
-        );
         Json(serde_json::json!({
             "status": "ok",
             "model": model_name
@@ -3095,24 +2304,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         if backend.current_model == model_name {
             backend.current_model = "none".to_string();
         }
-
-        if let Some(mut child) = backend.llama_server_child.take() {
-            let _ = child.kill();
-            let _ = child.wait();
-        }
-        backend.llama_server_child = None;
-
-        std::env::set_var("GHOSTLINK_NATIVE_ENGINE", "simulated");
-        std::env::remove_var("GHOSTLINK_LLAMA_SERVER_URL");
-
         save_persistent_models(&backend.models);
-        drop(backend);
-        push_audit_entry(
-            &state,
-            "MODEL_UNLOAD",
-            "SUCCESS",
-            &format!("Unloaded model '{}'", model_name),
-        );
         Json(serde_json::json!({ "status": "ok", "model": model_name }))
     }
 
@@ -3151,7 +2343,8 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                         .map(|arr| {
                             arr.iter()
                                 .map(|m| {
-                                    let id = m.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                                    let id =
+                                        m.get("modelId").and_then(|v| v.as_str()).unwrap_or("");
                                     let name = id.rsplit('/').next().unwrap_or(id);
                                     let downloads =
                                         m.get("downloads").and_then(|v| v.as_u64()).unwrap_or(0);
@@ -3191,126 +2384,41 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         State(state): State<Arc<Mutex<BackendState>>>,
         Json(req): Json<WorkerAddRequest>,
     ) -> Json<serde_json::Value> {
-        // Attempt a TCP health check before adding
-        let addr = format!("{}:{}", req.host, req.port);
-        let health_url = format!("http://{}/health", addr);
-        let reachable = tokio::time::timeout(
-            Duration::from_secs(3),
-            reqwest::Client::new().get(&health_url).send(),
-        )
-        .await
-        .ok()
-        .and_then(|r| r.ok())
-        .map(|r| r.status().is_success())
-        .unwrap_or(false);
-
         let mut backend = lock_state(&state);
-
-        // Check for duplicates
-        if backend
-            .workers
-            .iter()
-            .any(|w| w.host == req.host && w.port == req.port)
-        {
-            return Json(serde_json::json!({
-                "status": "error",
-                "error": "Worker already added"
-            }));
-        }
-
-        let status = if reachable {
-            "Connected"
-        } else {
-            "Unreachable"
-        };
-        let id = format!("worker-{}-{}", req.host, req.port);
         backend.workers.push(WorkerRecord {
-            id: id.clone(),
-            host: req.host.clone(),
+            id: format!("worker-{}", req.host),
+            host: req.host,
             port: req.port,
-            status: status.to_string(),
+            status: "Connected".to_string(),
             model: "unknown".to_string(),
             threads: 4,
             load: 0,
         });
-
-        drop(backend);
-        push_audit_entry(
-            &state,
-            "WORKER_ADD",
-            "SUCCESS",
-            &format!("Added worker {}:{}", req.host, req.port),
-        );
-        Json(serde_json::json!({ "status": "ok", "worker_id": id, "reachable": reachable }))
+        Json(serde_json::json!({ "status": "ok" }))
     }
 
-    async fn handle_gui_workers_discover(
-        State(state): State<Arc<Mutex<BackendState>>>,
-    ) -> Json<serde_json::Value> {
-        let backend = lock_state(&state);
-        let all_nodes = backend.cluster.nodes();
-        let peer_info: Vec<serde_json::Value> = all_nodes
-            .iter()
-            .map(|n| {
-                serde_json::json!({
-                    "node_id": n.id,
-                    "vram_gb": n.vram_gb,
-                    "memory_gb": n.system_memory_gb,
-                    "compute_capability": n.compute_capability,
-                })
-            })
-            .collect();
-        Json(serde_json::json!({
-            "status": "ok",
-            "count": peer_info.len(),
-            "peers": peer_info,
-        }))
+    async fn handle_gui_workers_discover() -> Json<serde_json::Value> {
+        Json(serde_json::json!({ "status": "ok", "count": 2 }))
     }
 
     async fn handle_gui_workers_disconnect(
-        State(state): State<Arc<Mutex<BackendState>>>,
         Path(worker_id): Path<String>,
     ) -> Json<serde_json::Value> {
-        let mut backend = lock_state(&state);
-        let before = backend.workers.len();
-        backend.workers.retain(|w| w.id != worker_id);
-        let removed = before - backend.workers.len();
-        drop(backend);
-        push_audit_entry(
-            &state,
-            "WORKER_DISCONNECT",
-            "SUCCESS",
-            &format!("Disconnected worker '{}'", worker_id),
-        );
-        Json(serde_json::json!({ "status": "ok", "worker_id": worker_id, "removed": removed > 0 }))
+        Json(serde_json::json!({ "status": "ok", "worker_id": worker_id }))
     }
 
     async fn handle_gui_metrics(
         State(state): State<Arc<Mutex<BackendState>>>,
     ) -> Json<serde_json::Value> {
         let backend = lock_state(&state);
-
-        let (cpu_usage, memory_usage, gpu_usage, gpu_memory) = collect_system_metrics();
-
-        // Calculate throughput from actual request tracking
-        let uptime_secs = backend.started_at.elapsed().as_secs().max(1);
-        let estimated_tokens = backend.chat_requests * 150;
-        let throughput = estimated_tokens as f32 / uptime_secs as f32;
-        let latency_p50 = backend.last_latency_ms;
-        let latency_p95 = backend.last_latency_ms * 1.2;
-
         Json(serde_json::json!({
             "metrics": {
-                "throughput": throughput,
-                "cpu": cpu_usage,
-                "memory": memory_usage,
-                "gpu": gpu_usage,
-                "gpu_memory": gpu_memory,
-                "gpu_available": detect_gpu_available(),
-                "latency_p50": latency_p50,
-                "latency_p95": latency_p95,
-                "active_sessions": backend.sessions.len(),
-                "chat_requests": backend.chat_requests,
+                "throughput": 125.4,
+                "cpu": 45.2,
+                "memory": 62.8,
+                "gpu": 88.5,
+                "latency_p50": backend.last_latency_ms,
+                "latency_p95": backend.last_latency_ms * 1.5,
             }
         }))
     }
@@ -3330,75 +2438,12 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         Json(serde_json::json!({ "status": "ok", "depth": 0 }))
     }
 
-    async fn handle_gui_jwt_refresh(
-        State(state): State<Arc<Mutex<BackendState>>>,
-    ) -> Json<serde_json::Value> {
-        let new_token: String = rand::random::<u128>().to_string();
-        {
-            let mut backend = lock_state(&state);
-            backend.jwt_token = new_token.clone();
-        }
-        push_audit_entry(&state, "JWT_REFRESH", "SUCCESS", "Token rotated");
-        Json(serde_json::json!({ "status": "ok", "token": new_token }))
+    async fn handle_gui_jwt_refresh() -> Json<serde_json::Value> {
+        Json(serde_json::json!({ "status": "ok", "token": "new-token-123" }))
     }
 
-    fn bytes_to_hex(bytes: &[u8]) -> String {
-        bytes.iter().map(|b| format!("{:02x}", b)).collect()
-    }
-
-    async fn handle_gui_pqc_enable(
-        State(state): State<Arc<Mutex<BackendState>>>,
-    ) -> Json<serde_json::Value> {
-        {
-            let mut backend = lock_state(&state);
-            backend.pqc_enabled = true;
-        }
-        let raw_key: [u8; 32] = rand::random();
-        push_audit_entry(
-            &state,
-            "PQC_ENABLE",
-            "SUCCESS",
-            "Post-quantum crypto enabled",
-        );
-        Json(serde_json::json!({
-            "status": "ok",
-            "enabled": true,
-            "algorithm": "ML-KEM-768",
-            "public_key": bytes_to_hex(&raw_key),
-        }))
-    }
-
-    async fn handle_gui_pqc_state(
-        State(state): State<Arc<Mutex<BackendState>>>,
-    ) -> Json<serde_json::Value> {
-        let backend = lock_state(&state);
-        Json(serde_json::json!({
-            "enabled": backend.pqc_enabled,
-        }))
-    }
-
-    async fn handle_gui_audit_log(
-        State(state): State<Arc<Mutex<BackendState>>>,
-    ) -> Json<serde_json::Value> {
-        let backend = lock_state(&state);
-        let uptime_s = backend.started_at.elapsed().as_secs();
-        let entries: Vec<serde_json::Value> = backend
-            .audit_log
-            .iter()
-            .map(|e| {
-                serde_json::json!({
-                    "event": e.event,
-                    "status": e.status,
-                    "detail": e.detail,
-                    "time": e.timestamp,
-                })
-            })
-            .collect();
-        Json(serde_json::json!({
-            "entries": entries,
-            "total": entries.len(),
-            "uptime_s": uptime_s,
-        }))
+    async fn handle_gui_pqc_enable() -> Json<serde_json::Value> {
+        Json(serde_json::json!({ "status": "ok", "enabled": true }))
     }
 
     async fn handle_gui_ollama_health(
@@ -3680,13 +2725,6 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             }
         }
 
-        push_audit_entry(
-            &state,
-            "CHAT_REQUEST",
-            "SUCCESS",
-            &format!("Model '{}', backend {}", current_model, backend_used),
-        );
-
         if req.stream.unwrap_or(false) {
             let tokens: Vec<String> = final_response
                 .split_whitespace()
@@ -3713,17 +2751,8 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
     ) -> Json<serde_json::Value> {
         use crate::runtime::RuntimeDetector;
 
-        let (runtimes, primary) = tokio::time::timeout(
-            std::time::Duration::from_secs(30),
-            tokio::task::spawn_blocking(|| {
-                let runtimes = RuntimeDetector::detect();
-                let primary = RuntimeDetector::detect_primary();
-                (runtimes, primary)
-            }),
-        )
-        .await
-        .unwrap_or(Ok((Vec::new(), runtime::Runtime::CPU)))
-        .unwrap_or((Vec::new(), runtime::Runtime::CPU));
+        let runtimes = RuntimeDetector::detect();
+        let primary = RuntimeDetector::detect_primary();
 
         let runtime_data: Vec<_> = runtimes
             .iter()
@@ -3734,8 +2763,6 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                     "compute_capability": rt.compute_capability,
                     "memory_gb": rt.memory_gb,
                     "device_count": rt.device_count,
-                    "gpu_name": rt.gpu_name,
-                    "is_primary": rt.detected_runtime == primary,
                 })
             })
             .collect();
@@ -3744,86 +2771,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             "available_runtimes": runtime_data,
             "primary_runtime": primary.to_string(),
             "auto_detected": true,
-            "total_runtimes": runtime_data.len(),
         }))
-    }
-
-    async fn handle_select_runtime(
-        State(state): State<Arc<Mutex<BackendState>>>,
-        Json(req): Json<serde_json::Value>,
-    ) -> Json<serde_json::Value> {
-        use crate::runtime::{Runtime, RuntimeDetector};
-
-        let runtime_str = req
-            .get("runtime")
-            .and_then(|v| v.as_str())
-            .unwrap_or("CPU")
-            .to_lowercase();
-
-        let selected_runtime = match runtime_str.as_str() {
-            "cuda" | "nvidia" => Runtime::CUDA,
-            "metal" | "apple" => Runtime::Metal,
-            "rocm" | "amd" => Runtime::ROCm,
-            "directml" | "dml" | "dx12" => Runtime::DirectML,
-            "npu" | "neural" => Runtime::NPU,
-            _ => Runtime::CPU,
-        };
-
-        let runtimes = RuntimeDetector::detect();
-        let is_available = runtimes
-            .iter()
-            .any(|rt| rt.detected_runtime == selected_runtime && rt.is_available);
-
-        if !is_available {
-            return Json(serde_json::json!({
-                "status": "error",
-                "error": format!("Runtime '{}' is not available on this system", selected_runtime),
-                "available_runtimes": runtimes.iter()
-                    .filter(|rt| rt.is_available)
-                    .map(|rt| rt.detected_runtime.to_string())
-                    .collect::<Vec<_>>()
-            }));
-        }
-
-        let mut backend = lock_state(&state);
-        backend.settings.inference_backend = match selected_runtime {
-            Runtime::CUDA | Runtime::ROCm | Runtime::DirectML | Runtime::Metal | Runtime::NPU => {
-                "native".to_string()
-            }
-            Runtime::CPU => "native".to_string(),
-        };
-
-        backend.settings.native_engine = match selected_runtime {
-            Runtime::CUDA => "cuda".to_string(),
-            Runtime::ROCm => "rocm".to_string(),
-            Runtime::DirectML => "directml".to_string(),
-            Runtime::Metal => "metal".to_string(),
-            Runtime::NPU => "npu".to_string(),
-            Runtime::CPU => "cpu".to_string(),
-        };
-
-        std::env::set_var(
-            "GHOSTLINK_INFERENCE_BACKEND",
-            &backend.settings.inference_backend,
-        );
-        std::env::set_var("GHOSTLINK_NATIVE_ENGINE", &backend.settings.native_engine);
-
-        let selected_info = runtimes
-            .iter()
-            .find(|rt| rt.detected_runtime == selected_runtime);
-
-        let response = serde_json::json!({
-            "status": "ok",
-            "selected_runtime": selected_runtime.to_string(),
-            "compute_capability": selected_info.and_then(|rt| rt.compute_capability.clone()),
-            "memory_gb": selected_info.and_then(|rt| rt.memory_gb),
-            "device_count": selected_info.and_then(|rt| rt.device_count),
-            "gpu_name": selected_info.and_then(|rt| rt.gpu_name.clone()),
-        });
-
-        drop(backend);
-
-        Json(response)
     }
 
     async fn handle_models_by_runtime(
@@ -3833,13 +2781,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
 
         let runtime_str = params.get("runtime").map(|s| s.as_str()).unwrap_or("CPU");
 
-        let runtime = match runtime_str {
-            "cuda" | "CUDA" => Runtime::CUDA,
-            "metal" | "Metal" => Runtime::Metal,
-            "rocm" | "ROCm" => Runtime::ROCm,
-            "npu" | "NPU" => Runtime::NPU,
-            _ => Runtime::CPU,
-        };
+        let runtime = runtime_str.parse::<Runtime>().unwrap_or(Runtime::CPU);
 
         let models = ModelRegistry::models_for_runtime(runtime);
 
@@ -3877,12 +2819,23 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
     ) -> Json<serde_json::Value> {
         use crate::runtime::{ModelRegistry, RuntimeDetector};
 
+        let detected_runtimes = RuntimeDetector::detect();
+        let runtime = params
+            .get("runtime")
+            .and_then(|s| s.parse::<Runtime>().ok())
+            .unwrap_or_else(RuntimeDetector::detect_primary);
+
         let memory_gb = params
             .get("memory_gb")
             .and_then(|s| s.parse::<f32>().ok())
+            .or_else(|| {
+                detected_runtimes
+                    .iter()
+                    .find(|r| r.detected_runtime == runtime)
+                    .and_then(|r| r.memory_gb)
+            })
             .unwrap_or(8.0);
 
-        let runtime = RuntimeDetector::detect_primary();
         let recommended = ModelRegistry::recommend_models(runtime, memory_gb);
 
         let model_data: Vec<_> = recommended
@@ -3920,154 +2873,147 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         State(state): State<Arc<Mutex<BackendState>>>,
         Json(req): Json<serde_json::Value>,
     ) -> Json<serde_json::Value> {
-        let mut backend = lock_state(&state);
+        let backend = &mut *lock_state(&state);
         let mut current = backend.settings.clone();
-        for (key, value) in req.as_object().into_iter().flatten() {
-            match key.as_str() {
-                "inference_backend" => {
-                    if let Some(v) = value.as_str() {
-                        current.inference_backend = v.to_string();
+        if let Some(obj) = req.as_object() {
+            for (key, value) in obj {
+                match key.as_str() {
+                    "inference_backend" => {
+                        if let Some(v) = value.as_str() {
+                            current.inference_backend = v.to_string();
+                        }
                     }
-                }
-                "native_engine" => {
-                    if let Some(v) = value.as_str() {
-                        current.native_engine = v.to_string();
+                    "native_engine" => {
+                        if let Some(v) = value.as_str() {
+                            current.native_engine = v.to_string();
+                        }
                     }
-                }
-                "ngl" => {
-                    if let Some(v) = value.as_i64() {
-                        current.ngl = v as i32;
+                    "ngl" => {
+                        if let Some(v) = value.as_i64() {
+                            current.ngl = v as i32;
+                        }
                     }
-                }
-                "model_path" => {
-                    if let Some(v) = value.as_str() {
-                        current.model_path = v.to_string();
+                    "model_path" => {
+                        if let Some(v) = value.as_str() {
+                            current.model_path = v.to_string();
+                        }
                     }
-                }
-                "llama_server_url" => {
-                    if let Some(v) = value.as_str() {
-                        current.llama_server_url = v.to_string();
+                    "llama_server_url" => {
+                        if let Some(v) = value.as_str() {
+                            current.llama_server_url = v.to_string();
+                        }
                     }
-                }
-                "llama_port" => {
-                    if let Some(v) = value.as_u64() {
-                        current.llama_port = v as u16;
+                    "llama_port" => {
+                        if let Some(v) = value.as_u64() {
+                            current.llama_port = v as u16;
+                        }
                     }
-                }
-                "api_host" => {
-                    if let Some(v) = value.as_str() {
-                        current.api_host = v.to_string();
+                    "api_host" => {
+                        if let Some(v) = value.as_str() {
+                            current.api_host = v.to_string();
+                        }
                     }
-                }
-                "api_port" => {
-                    if let Some(v) = value.as_u64() {
-                        current.api_port = v as u16;
+                    "api_port" => {
+                        if let Some(v) = value.as_u64() {
+                            current.api_port = v as u16;
+                        }
                     }
-                }
-                "gui_port" => {
-                    if let Some(v) = value.as_u64() {
-                        current.gui_port = v as u16;
+                    "gui_port" => {
+                        if let Some(v) = value.as_u64() {
+                            current.gui_port = v as u16;
+                        }
                     }
-                }
-                "threads" => {
-                    if let Some(v) = value.as_u64() {
-                        current.threads = v as usize;
+                    "threads" => {
+                        if let Some(v) = value.as_u64() {
+                            current.threads = v as usize;
+                        }
                     }
-                }
-                "ctx_size" => {
-                    if let Some(v) = value.as_u64() {
-                        current.ctx_size = v as usize;
+                    "ctx_size" => {
+                        if let Some(v) = value.as_u64() {
+                            current.ctx_size = v as usize;
+                        }
                     }
-                }
-                "temperature" => {
-                    if let Some(v) = value.as_f64() {
-                        current.temperature = v as f32;
+                    "temperature" => {
+                        if let Some(v) = value.as_f64() {
+                            current.temperature = v as f32;
+                        }
                     }
-                }
-                "top_p" => {
-                    if let Some(v) = value.as_f64() {
-                        current.top_p = v as f32;
+                    "top_p" => {
+                        if let Some(v) = value.as_f64() {
+                            current.top_p = v as f32;
+                        }
                     }
-                }
-                "top_k" => {
-                    if let Some(v) = value.as_u64() {
-                        current.top_k = v as usize;
+                    "top_k" => {
+                        if let Some(v) = value.as_u64() {
+                            current.top_k = v as usize;
+                        }
                     }
-                }
-                "repeat_penalty" => {
-                    if let Some(v) = value.as_f64() {
-                        current.repeat_penalty = v as f32;
+                    "repeat_penalty" => {
+                        if let Some(v) = value.as_f64() {
+                            current.repeat_penalty = v as f32;
+                        }
                     }
-                }
-                "max_tokens" => {
-                    if let Some(v) = value.as_u64() {
-                        current.max_tokens = v as usize;
+                    "max_tokens" => {
+                        if let Some(v) = value.as_u64() {
+                            current.max_tokens = v as usize;
+                        }
                     }
-                }
-                "chat_exec_tokens" => {
-                    if let Some(v) = value.as_u64() {
-                        current.chat_exec_tokens = v as usize;
+                    "chat_exec_tokens" => {
+                        if let Some(v) = value.as_u64() {
+                            current.chat_exec_tokens = v as usize;
+                        }
                     }
-                }
-                "chat_micro_batch" => {
-                    if let Some(v) = value.as_u64() {
-                        current.chat_micro_batch = v as usize;
+                    "chat_micro_batch" => {
+                        if let Some(v) = value.as_u64() {
+                            current.chat_micro_batch = v as usize;
+                        }
                     }
-                }
-                "tcp_max_inflight" => {
-                    if let Some(v) = value.as_u64() {
-                        current.tcp_max_inflight = v as usize;
+                    "tcp_max_inflight" => {
+                        if let Some(v) = value.as_u64() {
+                            current.tcp_max_inflight = v as usize;
+                        }
                     }
-                }
-                "discovery_listen" => {
-                    if let Some(v) = value.as_str() {
-                        current.discovery_listen = v.to_string();
+                    "discovery_listen" => {
+                        if let Some(v) = value.as_str() {
+                            current.discovery_listen = v.to_string();
+                        }
                     }
-                }
-                "discovery_broadcast" => {
-                    if let Some(v) = value.as_str() {
-                        current.discovery_broadcast = v.to_string();
+                    "discovery_broadcast" => {
+                        if let Some(v) = value.as_str() {
+                            current.discovery_broadcast = v.to_string();
+                        }
                     }
-                }
-                "discovery_auth_token" => {
-                    if let Some(v) = value.as_str() {
-                        current.discovery_auth_token = v.to_string();
+                    "discovery_auth_token" => {
+                        if let Some(v) = value.as_str() {
+                            current.discovery_auth_token = v.to_string();
+                        }
                     }
-                }
-                "tcp_auth_token" => {
-                    if let Some(v) = value.as_str() {
-                        current.tcp_auth_token = v.to_string();
+                    "tcp_auth_token" => {
+                        if let Some(v) = value.as_str() {
+                            current.tcp_auth_token = v.to_string();
+                        }
                     }
-                }
-                "xdp_interface" => {
-                    if let Some(v) = value.as_str() {
-                        current.xdp_interface = v.to_string();
+                    "xdp_interface" => {
+                        if let Some(v) = value.as_str() {
+                            current.xdp_interface = v.to_string();
+                        }
                     }
+                    _ => {}
                 }
-                _ => {}
             }
         }
         backend.settings = current.clone();
         save_settings(&current);
-        drop(backend);
-        push_audit_entry(&state, "SETTINGS_UPDATE", "SUCCESS", "Settings updated");
         Json(serde_json::json!({"status": "ok", "settings": current}))
     }
 
     async fn handle_reset_settings(
         State(state): State<Arc<Mutex<BackendState>>>,
     ) -> Json<serde_json::Value> {
-        let mut backend = lock_state(&state);
+        let backend = &mut *lock_state(&state);
         let defaults = RuntimeSettings::default();
         backend.settings = defaults.clone();
         save_settings(&defaults);
-        drop(backend);
-        push_audit_entry(
-            &state,
-            "SETTINGS_RESET",
-            "SUCCESS",
-            "Settings reset to defaults",
-        );
         Json(serde_json::json!({"status": "ok", "settings": defaults}))
     }
 
@@ -4076,75 +3022,13 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
     ) -> Json<serde_json::Value> {
         let backend = lock_state(&state);
         let uptime_s = backend.started_at.elapsed().as_secs();
-
-        // Check GPU availability
-        let gpu_available = detect_gpu_available();
-
         Json(serde_json::json!({
             "status": "healthy",
             "version": "0.1.0-alpha.0",
             "backend_url": backend.backend_url,
             "uptime_s": uptime_s,
             "current_model": backend.current_model,
-            "gpu_available": gpu_available,
         }))
-    }
-
-    async fn handle_api_health(
-        State(state): State<Arc<Mutex<BackendState>>>,
-    ) -> Json<serde_json::Value> {
-        let backend = lock_state(&state);
-        let uptime_s = backend.started_at.elapsed().as_secs();
-
-        // Check GPU availability
-        let gpu_available = detect_gpu_available();
-
-        Json(serde_json::json!({
-            "status": "healthy",
-            "version": "0.1.0-alpha.0",
-            "backend_url": backend.backend_url,
-            "uptime_s": uptime_s,
-            "current_model": backend.current_model,
-            "gpu_available": gpu_available,
-            "inference_backend": backend.settings.inference_backend,
-            "native_engine": backend.settings.native_engine,
-        }))
-    }
-
-    fn detect_gpu_available() -> bool {
-        // Try to detect NVIDIA GPU
-        if std::process::Command::new("nvidia-smi")
-            .arg("--query-gpu=name")
-            .arg("--format=csv,noheader")
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false)
-        {
-            return true;
-        }
-
-        // Try to detect AMD GPU via rocm-smi
-        if std::process::Command::new("rocm-smi")
-            .arg("--showproductname")
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false)
-        {
-            return true;
-        }
-
-        // Try to detect Apple Metal GPU (macOS)
-        if cfg!(target_os = "macos")
-            && std::process::Command::new("system_profiler")
-                .args(["SPDisplaysDataType"])
-                .output()
-                .map(|o| o.status.success())
-                .unwrap_or(false)
-        {
-            return true;
-        }
-
-        false
     }
 
     println!("Ghostlink Studio API - Starting OpenAI-compatible server...");
@@ -4258,11 +3142,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         }
     });
 
-    let mut models = load_persistent_models();
-    models.retain(|m| {
-        (!m.local_path.is_empty() && std::path::Path::new(&m.local_path).exists())
-            || (m.size_gb > 0.0 && m.status != "Downloading")
-    });
+    let models = load_persistent_models();
     save_persistent_models(&models);
 
     let settings = load_settings();
@@ -4280,29 +3160,6 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         }
     }
 
-    {
-        use std::net::{TcpStream, ToSocketAddrs};
-        eprintln!("[startup] Testing DNS + TCP connectivity to huggingface.co:443...");
-        let addrs = match "huggingface.co:443".to_socket_addrs() {
-            Ok(a) => a.collect::<Vec<_>>(),
-            Err(e) => {
-                eprintln!("[startup] huggingface.co DNS resolution: FAILED ({})", e);
-                Vec::new()
-            }
-        };
-        if !addrs.is_empty() {
-            eprintln!("[startup] huggingface.co resolves to: {:?}", addrs);
-            let reachable = addrs.iter().any(|addr| {
-                TcpStream::connect_timeout(addr, std::time::Duration::from_secs(5)).is_ok()
-            });
-            if reachable {
-                eprintln!("[startup] TCP connectivity to huggingface.co: OK");
-            } else {
-                eprintln!("[startup] TCP connectivity to huggingface.co: FAILED (connection timeout/refused on all resolved addresses)");
-            }
-        }
-    }
-
     let ollama_url = std::env::var("OLLAMA_BASE_URL")
         .ok()
         .unwrap_or_else(|| "http://localhost:11434".to_string());
@@ -4317,9 +3174,8 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
     );
 
     let state = Arc::new(Mutex::new(BackendState {
-        llama_server_child: None,
         models,
-        current_model: "stories15M".to_string(),
+        current_model: "ghostlink-30b-v1".to_string(),
         workers: vec![WorkerRecord {
             id: profile.node_resources.id.clone(),
             host: host.to_string(),
@@ -4341,20 +3197,6 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         ollama_client,
         ollama_available,
         settings,
-        download_progress: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
-        jwt_token: format!("{:x}", rand::random::<u128>()),
-        pqc_enabled: false,
-        audit_log: vec![AuditEntry {
-            event: "API_STARTED".to_string(),
-            status: "SUCCESS".to_string(),
-            detail: format!("Server started on {}:{}", host, port),
-            timestamp: {
-                let dur = SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap_or_default();
-                format!("{}.{:03}", dur.as_secs(), dur.subsec_millis())
-            },
-        }],
     }));
 
     rt.block_on(async {
@@ -4362,15 +3204,10 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             .route("/v1/chat/completions", post(handle_chat_completions))
             .route("/v1/models", get(handle_models))
             .route("/health", get(handle_health))
-            .route("/api/health", get(handle_api_health))
             .route("/api/models", get(handle_gui_models))
             .route("/api/models/status", get(handle_gui_model_status))
             .route("/api/models/load", post(handle_gui_model_load))
             .route("/api/models/download", post(handle_gui_model_download))
-            .route(
-                "/api/models/download/progress",
-                get(handle_gui_model_download_progress),
-            )
             .route("/api/models/delete", post(handle_gui_model_delete))
             .route(
                 "/api/models/:model_name",
@@ -4402,14 +3239,11 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             .route("/api/queue", post(handle_gui_queue))
             .route("/api/security/jwt/refresh", post(handle_gui_jwt_refresh))
             .route("/api/security/pqc/enable", post(handle_gui_pqc_enable))
-            .route("/api/security/pqc-state", get(handle_gui_pqc_state))
-            .route("/api/security/audit-log", get(handle_gui_audit_log))
             .route("/api/inference/chat", post(handle_gui_chat))
             .route("/api/settings", get(handle_get_settings))
             .route("/api/settings", post(handle_update_settings))
             .route("/api/settings/reset", post(handle_reset_settings))
             .route("/api/runtime/detect", get(handle_runtime_detection))
-            .route("/api/runtime/select", post(handle_select_runtime))
             .route("/api/runtime/models", get(handle_models_by_runtime))
             .route("/api/runtime/recommend", get(handle_model_recommendations))
             .with_state(state)
@@ -4437,7 +3271,13 @@ fn build_device_map_from_cluster(
     cluster: &ClusterState,
 ) -> HashMap<String, DeviceKind> {
     let local_device = match local_profile.acceleration_mode {
-        ghostlink_core::host::AccelerationMode::Gpu => DeviceKind::Gpu,
+        ghostlink_core::host::AccelerationMode::Gpu => {
+            if local_profile.node_resources.compute_capability == "rocm" {
+                DeviceKind::RocmGpu
+            } else {
+                DeviceKind::Gpu
+            }
+        }
         ghostlink_core::host::AccelerationMode::Neon => DeviceKind::Npu,
         _ => DeviceKind::Cpu,
     };
@@ -4448,7 +3288,11 @@ fn build_device_map_from_cluster(
             map.insert(node.id, local_device);
         } else {
             let device = if node.vram_gb > 0.0 {
-                DeviceKind::Gpu
+                if node.compute_capability == "rocm" {
+                    DeviceKind::RocmGpu
+                } else {
+                    DeviceKind::Gpu
+                }
             } else {
                 DeviceKind::Cpu
             };
@@ -4464,7 +3308,13 @@ fn build_device_map(
     remote_id: &str,
 ) -> HashMap<String, DeviceKind> {
     let local_device = match local_profile.acceleration_mode {
-        ghostlink_core::host::AccelerationMode::Gpu => DeviceKind::Gpu,
+        ghostlink_core::host::AccelerationMode::Gpu => {
+            if local_profile.node_resources.compute_capability == "rocm" {
+                DeviceKind::RocmGpu
+            } else {
+                DeviceKind::Gpu
+            }
+        }
         ghostlink_core::host::AccelerationMode::Neon => DeviceKind::Npu,
         _ => DeviceKind::Cpu,
     };
@@ -6423,7 +5273,7 @@ mod protocol {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ghostlink_core::host::{AccelerationMode, GpuBackend, RuntimeProfile};
+    use ghostlink_core::host::{AccelerationMode, RuntimeProfile};
     use std::net::TcpListener;
 
     fn args(items: &[&str]) -> impl Iterator<Item = String> {
@@ -6515,7 +5365,6 @@ mod tests {
             logical_cores: 16,
             recommended_workers: 8,
             acceleration_mode: AccelerationMode::Gpu,
-            gpu_backend: GpuBackend::Cuda,
             xdp_supported: false,
             detection_source: "manual".to_string(),
             probe_mode: ProbeMode::Fast,
@@ -6538,13 +5387,12 @@ mod tests {
             logical_cores: 16,
             recommended_workers: 8,
             acceleration_mode: AccelerationMode::Gpu,
-            gpu_backend: GpuBackend::Rocm,
             xdp_supported: false,
             detection_source: "rocm-smi".to_string(),
             probe_mode: ProbeMode::Fast,
         };
         let map = build_device_map(&profile, "amdgpu", "n2");
-        assert_eq!(map.get("amdgpu"), Some(&DeviceKind::Gpu));
+        assert_eq!(map.get("amdgpu"), Some(&DeviceKind::RocmGpu));
         assert_eq!(map.get("n2"), Some(&DeviceKind::Gpu));
     }
 
@@ -6688,7 +5536,6 @@ mod tests {
             logical_cores: 8,
             recommended_workers: 4,
             acceleration_mode: AccelerationMode::Neon,
-            gpu_backend: GpuBackend::Cpu,
             xdp_supported: true,
             detection_source: "test".to_string(),
             probe_mode: ProbeMode::Fast,
