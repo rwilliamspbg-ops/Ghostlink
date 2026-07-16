@@ -83,6 +83,15 @@ def main() -> int:
         if not isinstance(model_status["loaded_models"], list):
             raise AssertionError("/api/models/status 'loaded_models' must be a list")
 
+        runtime_recommend = _get("/api/runtime/recommend")
+        _assert_keys(
+            runtime_recommend,
+            ["detected_runtime", "available_memory_gb", "recommended_models", "count"],
+            "/api/runtime/recommend response",
+        )
+        if not isinstance(runtime_recommend["recommended_models"], list):
+            raise AssertionError("/api/runtime/recommend 'recommended_models' must be a list")
+
         ollama_health = _get("/api/ollama/health")
         _assert_keys(
             ollama_health,
