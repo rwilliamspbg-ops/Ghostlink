@@ -55,6 +55,56 @@ validate_config() {
 log() { printf '[launch-complete] %s\n' "$*"; }
 warn() { printf '[launch-complete] WARN: %s\n' "$*" >&2; }
 
+# Download official prebuilt llama.cpp binaries when building locally is not
+# possible (no cmake, missing submodule, or a failed build). Linux x86_64 only.
+# Without this, machines with no build toolchain silently drop to simulated
+# mode and every chat fails with "could not connect to 127.0.0.1:8080".
+download_prebuilt_llama() {
+    if [[ "$(uname -s)" != "Linux" || "$(uname -m)" != "x86_64" ]]; then
+        warn "prebuilt llama.cpp fallback supports Linux x86_64 only"
+        return 1
+    fi
+    # The Vulkan build drives NVIDIA/AMD/Intel GPUs through the system Vulkan
+    # loader without needing a CUDA/ROCm toolchain installed.
+    local variant="ubuntu-x64"
+    if ldconfig -p 2>/dev/null | grep -q "libvulkan.so.1"; then
+        variant="ubuntu-vulkan-x64"
+    fi
+    log "llama-server: resolving official prebuilt binaries ($variant)..."
+    # Releases are listed newest-first; not every release publishes all
+    # assets, so scan a few and take the newest matching one.
+    local url
+    url=$(curl -fsSL "https://api.github.com/repos/ggml-org/llama.cpp/releases?per_page=10" 2>/dev/null \
+        | grep -o "https://github.com/ggml-org/llama.cpp/releases/download/[^\"]*-bin-${variant}\.tar\.gz" \
+        | head -1)
+    if [[ -z "$url" ]]; then
+        warn "could not resolve a prebuilt llama.cpp release asset"
+        return 1
+    fi
+    local dest="$PROJECT_ROOT/third_party/llama.cpp/build/bin"
+    local tmp_tar
+    tmp_tar=$(mktemp) || return 1
+    log "llama-server: downloading $url"
+    if ! curl -fsSL --retry 3 -o "$tmp_tar" "$url"; then
+        rm -f "$tmp_tar"
+        warn "prebuilt llama.cpp download failed"
+        return 1
+    fi
+    mkdir -p "$dest"
+    if ! tar xzf "$tmp_tar" -C "$dest" --strip-components=1; then
+        rm -f "$tmp_tar"
+        warn "prebuilt llama.cpp archive extraction failed"
+        return 1
+    fi
+    rm -f "$tmp_tar"
+    if [[ ! -f "$dest/llama-server" ]]; then
+        warn "prebuilt archive did not contain llama-server"
+        return 1
+    fi
+    chmod +x "$dest/llama-server" 2>/dev/null || true
+    log "llama-server: prebuilt $variant installed to $dest"
+}
+
 require_cmd() {
     if ! command -v "$1" >/dev/null 2>&1; then
         printf '[launch-complete] missing required command: %s\n' "$1" >&2
@@ -333,6 +383,16 @@ main() {
             fi
         else
             warn "cmake not found - cannot build llama-server"
+        fi
+    fi
+
+    # Fallback: official prebuilt binaries when the build was not possible
+    # (no cmake, submodule not checked out, or the build failed)
+    if [[ -z "$LLAMA_SERVER_BIN" ]] && [[ "${GHOSTLINK_SKIP_BUILD:-0}" != "1" ]]; then
+        if download_prebuilt_llama; then
+            if [[ -f "$PROJECT_ROOT/third_party/llama.cpp/build/bin/llama-server" ]]; then
+                LLAMA_SERVER_BIN="$PROJECT_ROOT/third_party/llama.cpp/build/bin/llama-server"
+            fi
         fi
     fi
 
