@@ -33,6 +33,33 @@ pub enum AccelerationMode {
     Generic,
 }
 
+/// Backend technology hint for the detected accelerator path.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GpuBackend {
+    Cuda,
+    Rocm,
+    Vulkan,
+    Directml,
+    Metal,
+    Npu,
+    Cpu,
+}
+
+impl GpuBackend {
+    /// Human-readable backend label.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Cuda => "cuda",
+            Self::Rocm => "rocm",
+            Self::Vulkan => "vulkan",
+            Self::Directml => "directml",
+            Self::Metal => "metal",
+            Self::Npu => "npu",
+            Self::Cpu => "cpu",
+        }
+    }
+}
+
 /// Hardware probe mode.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProbeMode {
@@ -76,6 +103,8 @@ pub struct RuntimeProfile {
     pub recommended_workers: usize,
     /// Preferred acceleration path.
     pub acceleration_mode: AccelerationMode,
+    /// Detected GPU backend technology.
+    pub gpu_backend: GpuBackend,
     /// Whether AF_XDP can plausibly be used on this host.
     pub xdp_supported: bool,
     /// Best-effort hardware probe source.
@@ -97,6 +126,7 @@ impl RuntimeProfile {
              GPU VRAM: {:.1} GB\n\
              Compute capability: {}\n\
              GPU: {}\n\
+             GPU Backend: {}\n\
              Acceleration: {}\n\
              XDP support: {}\n\
              Detection source: {}\n\
@@ -115,6 +145,7 @@ impl RuntimeProfile {
                 .gpu_name
                 .as_deref()
                 .unwrap_or("Not detected"),
+            self.gpu_backend.as_str(),
             self.acceleration_mode.as_str(),
             if self.xdp_supported {
                 "available"
@@ -173,6 +204,7 @@ pub fn detect_runtime_profile_with_mode(
     let gpu_name = detect_gpu_name(gpu_probe.gpu_name.clone());
     let compute_capability = detect_compute_capability(gpu_probe.compute_capability.clone());
     let acceleration_mode = detect_acceleration_mode(vram_gb, gpu_name.as_deref());
+    let gpu_backend = detect_gpu_backend(acceleration_mode, gpu_name.as_deref(), &compute_capability);
     let xdp_supported = cfg!(target_os = "linux");
     let detection_source = gpu_probe
         .detection_source
@@ -198,6 +230,7 @@ pub fn detect_runtime_profile_with_mode(
         logical_cores,
         recommended_workers,
         acceleration_mode,
+        gpu_backend,
         xdp_supported,
         detection_source,
         probe_mode,
@@ -645,6 +678,61 @@ fn detect_acceleration_mode(vram_gb: f32, gpu_name: Option<&str>) -> Acceleratio
     AccelerationMode::Generic
 }
 
+fn detect_gpu_backend(
+    acceleration_mode: AccelerationMode,
+    gpu_name: Option<&str>,
+    compute_capability: &str,
+) -> GpuBackend {
+    if acceleration_mode != AccelerationMode::Gpu {
+        return GpuBackend::Cpu;
+    }
+
+    let lowered_name = gpu_name.unwrap_or_default().to_ascii_lowercase();
+    let lowered_cc = compute_capability.to_ascii_lowercase();
+
+    if lowered_cc.contains("rocm")
+        || lowered_name.contains("amd")
+        || lowered_name.contains("radeon")
+        || lowered_name.contains("instinct")
+    {
+        return GpuBackend::Rocm;
+    }
+
+    if lowered_cc.contains("metal")
+        || lowered_name.contains("apple")
+        || lowered_name.contains("m1")
+        || lowered_name.contains("m2")
+        || lowered_name.contains("m3")
+    {
+        return GpuBackend::Metal;
+    }
+
+    if lowered_cc.contains("directml") || lowered_name.contains("directml") {
+        return GpuBackend::Directml;
+    }
+
+    if lowered_cc.contains("npu")
+        || lowered_name.contains("npu")
+        || lowered_name.contains("xdna")
+        || lowered_name.contains("neural")
+    {
+        return GpuBackend::Npu;
+    }
+
+    if lowered_name.contains("nvidia")
+        || lowered_name.contains("rtx")
+        || lowered_name.contains("gtx")
+        || lowered_name.contains("tesla")
+        || lowered_name.contains("a100")
+        || lowered_name.contains("h100")
+        || lowered_cc.chars().next().is_some_and(|c| c.is_ascii_digit())
+    {
+        return GpuBackend::Cuda;
+    }
+
+    GpuBackend::Vulkan
+}
+
 fn recommend_worker_count(
     logical_cores: usize,
     system_memory_gb: f32,
@@ -729,6 +817,7 @@ mod tests {
             logical_cores: 16,
             recommended_workers: 10,
             acceleration_mode: AccelerationMode::Gpu,
+            gpu_backend: GpuBackend::Cuda,
             xdp_supported: true,
             detection_source: String::from("test"),
             probe_mode: ProbeMode::Fast,

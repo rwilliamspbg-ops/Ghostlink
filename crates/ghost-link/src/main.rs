@@ -24,8 +24,7 @@ use ghostlink_core::protocol::NodeResources;
 use ghostlink_core::protocol::{DiscoveryFrame, FrameKind};
 use ghostlink_core::runtime::{
     build_token_schedule, execute_pipeline_tcp_loopback, execute_pipeline_tcp_loopback_with_config,
-    execute_pipeline_with_rebalance_and_measured, execute_pipeline_xdp_loopback_with_config,
-    DeviceKind, PipelinePlan, TcpTransportConfig,
+    execute_pipeline_with_rebalance_and_measured, DeviceKind, PipelinePlan, TcpTransportConfig,
 };
 use ghostlink_core::xdp::probe_xdp_support;
 use serde::{Deserialize, Serialize};
@@ -1252,14 +1251,14 @@ fn print_flow(opts: FlowOptions) -> Result<()> {
                 None
             };
 
-            Ok(execute_pipeline_with_rebalance_and_measured(
+            execute_pipeline_with_rebalance_and_measured(
                 &pipeline_plan,
                 opts.execution_tokens,
                 opts.micro_batch,
                 rebalance,
                 cluster_feedback,
                 placement_feedback,
-            ))
+            )
         }
         FlowTransportMode::Xdp => {
             let interface = xdp_interface_from_env();
@@ -1281,12 +1280,11 @@ fn print_flow(opts: FlowOptions) -> Result<()> {
                         base_tcp_cfg
                     };
                     selected_tcp_cfg = Some(tcp_cfg.clone());
-                    execute_pipeline_xdp_loopback_with_config(
+                    execute_pipeline_tcp_loopback_with_config(
                         &pipeline_plan,
                         opts.execution_tokens,
                         opts.micro_batch,
                         tcp_cfg,
-                        &interface,
                     )
                 }
                 Err(reason) => {
@@ -3271,13 +3269,7 @@ fn build_device_map_from_cluster(
     cluster: &ClusterState,
 ) -> HashMap<String, DeviceKind> {
     let local_device = match local_profile.acceleration_mode {
-        ghostlink_core::host::AccelerationMode::Gpu => {
-            if local_profile.node_resources.compute_capability == "rocm" {
-                DeviceKind::RocmGpu
-            } else {
-                DeviceKind::Gpu
-            }
-        }
+        ghostlink_core::host::AccelerationMode::Gpu => DeviceKind::Gpu,
         ghostlink_core::host::AccelerationMode::Neon => DeviceKind::Npu,
         _ => DeviceKind::Cpu,
     };
@@ -3288,11 +3280,7 @@ fn build_device_map_from_cluster(
             map.insert(node.id, local_device);
         } else {
             let device = if node.vram_gb > 0.0 {
-                if node.compute_capability == "rocm" {
-                    DeviceKind::RocmGpu
-                } else {
-                    DeviceKind::Gpu
-                }
+                DeviceKind::Gpu
             } else {
                 DeviceKind::Cpu
             };
@@ -3308,13 +3296,7 @@ fn build_device_map(
     remote_id: &str,
 ) -> HashMap<String, DeviceKind> {
     let local_device = match local_profile.acceleration_mode {
-        ghostlink_core::host::AccelerationMode::Gpu => {
-            if local_profile.node_resources.compute_capability == "rocm" {
-                DeviceKind::RocmGpu
-            } else {
-                DeviceKind::Gpu
-            }
-        }
+        ghostlink_core::host::AccelerationMode::Gpu => DeviceKind::Gpu,
         ghostlink_core::host::AccelerationMode::Neon => DeviceKind::Npu,
         _ => DeviceKind::Cpu,
     };
@@ -5365,6 +5347,7 @@ mod tests {
             logical_cores: 16,
             recommended_workers: 8,
             acceleration_mode: AccelerationMode::Gpu,
+            gpu_backend: ghostlink_core::host::GpuBackend::Cuda,
             xdp_supported: false,
             detection_source: "manual".to_string(),
             probe_mode: ProbeMode::Fast,
@@ -5387,12 +5370,13 @@ mod tests {
             logical_cores: 16,
             recommended_workers: 8,
             acceleration_mode: AccelerationMode::Gpu,
+            gpu_backend: ghostlink_core::host::GpuBackend::Rocm,
             xdp_supported: false,
             detection_source: "rocm-smi".to_string(),
             probe_mode: ProbeMode::Fast,
         };
         let map = build_device_map(&profile, "amdgpu", "n2");
-        assert_eq!(map.get("amdgpu"), Some(&DeviceKind::RocmGpu));
+        assert_eq!(map.get("amdgpu"), Some(&DeviceKind::Gpu));
         assert_eq!(map.get("n2"), Some(&DeviceKind::Gpu));
     }
 
@@ -5536,6 +5520,7 @@ mod tests {
             logical_cores: 8,
             recommended_workers: 4,
             acceleration_mode: AccelerationMode::Neon,
+            gpu_backend: ghostlink_core::host::GpuBackend::Cpu,
             xdp_supported: true,
             detection_source: "test".to_string(),
             probe_mode: ProbeMode::Fast,
