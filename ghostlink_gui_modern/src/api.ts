@@ -1,23 +1,51 @@
 import axios, { AxiosInstance } from 'axios';
 import { Model, Metric, Session, Worker, Settings } from './store';
 
+type CircuitState = 'closed' | 'open' | 'half-open';
+
+export interface CircuitBreakerState {
+  failures: number;
+  successes: number;
+  state: CircuitState;
+  lastFailureTime: number;
+}
+
 export class GhostlinkAPI {
   private http: AxiosInstance;
   private requestTimeout = [5000, 120000] as const;
+  private circuitBreaker: CircuitBreakerState = {
+    failures: 0,
+    successes: 0,
+    state: 'closed',
+    lastFailureTime: 0,
+  };
 
   constructor(apiBase: string) {
     this.http = axios.create({
-      baseURL: apiBase,
+      baseURL: apiBase.trim(),
       timeout: this.requestTimeout[1],
     });
+  }
+
+  getCircuitBreakerState(): CircuitBreakerState {
+    return { ...this.circuitBreaker };
+  }
+
+  resetCircuitBreaker(): void {
+    this.circuitBreaker = {
+      failures: 0,
+      successes: 0,
+      state: 'closed',
+      lastFailureTime: 0,
+    };
   }
 
   async getHealth() {
     try {
       const response = await this.http.get('/health');
       return { success: true, data: response.data };
-    } catch (error) {
-      return { success: false, error: String(error) };
+    } catch (error: any) {
+      return { success: false, error: error?.message ?? String(error) };
     }
   }
 
@@ -297,6 +325,51 @@ export class GhostlinkAPI {
       return { workers: response.data.workers || [] };
     } catch (error: any) {
       return { workers: [], error: error.message };
+    }
+  }
+
+  async addWorker(host: string, port: number): Promise<{ success: boolean; error?: string; data?: any }> {
+    try {
+      const response = await this.http.post('/api/workers/add', { host, port });
+      return { success: true, data: response.data };
+    } catch (error: any) {
+      return { success: false, error: error.response?.data?.error || error.message };
+    }
+  }
+
+  async selectRuntime(runtime: string): Promise<{ success: boolean; error?: string; data?: any }> {
+    try {
+      const response = await this.http.post('/api/runtime/select', { runtime });
+      return { success: true, data: response.data };
+    } catch (error: any) {
+      return { success: false, error: error.response?.data?.error || error.message };
+    }
+  }
+
+  async getPQCState(): Promise<{ enabled: boolean; error?: string }> {
+    try {
+      const response = await this.http.get('/api/security/pqc/state');
+      return { enabled: !!response.data?.enabled };
+    } catch (error: any) {
+      return { enabled: false, error: error.response?.data?.error || error.message };
+    }
+  }
+
+  async enablePQC(): Promise<{ success: boolean; data?: any; error?: string }> {
+    try {
+      const response = await this.http.post('/api/security/pqc/enable');
+      return { success: true, data: response.data };
+    } catch (error: any) {
+      return { success: false, error: error.response?.data?.error || error.message };
+    }
+  }
+
+  async getAuditLog(): Promise<{ entries: any[]; error?: string }> {
+    try {
+      const response = await this.http.get('/api/security/audit-log');
+      return { entries: response.data?.entries || [] };
+    } catch (error: any) {
+      return { entries: [], error: error.response?.data?.error || error.message };
     }
   }
 }
