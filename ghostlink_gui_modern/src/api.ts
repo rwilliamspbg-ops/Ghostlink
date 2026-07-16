@@ -65,6 +65,47 @@ export class GhostlinkAPI {
     }
   }
 
+  async getDownloadProgress(modelId: string): Promise<{ progress: number; status: string; error?: string }> {
+    try {
+      const response = await this.http.get('/api/models/download/progress', { params: { model_id: modelId } });
+      const rawProgress = Number(response.data?.progress ?? 0);
+      const progress = Number.isFinite(rawProgress) ? Math.max(0, Math.min(1, rawProgress)) : 0;
+      const status = String(response.data?.status ?? 'unknown');
+      return { progress, status };
+    } catch (error: any) {
+      try {
+        // Fallback for backends that expose aggregate status instead of a per-model progress endpoint.
+        const statusResponse = await this.http.get('/api/models/status');
+        const downloadingModels = statusResponse.data?.downloading_models;
+
+        if (Array.isArray(downloadingModels)) {
+          const isDownloading = downloadingModels.includes(modelId);
+          return {
+            progress: isDownloading ? 0 : 1,
+            status: isDownloading ? 'downloading' : 'completed',
+          };
+        }
+
+        if (downloadingModels && typeof downloadingModels === 'object') {
+          const rawValue = Number((downloadingModels as Record<string, unknown>)[modelId] ?? 0);
+          const progress = Number.isFinite(rawValue) ? Math.max(0, Math.min(1, rawValue)) : 0;
+          return {
+            progress,
+            status: progress >= 1 ? 'completed' : 'downloading',
+          };
+        }
+
+        return { progress: 0, status: 'unknown', error: error.message };
+      } catch (fallbackError: any) {
+        return {
+          progress: 0,
+          status: 'unknown',
+          error: fallbackError.response?.data?.error || fallbackError.message || error.message,
+        };
+      }
+    }
+  }
+
   async deleteModel(modelName: string) {
     try {
       const response = await this.http.delete(`/api/models/${modelName}`);
