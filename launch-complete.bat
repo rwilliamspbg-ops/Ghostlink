@@ -15,12 +15,19 @@ set "BACKEND_HOST=127.0.0.1"
 set "BACKEND_PORT=8003"
 set "GUI_PORT=5173"
 set "LLAMA_PORT=8080"
+REM PROJECT_ROOT must be set before any variable that derives from it
+set "PROJECT_ROOT=%~dp0"
 set "MODEL_DIR=%PROJECT_ROOT%models"
 set "MODEL_FILE=%MODEL_DIR%\stories15M-q4_0.gguf"
 set "MODEL_URL=https://huggingface.co/ggml-org/models/resolve/main/tinyllamas/stories15M-q4_0.gguf"
-set "PROJECT_ROOT=%~dp0"
+set "LLAMA_SERVER_EXPECTED=%PROJECT_ROOT%third_party\llama.cpp\build\bin\Release\llama-server.exe"
+set "LLAMA_SERVER_ALT_EXPECTED=%PROJECT_ROOT%third_party\llama.cpp\build\bin\llama-server.exe"
 
 REM ==================== Manual Overrides (set via env vars) ====================
+REM   GHOSTLINK_LLAMA_PORT     - Override llama-server port
+REM   GHOSTLINK_MODEL_FILE     - Set custom model path
+if not "%GHOSTLINK_LLAMA_PORT%"=="" set "LLAMA_PORT=%GHOSTLINK_LLAMA_PORT%"
+if not "%GHOSTLINK_MODEL_FILE%"=="" set "MODEL_FILE=%GHOSTLINK_MODEL_FILE%"
 
 REM Validate VITE_GHOSTLINK_API_BASE if set
 if not "%VITE_GHOSTLINK_API_BASE%"=="" (
@@ -305,10 +312,6 @@ if "%GHOSTLINK_SKIP_MODEL%"=="1" (
 REM ==================== Find or Build llama-server ====================
 set "ACTUAL_LLAMA_SERVER="
 set "LLAMA_BUILT=0"
-
-REM Pre-compute the expected binary path (absolute)
-set "LLAMA_SERVER_EXPECTED=%PROJECT_ROOT%third_party\llama.cpp\build\bin\Release\llama-server.exe"
-set "LLAMA_SERVER_ALT_EXPECTED=%PROJECT_ROOT%third_party\llama.cpp\build\bin\llama-server.exe"
 
 if "%GHOSTLINK_SKIP_BUILD%"=="1" (
     echo [INFO] Skipping build ^(GHOSTLINK_SKIP_BUILD=1^)
