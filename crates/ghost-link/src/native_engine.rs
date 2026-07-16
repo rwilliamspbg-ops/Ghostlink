@@ -180,8 +180,18 @@ impl NativeEngineClient {
             .unwrap_or(60)
             .clamp(5, 300);
 
+        // Models have no clock; give them the current local date/time so
+        // questions like "what date is it today?" get a correct answer.
+        let system_prompt = format!(
+            "You are a helpful assistant. Current local date and time: {}.",
+            chrono::Local::now().format("%A, %B %-d, %Y, %H:%M")
+        );
+
         let payload = serde_json::json!({
-            "messages": [{"role": "user", "content": cleaned_prompt}],
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": cleaned_prompt}
+            ],
             "max_tokens": max_tokens,
             "temperature": temperature.clamp(0.0, 2.0),
             "top_p": top_p.clamp(0.0, 1.0),
