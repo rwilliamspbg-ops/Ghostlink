@@ -83,22 +83,40 @@ for /f "delims=" %%a in ('powershell -NoProfile -Command "Get-CimInstance Win32_
 set "GPU_COUNT=%GPU_INDEX%"
 
 REM --- NVIDIA GPU Detection (CUDA) ---
+REM nvidia-smi is often not on PATH; check its standard install locations too.
+set "NVIDIA_SMI="
 where nvidia-smi >nul 2>&1
-if not errorlevel 1 (
-    for /f "tokens=*" %%a in ('nvidia-smi --query-gpu=name --format=csv,noheader 2^>nul') do set "NVIDIA_GPU=%%a"
+if not errorlevel 1 set "NVIDIA_SMI=nvidia-smi"
+if not defined NVIDIA_SMI if exist "%SystemRoot%\System32\nvidia-smi.exe" set "NVIDIA_SMI=%SystemRoot%\System32\nvidia-smi.exe"
+if not defined NVIDIA_SMI if exist "%ProgramFiles%\NVIDIA Corporation\NVSMI\nvidia-smi.exe" set "NVIDIA_SMI=%ProgramFiles%\NVIDIA Corporation\NVSMI\nvidia-smi.exe"
+if defined NVIDIA_SMI (
+    "!NVIDIA_SMI!" --query-gpu=name --format=csv,noheader > "%TEMP%\ghostlink_gpu.txt" 2>nul
+    for /f "usebackq tokens=*" %%a in ("%TEMP%\ghostlink_gpu.txt") do set "NVIDIA_GPU=%%a"
+    del "%TEMP%\ghostlink_gpu.txt" 2>nul
     if defined NVIDIA_GPU (
-        for /f "tokens=*" %%a in ('nvidia-smi --query-gpu=name,memory.total,compute_cap --format=csv,noheader,nounits 2^>nul') do (
-            set "GPU_INFO=%%a"
-        )
         echo   [CUDA] NVIDIA GPU: !NVIDIA_GPU!
         set "GPU_VENDOR=nvidia"
         set "BACKEND=cuda"
-        REM Get VRAM
-        for /f "tokens=2 delims=, " %%a in ('nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2^>nul') do set "TOTAL_VRAM_MB=%%a"
-        if not defined TOTAL_VRAM_MB set "TOTAL_VRAM_MB=4096"
+        REM Get VRAM (single-column query: the value is token 1, not 2)
+        "!NVIDIA_SMI!" --query-gpu=memory.total --format=csv,noheader,nounits > "%TEMP%\ghostlink_vram.txt" 2>nul
+        for /f "usebackq tokens=1 delims=, " %%a in ("%TEMP%\ghostlink_vram.txt") do set "TOTAL_VRAM_MB=%%a"
+        del "%TEMP%\ghostlink_vram.txt" 2>nul
+        if "!TOTAL_VRAM_MB!"=="0" set "TOTAL_VRAM_MB=4096"
         set /a "VRAM_GB=!TOTAL_VRAM_MB! / 1024" 2>nul
         if "!VRAM_GB!"=="0" set "VRAM_GB=4"
         echo   VRAM: !VRAM_GB! GB ^(!TOTAL_VRAM_MB! MB^)
+    )
+)
+
+REM --- NVIDIA GPU via WMI fallback (driver present but nvidia-smi unavailable) ---
+REM On hybrid laptops (NVIDIA dGPU + AMD/Intel iGPU) this must run BEFORE the
+REM iGPU fallbacks, or inference silently lands on the weak integrated GPU.
+if not defined GPU_VENDOR (
+    for /f "delims=" %%a in ('powershell -NoProfile -Command "Get-CimInstance Win32_VideoController | Where-Object { $_.Name -match 'nvidia|geforce|rtx|gtx|quadro' } | Select-Object -First 1 | ForEach-Object { $_.Name }" 2^>nul') do (
+        echo   [Vulkan] NVIDIA GPU: %%a ^(nvidia-smi not found - CUDA unavailable, using Vulkan^)
+        set "GPU_NAME=%%a"
+        set "GPU_VENDOR=nvidia"
+        set "BACKEND=vulkan"
     )
 )
 

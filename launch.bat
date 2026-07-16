@@ -54,13 +54,30 @@ for /f "delims=" %%a in ('powershell -NoProfile -Command "Get-CimInstance Win32_
     set "GPU_DETECTED=1"
 )
 
-REM Check NVIDIA via nvidia-smi
+REM Check NVIDIA via nvidia-smi (often not on PATH; try standard locations too)
+set "NVIDIA_SMI="
 where nvidia-smi >nul 2>&1
-if not errorlevel 1 (
-    for /f "tokens=*" %%a in ('nvidia-smi --query-gpu=name --format=csv,noheader 2^>nul') do set "NVIDIA_GPU=%%a"
+if not errorlevel 1 set "NVIDIA_SMI=nvidia-smi"
+if not defined NVIDIA_SMI if exist "%SystemRoot%\System32\nvidia-smi.exe" set "NVIDIA_SMI=%SystemRoot%\System32\nvidia-smi.exe"
+if not defined NVIDIA_SMI if exist "%ProgramFiles%\NVIDIA Corporation\NVSMI\nvidia-smi.exe" set "NVIDIA_SMI=%ProgramFiles%\NVIDIA Corporation\NVSMI\nvidia-smi.exe"
+if defined NVIDIA_SMI (
+    "!NVIDIA_SMI!" --query-gpu=name --format=csv,noheader > "%TEMP%\ghostlink_gpu.txt" 2>nul
+    for /f "usebackq tokens=*" %%a in ("%TEMP%\ghostlink_gpu.txt") do set "NVIDIA_GPU=%%a"
+    del "%TEMP%\ghostlink_gpu.txt" 2>nul
     if defined NVIDIA_GPU (
         set "GPU_VENDOR=nvidia"
         set "BACKEND=CUDA"
+    )
+)
+
+REM NVIDIA GPU present but nvidia-smi unavailable: on hybrid laptops
+REM (NVIDIA dGPU + AMD/Intel iGPU) this must win over the iGPU name matching
+REM below, or inference silently lands on the integrated GPU.
+if not defined GPU_VENDOR (
+    for /f "delims=" %%a in ('powershell -NoProfile -Command "Get-CimInstance Win32_VideoController | Where-Object { $_.Name -match 'nvidia|geforce|rtx|gtx|quadro' } | Select-Object -First 1 | ForEach-Object { $_.Name }" 2^>nul') do (
+        set "GPU_NAME=%%a"
+        set "GPU_VENDOR=nvidia"
+        set "BACKEND=Vulkan"
     )
 )
 
