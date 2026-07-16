@@ -809,6 +809,38 @@ impl ModelRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, OnceLock};
+
+    static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+    fn with_runtime_env<R>(runtime: &str, force: Option<&str>, f: impl FnOnce() -> R) -> R {
+        let _guard = ENV_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .expect("env lock poisoned");
+
+        let prev_runtime = std::env::var("GHOSTLINK_RUNTIME").ok();
+        let prev_force = std::env::var("GHOSTLINK_FORCE_RUNTIME").ok();
+
+        std::env::set_var("GHOSTLINK_RUNTIME", runtime);
+        match force {
+            Some(v) => std::env::set_var("GHOSTLINK_FORCE_RUNTIME", v),
+            None => std::env::remove_var("GHOSTLINK_FORCE_RUNTIME"),
+        }
+
+        let out = f();
+
+        match prev_runtime {
+            Some(v) => std::env::set_var("GHOSTLINK_RUNTIME", v),
+            None => std::env::remove_var("GHOSTLINK_RUNTIME"),
+        }
+        match prev_force {
+            Some(v) => std::env::set_var("GHOSTLINK_FORCE_RUNTIME", v),
+            None => std::env::remove_var("GHOSTLINK_FORCE_RUNTIME"),
+        }
+
+        out
+    }
 
     #[test]
     fn test_runtime_detection() {
@@ -926,19 +958,13 @@ mod tests {
 
     #[test]
     fn test_runtime_override_force_ignores_detection() {
-        std::env::set_var("GHOSTLINK_RUNTIME", "metal");
-        std::env::set_var("GHOSTLINK_FORCE_RUNTIME", "true");
-        let runtime = RuntimeDetector::detect_primary();
+        let runtime = with_runtime_env("metal", Some("true"), RuntimeDetector::detect_primary);
         assert_eq!(runtime, Runtime::Metal);
-        std::env::remove_var("GHOSTLINK_RUNTIME");
-        std::env::remove_var("GHOSTLINK_FORCE_RUNTIME");
     }
 
     #[test]
     fn test_runtime_override_falls_back_when_not_forced() {
-        std::env::set_var("GHOSTLINK_RUNTIME", "metal");
-        std::env::remove_var("GHOSTLINK_FORCE_RUNTIME");
-        let runtime = RuntimeDetector::detect_primary();
+        let runtime = with_runtime_env("metal", None, RuntimeDetector::detect_primary);
         assert!(matches!(
             runtime,
             Runtime::Metal
@@ -948,6 +974,5 @@ mod tests {
                 | Runtime::DirectML
                 | Runtime::NPU
         ));
-        std::env::remove_var("GHOSTLINK_RUNTIME");
     }
 }
