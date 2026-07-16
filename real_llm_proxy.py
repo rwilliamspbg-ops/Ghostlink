@@ -18,6 +18,19 @@ CHAT_BACKEND = "backend"
 REQUEST_TIMEOUT_SECONDS = 180
 
 class GatewayHandler(BaseHTTPRequestHandler):
+    def send_cors_headers(self):
+        """Send CORS headers to allow cross-origin requests from the frontend."""
+        self.send_header('Access-Control-Allow-Origin', '*')
+        self.send_header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS')
+        self.send_header('Access-Control-Allow-Headers', 'Content-Type, Accept, Authorization')
+        self.send_header('Access-Control-Max-Age', '3600')
+
+    def do_OPTIONS(self):
+        """Handle CORS preflight requests."""
+        self.send_response(200)
+        self.send_cors_headers()
+        self.end_headers()
+
     def handle_proxy(self, target_url):
         """Forward the current request to the target URL."""
         content_length = int(self.headers.get('Content-Length', 0))
@@ -37,6 +50,7 @@ class GatewayHandler(BaseHTTPRequestHandler):
             )
 
             self.send_response(resp.status_code)
+            self.send_cors_headers()
             for k, v in resp.headers.items():
                 if k.lower() not in ['content-encoding', 'transfer-encoding', 'content-length']:
                     self.send_header(k, v)
@@ -67,6 +81,7 @@ class GatewayHandler(BaseHTTPRequestHandler):
         if self.path == '/health':
             self.send_response(200)
             self.send_header('Content-Type', 'application/json')
+            self.send_cors_headers()
             self.end_headers()
             self.wfile.write(json.dumps({'status': 'ok'}).encode())
             return
@@ -120,6 +135,7 @@ class GatewayHandler(BaseHTTPRequestHandler):
 
             self.send_response(200)
             self.send_header('Content-Type', 'application/json')
+            self.send_cors_headers()
 
             result = {
                 'response': response_text,
@@ -133,6 +149,7 @@ class GatewayHandler(BaseHTTPRequestHandler):
         except Exception as e:
             self.send_response(500)
             self.send_header('Content-Type', 'application/json')
+            self.send_cors_headers()
             self.end_headers()
             self.wfile.write(json.dumps({'error': str(e)}).encode())
 
