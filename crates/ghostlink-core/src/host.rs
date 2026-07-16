@@ -204,7 +204,8 @@ pub fn detect_runtime_profile_with_mode(
     let gpu_name = detect_gpu_name(gpu_probe.gpu_name.clone());
     let compute_capability = detect_compute_capability(gpu_probe.compute_capability.clone());
     let acceleration_mode = detect_acceleration_mode(vram_gb, gpu_name.as_deref());
-    let gpu_backend = detect_gpu_backend(acceleration_mode, gpu_name.as_deref(), &compute_capability);
+    let gpu_backend =
+        detect_gpu_backend(acceleration_mode, gpu_name.as_deref(), &compute_capability);
     let xdp_supported = cfg!(target_os = "linux");
     let detection_source = gpu_probe
         .detection_source
@@ -725,7 +726,10 @@ fn detect_gpu_backend(
         || lowered_name.contains("tesla")
         || lowered_name.contains("a100")
         || lowered_name.contains("h100")
-        || lowered_cc.chars().next().is_some_and(|c| c.is_ascii_digit())
+        || lowered_cc
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_digit())
     {
         return GpuBackend::Cuda;
     }
