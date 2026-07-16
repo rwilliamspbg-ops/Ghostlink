@@ -23,6 +23,9 @@ rocm = ["ghostlink-core/rocm"]
 [dependencies]
 ghostlink-core = { path = "../ghostlink-core", version = "0.1.0-alpha.0" }
 
+# Local date/time for the assistant system prompt
+chrono = "0.4"
+
 # Production error handling
 anyhow = "1"
 
