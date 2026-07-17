@@ -304,8 +304,8 @@ impl RuntimeDetector {
     fn detect_directml() -> Option<RuntimeInfo> {
         #[cfg(windows)]
         {
-            // On Windows, check for GPUs via WMI that are NOT NVIDIA (handled by CUDA detection)
-            // and NOT already detected by Metal
+            // On Windows, check for GPUs via PowerShell (wmic is deprecated)
+            // Check for NVIDIA first (handled by CUDA detection)
             let has_nvidia = std::process::Command::new("nvidia-smi")
                 .arg("--version")
                 .output()
@@ -313,20 +313,18 @@ impl RuntimeDetector {
                 .unwrap_or(false);
 
             if !has_nvidia {
-                // Check for AMD or Intel GPUs via WMI
-                if let Ok(output) = std::process::Command::new("wmic")
+                // Check for AMD or Intel GPUs via PowerShell
+                if let Ok(output) = std::process::Command::new("powershell")
                     .args([
-                        "path",
-                        "Win32_VideoController",
-                        "get",
-                        "Name",
-                        "/format:csv",
+                        "-NoProfile",
+                        "-Command",
+                        "Get-CimInstance Win32_VideoController | Where-Object { $_.Name -notmatch 'Microsoft Basic Display' } | Select-Object -ExpandProperty Name"
                     ])
                     .output()
                 {
                     if output.status.success() {
                         let stdout = String::from_utf8_lossy(&output.stdout);
-                        for line in stdout.lines().skip(1) {
+                        for line in stdout.lines() {
                             let name = line.trim();
                             if name.is_empty() {
                                 continue;
@@ -336,11 +334,9 @@ impl RuntimeDetector {
                             let is_intel = lower.contains("intel")
                                 || lower.contains("iris")
                                 || lower.contains("arc");
-                            let is_generic_d3d = lower.contains("microsoft basic display")
-                                || lower.contains("directx");
 
-                            if is_amd || is_intel || is_generic_d3d {
-                                // Check for DirectX 12 / WDDM 2.0+ support via dxdiag or registry
+                            if is_amd || is_intel {
+                                // Check for DirectX 12 / WDDM 2.0+ support
                                 let d3d12_available =
                                     std::path::Path::new("C:\\Windows\\System32\\d3d12.dll")
                                         .exists();
@@ -366,9 +362,13 @@ impl RuntimeDetector {
     fn detect_npu() -> Option<RuntimeInfo> {
         #[cfg(windows)]
         {
-            // Windows: check for AMD Ryzen AI NPU (XDNA) or Intel NPU via WMI/PnP
-            let has_amd_npu = std::process::Command::new("wmic")
-                .args(["path", "Win32_PnPEntity", "get", "Name", "/format:csv"])
+            // Windows: check for AMD Ryzen AI NPU (XDNA) or Intel NPU via PowerShell
+            let has_amd_npu = std::process::Command::new("powershell")
+                .args([
+                    "-NoProfile",
+                    "-Command",
+                    "Get-CimInstance -ClassName Win32_PnPEntity -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '(?i)(NPU|Neural Processor|AI Accelerator|XDNA|Ryzen AI)' } | ForEach-Object { $_.Name }"
+                ])
                 .output()
                 .map(|output| {
                     if output.status.success() {
@@ -492,22 +492,20 @@ impl RuntimeDetector {
             }
         }
 
-        // Windows WMI fallback for any GPU
+        // Windows PowerShell fallback for any GPU
         #[cfg(windows)]
         {
-            if let Ok(output) = std::process::Command::new("wmic")
+            if let Ok(output) = std::process::Command::new("powershell")
                 .args([
-                    "path",
-                    "Win32_VideoController",
-                    "get",
-                    "AdapterRAM",
-                    "/format:csv",
+                    "-NoProfile",
+                    "-Command",
+                    "Get-CimInstance Win32_VideoController | Select-Object -ExpandProperty AdapterRAM"
                 ])
                 .output()
             {
                 if output.status.success() {
                     let stdout = String::from_utf8_lossy(&output.stdout);
-                    for line in stdout.lines().skip(1) {
+                    for line in stdout.lines() {
                         if let Ok(bytes) = line.trim().parse::<f64>() {
                             if bytes > 0.0 {
                                 return Some((bytes / 1_073_741_824.0) as f32);

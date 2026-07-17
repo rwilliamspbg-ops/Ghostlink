@@ -2153,8 +2153,15 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             });
 
         if let Some(path) = local_path {
-            backend.settings.model_path = path;
+            backend.settings.model_path = path.clone();
             save_settings(&backend.settings);
+
+            // If using llama_server native engine, load the model into llama-server
+            if backend.settings.native_engine == "llama_server" {
+                if let Err(e) = backend.native_engine_client.load_model_into_slot(&path) {
+                    eprintln!("Warning: failed to load model into llama-server slot: {}", e);
+                }
+            }
         }
 
         for m in &mut backend.models {

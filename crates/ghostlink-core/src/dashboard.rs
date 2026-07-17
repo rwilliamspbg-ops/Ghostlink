@@ -159,7 +159,7 @@ impl AsciiDashboard {
 
             if let Some((start, end)) = node.streaming_layers {
                 output.push_str(&format!(
-                    "| >>> Streaming Layers {:>2}-{:>2} >>> [AF_XDP: {:>4.1} Gbps / {:>3.1}μs] |\n",
+                    "| >>> Streaming Layers {:>2}-{:>2} >>> [AF_XDP: {:>4.1} Gbps / {:>3.1}us] |\n",
                     start, end, 9.8, 1.2
                 ));
             }
@@ -363,7 +363,7 @@ impl HealthSummary {
              ==========\n\
              Active nodes: {}\n\
              Failed nodes: {}\n\
-             Avg latency: {:.2}μs\n\
+             Avg latency: {:.2}us\n\
              Avg delivery ratio: {:.2}\n",
             self.active_nodes, self.failed_nodes, self.avg_latency_us, self.avg_delivery_ratio
         )

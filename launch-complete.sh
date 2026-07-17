@@ -286,11 +286,11 @@ plan_resources() {
             LLAMA_NGL=24
             echo "  GPU Layers: 24 (VRAM-based, ${VRAM_GB} GB)"
         elif (( VRAM_GB >= 4 )); then
-            LLAMA_NGL=12
-            echo "  GPU Layers: 12 (VRAM-based, ${VRAM_GB} GB)"
+            LLAMA_NGL=99
+            echo "  GPU Layers: 99 (full offload, ${VRAM_GB} GB)"
         else
-            LLAMA_NGL=8
-            echo "  GPU Layers: 8 (VRAM-based, ${VRAM_GB} GB)"
+            LLAMA_NGL=99
+            echo "  GPU Layers: 99 (full offload, ${VRAM_GB} GB)"
         fi
     fi
 
@@ -404,6 +404,7 @@ main() {
             -m "$MODEL_FILE" \
             --host 127.0.0.1 --port "$LLAMA_PORT" \
             -ngl "$LLAMA_NGL" \
+            -np 1 \
             -t "$THREADS" \
             $MLOCK_FLAG \
             $BACKEND_FLAGS \
