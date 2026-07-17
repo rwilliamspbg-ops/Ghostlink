@@ -71,3 +71,19 @@ auth_token = "replace-with-secret"
 # fall back to the system `python3` when no workspace virtualenv is present.
 # GHOSTLINK_PYTHON env variable also overrides this.
 # python = "/path/to/python"
+
+[compute]
+# Preferred GPU/CPU backend for inference (rocm, cuda, oneapi, metal, cpu)
+# If not set, automatically selects best available backend
+# Can be overridden at runtime with --backend flag
+preferred_backend = "rocm"
+
+# Enable automatic backend discovery on startup
+auto_discover = true
+
+# GPU memory allocation as percentage of available VRAM (0.0-1.0)
+# 0.80 = 80% safe allocation to avoid OOM
+gpu_memory_allocation = 0.80
+
+# Timeout in seconds for draining in-flight requests during backend switch
+request_drain_timeout_secs = 30
