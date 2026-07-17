@@ -3251,6 +3251,10 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             .route("/api/runtime/detect", get(handle_runtime_detection))
             .route("/api/runtime/models", get(handle_models_by_runtime))
             .route("/api/runtime/recommend", get(handle_model_recommendations))
+            // Phase 2: Backend API endpoints
+            .route("/api/backends", get(backend_api::handle_list_backends))
+            .route("/api/backends/switch", post(backend_api::handle_switch_backend))
+            .route("/api/backends/:name/status", get(backend_api::handle_backend_status))
             .with_state(state)
             .layer(CorsLayer::permissive());
 
@@ -5251,6 +5255,7 @@ fn run_gui_preflight_checks() -> Result<()> {
 }
 
 mod backend_registry;
+mod backend_api;
 mod native_engine;
 mod ollama;
 mod runtime;
