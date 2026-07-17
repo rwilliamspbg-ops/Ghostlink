@@ -10,6 +10,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 
 use crate::backend_registry::{BackendRegistry, ComputeBackend};
+use crate::runtime_switcher::{RuntimeSwitcher, SwitchingConfig};
 
 /// Response for available backends query
 #[derive(Debug, Serialize, Deserialize)]
@@ -89,6 +90,7 @@ pub async fn handle_list_backends() -> Response {
 /// API Handler: POST /api/backends/switch - Switch to a different backend
 pub async fn handle_switch_backend(Json(payload): Json<SwitchBackendRequest>) -> Response {
     let registry = BackendRegistry::discover();
+    let switcher = RuntimeSwitcher::new(SwitchingConfig::default());
 
     // Parse the backend name
     let backend = match ComputeBackend::from_str(&payload.backend) {
@@ -115,16 +117,18 @@ pub async fn handle_switch_backend(Json(payload): Json<SwitchBackendRequest>) ->
         return (StatusCode::NOT_FOUND, response).into_response();
     }
 
-    // Switch to the backend
-    match registry.switch_backend(backend.clone()) {
-        Ok(_) => {
-            let response = SwitchBackendResponse {
-                status: "success".to_string(),
-                backend: backend.as_str().to_string(),
-                message: format!("Switched to {} backend", backend.as_str()),
-                restart_required: false, // TODO: Set based on actual need
-            };
-            (StatusCode::OK, Json(response)).into_response()
+    // Perform graceful switch with request draining and env updates
+    match switcher.switch_backend(&registry, backend.clone()).await {
+        Ok(result) => {
+            let response = Json(serde_json::json!({
+                "status": "success",
+                "backend": result.backend,
+                "message": result.message,
+                "restart_required": result.restart_required,
+                "in_flight_drained": result.in_flight_drained,
+                "env_vars_updated": result.env_vars_updated,
+            }));
+            (StatusCode::OK, response).into_response()
         }
         Err(err) => {
             let response = Json(serde_json::json!({

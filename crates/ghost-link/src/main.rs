@@ -5256,6 +5256,7 @@ fn run_gui_preflight_checks() -> Result<()> {
 
 mod backend_registry;
 mod backend_api;
+mod runtime_switcher;
 mod native_engine;
 mod ollama;
 mod runtime;
