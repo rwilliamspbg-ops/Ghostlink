@@ -29,16 +29,9 @@ export interface Session {
 
 export interface Settings {
   inference_backend: string;
-  native_engine: string;
-  ngl: number;
-  model_path: string;
-  llama_server_url: string;
-  llama_port: number;
   api_host: string;
   api_port: number;
   gui_port: number;
-  threads: number;
-  ctx_size: number;
   temperature: number;
   top_p: number;
   top_k: number;

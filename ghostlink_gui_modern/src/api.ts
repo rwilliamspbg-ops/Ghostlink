@@ -187,6 +187,7 @@ export class GhostlinkAPI {
   async sendMessage(
     payload: {
       message: string;
+      model?: string;
       temperature: number;
       top_p: number;
       top_k: number;
@@ -370,6 +371,161 @@ export class GhostlinkAPI {
       return { entries: response.data?.entries || [] };
     } catch (error: any) {
       return { entries: [], error: error.response?.data?.error || error.message };
+    }
+  }
+
+  // Ollama-specific API methods
+  async getOllamaHealth(): Promise<{ reachable: boolean; model_count: number; error?: string }> {
+    try {
+      const response = await this.http.get('/api/ollama/health');
+      return { 
+        reachable: response.data.reachable, 
+        model_count: response.data.model_count 
+      };
+    } catch (error: any) {
+      return { reachable: false, model_count: 0, error: error.message };
+    }
+  }
+
+  async getOllamaModels(): Promise<{ models: any[]; error?: string }> {
+    try {
+      const response = await this.http.get('/api/ollama/models');
+      return { models: response.data.models || [] };
+    } catch (error: any) {
+      return { models: [], error: error.message };
+    }
+  }
+
+  async pullOllamaModel(modelName: string): Promise<{ success: boolean; error?: string }> {
+    try {
+      const response = await this.http.post('/api/ollama/pull', { model: modelName });
+      return { success: true };
+    } catch (error: any) {
+      return { success: false, error: error.response?.data?.error || error.message };
+    }
+  }
+
+  async pullOllamaModelStream(modelName: string, onProgress: (progress: any) => void): Promise<{ success: boolean; error?: string }> {
+    try {
+      const response = await fetch(`${this.http.defaults.baseURL}/api/ollama/pull/stream`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: modelName }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+
+      const reader = response.body?.getReader();
+      if (!reader) throw new Error('No response body');
+
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            try {
+              const data = JSON.parse(line.slice(6));
+              onProgress(data);
+            } catch (e) {
+              // Ignore parse errors
+            }
+          }
+        }
+      }
+      return { success: true };
+    } catch (error: any) {
+      return { success: false, error: error.message };
+    }
+  }
+
+  async showOllamaModel(modelName: string): Promise<{ info: any; error?: string }> {
+    try {
+      const response = await this.http.post('/api/ollama/show', { model: modelName });
+      return { info: response.data };
+    } catch (error: any) {
+      return { info: null, error: error.response?.data?.error || error.message };
+    }
+  }
+
+  async createOllamaModel(name: string, modelfile: string): Promise<{ success: boolean; error?: string }> {
+    try {
+      const response = await this.http.post('/api/ollama/create', { name, modelfile });
+      return { success: true };
+    } catch (error: any) {
+      return { success: false, error: error.response?.data?.error || error.message };
+    }
+  }
+
+  async copyOllamaModel(source: string, destination: string): Promise<{ success: boolean; error?: string }> {
+    try {
+      const response = await this.http.post('/api/ollama/copy', { source, destination });
+      return { success: true };
+    } catch (error: any) {
+      return { success: false, error: error.response?.data?.error || error.message };
+    }
+  }
+
+  async deleteOllamaModel(name: string): Promise<{ success: boolean; error?: string }> {
+    try {
+      const response = await this.http.post('/api/ollama/delete', { name });
+      return { success: true };
+    } catch (error: any) {
+      return { success: false, error: error.response?.data?.error || error.message };
+    }
+  }
+
+  async getOllamaRunningModels(): Promise<{ models: any[]; error?: string }> {
+    try {
+      const response = await this.http.get('/api/ollama/ps');
+      return { models: response.data.models || [] };
+    } catch (error: any) {
+      return { models: [], error: error.message };
+    }
+  }
+
+  async getOllamaEmbeddings(model: string, prompt: string): Promise<{ embedding: number[]; error?: string }> {
+    try {
+      const response = await this.http.post('/api/ollama/embeddings', { model, prompt });
+      return { embedding: response.data.embedding || [] };
+    } catch (error: any) {
+      return { embedding: [], error: error.response?.data?.error || error.message };
+    }
+  }
+
+  async getOllamaVersion(): Promise<{ version: string; error?: string }> {
+    try {
+      const response = await this.http.get('/api/ollama/version');
+      return { version: response.data.version };
+    } catch (error: any) {
+      return { version: 'unknown', error: error.message };
+    }
+  }
+
+  async chatOllama(model: string, messages: any[], options: any = {}): Promise<{ response: any; error?: string }> {
+    try {
+      const response = await this.http.post('/api/ollama/chat', { 
+        model, 
+        messages, 
+        stream: options.stream || false,
+        temperature: options.temperature,
+        top_p: options.top_p,
+        top_k: options.top_k,
+        repeat_penalty: options.repeat_penalty,
+        max_tokens: options.max_tokens,
+      });
+      return { response: response.data };
+    } catch (error: any) {
+      return { response: null, error: error.response?.data?.error || error.message };
     }
   }
 }
