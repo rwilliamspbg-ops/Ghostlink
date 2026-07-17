@@ -6,6 +6,8 @@
 use std::process::Command;
 use std::time::Duration;
 
+use chrono::Datelike;
+
 #[derive(Debug, Clone)]
 pub struct NativeGeneration {
     pub text: String,
@@ -182,9 +184,13 @@ impl NativeEngineClient {
 
         // Models have no clock; give them the current local date/time so
         // questions like "what date is it today?" get a correct answer.
+        let now = chrono::Local::now();
         let system_prompt = format!(
-            "You are a helpful assistant. Current local date and time: {}.",
-            chrono::Local::now().format("%A, %B %-d, %Y, %H:%M")
+            "You are a helpful assistant. Current local date and time: {}, {} {}, {}.",
+            now.format("%A"),
+            now.format("%B"),
+            now.day(),
+            now.format("%Y, %H:%M")
         );
 
         let payload = serde_json::json!({
