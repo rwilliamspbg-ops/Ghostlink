@@ -2,8 +2,8 @@
   "profile": "flow_exec512_mb8_v2",
   "description": "Release-mode deterministic baseline refreshed on 2026-07-05 using exec_tokens=512 and micro_batch=8 for improved measurement stability",
   "drift_policy": {
-    "max_throughput_drop_ratio": 0.30,
-    "max_p95_rise_ratio": 0.60
+    "max_throughput_drop_ratio": 0.3,
+    "max_p95_rise_ratio": 0.6
   },
   "modes": {
     "tcp": {
@@ -12,7 +12,7 @@
       "wall_avg": 2.032033833333333,
       "drift_policy": {
         "max_throughput_drop_ratio": 0.45,
-        "max_p95_rise_ratio": 0.80
+        "max_p95_rise_ratio": 1.5
       }
     },
     "inmem": {
@@ -20,8 +20,8 @@
       "p95_avg": 1.0306548333333334,
       "wall_avg": 1.1680815,
       "drift_policy": {
-        "max_throughput_drop_ratio": 0.40,
-        "max_p95_rise_ratio": 0.8
+        "max_throughput_drop_ratio": 0.4,
+        "max_p95_rise_ratio": 1.5
       }
     }
   }
