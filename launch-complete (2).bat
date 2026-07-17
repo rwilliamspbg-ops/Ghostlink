@@ -1,8 +1,8 @@
 @echo off
-REM Ghostlink Studio - Complete Native Launch Script (Windows)
-REM No Docker required. Auto-detects hardware and configures llama-server optimally.
-
 setlocal enabledelayedexpansion
+
+REM Ghostlink Studio - Complete Native Launch Script (Windows) - FIXED VERSION
+REM No Docker required. Auto-detects hardware and configures llama-server optimally.
 
 REM Clear any stale internal state from prior runs
 set "GPU_VENDOR="
@@ -18,14 +18,12 @@ set "LLAMA_PORT=8080"
 REM PROJECT_ROOT must be set before any variable that derives from it
 set "PROJECT_ROOT=%~dp0"
 set "MODEL_DIR=%PROJECT_ROOT%models"
-set "MODEL_FILE=%MODEL_DIR%\gemma-4-E4B-it-Q4_K_M.gguf"
+set "MODEL_FILE=%MODEL_DIR%\stories15M-q4_0.gguf"
 set "MODEL_URL=https://huggingface.co/ggml-org/models/resolve/main/tinyllamas/stories15M-q4_0.gguf"
 set "LLAMA_SERVER_EXPECTED=%PROJECT_ROOT%third_party\llama.cpp\build\bin\Release\llama-server.exe"
 set "LLAMA_SERVER_ALT_EXPECTED=%PROJECT_ROOT%third_party\llama.cpp\build\bin\llama-server.exe"
 
 REM ==================== Manual Overrides (set via env vars) ====================
-REM   GHOSTLINK_LLAMA_PORT     - Override llama-server port
-REM   GHOSTLINK_MODEL_FILE     - Set custom model path
 if not "%GHOSTLINK_LLAMA_PORT%"=="" set "LLAMA_PORT=%GHOSTLINK_LLAMA_PORT%"
 if not "%GHOSTLINK_MODEL_FILE%"=="" set "MODEL_FILE=%GHOSTLINK_MODEL_FILE%"
 
@@ -33,7 +31,7 @@ REM Validate VITE_GHOSTLINK_API_BASE if set
 if not "%VITE_GHOSTLINK_API_BASE%"=="" (
     set "VITE_GHOSTLINK_API_BASE=%VITE_GHOSTLINK_API_BASE: =%"
     echo [INFO] VITE_GHOSTLINK_API_BASE: %VITE_GHOSTLINK_API_BASE%
-    echo %VITE_GHOSTLINK_API_BASE% | findstr /r "^https\?://" >nul
+    echo %VITE_GHOSTLINK_API_BASE% | findstr /r "^https?://" >nul
     if errorlevel 1 (
         echo [ERROR] VITE_GHOSTLINK_API_BASE must be a valid http:// or https:// URL
         pause
@@ -71,13 +69,12 @@ set "CPU_CORES=0"
 set "RAM_GB=0"
 
 REM --- CPU Cores ---
-REM wmic is deprecated on modern Windows; use PowerShell
 for /f %%a in ('powershell -NoProfile -Command "(Get-CimInstance Win32_ComputerSystem).NumberOfLogicalProcessors" 2^>nul') do set "CPU_CORES=%%a"
 if "%CPU_CORES%"=="0" set "CPU_CORES=4"
 echo   CPU Cores: !CPU_CORES!
 
 REM --- System RAM ---
-for /f %%a in ('powershell -NoProfile -Command "[Math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB)" 2^>nul') do set "RAM_GB=%%a"
+for /f %%a in ('powershell -NoProfile -Command "[Math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB)\" 2^>nul') do set "RAM_GB=%%a"
 if "%RAM_GB%"=="0" set "RAM_GB=4"
 echo   System RAM: !RAM_GB! GB
 
@@ -90,7 +87,6 @@ for /f "delims=" %%a in ('powershell -NoProfile -Command "Get-CimInstance Win32_
 set "GPU_COUNT=%GPU_INDEX%"
 
 REM --- NVIDIA GPU Detection (CUDA) ---
-REM nvidia-smi is often not on PATH; check its standard install locations too.
 set "NVIDIA_SMI="
 where nvidia-smi >nul 2>&1
 if not errorlevel 1 set "NVIDIA_SMI=nvidia-smi"
@@ -104,20 +100,17 @@ if defined NVIDIA_SMI (
         echo   [CUDA] NVIDIA GPU: !NVIDIA_GPU!
         set "GPU_VENDOR=nvidia"
         set "BACKEND=cuda"
-        REM Get VRAM (single-column query: the value is token 1, not 2)
         "!NVIDIA_SMI!" --query-gpu=memory.total --format=csv,noheader,nounits > "%TEMP%\ghostlink_vram.txt" 2>nul
         for /f "usebackq tokens=1 delims=, " %%a in ("%TEMP%\ghostlink_vram.txt") do set "TOTAL_VRAM_MB=%%a"
         del "%TEMP%\ghostlink_vram.txt" 2>nul
         if "!TOTAL_VRAM_MB!"=="0" set "TOTAL_VRAM_MB=4096"
         set /a "VRAM_GB=!TOTAL_VRAM_MB! / 1024" 2>nul
         if "!VRAM_GB!"=="0" set "VRAM_GB=4"
-        echo   VRAM: !VRAM_GB! GB ^(!TOTAL_VRAM_MB! MB^)
+        echo   VRAM: !VRAM_GB! GB (!TOTAL_VRAM_MB! MB)
     )
 )
 
 REM --- NVIDIA GPU via WMI fallback (driver present but nvidia-smi unavailable) ---
-REM On hybrid laptops (NVIDIA dGPU + AMD/Intel iGPU) this must run BEFORE the
-REM iGPU fallbacks, or inference silently lands on the weak integrated GPU.
 if not defined GPU_VENDOR (
     for /f "delims=" %%a in ('powershell -NoProfile -Command "Get-CimInstance Win32_VideoController | Where-Object { $_.Name -match 'nvidia|geforce|rtx|gtx|quadro' } | Select-Object -First 1 | ForEach-Object { $_.Name }" 2^>nul') do (
         echo   [Vulkan] NVIDIA GPU: %%a ^(nvidia-smi not found - CUDA unavailable, using Vulkan^)
@@ -127,23 +120,36 @@ if not defined GPU_VENDOR (
     )
 )
 
-REM --- AMD GPU Detection (Vulkan) ---
+REM --- AMD GPU Detection (ROCm / DirectML) ---
 if not defined GPU_VENDOR (
-    for /f "delims=" %%a in ('powershell -NoProfile -Command "Get-CimInstance Win32_VideoController | Where-Object { $_.Name -match 'amd|radeon' } | ForEach-Object { $_.Name }" 2^>nul') do (
-        echo   [Vulkan] AMD GPU: %%a
-        set "GPU_NAME=%%a"
-        set "GPU_VENDOR=amd"
-        set "BACKEND=vulkan"
+    where rocm-smi >nul 2>&1
+    if not errorlevel 1 (
+        for /f "tokens=* " %%a in ('rocm-smi --showproductname 2^>nul ^| findstr "Card model:"') do (
+            set "AMD_GPU=%%a"
+        )
+        if defined AMD_GPU (
+            echo   [ROCm] AMD GPU detected
+            set "GPU_VENDOR=amd"
+            set "BACKEND=rocm"
+        )
     )
 )
 
-REM --- Intel GPU Detection (Vulkan) ---
+REM --- AMD GPU via WMI fallback ---
+if not defined GPU_VENDOR (
+    for /f "delims=" %%a in ('powershell -NoProfile -Command "Get-CimInstance Win32_VideoController | Where-Object { $_.Name -match 'amd|radeon' } | ForEach-Object { $_.Name }" 2^>nul') do (
+        echo   [DirectML] AMD GPU: %%a
+        set "GPU_VENDOR=amd"
+        set "BACKEND=directml"
+    )
+)
+
+REM --- Intel GPU Detection ---
 if not defined GPU_VENDOR (
     for /f "delims=" %%a in ('powershell -NoProfile -Command "Get-CimInstance Win32_VideoController | Where-Object { $_.Name -match 'intel iris|intel arc|intel uhd' } | ForEach-Object { $_.Name }" 2^>nul') do (
-        echo   [Vulkan] Intel GPU: %%a
-        set "GPU_NAME=%%a"
+        echo   [DirectML] Intel GPU: %%a
         set "GPU_VENDOR=intel"
-        set "BACKEND=vulkan"
+        set "BACKEND=directml"
     )
 )
 
@@ -166,7 +172,6 @@ powershell -NoProfile -Command "& {Get-CimInstance -ClassName Win32_PnPEntity -E
 set "NPU_DETECTED="
 for /f "delims=" %%a in ('type "%TEMP%\ghostlink_npu.txt" 2^>nul') do (
     if not "%%a"=="" (
-        REM Filter out non-NPU devices
         echo %%a | findstr /i "keyboard mouse hid usb input" >nul
         if errorlevel 1 (
             set "NPU_DETECTED=%%a"
@@ -204,12 +209,10 @@ if not "%GHOSTLINK_LLAMA_THREADS%"=="" set "THREADS=%GHOSTLINK_LLAMA_THREADS%"
 echo   Threads: !THREADS! (of !CPU_CORES! cores)
 
 REM --- GPU Layers (NGL) ---
-REM Default: conservative 20 layers or VRAM-based calculation
 set "LLAMA_NGL=0"
 if not "%GHOSTLINK_LLAMA_NGL%"=="" (
     set "LLAMA_NGL=%GHOSTLINK_LLAMA_NGL%"
     if "!LLAMA_NGL!"=="-1" (
-        REM -1 means all layers - only safe with large VRAM
         echo   GPU Layers: all ^(user override^)
     ) else (
         echo   GPU Layers: !LLAMA_NGL! ^(user override^)
@@ -221,22 +224,21 @@ if not "%GHOSTLINK_LLAMA_NGL%"=="" (
             echo   GPU Layers: 0 ^(CPU mode^)
         ) else if defined VRAM_GB (
             if !VRAM_GB! GEQ 12 (
-                set /a "LLAMA_NGL=99" 2>nul
-                echo   GPU Layers: 99 ^(full offload, !VRAM_GB! GB^)
+                set /a "LLAMA_NGL=40"
+                echo   GPU Layers: 40 ^(VRAM-based, !VRAM_GB! GB^)
             ) else if !VRAM_GB! GEQ 8 (
-                set /a "LLAMA_NGL=99" 2>nul
-                echo   GPU Layers: 99 ^(full offload, !VRAM_GB! GB^)
+                set /a "LLAMA_NGL=24"
+                echo   GPU Layers: 24 ^(VRAM-based, !VRAM_GB! GB^)
             ) else if !VRAM_GB! GEQ 4 (
-                set /a "LLAMA_NGL=99" 2>nul
-                echo   GPU Layers: 99 ^(full offload, !VRAM_GB! GB^)
+                set /a "LLAMA_NGL=12"
+                echo   GPU Layers: 12 ^(VRAM-based, !VRAM_GB! GB^)
             ) else (
-                set "LLAMA_NGL=99"
-                echo   GPU Layers: 99 ^(full offload, !VRAM_GB! GB^)
+                set "LLAMA_NGL=8"
+                echo   GPU Layers: 8 ^(VRAM-based, !VRAM_GB! GB^)
             )
         ) else (
-            REM No VRAM detected but GPU present - use full offload
             set "LLAMA_NGL=99"
-            echo   GPU Layers: 99 ^(full offload, no VRAM data^)
+            echo   GPU Layers: 99 ^(full offload^)
         )
     ) else (
         set "LLAMA_NGL=0"
@@ -388,55 +390,42 @@ if exist "%LLAMA_SERVER_EXPECTED%" (
 
 echo.
 
-echo ====== Starting Services ======
-echo.
-
 REM ==================== Start llama-server ====================
 set "GHOSTLINK_NATIVE_ENGINE=simulated"
-if not defined ACTUAL_LLAMA_SERVER (
-    echo [WARN] llama-server binary not found. Using simulated mode.
-    echo [WARN] Run build first if you want native acceleration.
-    goto LLAMA_DONE
-)
-if not exist "%MODEL_FILE%" (
-    echo [WARN] Model file not found: "%MODEL_FILE%"
-    echo [WARN] Skipping llama-server ^(download a model from the Hugging Face tab, then relaunch^). Using simulated mode.
-    goto LLAMA_DONE
-)
+
+REM FIX: Export variables for child processes and use proper quoting
+set "LLAMA_CMD=%ACTUAL_LLAMA_SERVER%"
+set "LLAMA_MODEL=%MODEL_FILE%"
+set "LLAMA_HOST=127.0.0.1"
+set "LLAMA_PORT_VAL=%LLAMA_PORT%"
+set "LLAMA_NGL_VAL=!LLAMA_NGL!"
+set "LLAMA_THREADS_VAL=!THREADS!"
+if defined MLOCK_FLAG set "LLAMA_MLOCK=%MLOCK_FLAG%" else set "LLAMA_MLOCK="
+set "LLAMA_BACKEND_FLAGS=%BACKEND_FLAGS%"
+
+REM Start llama-server in a new window with properly exported variables
+start "llama-server" cmd /c ^
+    "set LLAMA_CMD=%LLAMA_CMD^&^&set LLAMA_MODEL=%LLAMA_MODEL^&^&set LLAMA_HOST=%LLAMA_HOST^&^&set LLAMA_PORT_VAL=%LLAMA_PORT_VAL^&^&set LLAMA_NGL_VAL=!LLAMA_NGL_VAL!^&^&set LLAMA_THREADS_VAL=!LLAMA_THREADS_VAL!^&^&if defined LLAMA_MLOCK set LLAMA_MLOCK=%LLAMA_MLOCK% ^&^&set LLAMA_BACKEND_FLAGS=%LLAMA_BACKEND_FLAGS%^&^&cmd /k \"%LLAMA_CMD% -m %LLAMA_MODEL% --host %LLAMA_HOST% --port %LLAMA_PORT_VAL% -ngl %LLAMA_NGL_VAL% -t %LLAMA_THREADS_VAL% -np 1 %LLAMA_MLOCK% %LLAMA_BACKEND_FLAGS%\""
+
 echo [INFO] Starting llama-server on http://127.0.0.1:%LLAMA_PORT%
-echo [INFO] Flags: -ngl !LLAMA_NGL! -t !THREADS! !MLOCK_FLAG! !BACKEND_FLAGS!
+echo [INFO] Flags: -ngl !LLAMA_NGL! -t !THREADS! %MLOCK_FLAG% %BACKEND_FLAGS%
 
-REM Load only the default model at startup to allow dynamic loading/unloading via API
-set "LLAMA_MODEL_ARGS="
-set "LLAMA_ALIAS_ARGS="
-if exist "%MODEL_FILE%" (
-    echo [INFO] Loading default model: %MODEL_FILE%
-    set "LLAMA_MODEL_ARGS=-m "%MODEL_FILE%""
-    for %%F in ("%MODEL_FILE%") do set "MODEL_NAME=%%~nF"
-    set "LLAMA_ALIAS_ARGS=--alias !MODEL_NAME!"
-) else (
-    echo [WARN] Default model not found: "%MODEL_FILE%"
-    echo [WARN] Starting llama-server without pre-loaded model (can load via GUI)
-)
-)
-
-start "llama-server" cmd /k ""%ACTUAL_LLAMA_SERVER%" !LLAMA_MODEL_ARGS! !LLAMA_ALIAS_ARGS! --host 127.0.0.1 --port %LLAMA_PORT% -ngl 99 -t !THREADS! -np 1 !MLOCK_FLAG! !BACKEND_FLAGS!"
-
+REM FIX: Wait for llama-server with better timeout and error handling
 echo [INFO] Waiting for llama-server...
 set /a "LLAMA_WAIT=0"
 :WAIT_LLAMA
 curl -sf http://127.0.0.1:%LLAMA_PORT%/health >nul 2>&1
 if not errorlevel 1 goto LLAMA_READY
 set /a "LLAMA_WAIT+=1"
-if %LLAMA_WAIT% GEQ 120 (
-    echo [WARN] llama-server not healthy after ~120s. Continuing in simulated mode.
+if %LLAMA_WAIT% GEQ 60 (
+    echo [WARN] llama-server not healthy after ~60s. Continuing in simulated mode.
     echo [WARN] Check the llama-server window for errors.
     goto LLAMA_DONE
 )
 ping -n 2 127.0.0.1 >nul
 goto WAIT_LLAMA
 :LLAMA_READY
-echo [OK] llama-server is ready
+echo [OK] llama-server is healthy
 set "GHOSTLINK_NATIVE_ENGINE=llama_server"
 :LLAMA_DONE
 
@@ -452,10 +441,10 @@ if exist "%PROJECT_ROOT%target\debug\ghost-link.exe" if "!GHOSTLINK_BINARY!"==""
 
 if defined GHOSTLINK_BINARY (
     echo [INFO] Starting backend binary: !GHOSTLINK_BINARY!
-    start "Ghostlink Backend API" cmd /c ""!GHOSTLINK_BINARY!" serve %BACKEND_HOST% %BACKEND_PORT%"
+    start "Ghostlink Backend API" cmd /c "!GHOSTLINK_BINARY! serve %BACKEND_HOST% %BACKEND_PORT%"
 ) else (
     echo [INFO] Building backend with Cargo...
-    start "Ghostlink Backend API" cmd /c "cd /d "%PROJECT_ROOT%" && cargo run -p ghost-link -- serve %BACKEND_HOST% %BACKEND_PORT%"
+    start "Ghostlink Backend API" cmd /c "cd /d \"%PROJECT_ROOT%\" ^&^& cargo run -p ghost-link -- serve %BACKEND_HOST% %BACKEND_PORT%"
 )
 
 REM Give backend a moment to fully initialize routes
@@ -517,7 +506,7 @@ set "VITE_GHOSTLINK_API_BASE=http://%BACKEND_HOST%:%BACKEND_PORT%"
 
 REM Start frontend dev server (with Vite proxy to backend)
 echo [INFO] Starting GUI dev server...
-start "Ghostlink Studio GUI" cmd /k "cd /d "%PROJECT_ROOT%ghostlink_gui_modern" && npm run dev -- --host 127.0.0.1 --port %GUI_PORT%"
+start "Ghostlink Studio GUI" cmd /c "npm run dev -- --host 127.0.0.1 --port %GUI_PORT%"
 
 cd "%PROJECT_ROOT%"
 

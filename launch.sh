@@ -464,22 +464,14 @@ start_services() {
          THREADS=$(( LOGICAL_CORES > 1 ? LOGICAL_CORES - 1 : 1 ))
      fi
      
-     # Plan GPU layers
-     if [ -n "${GHOSTLINK_LLAMA_NGL:-}" ]; then
-         LLAMA_NGL=$GHOSTLINK_LLAMA_NGL
-     elif [ "$BACKEND" = "cpu" ]; then
-         LLAMA_NGL=0
-     else
-         if [ "$VRAM_GB" -ge 12 ] 2>/dev/null; then
-             LLAMA_NGL=40
-         elif [ "$VRAM_GB" -ge 8 ] 2>/dev/null; then
-             LLAMA_NGL=24
-         elif [ "$VRAM_GB" -ge 4 ] 2>/dev/null; then
-             LLAMA_NGL=12
-         else
-             LLAMA_NGL=8
-         fi
-     fi
+# Plan GPU layers
+      if [ -n "${GHOSTLINK_LLAMA_NGL:-}" ]; then
+          LLAMA_NGL=$GHOSTLINK_LLAMA_NGL
+      elif [ "$BACKEND" = "cpu" ]; then
+          LLAMA_NGL=0
+      else
+          LLAMA_NGL=99  # full offload
+      fi
      
      # Backend flags
      local BACKEND_FLAGS=""
@@ -517,6 +509,7 @@ start_services() {
           -m "$PROJECT_ROOT/models/stories15M-q4_0.gguf" \
           --host 127.0.0.1 --port 8080 \
           -ngl "$LLAMA_NGL" \
+          -np 1 \
           -t "$THREADS" \
           $MLOCK_FLAG \
           $BACKEND_FLAGS \

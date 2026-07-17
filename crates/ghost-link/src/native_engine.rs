@@ -20,6 +20,15 @@ impl NativeEngineClient {
         Self
     }
 
+    /// Note: llama-server does not support dynamic model loading at runtime via API.
+    /// Models must be loaded at startup via `-m` and `--alias` CLI flags.
+    /// This function is a no-op that logs the model path for reference.
+    pub fn load_model_into_slot(&self, model_path: &str) -> Result<(), String> {
+        let normalized_path = model_path.replace('\\', "/");
+        eprintln!("Info: Model '{}' would be loaded at startup. For dynamic switching, pre-load models with --alias at launch.", normalized_path);
+        Ok(())
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn generate(
         &self,
@@ -56,6 +65,7 @@ impl NativeEngineClient {
         {
             "llama_server" | "llama-server" => {
                 let text = self.generate_with_llama_server(
+                    model, // Pass model name
                     cleaned_prompt,
                     max_tokens,
                     temperature,
@@ -152,6 +162,7 @@ impl NativeEngineClient {
 
     fn generate_with_llama_server(
         &self,
+        model: &str,
         cleaned_prompt: &str,
         max_tokens: usize,
         temperature: f32,
@@ -163,16 +174,6 @@ impl NativeEngineClient {
             .ok()
             .filter(|v| !v.trim().is_empty())
             .unwrap_or_else(|| "http://127.0.0.1:8080/completion".to_string());
-
-        // Use the OpenAI-compatible chat endpoint so llama-server applies the
-        // model's own chat template. Posting raw text to /completion does bare
-        // text continuation - instruct models then ramble off-topic instead of
-        // answering (e.g. "hi" continues as a video transcript).
-        let url = if let Some(base) = url.strip_suffix("/completion") {
-            format!("{}/v1/chat/completions", base)
-        } else {
-            url
-        };
 
         let timeout_secs = std::env::var("GHOSTLINK_LLAMA_SERVER_TIMEOUT_SECS")
             .ok()
@@ -187,7 +188,15 @@ impl NativeEngineClient {
             chrono::Local::now().format("%A, %B %-d, %Y, %H:%M")
         );
 
-        let payload = serde_json::json!({
+        // Try chat completion endpoint first (for models with chat templates)
+        let chat_url = if let Some(base) = url.strip_suffix("/completion") {
+            format!("{}/v1/chat/completions", base)
+        } else {
+            format!("{}/v1/chat/completions", url.trim_end_matches('/'))
+        };
+
+        let chat_payload = serde_json::json!({
+            "model": model,
             "messages": [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": cleaned_prompt}
@@ -198,50 +207,98 @@ impl NativeEngineClient {
             "top_k": top_k.clamp(1, 200),
             "repeat_penalty": repeat_penalty.clamp(0.0, 2.0),
             "stream": false
-        })
-        .to_string();
+        });
 
-        let timeout = Duration::from_secs(timeout_secs).as_secs().to_string();
-        let output = Command::new("curl")
-            .arg("--silent")
-            .arg("--show-error")
-            .arg("--fail")
-            .arg("--max-time")
-            .arg(timeout)
-            .arg("-H")
-            .arg("content-type: application/json")
-            .arg("-d")
-            .arg(payload)
-            .arg(url)
-            .output()
-            .map_err(|err| format!("failed to execute curl for llama-server: {}", err))?;
+        let client = reqwest::blocking::Client::builder()
+            .timeout(Duration::from_secs(timeout_secs))
+            .build()
+            .map_err(|e| format!("failed to create HTTP client: {}", e))?;
 
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(format!("llama_server request failed: {}", stderr.trim()));
-        }
+        // Try chat endpoint first
+        let chat_response = client
+            .post(&chat_url)
+            .header("Content-Type", "application/json")
+            .json(&chat_payload)
+            .send();
 
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
-            .map_err(|err| format!("invalid llama_server JSON response: {}", err))?;
+        if let Ok(response) = chat_response {
+            if response.status().is_success() {
+                let parsed: serde_json::Value = response
+                    .json()
+                    .map_err(|e| format!("invalid llama_server JSON response: {}", e))?;
 
-        if let Some(content) = parsed.get("content").and_then(|v| v.as_str()) {
-            let text = content.trim();
-            if !text.is_empty() {
-                return Ok(text.to_string());
+                if let Some(content) = parsed.get("content").and_then(|v| v.as_str()) {
+                    let text = content.trim();
+                    if !text.is_empty() {
+                        return Ok(text.to_string());
+                    }
+                }
+
+                if let Some(text) = parsed
+                    .get("choices")
+                    .and_then(|choices| choices.get(0))
+                    .and_then(|c| {
+                        c.get("text")
+                            .or_else(|| c.get("message").and_then(|m| m.get("content")))
+                    })
+                    .and_then(|v| v.as_str())
+                {
+                    let text = text.trim();
+                    if !text.is_empty() {
+                        return Ok(text.to_string());
+                    }
+                }
+            } else if response.status().as_u16() == 400 {
+                // Fall through to completion endpoint if chat fails with 400
             }
         }
 
-        if let Some(text) = parsed
-            .get("choices")
-            .and_then(|choices| choices.get(0))
-            .and_then(|c| {
-                c.get("text")
-                    .or_else(|| c.get("message").and_then(|m| m.get("content")))
-            })
-            .and_then(|v| v.as_str())
-        {
-            let text = text.trim();
+        // Fall back to completion endpoint for models without chat template
+        let completion_url = if let Some(base) = url.strip_suffix("/completion") {
+            format!("{}/completion", base)
+        } else {
+            url
+        };
+
+        // Format prompt for completion endpoint: system + user
+        let completion_prompt = format!(
+            "{}\n\nUser: {}\n\nAssistant:",
+            system_prompt, cleaned_prompt
+        );
+
+        let completion_payload = serde_json::json!({
+            "model": model,
+            "prompt": completion_prompt,
+            "max_tokens": max_tokens,
+            "temperature": temperature.clamp(0.0, 2.0),
+            "top_p": top_p.clamp(0.0, 1.0),
+            "top_k": top_k.clamp(1, 200),
+            "repeat_penalty": repeat_penalty.clamp(0.0, 2.0),
+            "stream": false
+        });
+
+        let response = client
+            .post(&completion_url)
+            .header("Content-Type", "application/json")
+            .json(&completion_payload)
+            .send()
+            .map_err(|e| format!("llama_server request failed: {}", e))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let error_text = response.text().unwrap_or_default();
+            return Err(format!(
+                "llama_server request failed with status {}: {}",
+                status, error_text
+            ));
+        }
+
+        let parsed: serde_json::Value = response
+            .json()
+            .map_err(|e| format!("invalid llama_server JSON response: {}", e))?;
+
+        if let Some(content) = parsed.get("content").and_then(|v| v.as_str()) {
+            let text = content.trim();
             if !text.is_empty() {
                 return Ok(text.to_string());
             }
