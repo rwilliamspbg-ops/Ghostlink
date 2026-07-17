@@ -147,6 +147,7 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
       system_prompt: systemPrompt,
       mcp: { tools: enabledTools },
       stream: true,
+      model: currentModel === 'none' ? undefined : currentModel,
     }, (token: string) => {
       setMessages((prev) => prev.map(m =>
         m.id === assistantId ? { ...m, content: m.content + token } : m
@@ -189,13 +190,8 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
 
   const selectModel = async (name: string) => {
     setShowModelSelector(false);
-    const result = await api.loadModel(name);
-    if (result.success) {
-        setCurrentModel(name);
-        // Refresh models to show "Loaded" status
-        const modelsResult = await api.getModels();
-        if (modelsResult.models) setModels(modelsResult.models);
-    }
+    // With Ollama, just set current model - no load/unload needed
+    setCurrentModel(name);
   };
 
   const toggleTool = (name: string) => {

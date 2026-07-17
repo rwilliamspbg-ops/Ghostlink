@@ -1,50 +1,44 @@
 # Quickstart
 
-## One-command launch
+## One-command launch (Ollama)
 
 **Windows:**
 ```powershell
-launch-complete.bat
-```
-
-**Linux/macOS:**
-```bash
-bash launch-complete.sh
+launch-ollama.bat
 ```
 
 The script:
-1. Detects hardware (CUDA/Metal/DirectML/NPU/CPU)
-2. Builds the Rust backend (`cargo build`)
+1. Starts Ollama server on `http://127.0.0.1:11434`
+2. Builds and starts the Rust backend API on `http://127.0.0.1:8003`
 3. Installs npm dependencies
-4. Starts the backend API on `http://127.0.0.1:8003`
-5. Starts Vite dev server on `http://127.0.0.1:5173`
-6. Opens the GUI
+4. Starts Vite dev server on `http://127.0.0.1:5173`
+
+## Prerequisites
+
+- **Ollama** — Download from https://ollama.com
+- **Rust** — `winget install Rust.Rustup` or https://rustup.rs
+- **Node.js** — `winget install OpenJS.NodeJS` or https://nodejs.org
 
 ## What you can do
 
 1. **Chat** — Select a model, send messages with SSE streaming
-2. **Download models** — Browse Hugging Face tab, click Download; progress shows in Library tab
+2. **Download models** — Pull models from Ollama library or browse Hugging Face
 3. **Monitor metrics** — CPU/GPU/memory utilization, active sessions
 4. **Cluster workers** — Add remote workers, discover peers on LAN
-5. **Settings** — Configure ports, discovery, auth tokens
+5. **Settings** — Configure ports, backend selection, auth tokens
 
-## Default models
+## Pull models
 
-The backend starts with two tiny models (safe for low-RAM systems):
-- `stories15M` (15M params, ~8 MB)
-- `TinyLlama-1.1B-Chat` (1.1B params, ~650 MB)
+```powershell
+ollama pull llama3.2:3b
+ollama pull gemma2:2b
+ollama pull qwen2.5:4b
+```
 
-Download larger models from the Hugging Face tab in the GUI.
+Or use the "Popular Ollama Models" grid in the GUI's Models tab.
 
 ## Environment shortcuts
 
 ```powershell
-# Skip model download
-set GHOSTLINK_SKIP_MODEL=1 && launch-complete.bat
-
-# Skip Rust build
-set GHOSTLINK_SKIP_BUILD=1 && launch-complete.bat
-
-# Use ollama backend instead of native llama-server
-set GHOSTLINK_INFERENCE_BACKEND=ollama && launch-complete.bat
+set GHOSTLINK_INFERENCE_BACKEND=native  # Use legacy native backend instead of Ollama
 ```

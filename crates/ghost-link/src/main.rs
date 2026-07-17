@@ -5250,6 +5250,7 @@ fn run_gui_preflight_checks() -> Result<()> {
     Ok(())
 }
 
+mod backend_registry;
 mod native_engine;
 mod ollama;
 mod runtime;

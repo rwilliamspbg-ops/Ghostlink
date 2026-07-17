@@ -10,17 +10,12 @@ import {
   RotateCcw,
   CheckCircle2,
   AlertTriangle,
-  Monitor,
-  Cpu as GpuIcon,
 } from 'lucide-react';
 import { Settings as SettingsType } from '../store';
 
 export const SettingsTab: React.FC<{ api: any }> = ({ api }) => {
   const [settings, setSettings] = useState<SettingsType | null>(null);
   const [loading, setLoading] = useState(true);
-  const [runtimes, setRuntimes] = useState<any[]>([]);
-  const [selectedRuntime, setSelectedRuntime] = useState<string>('');
-  const [runtimeStatus, setRuntimeStatus] = useState<string>('');
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState('');
@@ -31,11 +26,8 @@ export const SettingsTab: React.FC<{ api: any }> = ({ api }) => {
     const errs: Record<string, string> = {};
     if (settings.api_port && (settings.api_port < 1024 || settings.api_port > 65535)) errs.api_port = 'Port must be 1024-65535';
     if (settings.gui_port && (settings.gui_port < 1024 || settings.gui_port > 65535)) errs.gui_port = 'Port must be 1024-65535';
-    if (settings.llama_port && (settings.llama_port < 1024 || settings.llama_port > 65535)) errs.llama_port = 'Port must be 1024-65535';
     if (settings.temperature !== undefined && (settings.temperature < 0 || settings.temperature > 2)) errs.temperature = 'Temperature must be 0-2';
     if (settings.top_p !== undefined && (settings.top_p < 0 || settings.top_p > 1)) errs.top_p = 'Top P must be 0-1';
-    if (settings.ctx_size && (settings.ctx_size < 512 || settings.ctx_size > 32768)) errs.ctx_size = 'Context size must be 512-32768';
-    if (settings.llama_server_url && !/^https?:\/\/.+/.test(settings.llama_server_url)) errs.llama_server_url = 'Must be a valid URL (http://...)';
     if (settings.api_host && !/^[\w.*:-]+$/.test(settings.api_host)) errs.api_host = 'Invalid host format';
     setValidationErrors(errs);
     return Object.keys(errs).length === 0;
@@ -57,39 +49,14 @@ export const SettingsTab: React.FC<{ api: any }> = ({ api }) => {
 
   const loadSettings = useCallback(async () => {
     setLoading(true);
-    const [result, runtimeResult] = await Promise.all([
-      api.getSettings(),
-      api.getRuntimes().catch(() => ({ available_runtimes: [] })),
-    ]);
+    const result = await api.getSettings();
     if (result.settings && !result.error) {
       setSettings(result.settings);
-      const nativeEngine = result.settings.native_engine;
-      if (nativeEngine) {
-        setSelectedRuntime(nativeEngine);
-      }
     } else {
       setError(result.error || 'Failed to load settings');
     }
-    if (runtimeResult?.available_runtimes) {
-      setRuntimes(runtimeResult.available_runtimes);
-    }
     setLoading(false);
   }, [api]);
-
-  const handleSelectRuntime = async (runtime: string) => {
-    setRuntimeStatus('switching...');
-    const result = await api.selectRuntime(runtime);
-    if (result.success) {
-      setSelectedRuntime(runtime);
-      setRuntimeStatus(`switched to ${runtime}`);
-      setTimeout(() => setRuntimeStatus(''), 2000);
-      if (settings) {
-        setSettings({ ...settings, native_engine: runtime });
-      }
-    } else {
-      setRuntimeStatus(result.error || 'switch failed');
-    }
-  };
 
   useEffect(() => {
     loadSettings();
@@ -256,60 +223,6 @@ export const SettingsTab: React.FC<{ api: any }> = ({ api }) => {
 
       <div className="flex-1 overflow-y-auto p-6">
         <div className="max-w-5xl mx-auto space-y-6">
-          {/* Hardware Detection Card */}
-          {runtimes.length > 0 && (
-            <div className="bg-slate-900/50 border border-slate-800 rounded-3xl p-6">
-              <div className="flex items-center gap-3 mb-4">
-                <div className="p-3 bg-green-500/10 rounded-2xl text-green-400">
-                  <Monitor size={24} />
-                </div>
-                <div>
-                  <h3 className="font-bold text-slate-100">Detected Hardware</h3>
-                  <p className="text-xs text-slate-500">Available runtimes on this system</p>
-                </div>
-              </div>
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                {runtimes.map((rt, i) => {
-                  const isGpu = rt.runtime?.includes('NVIDIA') || rt.runtime?.includes('AMD') || rt.runtime?.includes('ROCm');
-                  const isCpu = rt.runtime?.includes('CPU');
-                  const isNpu = rt.runtime?.includes('NPU');
-                  const runtimeKey = rt.runtime?.toLowerCase().replace(/[^a-z0-9]/g, '') || '';
-                  const isSelected = selectedRuntime && runtimeKey.includes(selectedRuntime.toLowerCase());
-                  return (
-                    <button
-                      key={i}
-                      onClick={() => rt.is_available && handleSelectRuntime(runtimeKey)}
-                      disabled={!rt.is_available}
-                      className={`p-3 rounded-2xl border text-left transition-all ${
-                        rt.is_available
-                          ? isSelected
-                            ? 'bg-blue-500/10 border-blue-500/50 ring-1 ring-blue-500/50'
-                            : isGpu ? 'bg-green-500/5 border-green-500/20 hover:bg-green-500/10' : isNpu ? 'bg-purple-500/5 border-purple-500/20 hover:bg-purple-500/10' : 'bg-slate-800/50 border-slate-700 hover:bg-slate-800'
-                          : 'bg-slate-800/20 border-slate-800/30 cursor-not-allowed opacity-50'
-                      }`}
-                    >
-                      <div className="flex items-center gap-2 mb-1">
-                        {isGpu ? <GpuIcon size={14} className="text-green-400" /> : isCpu ? <Cpu size={14} className="text-slate-400" /> : <Zap size={14} className="text-purple-400" />}
-                        <span className={`text-xs font-bold ${rt.is_available ? (isGpu ? 'text-green-400' : 'text-slate-300') : 'text-slate-600'}`}>
-                          {rt.is_available ? (isSelected ? 'Active' : 'Available') : 'Unavailable'}
-                        </span>
-                      </div>
-                      <p className="text-sm font-mono text-slate-200 truncate" title={rt.runtime}>
-                        {rt.runtime}
-                      </p>
-                      {rt.memory_gb && <p className="text-[10px] text-slate-500">{rt.memory_gb.toFixed(1)} GB</p>}
-                    </button>
-                  );
-                })}
-              </div>
-              {runtimeStatus && (
-                <div className="mt-3 text-xs text-blue-400 bg-blue-500/10 px-3 py-1.5 rounded-lg">
-                  {runtimeStatus}
-                </div>
-              )}
-            </div>
-          )}
-
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             {/* Runtime Section */}
             <Section title="Inference Runtime" icon={Cpu}>
@@ -318,44 +231,10 @@ export const SettingsTab: React.FC<{ api: any }> = ({ api }) => {
                 desc="Inference engine backend"
                 value={settings.inference_backend}
                 options={[
-                  { value: 'native', label: 'Native (llama.cpp)' },
                   { value: 'ollama', label: 'Ollama' },
+                  { value: 'native', label: 'Native (legacy)' },
                 ]}
                 onChange={(v) => update('inference_backend', v)}
-              />
-              {settings.inference_backend === 'native' && (
-                <SelectField
-                  label="Native Engine"
-                  desc="llama.cpp execution mode"
-                  value={settings.native_engine}
-                  options={[
-                    { value: 'llama_server', label: 'llama-server (HTTP)' },
-                    { value: 'llama_cpp', label: 'llama-cli (direct)' },
-                    { value: 'simulated', label: 'Simulated (debug)' },
-                  ]}
-                  onChange={(v) => update('native_engine', v)}
-                />
-              )}
-              <SliderField
-                label="GPU Layers (NGL)"
-                desc="Number of layers offloaded to GPU (-1 = all, 0 = CPU)"
-                value={settings.ngl}
-                min={-1} max={200} step={1}
-                onChange={(v) => update('ngl', v)}
-              />
-              <SliderField
-                label="CPU Threads"
-                desc="Number of threads for inference"
-                value={settings.threads}
-                min={1} max={32} step={1}
-                onChange={(v) => update('threads', v)}
-              />
-              <SliderField
-                label="Context Size"
-                desc="Maximum context window (tokens)"
-                value={settings.ctx_size}
-                min={512} max={32768} step={512}
-                onChange={(v) => update('ctx_size', v)}
               />
             </Section>
 
@@ -399,28 +278,7 @@ export const SettingsTab: React.FC<{ api: any }> = ({ api }) => {
             </Section>
 
             {/* Model Section */}
-            <Section title="Model Configuration" icon={Server}>
-              <InputField
-                label="Model Path"
-                desc="Path to GGUF model file"
-                value={settings.model_path}
-                onChange={(v) => update('model_path', v)}
-                placeholder="/tmp/ghostlink-models/model.gguf"
-              />
-              <InputField
-                label="llama-server URL"
-                desc="llama.cpp server endpoint"
-                value={settings.llama_server_url}
-                onChange={(v) => update('llama_server_url', v)}
-                placeholder="http://127.0.0.1:8080/completion"
-              />
-              <SliderField
-                label="llama-server Port"
-                desc="Port for the native inference server"
-                value={settings.llama_port}
-                min={1024} max={65535} step={1}
-                onChange={(v) => update('llama_port', v)}
-              />
+            <Section title="Inference Parameters" icon={Server}>
               <SliderField
                 label="Chat Exec Tokens"
                 desc="Execution token budget per chat request"

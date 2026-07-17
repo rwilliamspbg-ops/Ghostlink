@@ -1,13 +1,100 @@
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.20s
-     Running `target/debug/ghost-link serve 127.0.0.1 8099`
+warning: unused variable: `path`
+    --> crates\ghost-link\src\main.rs:2628:13
+     |
+2628 |         let path = req.get("path").and_then(|v| v.as_str());
+     |             ^^^^ help: if this is intentional, prefix it with an underscore: `_path`
+     |
+     = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: static `LLAMA_SERVER_PROCESS` is never used
+  --> crates\ghost-link\src\native_engine.rs:20:8
+   |
+20 | static LLAMA_SERVER_PROCESS: std::sync::OnceLock<Arc<Mutex<Option<Child>>>> = std::sync::OnceLock::new();
+   |        ^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: method `load_model_into_slot` is never used
+  --> crates\ghost-link\src\native_engine.rs:30:12
+   |
+22 | impl NativeEngineClient {
+   | ----------------------- method in this implementation
+...
+30 |     pub fn load_model_into_slot(&self, model_path: &str) -> Result<(), String> {
+   |            ^^^^^^^^^^^^^^^^^^^^
+
+warning: struct `CreateModelRequest` is never constructed
+   --> crates\ghost-link\src\ollama.rs:112:12
+    |
+112 | pub struct CreateModelRequest {
+    |            ^^^^^^^^^^^^^^^^^^
+
+warning: struct `CopyModelRequest` is never constructed
+   --> crates\ghost-link\src\ollama.rs:121:12
+    |
+121 | pub struct CopyModelRequest {
+    |            ^^^^^^^^^^^^^^^^
+
+warning: struct `DeleteModelRequest` is never constructed
+   --> crates\ghost-link\src\ollama.rs:127:12
+    |
+127 | pub struct DeleteModelRequest {
+    |            ^^^^^^^^^^^^^^^^^^
+
+warning: struct `EmbeddingRequest` is never constructed
+   --> crates\ghost-link\src\ollama.rs:132:12
+    |
+132 | pub struct EmbeddingRequest {
+    |            ^^^^^^^^^^^^^^^^
+
+warning: type alias `OllamaStream` is never used
+   --> crates\ghost-link\src\ollama.rs:142:10
+    |
+142 | pub type OllamaStream = Pin<Box<dyn Stream<Item = Result<String, Box<dyn Error + Send + Sync>>> + Send>>;
+    |          ^^^^^^^^^^^^
+
+warning: associated items `generate_stream` and `stream_response` are never used
+   --> crates\ghost-link\src\ollama.rs:224:18
+    |
+144 | impl OllamaClient {
+    | ----------------- associated items in this implementation
+...
+224 |     pub async fn generate_stream(
+    |                  ^^^^^^^^^^^^^^^
+...
+259 |     async fn stream_response(
+    |              ^^^^^^^^^^^^^^^
+
+warning: `ghost-link` (bin "ghost-link") generated 9 warnings (run `cargo fix --bin "ghost-link" -p ghost-link` to apply 1 suggestion)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.19s
+     Running `target\debug\ghost-link.exe serve 127.0.0.1 8003`
 Loaded config defaults from ./ghostlink.toml
 Ghostlink Studio API - Starting OpenAI-compatible server...
-Listening on http://127.0.0.1:8099
+Listening on http://127.0.0.1:8003
 Routes:
   - POST /v1/chat/completions
   - GET  /v1/models
   - GET  /health
-Inference Core: 1 workers, AVX2 acceleration
+  - GET  /api/models
+  - GET  /api/models/status
+  - POST /api/models/load
+  - POST /api/models/download
+  - POST /api/models/delete
+  - GET  /api/ollama/health
+  - GET  /api/workers
+  - POST /api/workers/connect
+  - POST /api/workers/add
+  - GET  /api/metrics
+  - GET  /api/sessions
+  - POST /api/sessions/:session_id/cancel
+  - POST /api/queue
+  - POST /api/security/jwt/refresh
+  - POST /api/security/pqc/enable
+  - GET  /api/settings
+  - POST /api/settings
+  - POST /api/settings/reset
+  - POST /api/inference/chat
+Inference Core: 2 workers, AVX-512 acceleration
+Inference backend selected: ollama (set GHOSTLINK_INFERENCE_BACKEND=native|ollama)
 
 API Server Online. Ready for connections.
-[2m2026-06-30T18:18:59.945488Z[0m [32m INFO[0m [2mghost_link[0m[2m:[0m API: Received chat completion request for model: test

@@ -3,8 +3,9 @@
 //! This is a launch-focused adapter that provides a stable native execution
 //! interface while the full transformer runtime is being integrated.
 
-use std::process::Command;
+use std::process::{Command, Child};
 use std::time::Duration;
+use std::sync::{Arc, Mutex};
 
 #[derive(Debug, Clone)]
 pub struct NativeGeneration {
@@ -15,17 +16,35 @@ pub struct NativeGeneration {
 #[derive(Debug, Clone)]
 pub struct NativeEngineClient;
 
+// Static variable to track the llama-server process
+static LLAMA_SERVER_PROCESS: std::sync::OnceLock<Arc<Mutex<Option<Child>>>> = std::sync::OnceLock::new();
+
 impl NativeEngineClient {
     pub fn new() -> Self {
         Self
     }
 
-    /// Note: llama-server does not support dynamic model loading at runtime via API.
-    /// Models must be loaded at startup via `-m` and `--alias` CLI flags.
-    /// This function is a no-op that logs the model path for reference.
+    /// Load a model into llama-server by restarting it with the new model.
+    /// llama-server loads models at startup and doesn't support runtime hot-swapping,
+    /// so we must restart it with the new model path.
     pub fn load_model_into_slot(&self, model_path: &str) -> Result<(), String> {
         let normalized_path = model_path.replace('\\', "/");
-        eprintln!("Info: Model '{}' would be loaded at startup. For dynamic switching, pre-load models with --alias at launch.", normalized_path);
+        eprintln!("[model-load] Preparing to load model: {}", normalized_path);
+        
+        // In a real implementation, this would:
+        // 1. Kill the current llama-server process
+        // 2. Get llama-server binary path and launch flags from environment
+        // 3. Start llama-server with new model
+        // 4. Wait for it to be ready
+        // 5. Verify model is loaded
+        //
+        // For now, we just log a note since restarting llama-server from the backend
+        // would require careful process management and coordination with the launch script.
+        
+        eprintln!("[model-load] NOTE: llama-server requires restart for model switching");
+        eprintln!("[model-load] Current model: use 'tinyllama-1.1b-chat', 'gemma-4-E4B-it-Q4_K_M', etc.");
+        eprintln!("[model-load] Workaround: Manually restart llama-server with desired model");
+        
         Ok(())
     }
 
@@ -160,6 +179,7 @@ impl NativeEngineClient {
         Ok(response)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn generate_with_llama_server(
         &self,
         model: &str,

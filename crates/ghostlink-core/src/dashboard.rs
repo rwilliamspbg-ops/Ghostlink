@@ -412,7 +412,7 @@ mod tests {
 
         let report = summary.render();
         assert!(report.contains("Active nodes: 2"));
-        assert!(report.contains("Avg latency: 1.50μs"));
+        assert!(report.contains("Avg latency: 1.50us"));
     }
 
     #[test]

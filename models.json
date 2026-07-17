@@ -28,7 +28,7 @@
     "size_gb": 7.845828,
     "model_type": "LLM",
     "quantization": "F16",
-    "status": "Ready",
+    "status": "Loaded",
     "local_path": "models\\Qwen3.5-4B-BF16.gguf"
   },
   {
@@ -62,5 +62,29 @@
     "quantization": "Q2_K",
     "status": "Ready",
     "local_path": "models\\llama-2-7b-chat.Q2_K.gguf"
+  },
+  {
+    "name": "bartowski/Llama-3.2-3B-Instruct-GGUF",
+    "size_gb": 0.0,
+    "model_type": "LLM",
+    "quantization": "unknown",
+    "status": "Downloading",
+    "local_path": ""
+  },
+  {
+    "name": "Llama-3.2-3B-Instruct-IQ3_M",
+    "size_gb": 0.83246666,
+    "model_type": "LLM",
+    "quantization": "unknown",
+    "status": "Ready",
+    "local_path": "models\\Llama-3.2-3B-Instruct-IQ3_M.gguf"
+  },
+  {
+    "name": "DavidAU/Qwen3.5-9B-Claude-4.6-HighIQ-THINKING-HERETIC-UNCENSORED",
+    "size_gb": 0.0,
+    "model_type": "LLM",
+    "quantization": "unknown",
+    "status": "Downloading",
+    "local_path": ""
   }
 ]
