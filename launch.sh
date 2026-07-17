@@ -1,13 +1,23 @@
 #!/usr/bin/env bash
 
-# Ghostlink Studio - Cinematic Launch Experience (Linux/macOS)
-# Beautiful splash screen with real service verification
+# Ghostlink Studio - GPU-Accelerated Launch (Linux/macOS)
+# Optimized for AMD ROCm with automatic GPU environment configuration
 
 # Hardware globals (set by detect_gpu / start_services)
 GPU_VENDOR=""
 BACKEND="cpu"
 VRAM_GB=0
 NPU_DETECTED=""
+
+# GPU Environment Variables (for AMD ROCm - ROCm.txt gfx906 mapping)
+export OLLAMA_HOST=${OLLAMA_HOST:-127.0.0.1:11434}
+export OLLAMA_NUM_THREAD=${OLLAMA_NUM_THREAD:-16}
+export OLLAMA_GPU_MEMORY=${OLLAMA_GPU_MEMORY:-3276}
+export HIP_PLATFORM=${HIP_PLATFORM:-amd}
+export HSA_OVERRIDE_GFX_VERSION=${HSA_OVERRIDE_GFX_VERSION:-gfx906}
+export OLLAMA_IGPU_ENABLE=${OLLAMA_IGPU_ENABLE:-1}
+export OLLAMA_BATCH_SIZE=${OLLAMA_BATCH_SIZE:-512}
+export OLLAMA_CACHE_SIZE=${OLLAMA_CACHE_SIZE:-2048}
 
 # Color palette
 RED='\033[0;31m'
@@ -169,12 +179,12 @@ detect_gpu() {
     if [ -z "$gpu_vendor" ] && command -v rocm-smi >/dev/null 2>&1; then
         gpu_name=$(rocm-smi --showproductname 2>/dev/null | grep "Card model:" | head -1 | awk -F': ' '{print $3}')
         if [ -n "$gpu_name" ]; then
-            echo -e "  ${GREEN}╡${NC} ${WHITE}GPU${NC}          ${GREEN}AMD ROCm: $gpu_name${NC}"
+            echo -e "  ${GREEN}╡${NC} ${WHITE}GPU${NC}          ${GREEN}AMD ROCm: $gpu_name (gfx906 mapping)${NC}"
             gpu_vendor="amd"
             GPU_VENDOR="amd"
             BACKEND="rocm"
         else
-            echo -e "  ${GREEN}╡${NC} ${WHITE}GPU${NC}          ${GREEN}AMD ROCm detected${NC}"
+            echo -e "  ${GREEN}╡${NC} ${WHITE}GPU${NC}          ${GREEN}AMD ROCm detected (gfx906 mapping)${NC}"
             gpu_vendor="amd"
             GPU_VENDOR="amd"
             BACKEND="rocm"
@@ -610,6 +620,12 @@ show_success() {
 echo -e "  ${DIM}Hardware: ${GPU_NAME:-CPU} (${BACKEND})${NC}"
 echo -e "  ${DIM}GPU Layers: ${LLAMA_NGL:-0} | Threads: ${THREADS:-auto}${NC}"
 [[ -n "$NPU_DETECTED" ]] && echo -e "  ${DIM}NPU: $NPU_DETECTED${NC}"
+echo ""
+echo -e "${DIM}GPU Configuration:${NC}"
+echo -e "  ${DIM}• OLLAMA_NUM_THREAD: $OLLAMA_NUM_THREAD (all cores)${NC}"
+echo -e "  ${DIM}• OLLAMA_GPU_MEMORY: $OLLAMA_GPU_MEMORY (safe 80%%)${NC}"
+echo -e "  ${DIM}• HSA_OVERRIDE_GFX_VERSION: $HSA_OVERRIDE_GFX_VERSION${NC}"
+echo -e "  ${DIM}• HIP_PLATFORM: $HIP_PLATFORM${NC}"
 echo ""
 echo -e "${DIM}Press ${BOLD}Ctrl+C${NC} ${DIM}to stop all services${NC}"
 echo -e "${DIM}Logs: /tmp/ghostlink_*.log${NC}"
