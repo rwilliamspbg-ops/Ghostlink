@@ -2893,54 +2893,124 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
 
         let (response_text, real_inference, backend_used, ollama_backend_available) =
             match inference_backend {
-                InferenceBackend::Ollama => match ollama_client
-                    .generate(
-                        &current_model,
-                        &req.message,
-                        temp,
-                        top_p,
-                        top_k,
-                        penalty,
-                        exec_tokens,
-                    )
-                    .await
-                {
-                    Ok(text) => (
-                        text.trim().to_string(),
-                        true,
-                        InferenceBackend::Ollama.as_str(),
-                        true,
-                    ),
-                    Err(err) => {
-                        let err_text = err.to_string();
-                        let is_model_not_found = err_text.contains("HTTP 404");
-                        let is_unreachable = err_text.contains("error sending request")
+                InferenceBackend::Ollama => {
+                    let is_unreachable = |err_text: &str| {
+                        err_text.contains("error sending request")
                             || err_text.contains("connection refused")
                             || err_text.contains("Connection refused")
-                            || err_text.contains("timed out");
+                            || err_text.contains("timed out")
+                    };
 
-                        let fallback = if is_model_not_found {
-                            format!(
-                            "Ollama model '{}' not found (HTTP 404). Pull or retag the model, then retry prompt '{}'.",
-                            current_model, req.message
-                        )
-                        } else {
-                            format!(
-                            "Inference backend '{}' unavailable. Generated degraded fallback for prompt: '{}'. Error: {}",
-                            InferenceBackend::Ollama.as_str(),
-                            req.message,
-                            err_text
-                        )
-                        };
+                    let resolve_model = |requested: &str, available: &[String]| -> Option<String> {
+                        if available.iter().any(|m| m == requested) {
+                            return Some(requested.to_string());
+                        }
 
-                        (
-                            fallback,
+                        if let Some(found) =
+                            available.iter().find(|m| m.eq_ignore_ascii_case(requested))
+                        {
+                            return Some(found.clone());
+                        }
+
+                        if !requested.contains(':') {
+                            let prefix = format!("{}:", requested.to_ascii_lowercase());
+                            if let Some(found) = available
+                                .iter()
+                                .find(|m| m.to_ascii_lowercase().starts_with(&prefix))
+                            {
+                                return Some(found.clone());
+                            }
+                        }
+
+                        None
+                    };
+
+                    let available_models_result: Result<Vec<String>, String> = ollama_client
+                        .list_models()
+                        .await
+                        .map_err(|err| err.to_string());
+
+                    match available_models_result {
+                        Ok(available_models) => {
+                            if let Some(effective_model) =
+                                resolve_model(&current_model, &available_models)
+                            {
+                                match ollama_client
+                                    .generate(
+                                        &effective_model,
+                                        &req.message,
+                                        temp,
+                                        top_p,
+                                        top_k,
+                                        penalty,
+                                        exec_tokens,
+                                    )
+                                    .await
+                                {
+                                    Ok(text) => (
+                                        text.trim().to_string(),
+                                        true,
+                                        InferenceBackend::Ollama.as_str(),
+                                        true,
+                                    ),
+                                    Err(err) => {
+                                        let err_text = err.to_string();
+                                        let is_model_not_found = err_text.contains("HTTP 404");
+
+                                        let fallback = if is_model_not_found {
+                                            format!(
+                                                "Ollama model '{}' not found (HTTP 404). Pull or retag the model, then retry prompt '{}'.",
+                                                effective_model, req.message
+                                            )
+                                        } else {
+                                            format!(
+                                                "Inference backend '{}' unavailable. Generated degraded fallback for prompt: '{}'. Error: {}",
+                                                InferenceBackend::Ollama.as_str(),
+                                                req.message,
+                                                err_text
+                                            )
+                                        };
+
+                                        (
+                                            fallback,
+                                            false,
+                                            InferenceBackend::Ollama.as_str(),
+                                            !is_unreachable(&err_text),
+                                        )
+                                    }
+                                }
+                            } else {
+                                let shown =
+                                    available_models.iter().take(6).cloned().collect::<Vec<_>>();
+                                let available_hint = if shown.is_empty() {
+                                    "<no installed models>".to_string()
+                                } else {
+                                    shown.join(", ")
+                                };
+
+                                (
+                                    format!(
+                                        "Ollama model '{}' is not installed. Available models: {}. Pull the model or select one from the Models tab.",
+                                        current_model, available_hint
+                                    ),
+                                    false,
+                                    InferenceBackend::Ollama.as_str(),
+                                    true,
+                                )
+                            }
+                        }
+                        Err(err_text) => (
+                            format!(
+                                "Inference backend '{}' unavailable. Failed to list Ollama models before generation. Error: {}",
+                                InferenceBackend::Ollama.as_str(),
+                                err_text
+                            ),
                             false,
                             InferenceBackend::Ollama.as_str(),
-                            !is_unreachable,
-                        )
+                            !is_unreachable(&err_text),
+                        ),
                     }
-                },
+                }
                 InferenceBackend::Native => {
                     match native_engine_client.generate(
                     &current_model, &req.message, exec_tokens,
