@@ -2895,35 +2895,58 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         let exec_tokens = chat_exec_token_budget(requested_exec_tokens);
         let exec_micro_batch = chat_exec_micro_batch();
 
-        let (response_text, real_inference, backend_used) = match inference_backend {
-            InferenceBackend::Ollama => match ollama_client
-                .generate(
-                    &current_model,
-                    &req.message,
-                    temp,
-                    top_p,
-                    top_k,
-                    penalty,
-                    exec_tokens,
-                )
-                .await
-            {
-                Ok(text) => (
-                    text.trim().to_string(),
-                    true,
-                    InferenceBackend::Ollama.as_str(),
-                ),
-                Err(_) => {
-                    let fallback = format!(
-                        "Inference backend '{}' unavailable. Generated degraded fallback for prompt: '{}'",
+        let (response_text, real_inference, backend_used, ollama_backend_available) =
+            match inference_backend {
+                InferenceBackend::Ollama => match ollama_client
+                    .generate(
+                        &current_model,
+                        &req.message,
+                        temp,
+                        top_p,
+                        top_k,
+                        penalty,
+                        exec_tokens,
+                    )
+                    .await
+                {
+                    Ok(text) => (
+                        text.trim().to_string(),
+                        true,
                         InferenceBackend::Ollama.as_str(),
-                        req.message
-                    );
-                    (fallback, false, InferenceBackend::Ollama.as_str())
-                }
-            },
-            InferenceBackend::Native => {
-                match native_engine_client.generate(
+                        true,
+                    ),
+                    Err(err) => {
+                        let err_text = err.to_string();
+                        let is_model_not_found = err_text.contains("HTTP 404");
+                        let is_unreachable = err_text.contains("error sending request")
+                            || err_text.contains("connection refused")
+                            || err_text.contains("Connection refused")
+                            || err_text.contains("timed out");
+
+                        let fallback = if is_model_not_found {
+                            format!(
+                            "Ollama model '{}' not found (HTTP 404). Pull or retag the model, then retry prompt '{}'.",
+                            current_model, req.message
+                        )
+                        } else {
+                            format!(
+                            "Inference backend '{}' unavailable. Generated degraded fallback for prompt: '{}'. Error: {}",
+                            InferenceBackend::Ollama.as_str(),
+                            req.message,
+                            err_text
+                        )
+                        };
+
+                        (
+                            fallback,
+                            false,
+                            InferenceBackend::Ollama.as_str(),
+                            !is_unreachable,
+                        )
+                    }
+                },
+                InferenceBackend::Native => {
+                    match native_engine_client.generate(
                     &current_model, &req.message, exec_tokens,
                     temp, top_p, top_k, penalty,
                 ) {
@@ -2931,6 +2954,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                         gen.text,
                         gen.real_inference,
                         InferenceBackend::Native.as_str(),
+                        true,
                     ),
                     Err(err) => (
                         format!(
@@ -2939,14 +2963,15 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                         ),
                         false,
                         InferenceBackend::Native.as_str(),
+                        false,
                     ),
                 }
-            }
-        };
+                }
+            };
 
-        {
+        if inference_backend == InferenceBackend::Ollama {
             let mut available_flag = ollama_available.lock().await;
-            *available_flag = real_inference;
+            *available_flag = ollama_backend_available;
         }
 
         let nodes = cluster.nodes();

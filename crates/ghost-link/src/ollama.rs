@@ -4,6 +4,7 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::error::Error;
+use std::io;
 use std::pin::Pin;
 use tokio::sync::mpsc;
 
@@ -241,6 +242,18 @@ impl OllamaClient {
             .json(&payload)
             .send()
             .await?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp
+                .text()
+                .await
+                .unwrap_or_else(|_| "<unreadable body>".to_string());
+            return Err(Box::new(io::Error::other(format!(
+                "Ollama generate failed: HTTP {} - {}",
+                status, body
+            ))));
+        }
 
         let data: OllamaResponse = resp.json().await?;
         Ok(data.response)
