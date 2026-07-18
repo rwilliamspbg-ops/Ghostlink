@@ -161,6 +161,58 @@ $env:GHOSTLINK_COMPUTE_CAPABILITY="gpu"
 | `launch-complete.bat` | Starts backend, llama-server, and React GUI |
 | `check_hardware.ps1` | Diagnostic — shows detected GPU, NPU, and component status |
 
+## Troubleshooting: Ollama 404 on /api/generate
+
+If Ollama logs show:
+- `GET /api/tags` returns `200`, and
+- `POST /api/generate` returns `404`,
+
+then Ollama is reachable, but the model name/tag sent to generate is not resolvable.
+
+1. Check installed Ollama tags:
+
+```powershell
+ollama list
+```
+
+```bash
+ollama list
+```
+
+2. Verify tags through API:
+
+```powershell
+curl http://127.0.0.1:11434/api/tags
+```
+
+```bash
+curl http://127.0.0.1:11434/api/tags
+```
+
+3. Pull the exact tag you plan to use:
+
+```powershell
+ollama pull qwen2.5:3b
+```
+
+```bash
+ollama pull qwen2.5:3b
+```
+
+4. Select that exact tag in Ghostlink before sending chat requests.
+
+5. If logs show warnings about overridden device visibility, temporarily clear the override and restart services:
+
+```powershell
+setx HSA_OVERRIDE_GFX_VERSION ""
+```
+
+```bash
+unset HSA_OVERRIDE_GFX_VERSION
+```
+
+6. Restart Ollama and Ghostlink after model or environment changes.
+
 ## Usage (Developer)
 
 ### CLI Commands
