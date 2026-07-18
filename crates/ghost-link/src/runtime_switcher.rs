@@ -307,7 +307,10 @@ mod tests {
 
         manager.set_backend_env(&ComputeBackend::Cpu).unwrap();
 
-        assert_eq!(std::env::var("OLLAMA_NUM_THREAD").ok(), Some("16".to_string()));
+        assert_eq!(
+            std::env::var("OLLAMA_NUM_THREAD").ok(),
+            Some("16".to_string())
+        );
         assert_eq!(
             std::env::var("OLLAMA_GPU_MEMORY").ok(),
             Some("0".to_string())
@@ -356,9 +359,7 @@ mod tests {
         // Should timeout
         let result = tracker.drain(Duration::from_millis(100)).await;
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .contains("Request drain timeout"));
+        assert!(result.unwrap_err().contains("Request drain timeout"));
 
         tracker.decrement().await;
     }

@@ -26,7 +26,7 @@ impl NativeEngineClient {
     pub fn load_model_into_slot(&self, model_path: &str) -> Result<(), String> {
         let normalized_path = model_path.replace('\\', "/");
         eprintln!("[model-load] Preparing to load model: {}", normalized_path);
-        
+
         // In a real implementation, this would:
         // 1. Kill the current llama-server process
         // 2. Get llama-server binary path and launch flags from environment
@@ -36,11 +36,13 @@ impl NativeEngineClient {
         //
         // For now, we just log a note since restarting llama-server from the backend
         // would require careful process management and coordination with the launch script.
-        
+
         eprintln!("[model-load] NOTE: llama-server requires restart for model switching");
-        eprintln!("[model-load] Current model: use 'tinyllama-1.1b-chat', 'gemma-4-E4B-it-Q4_K_M', etc.");
+        eprintln!(
+            "[model-load] Current model: use 'tinyllama-1.1b-chat', 'gemma-4-E4B-it-Q4_K_M', etc."
+        );
         eprintln!("[model-load] Workaround: Manually restart llama-server with desired model");
-        
+
         Ok(())
     }
 
