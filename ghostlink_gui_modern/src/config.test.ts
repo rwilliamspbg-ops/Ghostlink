@@ -108,7 +108,7 @@ describe('Config Validation', () => {
       }
     });
 
-    it('should reject invalid tcp_max_inflight minimum', () => {
+    it('should reject tcp_max_inflight minimum', () => {
       const result = validateConfig({ ...defaultConfig, tcp_max_inflight: 0 });
       expect(result.success).toBe(false);
     });
@@ -119,6 +119,8 @@ describe('Config Validation', () => {
         inference_backend: 'ollama',
         temperature: 0.8,
         top_p: 0.95,
+        top_k: 32,
+        repeat_penalty: 1.05,
         max_tokens: 4096,
         chat_micro_batch: 4,
       };
@@ -158,7 +160,7 @@ describe('Config Validation', () => {
       if (result.success) {
         expect(result.data.inference_backend).toBe('ollama');
         expect(result.data.api_port).toBe(8003);
-        expect(result.data.chat_exec_tokens).toBe(512);
+        expect(result.data.top_k).toBe(40);
       }
     });
   });

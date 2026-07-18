@@ -1,25 +1,18 @@
-//! Phase 4: Backend Configuration & Persistence
-//! Implements saving/loading backend preferences to/from ghostlink.toml
-
-#![allow(dead_code)] // Public API for config management
+//! Backend configuration and persistence for compute preferences.
 
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 use crate::backend_registry::ComputeBackend;
 
-/// Compute backend configuration section for ghostlink.toml
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ComputeConfig {
-    /// Preferred backend (rocm, cuda, oneapi, metal, cpu)
+    #[serde(default)]
     pub preferred_backend: Option<String>,
-    /// Enable automatic backend discovery
     #[serde(default = "default_auto_discover")]
     pub auto_discover: bool,
-    /// GPU memory allocation percentage (0.0-1.0)
     #[serde(default = "default_gpu_memory_allocation")]
     pub gpu_memory_allocation: f32,
-    /// Request drain timeout in seconds
     #[serde(default = "default_request_drain_timeout_secs")]
     pub request_drain_timeout_secs: u64,
 }
@@ -36,32 +29,34 @@ fn default_request_drain_timeout_secs() -> u64 {
     30
 }
 
-impl ComputeConfig {
-    /// Create a new compute configuration with defaults
-    pub fn new() -> Self {
+impl Default for ComputeConfig {
+    fn default() -> Self {
         Self {
             preferred_backend: None,
-            auto_discover: true,
-            gpu_memory_allocation: 0.80,
-            request_drain_timeout_secs: 30,
+            auto_discover: default_auto_discover(),
+            gpu_memory_allocation: default_gpu_memory_allocation(),
+            request_drain_timeout_secs: default_request_drain_timeout_secs(),
         }
     }
+}
 
-    /// Get the preferred backend if set
-    pub fn get_preferred_backend(&self) -> Option<ComputeBackend> {
-        self.preferred_backend
-            .as_ref()
-            .and_then(|name| ComputeBackend::from_str(name))
+impl ComputeConfig {
+    pub fn new() -> Self {
+        Self::default()
     }
 
-    /// Set the preferred backend
+    pub fn get_preferred_backend(&self) -> Option<ComputeBackend> {
+        self.preferred_backend
+            .as_deref()
+            .and_then(ComputeBackend::from_str)
+    }
+
     pub fn set_preferred_backend(&mut self, backend: ComputeBackend) {
         self.preferred_backend = Some(backend.as_str().to_string());
     }
 
-    /// Validate configuration
     pub fn validate(&self) -> Result<(), String> {
-        if self.gpu_memory_allocation < 0.0 || self.gpu_memory_allocation > 1.0 {
+        if !(0.0..=1.0).contains(&self.gpu_memory_allocation) {
             return Err(format!(
                 "gpu_memory_allocation must be between 0.0 and 1.0, got {}",
                 self.gpu_memory_allocation
@@ -82,163 +77,118 @@ impl ComputeConfig {
     }
 }
 
-/// Backend configuration manager
+#[derive(Debug, Clone)]
 pub struct ConfigManager {
     config_path: PathBuf,
 }
 
 impl ConfigManager {
-    /// Create a new configuration manager
     pub fn new(config_path: impl AsRef<Path>) -> Self {
         Self {
             config_path: config_path.as_ref().to_path_buf(),
         }
     }
 
-    /// Load compute configuration from file
     pub fn load_compute_config(&self) -> Result<ComputeConfig, String> {
-        // Try to read the config file
+        if !self.config_path.exists() {
+            return Ok(ComputeConfig::default());
+        }
+
         let content = std::fs::read_to_string(&self.config_path)
             .map_err(|err| format!("Failed to read config file: {}", err))?;
 
-        // Parse as TOML
-        let config: toml::Table =
+        let root: toml::Value =
             toml::from_str(&content).map_err(|err| format!("Failed to parse TOML: {}", err))?;
 
-        // Extract [compute] section or use defaults
-        let compute_config = if let Some(compute) = config.get("compute") {
-            compute
-                .as_table()
-                .ok_or("[compute] section must be a table".to_string())?
+        if let Some(compute) = root.get("compute") {
+            let config: ComputeConfig = compute
                 .clone()
-                .try_into::<ComputeConfig>()
-                .map_err(|err| format!("Failed to parse [compute] section: {}", err))?
+                .try_into()
+                .map_err(|err| format!("Failed to parse [compute] section: {}", err))?;
+            config.validate()?;
+            Ok(config)
         } else {
-            ComputeConfig::new()
-        };
-
-        compute_config.validate()?;
-        Ok(compute_config)
+            Ok(ComputeConfig::default())
+        }
     }
 
-    /// Save compute configuration to file
-    pub fn save_compute_config(&self, config: &ComputeConfig) -> Result<(), String> {
-        config.validate()?;
-
-        // Read existing config or create new
-        let mut root: toml::Table = if self.config_path.exists() {
-            let content = std::fs::read_to_string(&self.config_path)
-                .map_err(|err| format!("Failed to read config file: {}", err))?;
-
-            toml::from_str(&content).map_err(|err| format!("Failed to parse TOML: {}", err))?
-        } else {
-            toml::Table::new()
-        };
-
-        // Serialize config to table
-        let config_json = serde_json::to_value(config)
-            .map_err(|err| format!("Failed to convert config: {}", err))?;
-
-        let compute_table = config_json
-            .as_object()
-            .ok_or("Failed to serialize compute config".to_string())?
-            .iter()
-            .map(|(k, v)| {
-                let val = match v {
-                    serde_json::Value::String(s) => toml::Value::String(s.clone()),
-                    serde_json::Value::Bool(b) => toml::Value::Boolean(*b),
-                    serde_json::Value::Number(n) => {
-                        if let Some(f) = n.as_f64() {
-                            toml::Value::Float(f)
-                        } else if let Some(i) = n.as_i64() {
-                            toml::Value::Integer(i)
-                        } else {
-                            return Err("Invalid number".to_string());
-                        }
-                    }
-                    serde_json::Value::Null => toml::Value::String(String::new()),
-                    _ => return Err("Unsupported value type".to_string()),
-                };
-                Ok((k.clone(), val))
-            })
-            .collect::<Result<toml::Table, String>>()?;
-
-        root.insert("compute".to_string(), toml::Value::Table(compute_table));
-
-        // Write back to file
-        let output = toml::to_string_pretty(&root)
-            .map_err(|err| format!("Failed to serialize TOML: {}", err))?;
-
-        std::fs::write(&self.config_path, output)
-            .map_err(|err| format!("Failed to write config file: {}", err))?;
-
-        tracing::info!(
-            "Phase4: Saved compute config to {}",
-            self.config_path.display()
-        );
-
-        Ok(())
-    }
-
-    /// Load preferred backend from config
-    pub fn load_preferred_backend(&self) -> Result<Option<ComputeBackend>, String> {
-        let config = self.load_compute_config()?;
-        Ok(config.get_preferred_backend())
-    }
-
-    /// Save preferred backend to config
     pub fn save_preferred_backend(&self, backend: ComputeBackend) -> Result<(), String> {
-        let mut config = self
-            .load_compute_config()
-            .unwrap_or_else(|_| ComputeConfig::new());
+        let mut config = self.load_compute_config().unwrap_or_default();
         config.set_preferred_backend(backend);
         self.save_compute_config(&config)
     }
+
+    pub fn load_preferred_backend(&self) -> Result<Option<ComputeBackend>, String> {
+        Ok(self.load_compute_config()?.get_preferred_backend())
+    }
+
+    pub fn save_compute_config(&self, config: &ComputeConfig) -> Result<(), String> {
+        config.validate()?;
+
+        let mut root = if self.config_path.exists() {
+            let content = std::fs::read_to_string(&self.config_path)
+                .map_err(|err| format!("Failed to read config file: {}", err))?;
+            toml::from_str::<toml::Value>(&content)
+                .map_err(|err| format!("Failed to parse TOML: {}", err))?
+                .as_table()
+                .cloned()
+                .unwrap_or_default()
+        } else {
+            toml::map::Map::new()
+        };
+
+        let compute_value = toml::Value::try_from(config)
+            .map_err(|err| format!("Failed to serialize compute config: {}", err))?;
+        root.insert("compute".to_string(), compute_value);
+
+        let output = toml::to_string_pretty(&toml::Value::Table(root))
+            .map_err(|err| format!("Failed to serialize TOML: {}", err))?;
+        std::fs::write(&self.config_path, output)
+            .map_err(|err| format!("Failed to write config file: {}", err))?;
+        Ok(())
+    }
 }
 
-/// Environment variable overrides from CLI
+#[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 pub struct CLIOverrides {
-    /// Override preferred backend from command line
     pub preferred_backend: Option<String>,
 }
 
+#[allow(dead_code)]
 impl CLIOverrides {
-    /// Create new CLI overrides
     pub fn new() -> Self {
         Self {
             preferred_backend: None,
         }
     }
 
-    /// Parse CLI arguments for backend override
     pub fn from_args(args: &[String]) -> Self {
         let mut overrides = Self::new();
+        let mut index = 0;
 
-        let mut i = 0;
-        while i < args.len() {
-            match args[i].as_str() {
+        while index < args.len() {
+            match args[index].as_str() {
                 "--backend" => {
-                    if let Some(next) = args.get(i + 1) {
+                    if let Some(next) = args.get(index + 1) {
                         overrides.preferred_backend = Some(next.clone());
-                        i += 2;
+                        index += 2;
                     } else {
-                        i += 1;
+                        index += 1;
                     }
                 }
-                _ if args[i].starts_with("--backend=") => {
+                _ if args[index].starts_with("--backend=") => {
                     overrides.preferred_backend =
-                        Some(args[i].trim_start_matches("--backend=").to_string());
-                    i += 1;
+                        Some(args[index].trim_start_matches("--backend=").to_string());
+                    index += 1;
                 }
-                _ => i += 1,
+                _ => index += 1,
             }
         }
 
         overrides
     }
 
-    /// Get effective backend (CLI override takes precedence)
     pub fn get_effective_backend(
         &self,
         config_backend: Option<ComputeBackend>,
@@ -246,6 +196,7 @@ impl CLIOverrides {
         if let Some(backend_str) = &self.preferred_backend {
             return ComputeBackend::from_str(backend_str);
         }
+
         config_backend
     }
 }
@@ -254,12 +205,24 @@ impl CLIOverrides {
 mod tests {
     use super::*;
 
+    fn temp_config_path() -> PathBuf {
+        let suffix = format!(
+            "ghostlink-compute-{}-{}.toml",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        std::env::temp_dir().join(suffix)
+    }
+
     #[test]
-    fn test_compute_config_new() {
-        let config = ComputeConfig::new();
+    fn test_compute_config_defaults() {
+        let config = ComputeConfig::default();
+        assert!(config.auto_discover);
         assert_eq!(config.gpu_memory_allocation, 0.80);
         assert_eq!(config.request_drain_timeout_secs, 30);
-        assert!(config.auto_discover);
         assert!(config.preferred_backend.is_none());
     }
 
@@ -290,6 +253,21 @@ mod tests {
     }
 
     #[test]
+    fn test_config_manager_save_and_load_preferred_backend() {
+        let path = temp_config_path();
+        let manager = ConfigManager::new(&path);
+
+        manager
+            .save_preferred_backend(ComputeBackend::Rocm)
+            .unwrap();
+
+        let loaded = manager.load_preferred_backend().unwrap();
+        assert_eq!(loaded, Some(ComputeBackend::Rocm));
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
     fn test_cli_overrides_from_args() {
         let args = [
             "cmd".to_string(),
@@ -314,16 +292,12 @@ mod tests {
     fn test_cli_overrides_get_effective_backend() {
         let mut overrides = CLIOverrides::new();
 
-        // No override, no config
         assert!(overrides.get_effective_backend(None).is_none());
-
-        // No override, with config
         assert_eq!(
             overrides.get_effective_backend(Some(ComputeBackend::Rocm)),
             Some(ComputeBackend::Rocm)
         );
 
-        // Override takes precedence
         overrides.preferred_backend = Some("cpu".to_string());
         assert_eq!(
             overrides.get_effective_backend(Some(ComputeBackend::Rocm)),
@@ -357,13 +331,5 @@ mod tests {
 
         let overrides = CLIOverrides::from_args(&args[1..]);
         assert!(overrides.preferred_backend.is_none());
-    }
-
-    #[test]
-    fn test_compute_config_defaults() {
-        let _config = ComputeConfig::new();
-        assert!(default_auto_discover());
-        assert_eq!(default_gpu_memory_allocation(), 0.80);
-        assert_eq!(default_request_drain_timeout_secs(), 30);
     }
 }

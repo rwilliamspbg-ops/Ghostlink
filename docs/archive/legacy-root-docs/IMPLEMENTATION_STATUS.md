@@ -1,5 +1,9 @@
 # 🎉 GPU/CPU AUTO-DISCOVERY PROJECT - PHASE 1 COMPLETE
 
+## Current Status
+
+This file started as a Phase 1 completion note. The codebase has since grown through the backend API, runtime switcher, config persistence, and GUI selector work, so the remaining sections below are best read as the original phase history rather than the current project state.
+
 ## Executive Summary
 
 We've successfully completed **Phase 1: Backend Registry & Discovery** of the GPU/CPU auto-discovery and runtime switching system.
@@ -85,9 +89,9 @@ All passing (6/6):
 
 ---
 
-## Next Phases (Ready to Implement)
+## Next Phases
 
-### Phase 2: API Endpoints (2-3 hours)
+### Phase 2: API Endpoints
 REST endpoints for backend control:
 ```http
 GET /api/backends
@@ -101,11 +105,16 @@ GET /api/backends/{name}/status
   → Returns current health/utilization
 ```
 
+**Status:** ✅ Complete
+**Validation:** Backend handler tests passing, including HTTP-level route checks for `/api/backends`, `/api/backends/switch`, and `/api/backends/:name/status`
+
 ### Phase 3: Runtime Switching (2-3 hours)
 - Graceful request draining (30s timeout)
 - Environment variable updates (HIP_PLATFORM, HSA_OVERRIDE_GFX_VERSION, etc)
 - Process restart (Ollama or native llama-server)
 - Error handling & automatic rollback
+
+**Status:** Implemented in the runtime switcher layer; engine-specific restart behavior remains intentionally conservative when a full restart is required.
 
 ### Phase 4: Config & Persistence (1 hour)
 ```toml
@@ -115,11 +124,15 @@ auto_discover = true
 gpu_memory_allocation = 0.80
 ```
 
+**Status:** Implemented
+
 ### Phase 5: GUI Integration (2-3 hours)
 - Backend selector in Settings tab
 - Display available backends with specs
 - One-click switching UI
 - Real-time status display
+
+**Status:** Implemented
 
 ---
 
@@ -235,6 +248,8 @@ gpu_memory_allocation = 0.80
 
 ## Next Session Quick Start
 
+If you are extending the backend system further, the next useful targets are richer telemetry, broader e2e coverage, and any engine-specific restart refinements.
+
 To continue with Phase 2 (API Endpoints):
 
 1. Review `GPU_CPU_SWITCHING_PLAN.md` sections for Phase 2
@@ -265,16 +280,16 @@ cc196e9 fix: LSP, llama-server GPU offload, model loading, and launch scripts
 | **1** | Backend Registry | ✅ COMPLETE |
 | **1** | Auto-detection | ✅ COMPLETE |
 | **1** | Unit Tests | ✅ COMPLETE |
-| **2** | API Endpoints | ⏳ READY |
-| **3** | Runtime Switching | ⏳ READY |
-| **4** | Config & Persistence | ⏳ READY |
-| **5** | GUI Integration | ⏳ READY |
+| **2** | API Endpoints | ✅ COMPLETE |
+| **3** | Runtime Switching | ✅ COMPLETE |
+| **4** | Config & Persistence | ✅ COMPLETE |
+| **5** | GUI Integration | ✅ COMPLETE |
 
 ---
 
 ## Conclusion
 
-Phase 1 is production-ready with full auto-discovery of GPU and CPU backends. The system is now capable of:
+The full backend-switching stack is now implemented with production-ready discovery, API, config, and GUI layers. The system is now capable of:
 
 🎯 Detecting all available compute accelerators  
 🎯 Querying detailed device information  
@@ -282,6 +297,4 @@ Phase 1 is production-ready with full auto-discovery of GPU and CPU backends. Th
 🎯 Programmatically switching backends  
 🎯 Getting real-time health metrics  
 
-Phases 2-5 are documented and ready for implementation. The groundwork is solid with comprehensive testing and clean architecture for easy extension.
-
-**Ready for Phase 2: API Endpoints** 🚀
+All five phases are present in the repository. The main remaining work is future enhancement rather than basic implementation.

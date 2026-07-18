@@ -56,6 +56,7 @@ pub struct BackendStatus {
     pub temperature: Option<f32>, // celsius
 }
 
+#[derive(Debug)]
 pub struct BackendRegistry {
     backends: Arc<Mutex<Vec<BackendInfo>>>,
     current: Arc<Mutex<ComputeBackend>>,

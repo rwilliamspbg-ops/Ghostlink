@@ -1,5 +1,9 @@
 # GPU/CPU AUTO-DISCOVERY & RUNTIME SWITCHING - IMPLEMENTATION STATUS
 
+## Current Project State
+
+This document was originally written when only Phase 1 existed. The repository now includes the backend API, runtime switcher, config persistence, and GUI selector work as well, so the remaining sections should be treated as historical context for the original phase rollout.
+
 ## ✅ COMPLETED
 
 ### Phase 1: Backend Registry & Discovery
@@ -33,8 +37,8 @@ test result: ok. 6 passed; 0 failed
 ## ⏳ REMAINING WORK (Due to Token Limits)
 
 ### Phase 2: API Endpoints
-**Status:** NOT STARTED
-**Effort:** 2-3 hours
+**Status:** Complete
+**Effort:** 2-3 hours (historical estimate)
 **Tasks:**
 - [ ] Add `/api/backends` endpoint (GET) - list available backends
 - [ ] Add `/api/backends/switch` endpoint (POST) - switch backends
@@ -53,8 +57,8 @@ app.at("/api/backends").get(|_| async {
 ```
 
 ### Phase 3: Runtime Switching
-**Status:** NOT STARTED
-**Effort:** 2-3 hours
+**Status:** Complete
+**Effort:** 2-3 hours (historical estimate)
 **Tasks:**
 - [ ] Implement request draining logic
 - [ ] Update environment variables on switch
@@ -62,16 +66,16 @@ app.at("/api/backends").get(|_| async {
 - [ ] Error handling & rollback
 
 ### Phase 4: Config & Persistence
-**Status:** NOT STARTED
-**Effort:** 1 hour
+**Status:** Complete
+**Effort:** 1 hour (historical estimate)
 **Tasks:**
 - [ ] Add `[compute]` section to ghostlink.toml
 - [ ] Load/persist backend preference
 - [ ] CLI override support
 
 ### Phase 5: GUI Integration
-**Status:** NOT STARTED
-**Effort:** 2-3 hours
+**Status:** Complete
+**Effort:** 2-3 hours (historical estimate)
 **Tasks:**
 - [ ] Add "Compute Backend" section to SettingsTab.tsx
 - [ ] Display available backends with specs
@@ -128,23 +132,22 @@ let status = registry.get_status(&ComputeBackend::Cpu);
 
 ## NEXT STEPS (Priority Order)
 
-1. **Phase 2: API Endpoints** (2-3 hours)
-   - Add three REST endpoints for backend querying & switching
-   - Enables CLI/programmatic control
+1. **Future enhancements** (optional)
+   - Expand backend telemetry
+   - Add broader switching e2e coverage
+   - Add any new backend types that need special handling
 
-2. **Phase 3: Runtime Switching** (2-3 hours)
-   - Implement graceful request draining
-   - Environment variable updates
-   - Process restart logic
+2. **Operational hardening** (optional)
+   - Tighten restart orchestration if a backend needs a full process restart
+   - Add more diagnostics around failed backend transitions
 
-3. **Phase 5: GUI Integration** (2-3 hours)
-   - Backend selector in Settings
-   - Real-time backend information display
-   - One-click switching
+3. **UI polish** (optional)
+   - Refine backend status presentation
+   - Add more contextual help for the selector
 
-4. **Phase 4: Config & Persistence** (1 hour)
-   - Save user's preferred backend
-   - Auto-load on next startup
+4. **Config polish** (optional)
+   - Add more user-facing override controls if needed
+   - Extend preference persistence to additional runtime knobs
 
 ---
 
@@ -173,13 +176,10 @@ When complete, the system will support:
 
 ## ESTIMATED COMPLETION
 
-- **Phase 2 (API):** 1-2 days
-- **Phase 3 (Runtime):** 1-2 days
-- **Phase 5 (GUI):** 1-2 days
-- **Phase 4 (Config):** 3-4 hours
-- **Testing & Bug fixes:** 1 day
+- **Future enhancements:** only if new backend types or additional telemetry are added
+- **Testing & Bug fixes:** ongoing
 
-**Total: ~5-7 days for full production system**
+**Total: already implemented for the current backend-switching stack**
 
 ---
 
@@ -187,3 +187,5 @@ When complete, the system will support:
 
 Plan details saved to: `GPU_CPU_SWITCHING_PLAN.md`
 Backend registry test results: 6/6 passing
+
+The phase 1 foundation now feeds the implemented API, runtime switcher, config persistence, and GUI selector elsewhere in the repository.

@@ -36,7 +36,7 @@ use std::net::{Shutdown, SocketAddr, TcpStream, ToSocketAddrs};
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::{Child, Command};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -1674,10 +1674,6 @@ struct OllamaModelRequest {
     model: String,
 }
 #[derive(Debug, Deserialize)]
-struct OllamaNameRequest {
-    name: String,
-}
-#[derive(Debug, Deserialize)]
 struct OllamaCreateRequest {
     name: String,
     modelfile: String,
@@ -1708,6 +1704,10 @@ struct OllamaChatRequest {
     repeat_penalty: Option<f32>,
     #[allow(dead_code)]
     max_tokens: Option<usize>,
+}
+#[derive(Debug, Deserialize)]
+struct OllamaNameRequest {
+    name: String,
 }
 #[derive(Debug, Deserialize)]
 struct WorkerAddRequest {
@@ -1812,6 +1812,9 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                     .map(str::to_owned)
             })
             .unwrap_or_default();
+
+        let request_tracker = active_runtime_switcher().request_tracker().clone();
+        request_tracker.increment().await;
 
         let (model, cluster, chat_req_id, inference_backend, native_engine_client) = {
             let mut backend = lock_state(&state);
@@ -1928,7 +1931,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             },
         };
 
-        Json(ChatCompletionResponse {
+        let response = Json(ChatCompletionResponse {
             id: format!("chatcmpl-{}", rand::random::<u32>()),
             object: "chat.completion".to_string(),
             created: SystemTime::now()
@@ -1946,7 +1949,10 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                 }),
                 finish_reason: "stop".to_string(),
             }],
-        })
+        });
+
+        request_tracker.decrement().await;
+        response
     }
 
     fn detect_quantization(filename: &str) -> String {
@@ -2170,6 +2176,85 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         if requested_model.is_empty() {
             return Json(serde_json::json!({ "error": "model cannot be empty" }));
         }
+
+        let (inference_backend, ollama_client, ollama_available) = {
+            let backend = lock_state(&state);
+            (
+                backend.inference_backend,
+                backend.ollama_client.clone(),
+                Arc::clone(&backend.ollama_available),
+            )
+        };
+
+        let selected_model = if inference_backend == InferenceBackend::Ollama {
+            let resolve_model = |requested: &str, available: &[String]| -> Option<String> {
+                if available.iter().any(|m| m == requested) {
+                    return Some(requested.to_string());
+                }
+
+                if let Some(found) = available.iter().find(|m| m.eq_ignore_ascii_case(requested)) {
+                    return Some(found.clone());
+                }
+
+                if !requested.contains(':') {
+                    let prefix = format!("{}:", requested.to_ascii_lowercase());
+                    if let Some(found) = available
+                        .iter()
+                        .find(|m| m.to_ascii_lowercase().starts_with(&prefix))
+                    {
+                        return Some(found.clone());
+                    }
+                }
+
+                None
+            };
+
+            let available_models_result: Result<Vec<String>, String> = ollama_client
+                .list_models()
+                .await
+                .map_err(|err| err.to_string());
+
+            let available_models = match available_models_result {
+                Ok(models) => models,
+                Err(err_text) => {
+                    let mut available_flag = ollama_available.lock().await;
+                    *available_flag = false;
+                    return Json(serde_json::json!({
+                        "error": format!("failed to query ollama models: {}", err_text),
+                    }));
+                }
+            };
+
+            match resolve_model(&requested_model, &available_models) {
+                Some(model_name) => {
+                    if let Err(err) = ollama_client.show_model(&model_name).await {
+                        return Json(serde_json::json!({
+                            "error": format!("model '{}' failed preflight: {}", model_name, err),
+                        }));
+                    }
+                    let mut available_flag = ollama_available.lock().await;
+                    *available_flag = true;
+                    model_name
+                }
+                None => {
+                    let shown = available_models.iter().take(6).cloned().collect::<Vec<_>>();
+                    let available_hint = if shown.is_empty() {
+                        "<no installed models>".to_string()
+                    } else {
+                        shown.join(", ")
+                    };
+                    return Json(serde_json::json!({
+                        "error": format!(
+                            "model '{}' is not installed in Ollama. Available: {}",
+                            requested_model, available_hint
+                        ),
+                    }));
+                }
+            }
+        } else {
+            requested_model.clone()
+        };
+
         let mut backend = lock_state(&state);
 
         // Merge local scans so we can find local_path for locally-downloaded models
@@ -2183,7 +2268,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         let local_path = backend
             .models
             .iter()
-            .find(|m| m.name == requested_model)
+            .find(|m| m.name == selected_model)
             .and_then(|m| {
                 if m.local_path.is_empty() {
                     None
@@ -2211,12 +2296,12 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             if m.status == "Loaded" {
                 m.status = "Ready".to_string();
             }
-            if m.name == requested_model {
+            if m.name == selected_model {
                 m.status = "Loaded".to_string();
             }
         }
 
-        backend.current_model = requested_model.clone();
+        backend.current_model = selected_model.clone();
         save_persistent_models(&backend.models);
 
         Json(serde_json::json!({
@@ -2343,17 +2428,41 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         State(state): State<Arc<Mutex<BackendState>>>,
         Path(model_name): Path<String>,
     ) -> Json<serde_json::Value> {
+        let requested = model_name.trim().to_string();
+        if requested.is_empty() {
+            return Json(serde_json::json!({ "error": "model cannot be empty" }));
+        }
+
+        let (inference_backend, ollama_client, ollama_available) = {
+            let backend = lock_state(&state);
+            (
+                backend.inference_backend,
+                backend.ollama_client.clone(),
+                Arc::clone(&backend.ollama_available),
+            )
+        };
+
+        if inference_backend == InferenceBackend::Ollama {
+            if let Err(err) = ollama_client.unload_model(&requested).await {
+                return Json(serde_json::json!({
+                    "error": format!("failed to unload model '{}' from ollama: {}", requested, err),
+                }));
+            }
+            let mut available_flag = ollama_available.lock().await;
+            *available_flag = true;
+        }
+
         let mut backend = lock_state(&state);
         for m in &mut backend.models {
-            if m.name == model_name && m.status == "Loaded" {
+            if m.name == requested && m.status == "Loaded" {
                 m.status = "Ready".to_string();
             }
         }
-        if backend.current_model == model_name {
+        if backend.current_model == requested {
             backend.current_model = "none".to_string();
         }
         save_persistent_models(&backend.models);
-        Json(serde_json::json!({ "status": "ok", "model": model_name }))
+        Json(serde_json::json!({ "status": "ok", "model": requested }))
     }
 
     async fn handle_gui_models_search_hf(
@@ -2541,10 +2650,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
 
         match ollama_client.list_models_detailed().await {
             Ok(models) => Json(serde_json::json!({ "models": models })),
-            Err(err) => Json(serde_json::json!({
-                "models": [],
-                "error": format!("failed to list Ollama models: {}", err),
-            })),
+            Err(err) => Json(serde_json::json!({ "models": [], "error": err.to_string() })),
         }
     }
 
@@ -2552,8 +2658,8 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         State(state): State<Arc<Mutex<BackendState>>>,
         Json(req): Json<OllamaModelRequest>,
     ) -> Json<serde_json::Value> {
-        let model_name = req.model.trim().to_string();
-        if model_name.is_empty() {
+        let model = req.model.trim().to_string();
+        if model.is_empty() {
             return Json(serde_json::json!({ "error": "model cannot be empty" }));
         }
 
@@ -2562,12 +2668,9 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             backend.ollama_client.clone()
         };
 
-        match ollama_client.pull_model(&model_name).await {
-            Ok(response) => Json(serde_json::json!({ "status": "success", "detail": response })),
-            Err(err) => Json(serde_json::json!({
-                "status": "error",
-                "error": format!("failed to pull model '{}': {}", model_name, err),
-            })),
+        match ollama_client.pull_model(&model).await {
+            Ok(result) => Json(serde_json::json!({ "status": "ok", "result": result })),
+            Err(err) => Json(serde_json::json!({ "error": err.to_string() })),
         }
     }
 
@@ -2585,15 +2688,19 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             backend.ollama_client.clone()
         };
 
-        let progress_stream =
-            match ollama_client.pull_model_stream(&model_name).await {
-                Ok(stream) => stream,
-                Err(err) => return Json(serde_json::json!({
+        let progress_stream = match ollama_client.pull_model_stream(&model_name).await {
+            Ok(stream) => stream,
+            Err(err) => {
+                return Json(serde_json::json!({
                     "status": "error",
-                    "error": format!("failed to start pull stream for '{}': {}", model_name, err),
+                    "error": format!(
+                        "failed to start pull stream for '{}': {}",
+                        model_name, err
+                    ),
                 }))
-                .into_response(),
-            };
+                .into_response()
+            }
+        };
 
         let (tx, rx) = tokio::sync::mpsc::channel::<Result<Event, Infallible>>(16);
 
@@ -2636,8 +2743,8 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         State(state): State<Arc<Mutex<BackendState>>>,
         Json(req): Json<OllamaModelRequest>,
     ) -> Json<serde_json::Value> {
-        let model_name = req.model.trim().to_string();
-        if model_name.is_empty() {
+        let model = req.model.trim().to_string();
+        if model.is_empty() {
             return Json(serde_json::json!({ "error": "model cannot be empty" }));
         }
 
@@ -2646,11 +2753,15 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             backend.ollama_client.clone()
         };
 
-        match ollama_client.show_model(&model_name).await {
-            Ok(info) => Json(serde_json::json!(info)),
-            Err(err) => Json(serde_json::json!({
-                "error": format!("failed to show model '{}': {}", model_name, err),
-            })),
+        match ollama_client.show_model(&model).await {
+            Ok(info) => {
+                let modelfile = info.modelfile.clone();
+                Json(serde_json::json!({
+                    "info": info,
+                    "modelfile": modelfile,
+                }))
+            }
+            Err(err) => Json(serde_json::json!({ "error": err.to_string() })),
         }
     }
 
@@ -2719,11 +2830,8 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         };
 
         match ollama_client.delete_model(&name).await {
-            Ok(detail) => Json(serde_json::json!({ "status": "success", "detail": detail })),
-            Err(err) => Json(serde_json::json!({
-                "status": "error",
-                "error": format!("failed to delete model '{}': {}", name, err),
-            })),
+            Ok(result) => Json(serde_json::json!({ "status": "ok", "result": result })),
+            Err(err) => Json(serde_json::json!({ "error": err.to_string() })),
         }
     }
 
@@ -2890,129 +2998,105 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             .clamp(16, 4096);
         let exec_tokens = chat_exec_token_budget(requested_exec_tokens);
         let exec_micro_batch = chat_exec_micro_batch();
+        let request_tracker = active_runtime_switcher().request_tracker().clone();
+        request_tracker.increment().await;
 
-        let (response_text, real_inference, backend_used, ollama_backend_available) =
-            match inference_backend {
-                InferenceBackend::Ollama => {
-                    let is_unreachable = |err_text: &str| {
-                        err_text.contains("error sending request")
-                            || err_text.contains("connection refused")
-                            || err_text.contains("Connection refused")
-                            || err_text.contains("timed out")
-                    };
+        let (response_text, real_inference, backend_used) = match inference_backend {
+            InferenceBackend::Ollama => {
+                let resolve_model = |requested: &str, available: &[String]| -> Option<String> {
+                    if available.iter().any(|m| m == requested) {
+                        return Some(requested.to_string());
+                    }
 
-                    let resolve_model = |requested: &str, available: &[String]| -> Option<String> {
-                        if available.iter().any(|m| m == requested) {
-                            return Some(requested.to_string());
-                        }
+                    if let Some(found) =
+                        available.iter().find(|m| m.eq_ignore_ascii_case(requested))
+                    {
+                        return Some(found.clone());
+                    }
 
-                        if let Some(found) =
-                            available.iter().find(|m| m.eq_ignore_ascii_case(requested))
+                    if !requested.contains(':') {
+                        let prefix = format!("{}:", requested.to_ascii_lowercase());
+                        if let Some(found) = available
+                            .iter()
+                            .find(|m| m.to_ascii_lowercase().starts_with(&prefix))
                         {
                             return Some(found.clone());
                         }
+                    }
 
-                        if !requested.contains(':') {
-                            let prefix = format!("{}:", requested.to_ascii_lowercase());
-                            if let Some(found) = available
-                                .iter()
-                                .find(|m| m.to_ascii_lowercase().starts_with(&prefix))
+                    None
+                };
+
+                let available_models_result: Result<Vec<String>, String> = ollama_client
+                    .list_models()
+                    .await
+                    .map_err(|err| err.to_string());
+
+                match available_models_result {
+                    Ok(available_models) => {
+                        let effective_model = resolve_model(&current_model, &available_models);
+                        if let Some(model_name) = effective_model {
+                            match ollama_client
+                                .generate(
+                                    &model_name,
+                                    &req.message,
+                                    temp,
+                                    top_p,
+                                    top_k,
+                                    penalty,
+                                    exec_tokens,
+                                )
+                                .await
                             {
-                                return Some(found.clone());
-                            }
-                        }
-
-                        None
-                    };
-
-                    let available_models_result: Result<Vec<String>, String> = ollama_client
-                        .list_models()
-                        .await
-                        .map_err(|err| err.to_string());
-
-                    match available_models_result {
-                        Ok(available_models) => {
-                            if let Some(effective_model) =
-                                resolve_model(&current_model, &available_models)
-                            {
-                                match ollama_client
-                                    .generate(
-                                        &effective_model,
-                                        &req.message,
-                                        temp,
-                                        top_p,
-                                        top_k,
-                                        penalty,
-                                        exec_tokens,
-                                    )
-                                    .await
-                                {
-                                    Ok(text) => (
+                                Ok(text) => {
+                                    if model_name != current_model {
+                                        let mut backend = lock_state(&state);
+                                        backend.current_model = model_name;
+                                    }
+                                    (
                                         text.trim().to_string(),
                                         true,
                                         InferenceBackend::Ollama.as_str(),
-                                        true,
-                                    ),
-                                    Err(err) => {
-                                        let err_text = err.to_string();
-                                        let is_model_not_found = err_text.contains("HTTP 404");
-
-                                        let fallback = if is_model_not_found {
-                                            format!(
-                                                "Ollama model '{}' not found (HTTP 404). Pull or retag the model, then retry prompt '{}'.",
-                                                effective_model, req.message
-                                            )
-                                        } else {
-                                            format!(
-                                                "Inference backend '{}' unavailable. Generated degraded fallback for prompt: '{}'. Error: {}",
-                                                InferenceBackend::Ollama.as_str(),
-                                                req.message,
-                                                err_text
-                                            )
-                                        };
-
-                                        (
-                                            fallback,
-                                            false,
-                                            InferenceBackend::Ollama.as_str(),
-                                            !is_unreachable(&err_text),
-                                        )
-                                    }
+                                    )
                                 }
-                            } else {
-                                let shown =
-                                    available_models.iter().take(6).cloned().collect::<Vec<_>>();
-                                let available_hint = if shown.is_empty() {
-                                    "<no installed models>".to_string()
-                                } else {
-                                    shown.join(", ")
-                                };
-
-                                (
-                                    format!(
-                                        "Ollama model '{}' is not installed. Available models: {}. Pull the model or select one from the Models tab.",
-                                        current_model, available_hint
-                                    ),
-                                    false,
-                                    InferenceBackend::Ollama.as_str(),
-                                    true,
-                                )
+                                Err(err) => {
+                                    let fallback = format!(
+                                        "Ollama generate failed for model '{}': {}",
+                                        model_name, err
+                                    );
+                                    (fallback, false, InferenceBackend::Ollama.as_str())
+                                }
                             }
-                        }
-                        Err(err_text) => (
-                            format!(
-                                "Inference backend '{}' unavailable. Failed to list Ollama models before generation. Error: {}",
+                        } else {
+                            let shown =
+                                available_models.iter().take(6).cloned().collect::<Vec<_>>();
+                            let available_hint = if shown.is_empty() {
+                                "<no installed models>".to_string()
+                            } else {
+                                shown.join(", ")
+                            };
+                            (
+                                format!(
+                                    "Configured model '{}' is not installed in Ollama. Available: {}. Pull/select an exact tag and retry.",
+                                    current_model, available_hint
+                                ),
+                                false,
                                 InferenceBackend::Ollama.as_str(),
-                                err_text
-                            ),
-                            false,
+                            )
+                        }
+                    }
+                    Err(err_text) => {
+                        let fallback = format!(
+                            "Inference backend '{}' unavailable while listing models: {}",
                             InferenceBackend::Ollama.as_str(),
-                            !is_unreachable(&err_text),
-                        ),
+                            err_text
+                        );
+                        (fallback, false, InferenceBackend::Ollama.as_str())
                     }
                 }
-                InferenceBackend::Native => {
-                    match native_engine_client.generate(
+            }
+            InferenceBackend::Native => {
+                match native_engine_client.generate(
                     &current_model, &req.message, exec_tokens,
                     temp, top_p, top_k, penalty,
                 ) {
@@ -3020,7 +3104,6 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                         gen.text,
                         gen.real_inference,
                         InferenceBackend::Native.as_str(),
-                        true,
                     ),
                     Err(err) => (
                         format!(
@@ -3029,15 +3112,14 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                         ),
                         false,
                         InferenceBackend::Native.as_str(),
-                        false,
                     ),
                 }
-                }
-            };
+            }
+        };
 
-        if inference_backend == InferenceBackend::Ollama {
+        {
             let mut available_flag = ollama_available.lock().await;
-            *available_flag = ollama_backend_available;
+            *available_flag = real_inference;
         }
 
         let nodes = cluster.nodes();
@@ -3172,6 +3254,8 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                 response_object.insert("tools_used".to_string(), serde_json::json!(tools_used));
             }
         }
+
+        request_tracker.decrement().await;
 
         if req.stream.unwrap_or(false) {
             let tokens: Vec<String> = final_response
@@ -3515,9 +3599,6 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
     println!("  - POST /api/settings");
     println!("  - POST /api/settings/reset");
     println!("  - POST /api/inference/chat");
-    println!("  - GET  /api/backends");
-    println!("  - POST /api/backends/switch");
-    println!("  - GET  /api/backends/:name/status");
 
     let profile = detect_runtime_profile("studio-api");
     let backend_url = format!("http://{}:{}", host, port);
@@ -3629,21 +3710,53 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
     let native_engine_client = native_engine::NativeEngineClient::new();
     let ollama_client = ollama::OllamaClient::new(ollama_url);
     let ollama_available = Arc::new(tokio::sync::Mutex::new(false));
+    let compute_config_manager = backend_config::ConfigManager::new("ghostlink.toml");
+    let compute_config = compute_config_manager
+        .load_compute_config()
+        .unwrap_or_else(|_| backend_config::ComputeConfig::new());
+    let preferred_backend = compute_config_manager
+        .load_preferred_backend()
+        .ok()
+        .flatten();
+    let backend_registry = {
+        let registry = backend_registry::BackendRegistry::discover();
+        if let Some(preferred_backend) = preferred_backend {
+            if registry.get_backend(&preferred_backend).is_some() {
+                let _ = registry.switch_backend(preferred_backend);
+            }
+        }
+        Arc::new(registry)
+    };
+    let runtime_switcher =
+        runtime_switcher::RuntimeSwitcher::new(runtime_switcher::SwitchingConfig {
+            request_drain_timeout: Duration::from_secs(compute_config.request_drain_timeout_secs),
+            ..runtime_switcher::SwitchingConfig::default()
+        });
+
+    let _ = ACTIVE_BACKEND_REGISTRY.set(Arc::clone(&backend_registry));
+    let _ = ACTIVE_RUNTIME_SWITCHER.set(runtime_switcher.clone());
 
     println!(
         "Inference backend selected: {} (set GHOSTLINK_INFERENCE_BACKEND=native|ollama)",
         inference_backend.as_str()
     );
 
+    let initial_model = models
+        .iter()
+        .find(|m| m.status == "Loaded")
+        .or_else(|| models.first())
+        .map(|m| m.name.clone())
+        .unwrap_or_else(|| "none".to_string());
+
     let state = Arc::new(Mutex::new(BackendState {
         models,
-        current_model: "ghostlink-30b-v1".to_string(),
+        current_model: initial_model.clone(),
         workers: vec![WorkerRecord {
             id: profile.node_resources.id.clone(),
             host: host.to_string(),
             port,
             status: "Connected".to_string(),
-            model: "ghostlink-30b-v1".to_string(),
+            model: initial_model,
             threads: profile.recommended_workers.max(1),
             load: 35,
         }],
@@ -3666,6 +3779,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             .route("/v1/chat/completions", post(handle_chat_completions))
             .route("/v1/models", get(handle_models))
             .route("/health", get(handle_health))
+            .route("/api/health", get(handle_health))
             .route("/api/models", get(handle_gui_models))
             .route("/api/models/status", get(handle_gui_model_status))
             .route("/api/models/load", post(handle_gui_model_load))
@@ -5738,6 +5852,23 @@ mod native_engine;
 mod ollama;
 mod runtime;
 mod runtime_switcher;
+
+static ACTIVE_BACKEND_REGISTRY: OnceLock<Arc<backend_registry::BackendRegistry>> = OnceLock::new();
+static ACTIVE_RUNTIME_SWITCHER: OnceLock<runtime_switcher::RuntimeSwitcher> = OnceLock::new();
+
+pub(crate) fn active_backend_registry() -> Arc<backend_registry::BackendRegistry> {
+    ACTIVE_BACKEND_REGISTRY
+        .get_or_init(|| Arc::new(backend_registry::BackendRegistry::discover()))
+        .clone()
+}
+
+pub(crate) fn active_runtime_switcher() -> runtime_switcher::RuntimeSwitcher {
+    ACTIVE_RUNTIME_SWITCHER
+        .get_or_init(|| {
+            runtime_switcher::RuntimeSwitcher::new(runtime_switcher::SwitchingConfig::default())
+        })
+        .clone()
+}
 
 // Re-export protocol module for use in main.rs
 mod protocol {

@@ -4,6 +4,19 @@ All notable changes to Ghostlink Studio are documented here.
 
 ---
 
+## [1.2.1] - 2026-07-18 (Repository Cleanup)
+
+### 🧹 Documentation Hygiene
+
+- Moved obsolete root remediation docs into `docs/archive/legacy-root-docs/` so the repository root keeps only active reference material.
+- Added `docs/archive/TESTING.md` as the archived pointer for the live top-level testing guide.
+- Updated `README.md` to prefer `launch-complete.sh` for the Linux/macOS full-stack launch path.
+- Kept the changelog and archive index aligned with the current documentation layout.
+
+### ✅ Verification
+
+- Local workflow-equivalent validation is run after this cleanup to confirm the repo remains green.
+
 ## [1.2.0] - 2026-07-15 (Reliability & Resilience)
 
 ### 🛡️ API Reliability Hardening

@@ -140,7 +140,7 @@ export class GhostlinkAPI {
 
   async deleteModel(modelName: string) {
     try {
-      const response = await this.http.delete(`/api/models/${modelName}`);
+      const response = await this.http.delete(`/api/models/${encodeURIComponent(modelName)}`);
       return { success: true, data: response.data };
     } catch (error: any) {
       return { success: false, error: error.response?.data?.error || error.message };
@@ -149,7 +149,7 @@ export class GhostlinkAPI {
 
   async unloadModel(modelName: string) {
     try {
-      const response = await this.http.post(`/api/models/${modelName}/unload`);
+      const response = await this.http.post(`/api/models/${encodeURIComponent(modelName)}/unload`);
       return { success: true, data: response.data };
     } catch (error: any) {
       return { success: false, error: error.response?.data?.error || error.message };
@@ -365,6 +365,40 @@ export class GhostlinkAPI {
         }
       }
       return { success: false, error: error.response?.data?.error || error.message };
+    }
+  }
+
+  async getBackends(): Promise<{ available: any[]; current: string; error?: string }> {
+    try {
+      const response = await this.http.get('/api/backends');
+      return {
+        available: response.data.available || [],
+        current: response.data.current || 'cpu',
+      };
+    } catch (error: any) {
+      return { available: [], current: 'cpu', error: error.response?.data?.error || error.message };
+    }
+  }
+
+  async switchBackend(backend: string): Promise<{ success: boolean; restart_required?: boolean; error?: string; data?: any }> {
+    try {
+      const response = await this.http.post('/api/backends/switch', { backend });
+      return {
+        success: true,
+        restart_required: !!response.data?.restart_required,
+        data: response.data,
+      };
+    } catch (error: any) {
+      return { success: false, error: error.response?.data?.message || error.response?.data?.error || error.message };
+    }
+  }
+
+  async getBackendStatus(name: string): Promise<{ status?: any; error?: string }> {
+    try {
+      const response = await this.http.get(`/api/backends/${encodeURIComponent(name)}/status`);
+      return { status: response.data };
+    } catch (error: any) {
+      return { error: error.response?.data?.error || error.response?.data?.message || error.message };
     }
   }
 
@@ -612,39 +646,4 @@ export class GhostlinkAPI {
     }
   }
 
-  // Phase 5: GPU/CPU Backend API Methods
-  async getBackends(): Promise<{ backends: any[]; current: string; error?: string }> {
-    try {
-      const response = await this.http.get('/api/backends');
-      return { 
-        backends: response.data.available || [], 
-        current: response.data.current || 'cpu',
-        error: undefined
-      };
-    } catch (error: any) {
-      return { backends: [], current: 'cpu', error: error.message };
-    }
-  }
-
-  async switchBackend(backend: string): Promise<{ success: boolean; message?: string; error?: string }> {
-    try {
-      const response = await this.http.post('/api/backends/switch', { backend });
-      return { 
-        success: response.data.status === 'success',
-        message: response.data.message,
-        error: response.data.error
-      };
-    } catch (error: any) {
-      return { success: false, error: error.response?.data?.error || error.message };
-    }
-  }
-
-  async getBackendStatus(backend: string): Promise<{ status: any; error?: string }> {
-    try {
-      const response = await this.http.get(`/api/backends/${backend}/status`);
-      return { status: response.data, error: undefined };
-    } catch (error: any) {
-      return { status: null, error: error.message };
-    }
-  }
 }

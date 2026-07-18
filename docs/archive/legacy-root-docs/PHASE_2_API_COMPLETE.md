@@ -2,6 +2,8 @@
 
 ## ✅ Implementation Complete
 
+The original Phase 2 API surface is implemented. The repository has also since picked up the runtime switcher, compute config persistence, and GUI backend selector, so the remaining sections below are now mostly historical integration notes.
+
 ### API Endpoints Implemented
 
 #### 1. GET `/api/backends` - List Available Backends
@@ -190,16 +192,16 @@ The API endpoints integrate with:
 
 ## Next Phase: Runtime Switching (Phase 3)
 
-Currently, the API switches the backend in memory but doesn't:
-- ❌ Drain in-flight requests
-- ❌ Update environment variables
-- ❌ Restart inference client
+The API now routes into the runtime switcher and config persistence layers. If you are extending it further, the remaining hard problems are:
+- richer engine restart handling
+- additional telemetry around live switching
+- any future backend types that need special-case orchestration
 
-**Phase 3** will implement these features by:
-1. Adding request queue tracking
+**Phase 3** was implemented by:
+1. Request queue tracking and draining
 2. Environment variable updates (HIP_PLATFORM, HSA_OVERRIDE_GFX_VERSION)
-3. Process restart logic for Ollama or native llama-server
-4. Graceful error handling and rollback
+3. Backend switch orchestration and rollback handling
+4. Persistence of the preferred backend
 
 ---
 
@@ -252,4 +254,4 @@ These endpoints are part of `/api/` namespace:
 ✅ JSON serialization/deserialization tested  
 ✅ Integration with Phase 1 registry complete  
 
-Ready for **Phase 3: Runtime Switching** →
+The runtime switcher, config persistence, and GUI selector are implemented in the codebase, so this guide is now a historical integration reference rather than a to-do list.

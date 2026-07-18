@@ -297,11 +297,12 @@ plan_resources() {
     # Backend flags
     case "$BACKEND" in
         cuda)     BACKEND_FLAGS="" ;;
-        vulkan)   BACKEND_FLAGS="--no-cuda --vulkan" ;;
+        vulkan)   BACKEND_FLAGS="--vulkan" ;;
         rocm)     BACKEND_FLAGS="" ;;
-        metal)    BACKEND_FLAGS="--no-cuda --metal" ;;
-        directml) BACKEND_FLAGS="--no-cuda --directml" ;;
-        *)        BACKEND_FLAGS="--no-cuda --no-vulkan --no-metal" ;;
+        metal)    BACKEND_FLAGS="--metal" ;;
+        directml) BACKEND_FLAGS="--directml" ;;
+        cpu)      BACKEND_FLAGS="" ;;
+        *)        BACKEND_FLAGS="" ;;
     esac
     echo "  Backend: $(echo $BACKEND | tr '[:lower:]' '[:upper:]')"
 

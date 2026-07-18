@@ -67,31 +67,47 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
     model.id.toLowerCase().includes(hfSearch.toLowerCase())
   );
 
-  const refreshModels = async () => {
+  const refreshModels = useCallback(async () => {
     setLoading(true);
     try {
       const result = await api.getModels();
       if (result.models) {
         setModels(result.models);
         if (result.current_model) setCurrentModel(result.current_model);
-      }
-      // Also fetch Ollama models
-      const ollamaResult = await api.getOllamaModels();
-      if (ollamaResult.models) {
-        setOllamaModels(ollamaResult.models);
+        setOllamaModels(
+          result.models.map((m: any) => ({
+            name: m.name,
+            size: Math.max(0, Number(m.size_gb || 0)) * 1024 * 1024 * 1024,
+            details: {
+              family: m.type || 'unknown',
+              quantization_level: m.quantization || 'unknown',
+            },
+            status: m.status || 'unknown',
+          }))
+        );
       }
     } catch (e) {
       console.error('Failed to refresh models:', e);
     }
     setLoading(false);
-  };
+  }, [api, setCurrentModel, setModels]);
+
+  useEffect(() => {
+    refreshModels();
+  }, [refreshModels]);
 
   const handleLoadModel = async (name: string) => {
     setPendingActions(prev => ({ ...prev, [name]: 'loading' }));
-    setMessage(`Setting ${name} as current model...`);
+    setMessage(`Loading ${name}...`);
     try {
-      setCurrentModel(name);
-      setMessage(`Current model set to ${name}`);
+      const result = await api.loadModel(name);
+      if (result.success) {
+        setCurrentModel(name);
+        setMessage(`Current model set to ${name}`);
+        refreshModels();
+      } else {
+        setMessage(`Error: ${result.error}`);
+      }
     } finally {
       setPendingActions(prev => {
         const newState = { ...prev };
@@ -108,7 +124,7 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
     setPendingActions(prev => ({ ...prev, [name]: 'deleting' }));
     setMessage(`Deleting ${name}...`);
     try {
-      const result = await api.deleteOllamaModel(name);
+      const result = await api.deleteModel(name);
       if (result.success) {
         setMessage(`Deleted ${name}`);
         if (name === currentModel) {
@@ -130,18 +146,9 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
   const handlePullModel = async (id: string) => {
     setPendingActions(prev => ({ ...prev, [id]: 'downloading' }));
     setMessage(`Pulling ${id}...`);
-    setDownloadProgress(prev => ({ ...prev, [id]: 0 }));
 
     try {
-      const result = await api.pullOllamaModelStream(id, (progress: any) => {
-        if (progress.completed && progress.total) {
-          const pct = progress.completed / progress.total;
-          setDownloadProgress(prev => ({ ...prev, [id]: pct }));
-        }
-        if (progress.status === 'success') {
-          setDownloadProgress(prev => ({ ...prev, [id]: 1 }));
-        }
-      });
+      const result = await api.pullOllamaModel(id);
 
       if (result.success) {
         setMessage(`Pulled ${id}`);
@@ -225,11 +232,36 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
   const handleShowModelfile = async (name: string) => {
     try {
       const result = await api.showOllamaModel(name);
-      if (result.modelfile) {
-        setShowModelfile(result.modelfile);
+      if (result.info?.modelfile) {
+        setShowModelfile(result.info.modelfile);
+      } else if (result.error) {
+        setMessage(`Error: ${result.error}`);
       }
     } catch (e) {
       setMessage(`Error fetching modelfile: ${e}`);
+    }
+  };
+
+  const handleUnloadModel = async (name: string) => {
+    setPendingActions(prev => ({ ...prev, [name]: 'unloading' }));
+    setMessage(`Unloading ${name}...`);
+    try {
+      const result = await api.unloadModel(name);
+      if (result.success) {
+        if (name === currentModel) {
+          setCurrentModel('none');
+        }
+        setMessage(`Unloaded ${name}`);
+        refreshModels();
+      } else {
+        setMessage(`Error: ${result.error}`);
+      }
+    } finally {
+      setPendingActions(prev => {
+        const newState = { ...prev };
+        delete newState[name];
+        return newState;
+      });
     }
   };
 
@@ -328,9 +360,23 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                       </div>
                       <div className="flex items-center gap-2">
                         {model.name === currentModel ? (
-                          <span className="px-3 py-1 bg-blue-600 text-white text-xs font-medium rounded-full">
-                            Active
-                          </span>
+                          <div className="flex items-center gap-2">
+                            <span className="px-3 py-1 bg-blue-600 text-white text-xs font-medium rounded-full">
+                              Active
+                            </span>
+                            <button
+                              onClick={() => handleUnloadModel(model.name)}
+                              disabled={pendingActions[model.name] === 'unloading' || loading}
+                              className="flex items-center gap-2 px-3 py-1 bg-slate-800 hover:bg-amber-600 text-xs font-medium rounded-full transition"
+                            >
+                              {pendingActions[model.name] === 'unloading' ? (
+                                <Loader size={16} className="mr-1" />
+                              ) : (
+                                <Power size={16} />
+                              )}
+                              Unload
+                            </button>
+                          </div>
                         ) : (
                           <button
                             onClick={() => handleLoadModel(model.name)}

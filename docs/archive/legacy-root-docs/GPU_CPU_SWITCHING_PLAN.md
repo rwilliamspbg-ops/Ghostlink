@@ -1,5 +1,16 @@
 # GPU/CPU Auto-Discovery & Runtime Switching - Concrete Plan
 
+## Current Implementation Snapshot
+
+The codebase has now implemented the core backend-switching path this plan originally described:
+- Backend discovery and status live in `crates/ghost-link/src/backend_registry.rs`
+- HTTP endpoints live in `crates/ghost-link/src/backend_api.rs`
+- Runtime draining / env switching lives in `crates/ghost-link/src/runtime_switcher.rs`
+- Compute preference persistence lives in `crates/ghost-link/src/backend_config.rs`
+- GUI backend selection lives in `ghostlink_gui_modern/src/components/SettingsTab.tsx`
+
+The remaining work in this document should be treated as historical planning context unless a future refactor expands the backend model further.
+
 ## Current State Analysis
 
 ### ✅ What Already Exists:
@@ -30,12 +41,9 @@
    - Already auto-detecting AMD ROCm with gfx906 mapping
 
 ### ❌ What's Missing:
-1. **Runtime backend switching** - currently static
-2. **GPU memory/VRAM tracking** - not exposed in API
-3. **Backend health/status endpoint** - not implemented
-4. **Backend availability query endpoint** - not implemented
-5. **GPU/compute preference persistence** - not stored
-6. **GUI backend selector** - not in SettingsTab
+1. **Deeper process restart orchestration** - backend switching is wired, but some runtime changes still require service restart depending on the selected engine
+2. **Expanded backend metrics** - health/status exists, but richer telemetry can still be added
+3. **Automatic cross-session migration** - preference persistence exists, but live migration across all sessions remains limited
 
 ---
 
@@ -45,6 +53,8 @@
 
 **Files to Create:**
 - `crates/ghost-link/src/backend_registry.rs` (new)
+
+**Status:** Implemented
 
 **Features:**
 ```rust
@@ -83,6 +93,8 @@ impl BackendRegistry {
 **Files to Modify:**
 - `crates/ghost-link/src/main.rs` - add routes
 
+**Status:** Implemented
+
 **New HTTP Endpoints:**
 ```
 GET /api/backends
@@ -119,6 +131,8 @@ GET /api/backends/{name}/status
    - Restart inference client (Ollama or native)
    - Return status
 
+**Status:** Implemented in the request-draining and switch-rollback layer; remaining engine-specific restart behavior is intentionally conservative.
+
 **Environment Variables to Control:**
 ```
 For ROCm:
@@ -154,6 +168,8 @@ gpu_memory_allocation = 0.80        # 80% safe threshold
 - Load from config file on startup
 - Update via API and persist to disk
 
+**Status:** Implemented
+
 ---
 
 ### Phase 5: GUI Integration
@@ -162,6 +178,8 @@ gpu_memory_allocation = 0.80        # 80% safe threshold
 - `ghostlink_gui_modern/src/components/SettingsTab.tsx` (new section)
 - `ghostlink_gui_modern/src/api.ts` - add backend API calls
 - `ghostlink_gui_modern/src/store.ts` - add backend state
+
+**Status:** Implemented
 
 **UI Components:**
 ```
@@ -191,31 +209,31 @@ GPU Memory Allocation: [========▮    ] 80%
 ## Concrete Task Breakdown
 
 ### Week 1: Foundation
-- [ ] Task 1a: Create `backend_registry.rs` with discovery
-- [ ] Task 1b: Add backend detection (rocm-smi, nvidia-smi)
-- [ ] Task 1c: Unit tests for discovery
+- [x] Task 1a: Create `backend_registry.rs` with discovery
+- [x] Task 1b: Add backend detection (rocm-smi, nvidia-smi)
+- [x] Task 1c: Unit tests for discovery
 
 ### Week 1-2: API
-- [ ] Task 2a: Add `/api/backends` endpoint
-- [ ] Task 2b: Add `/api/backends/switch` endpoint
-- [ ] Task 2c: Add health check per backend
-- [ ] Task 2d: Integration tests for switching
+- [x] Task 2a: Add `/api/backends` endpoint
+- [x] Task 2b: Add `/api/backends/switch` endpoint
+- [x] Task 2c: Add health check per backend
+- [x] Task 2d: Integration tests for switching
 
 ### Week 2: Runtime
-- [ ] Task 3a: Implement env var updates
-- [ ] Task 3b: Handle request draining on switch
-- [ ] Task 3c: Restart inference client
-- [ ] Task 3d: Error handling & rollback
+- [x] Task 3a: Implement env var updates
+- [x] Task 3b: Handle request draining on switch
+- [x] Task 3c: Restart inference client
+- [x] Task 3d: Error handling & rollback
 
 ### Week 2-3: Config
-- [ ] Task 4a: Add config section to ghostlink.toml
-- [ ] Task 4b: Load/persist backend preference
+- [x] Task 4a: Add config section to ghostlink.toml
+- [x] Task 4b: Load/persist backend preference
 - [ ] Task 4c: CLI override support
 
 ### Week 3: UI
-- [ ] Task 5a: Add SettingsTab backend selector
-- [ ] Task 5b: Call API endpoints from GUI
-- [ ] Task 5c: Display backend info & status
+- [x] Task 5a: Add SettingsTab backend selector
+- [x] Task 5b: Call API endpoints from GUI
+- [x] Task 5c: Display backend info & status
 - [ ] Task 5d: E2E testing
 
 ---

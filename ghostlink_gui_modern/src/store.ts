@@ -57,6 +57,25 @@ export interface Worker {
   load: number;
 }
 
+export interface BackendInfo {
+  name: string;
+  device_name: string;
+  vram_gb: number | null;
+  compute_capability: string;
+  driver_version: string;
+  status: string;
+}
+
+export interface BackendStatus {
+  name: string;
+  device_name: string;
+  vram_gb: number | null;
+  status: string;
+  health: string;
+  utilization: number | null;
+  temperature: number | null;
+}
+
 interface AppState {
   apiBase: string;
   backendOnline: boolean;
@@ -66,6 +85,9 @@ interface AppState {
   metrics: Metric | null;
   sessions: Session[];
   workers: Worker[];
+  backends: BackendInfo[];
+  currentBackend: string;
+  backendStatus: BackendStatus | null;
   selectedModel: string | null;
   activeTab: number;
   
@@ -77,6 +99,9 @@ interface AppState {
   setMetrics: (metrics: Metric) => void;
   setSessions: (sessions: Session[]) => void;
   setWorkers: (workers: Worker[]) => void;
+  setBackends: (backends: BackendInfo[]) => void;
+  setCurrentBackend: (backend: string) => void;
+  setBackendStatus: (status: BackendStatus | null) => void;
   setSelectedModel: (model: string | null) => void;
   setActiveTab: (tab: number) => void;
 }
@@ -90,6 +115,9 @@ export const useAppStore = create<AppState>((set) => ({
   metrics: null,
   sessions: [],
   workers: [],
+  backends: [],
+  currentBackend: 'cpu',
+  backendStatus: null,
   selectedModel: null,
   activeTab: 0,
   
@@ -101,6 +129,9 @@ export const useAppStore = create<AppState>((set) => ({
   setMetrics: (metrics) => set({ metrics }),
   setSessions: (sessions) => set({ sessions }),
   setWorkers: (workers) => set({ workers }),
+  setBackends: (backends) => set({ backends }),
+  setCurrentBackend: (currentBackend) => set({ currentBackend }),
+  setBackendStatus: (backendStatus) => set({ backendStatus }),
   setSelectedModel: (model) => set({ selectedModel: model }),
   setActiveTab: (tab) => set({ activeTab: tab }),
 }));

@@ -1,8 +1,6 @@
 //! Phase 3: Runtime Backend Switching
 //! Implements graceful backend switching with request draining, environment updates, and process restart
 
-#![allow(dead_code)] // Public API for runtime switching
-
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -207,18 +205,25 @@ impl RuntimeSwitcher {
             .drain(self.config.request_drain_timeout)
             .await?;
 
-        // Step 2: Update environment variables
+        // Step 2: Clear stale backend-specific environment variables
+        for backend_name in self.config.backend_env_vars.keys() {
+            if let Some(backend) = ComputeBackend::from_str(backend_name) {
+                let _ = self.env_manager.restore_env(&backend);
+            }
+        }
+
+        // Step 3: Update environment variables
         tracing::info!(
             "Phase3: Updating environment variables for {}",
             target_backend.as_str()
         );
         self.env_manager.set_backend_env(&target_backend)?;
 
-        // Step 3: Switch backend in registry
+        // Step 4: Switch backend in registry
         tracing::info!("Phase3: Switching backend in registry");
         registry.switch_backend(target_backend.clone())?;
 
-        // Step 4: Note: Actual process restart would happen here
+        // Step 5: Note: Actual process restart would happen here
         // For now, we return info about what needs to happen
         let restart_required = self.config.auto_restart_client;
 

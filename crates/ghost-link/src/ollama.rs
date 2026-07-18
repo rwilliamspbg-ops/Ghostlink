@@ -1,4 +1,5 @@
 //! Ollama inference client for real model execution
+#![allow(dead_code)]
 use futures::Stream;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -109,7 +110,6 @@ pub struct ModelInfoResponse {
     pub details: Option<ModelDetails>,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateModelRequest {
     pub name: String,
@@ -119,20 +119,17 @@ pub struct CreateModelRequest {
     pub stream: bool,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CopyModelRequest {
     pub source: String,
     pub destination: String,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeleteModelRequest {
     pub name: String,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EmbeddingRequest {
     pub model: String,
@@ -144,7 +141,6 @@ pub struct EmbeddingResponse {
     pub embedding: Vec<f32>,
 }
 
-#[allow(dead_code)]
 pub type OllamaStream =
     Pin<Box<dyn Stream<Item = Result<String, Box<dyn Error + Send + Sync>>> + Send>>;
 
@@ -241,7 +237,7 @@ impl OllamaClient {
     }
 
     /// Generate text using Ollama (streaming)
-    #[allow(dead_code, clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     pub async fn generate_stream(
         &self,
         model: &str,
@@ -277,7 +273,6 @@ impl OllamaClient {
         Ok(stream)
     }
 
-    #[allow(dead_code)]
     async fn stream_response(
         resp: reqwest::Response,
     ) -> Result<mpsc::Receiver<Result<String, Box<dyn Error + Send + Sync>>>, Box<dyn Error>> {
@@ -346,7 +341,7 @@ impl OllamaClient {
     }
 
     /// Chat with Ollama (streaming)
-    #[allow(dead_code, clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     pub async fn chat_stream(
         &self,
         model: &str,
@@ -385,7 +380,6 @@ impl OllamaClient {
         Ok(stream)
     }
 
-    #[allow(dead_code)]
     async fn stream_chat_response(
         resp: reqwest::Response,
     ) -> Result<mpsc::Receiver<Result<ChatResponse, Box<dyn Error + Send + Sync>>>, Box<dyn Error>>
@@ -509,8 +503,52 @@ impl OllamaClient {
             .send()
             .await?;
 
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp
+                .text()
+                .await
+                .unwrap_or_else(|_| "<unreadable body>".to_string());
+            return Err(Box::new(io::Error::other(format!(
+                "Ollama show failed: HTTP {} - {}",
+                status, body
+            ))));
+        }
+
         let data: ModelInfoResponse = resp.json().await?;
         Ok(data)
+    }
+
+    /// Unload a model by setting keep_alive to zero.
+    pub async fn unload_model(&self, model_name: &str) -> Result<String, Box<dyn Error>> {
+        let payload = json!({
+            "model": model_name,
+            "prompt": "",
+            "stream": false,
+            "keep_alive": 0,
+        });
+
+        let resp = self
+            .client
+            .post(format!("{}/api/generate", self.base_url))
+            .json(&payload)
+            .send()
+            .await?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp
+                .text()
+                .await
+                .unwrap_or_else(|_| "<unreadable body>".to_string());
+            return Err(Box::new(io::Error::other(format!(
+                "Ollama unload failed: HTTP {} - {}",
+                status, body
+            ))));
+        }
+
+        let body = resp.text().await.unwrap_or_default();
+        Ok(body)
     }
 
     /// Create a model from a Modelfile

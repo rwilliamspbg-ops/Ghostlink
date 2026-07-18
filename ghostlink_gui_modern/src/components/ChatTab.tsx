@@ -62,7 +62,7 @@ const AVAILABLE_TOOLS: Tool[] = [
 ];
 
 export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
-  const { currentModel, models, setCurrentModel, activeTab } = useAppStore();
+  const { currentModel, models, setCurrentModel } = useAppStore();
   const [messages, setMessages] = useState<Message[]>(loadMessages);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
@@ -94,13 +94,6 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
   useEffect(() => {
     saveMessages(messages);
   }, [messages]);
-
-  // Clear messages when switching to Chat tab (New Chat)
-  useEffect(() => {
-    if (activeTab === 0 && messages.length > 0 && !loading) {
-      setMessages([]);
-    }
-  }, [activeTab]);
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {

@@ -3,7 +3,10 @@
 //! This is a launch-focused adapter that provides a stable native execution
 //! interface while the full transformer runtime is being integrated.
 
-use std::process::Command;
+#![allow(dead_code)]
+
+use std::process::{Child, Command};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 #[derive(Debug, Clone)]
@@ -14,6 +17,10 @@ pub struct NativeGeneration {
 
 #[derive(Debug, Clone)]
 pub struct NativeEngineClient;
+
+// Static variable to track the llama-server process
+static LLAMA_SERVER_PROCESS: std::sync::OnceLock<Arc<Mutex<Option<Child>>>> =
+    std::sync::OnceLock::new();
 
 impl NativeEngineClient {
     pub fn new() -> Self {
