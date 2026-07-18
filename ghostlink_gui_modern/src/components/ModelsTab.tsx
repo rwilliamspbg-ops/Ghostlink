@@ -9,11 +9,9 @@ import {
   Cpu,
   Layers,
   CheckCircle2,
-  AlertCircle,
   Loader,
   Power,
   ChevronRight,
-  ArrowUpRight,
   Copy,
 } from 'lucide-react';
 import { useAppStore } from '../store';
@@ -31,7 +29,7 @@ const POPULAR_MODELS = [
 ];
 
 export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
-  const { models, currentModel, setModels, setCurrentModel } = useAppStore();
+  const { currentModel, setModels, setCurrentModel } = useAppStore();
   const [activeTab, setActiveTab] = useState<'local' | 'huggingface'>('local');
   const [loading, setLoading] = useState(false);
   const [hfSearch, setHfSearch] = useState('');

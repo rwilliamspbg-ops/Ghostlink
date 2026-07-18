@@ -62,7 +62,7 @@ const AVAILABLE_TOOLS: Tool[] = [
 ];
 
 export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
-  const { currentModel, models, setCurrentModel, setModels, activeTab } = useAppStore();
+  const { currentModel, models, setCurrentModel, activeTab } = useAppStore();
   const [messages, setMessages] = useState<Message[]>(loadMessages);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);

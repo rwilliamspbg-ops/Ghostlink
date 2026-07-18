@@ -512,10 +512,11 @@ export class GhostlinkAPI {
         const fallback = await this.getModels();
         const model = (fallback.models || []).find((m: any) => m.name === modelName);
         if (model) {
+          const localPath = (model as any).local_path as string | undefined;
           const generated = [
             `FROM ${model.name}`,
             model.quantization ? `# quantization: ${model.quantization}` : '',
-            model.local_path ? `# local_path: ${model.local_path}` : '',
+            localPath ? `# local_path: ${localPath}` : '',
           ]
             .filter(Boolean)
             .join('\n');
@@ -528,7 +529,7 @@ export class GhostlinkAPI {
 
   async createOllamaModel(name: string, modelfile: string): Promise<{ success: boolean; error?: string }> {
     try {
-      const response = await this.http.post('/api/ollama/create', { name, modelfile });
+      await this.http.post('/api/ollama/create', { name, modelfile });
       return { success: true };
     } catch (error: any) {
       return { success: false, error: error.response?.data?.error || error.message };
@@ -537,7 +538,7 @@ export class GhostlinkAPI {
 
   async copyOllamaModel(source: string, destination: string): Promise<{ success: boolean; error?: string }> {
     try {
-      const response = await this.http.post('/api/ollama/copy', { source, destination });
+      await this.http.post('/api/ollama/copy', { source, destination });
       return { success: true };
     } catch (error: any) {
       return { success: false, error: error.response?.data?.error || error.message };

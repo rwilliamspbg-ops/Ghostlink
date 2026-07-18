@@ -102,8 +102,8 @@ impl ConfigManager {
             .map_err(|err| format!("Failed to read config file: {}", err))?;
 
         // Parse as TOML
-        let config: toml::Table = toml::from_str(&content)
-            .map_err(|err| format!("Failed to parse TOML: {}", err))?;
+        let config: toml::Table =
+            toml::from_str(&content).map_err(|err| format!("Failed to parse TOML: {}", err))?;
 
         // Extract [compute] section or use defaults
         let compute_config = if let Some(compute) = config.get("compute") {
@@ -130,8 +130,7 @@ impl ConfigManager {
             let content = std::fs::read_to_string(&self.config_path)
                 .map_err(|err| format!("Failed to read config file: {}", err))?;
 
-            toml::from_str(&content)
-                .map_err(|err| format!("Failed to parse TOML: {}", err))?
+            toml::from_str(&content).map_err(|err| format!("Failed to parse TOML: {}", err))?
         } else {
             toml::Table::new()
         };
@@ -189,7 +188,9 @@ impl ConfigManager {
 
     /// Save preferred backend to config
     pub fn save_preferred_backend(&self, backend: ComputeBackend) -> Result<(), String> {
-        let mut config = self.load_compute_config().unwrap_or_else(|_| ComputeConfig::new());
+        let mut config = self
+            .load_compute_config()
+            .unwrap_or_else(|_| ComputeConfig::new());
         config.set_preferred_backend(backend);
         self.save_compute_config(&config)
     }
@@ -285,10 +286,7 @@ mod tests {
         assert!(config.get_preferred_backend().is_none());
 
         config.set_preferred_backend(ComputeBackend::Rocm);
-        assert_eq!(
-            config.get_preferred_backend(),
-            Some(ComputeBackend::Rocm)
-        );
+        assert_eq!(config.get_preferred_backend(), Some(ComputeBackend::Rocm));
     }
 
     #[test]
@@ -317,9 +315,7 @@ mod tests {
         let mut overrides = CLIOverrides::new();
 
         // No override, no config
-        assert!(overrides
-            .get_effective_backend(None)
-            .is_none());
+        assert!(overrides.get_effective_backend(None).is_none());
 
         // No override, with config
         assert_eq!(

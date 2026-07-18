@@ -144,7 +144,8 @@ pub struct EmbeddingResponse {
 }
 
 #[allow(dead_code)]
-pub type OllamaStream = Pin<Box<dyn Stream<Item = Result<String, Box<dyn Error + Send + Sync>>> + Send>>;
+pub type OllamaStream =
+    Pin<Box<dyn Stream<Item = Result<String, Box<dyn Error + Send + Sync>>> + Send>>;
 
 impl OllamaClient {
     pub fn new(base_url: String) -> Self {
@@ -257,7 +258,7 @@ impl OllamaClient {
             .await?;
 
         let stream = Box::pin(tokio_stream::wrappers::ReceiverStream::new(
-            Self::stream_response(resp).await?
+            Self::stream_response(resp).await?,
         ));
 
         Ok(stream)
@@ -268,7 +269,7 @@ impl OllamaClient {
         resp: reqwest::Response,
     ) -> Result<mpsc::Receiver<Result<String, Box<dyn Error + Send + Sync>>>, Box<dyn Error>> {
         let (tx, rx) = mpsc::channel(100);
-        
+
         let body = resp.bytes().await?;
 
         tokio::spawn(async move {
@@ -342,7 +343,10 @@ impl OllamaClient {
         top_k: Option<usize>,
         repeat_penalty: Option<f32>,
         max_tokens: Option<usize>,
-    ) -> Result<Pin<Box<dyn Stream<Item = Result<ChatResponse, Box<dyn Error + Send + Sync>>> + Send>>, Box<dyn Error>> {
+    ) -> Result<
+        Pin<Box<dyn Stream<Item = Result<ChatResponse, Box<dyn Error + Send + Sync>>> + Send>>,
+        Box<dyn Error>,
+    > {
         let request = ChatRequest {
             model: model.to_string(),
             messages: messages.to_vec(),
@@ -362,7 +366,7 @@ impl OllamaClient {
             .await?;
 
         let stream = Box::pin(tokio_stream::wrappers::ReceiverStream::new(
-            Self::stream_chat_response(resp).await?
+            Self::stream_chat_response(resp).await?,
         ));
 
         Ok(stream)
@@ -371,9 +375,10 @@ impl OllamaClient {
     #[allow(dead_code)]
     async fn stream_chat_response(
         resp: reqwest::Response,
-    ) -> Result<mpsc::Receiver<Result<ChatResponse, Box<dyn Error + Send + Sync>>>, Box<dyn Error>> {
+    ) -> Result<mpsc::Receiver<Result<ChatResponse, Box<dyn Error + Send + Sync>>>, Box<dyn Error>>
+    {
         let (tx, rx) = mpsc::channel(100);
-        
+
         let body = resp.bytes().await?;
 
         tokio::spawn(async move {
@@ -424,7 +429,15 @@ impl OllamaClient {
     pub async fn pull_model_stream(
         &self,
         model_name: &str,
-    ) -> Result<Pin<Box<dyn Stream<Item = Result<PullProgressResponse, Box<dyn Error + Send + Sync>>> + Send>>, Box<dyn Error>> {
+    ) -> Result<
+        Pin<
+            Box<
+                dyn Stream<Item = Result<PullProgressResponse, Box<dyn Error + Send + Sync>>>
+                    + Send,
+            >,
+        >,
+        Box<dyn Error>,
+    > {
         let payload = json!({
             "name": model_name,
             "stream": true,
@@ -438,7 +451,7 @@ impl OllamaClient {
             .await?;
 
         let stream = Box::pin(tokio_stream::wrappers::ReceiverStream::new(
-            Self::stream_pull_progress(resp).await?
+            Self::stream_pull_progress(resp).await?,
         ));
 
         Ok(stream)
@@ -446,9 +459,12 @@ impl OllamaClient {
 
     async fn stream_pull_progress(
         resp: reqwest::Response,
-    ) -> Result<mpsc::Receiver<Result<PullProgressResponse, Box<dyn Error + Send + Sync>>>, Box<dyn Error>> {
+    ) -> Result<
+        mpsc::Receiver<Result<PullProgressResponse, Box<dyn Error + Send + Sync>>>,
+        Box<dyn Error>,
+    > {
         let (tx, rx) = mpsc::channel(100);
-        
+
         let body = resp.bytes().await?;
 
         tokio::spawn(async move {
@@ -485,7 +501,11 @@ impl OllamaClient {
     }
 
     /// Create a model from a Modelfile
-    pub async fn create_model(&self, name: &str, modelfile: &str) -> Result<String, Box<dyn Error>> {
+    pub async fn create_model(
+        &self,
+        name: &str,
+        modelfile: &str,
+    ) -> Result<String, Box<dyn Error>> {
         let payload = json!({
             "name": name,
             "modelfile": modelfile,
@@ -506,7 +526,11 @@ impl OllamaClient {
     }
 
     /// Copy a model
-    pub async fn copy_model(&self, source: &str, destination: &str) -> Result<String, Box<dyn Error>> {
+    pub async fn copy_model(
+        &self,
+        source: &str,
+        destination: &str,
+    ) -> Result<String, Box<dyn Error>> {
         let payload = json!({
             "source": source,
             "destination": destination,
