@@ -152,6 +152,10 @@ impl OllamaClient {
         }
     }
 
+    fn matches_model_name(candidate: &str, requested: &str) -> bool {
+        candidate == requested || candidate.eq_ignore_ascii_case(requested)
+    }
+
     /// Check if Ollama is reachable
     pub async fn health(&self) -> Result<bool, Box<dyn Error>> {
         match self
@@ -521,6 +525,14 @@ impl OllamaClient {
 
     /// Unload a model by setting keep_alive to zero.
     pub async fn unload_model(&self, model_name: &str) -> Result<String, Box<dyn Error>> {
+        let running_models = self.list_running().await.unwrap_or_default();
+        if !running_models
+            .iter()
+            .any(|model| Self::matches_model_name(&model.name, model_name))
+        {
+            return Ok(format!("model '{}' is not running; unload skipped", model_name));
+        }
+
         let payload = json!({
             "model": model_name,
             "prompt": "",
