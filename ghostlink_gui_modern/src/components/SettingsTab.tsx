@@ -24,7 +24,16 @@ export const SettingsTab: React.FC<{ api: any }> = ({ api }) => {
   const [validationErrors, setValidationErrors] = useState<Record<string, string>>({});
   
   // Phase 5: Backend selector state
-  const [backends, setBackends] = useState<any[]>([]);
+  const [backends, setBackends] = useState<any[]>([
+    {
+      name: 'cpu',
+      device_name: 'CPU',
+      vram_gb: null,
+      compute_capability: 'generic',
+      driver_version: 'native',
+      status: 'ready',
+    },
+  ]);
   const [currentBackend, setCurrentBackend] = useState('cpu');
   const [backendLoading, setBackendLoading] = useState(false);
   const [backendSwitching, setBackendSwitching] = useState(false);
@@ -72,12 +81,20 @@ export const SettingsTab: React.FC<{ api: any }> = ({ api }) => {
   const loadBackends = useCallback(async () => {
     setBackendLoading(true);
     setBackendError('');
-    const result = await api.getBackends();
-    if (!result.error) {
-      setBackends(result.backends);
-      setCurrentBackend(result.current);
-    } else {
-      setBackendError(result.error);
+    try {
+      const result = await api.getBackends();
+      console.log('Backend API Response:', result);
+      if (!result.error && result.backends && Array.isArray(result.backends) && result.backends.length > 0) {
+        setBackends(result.backends);
+        setCurrentBackend(result.current || 'cpu');
+        console.log('Backends loaded successfully:', result.backends);
+      } else {
+        console.log('Empty or error response, keeping default backends');
+        setCurrentBackend(result.current || 'cpu');
+      }
+    } catch (err) {
+      console.error('Failed to load backends:', err);
+      setBackendError(`Failed to connect: ${err}`);
     }
     setBackendLoading(false);
   }, [api]);
@@ -287,38 +304,38 @@ export const SettingsTab: React.FC<{ api: any }> = ({ api }) => {
               ) : (
                 <div className="space-y-3">
                   <div className="grid grid-cols-1 gap-2">
-                    {backends.length > 0 ? (
+                    {backends && backends.length > 0 ? (
                       backends.map((backend: any) => {
                         const displayVram = backend.vram_gb ? Number(backend.vram_gb).toFixed(1) : 'N/A';
                         const displayCapability = backend.compute_capability || 'N/A';
                         return (
-                        <button
-                          key={backend.name}
-                          onClick={() => handleBackendSwitch(backend.name)}
-                          disabled={backendSwitching || currentBackend === backend.name}
-                          className={`p-3 rounded-xl text-left text-sm transition ${
-                            currentBackend === backend.name
-                              ? 'bg-blue-600 border border-blue-500 text-white'
-                              : backendSwitching
-                              ? 'bg-slate-800 border border-slate-700 text-slate-400 opacity-50 cursor-not-allowed'
-                              : 'bg-slate-800 border border-slate-700 text-slate-300 hover:bg-slate-700 hover:border-slate-600'
-                          }`}
-                        >
-                          <div className="flex items-center justify-between">
-                            <div>
-                              <div className="font-semibold capitalize">{backend.name}</div>
-                              <div className={`text-[10px] ${currentBackend === backend.name ? 'text-blue-200' : 'text-slate-500'}`}>
-                                {backend.device_name || 'Unknown'} • {displayVram}GB • {displayCapability}
+                          <button
+                            key={backend.name}
+                            onClick={() => handleBackendSwitch(backend.name)}
+                            disabled={backendSwitching || currentBackend === backend.name}
+                            className={`p-3 rounded-xl text-left text-sm transition ${
+                              currentBackend === backend.name
+                                ? 'bg-blue-600 border border-blue-500 text-white'
+                                : backendSwitching
+                                ? 'bg-slate-800 border border-slate-700 text-slate-400 opacity-50 cursor-not-allowed'
+                                : 'bg-slate-800 border border-slate-700 text-slate-300 hover:bg-slate-700 hover:border-slate-600'
+                            }`}
+                          >
+                            <div className="flex items-center justify-between">
+                              <div>
+                                <div className="font-semibold capitalize">{backend.name}</div>
+                                <div className={`text-[10px] ${currentBackend === backend.name ? 'text-blue-200' : 'text-slate-500'}`}>
+                                  {backend.device_name || 'Unknown'} • {displayVram}GB • {displayCapability}
+                                </div>
                               </div>
+                              {currentBackend === backend.name && (
+                                <CheckCircle2 size={16} className="flex-shrink-0" />
+                              )}
+                              {backendSwitching && currentBackend !== backend.name && backend.name === 'cpu' && (
+                                <Loader size={16} className="animate-spin flex-shrink-0" />
+                              )}
                             </div>
-                            {currentBackend === backend.name && (
-                              <CheckCircle2 size={16} className="flex-shrink-0" />
-                            )}
-                            {backendSwitching && currentBackend !== backend.name && backend.name === 'cpu' && (
-                              <Loader size={16} className="animate-spin flex-shrink-0" />
-                            )}
-                          </div>
-                        </button>
+                          </button>
                         );
                       })
                     ) : (
