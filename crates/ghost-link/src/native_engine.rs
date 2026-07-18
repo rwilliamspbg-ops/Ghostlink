@@ -3,9 +3,11 @@
 //! This is a launch-focused adapter that provides a stable native execution
 //! interface while the full transformer runtime is being integrated.
 
-use std::process::{Command, Child};
-use std::time::Duration;
+#![allow(dead_code)]
+
+use std::process::{Child, Command};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 #[derive(Debug, Clone)]
 pub struct NativeGeneration {
@@ -17,7 +19,8 @@ pub struct NativeGeneration {
 pub struct NativeEngineClient;
 
 // Static variable to track the llama-server process
-static LLAMA_SERVER_PROCESS: std::sync::OnceLock<Arc<Mutex<Option<Child>>>> = std::sync::OnceLock::new();
+static LLAMA_SERVER_PROCESS: std::sync::OnceLock<Arc<Mutex<Option<Child>>>> =
+    std::sync::OnceLock::new();
 
 impl NativeEngineClient {
     pub fn new() -> Self {
@@ -30,7 +33,7 @@ impl NativeEngineClient {
     pub fn load_model_into_slot(&self, model_path: &str) -> Result<(), String> {
         let normalized_path = model_path.replace('\\', "/");
         eprintln!("[model-load] Preparing to load model: {}", normalized_path);
-        
+
         // In a real implementation, this would:
         // 1. Kill the current llama-server process
         // 2. Get llama-server binary path and launch flags from environment
@@ -40,11 +43,13 @@ impl NativeEngineClient {
         //
         // For now, we just log a note since restarting llama-server from the backend
         // would require careful process management and coordination with the launch script.
-        
+
         eprintln!("[model-load] NOTE: llama-server requires restart for model switching");
-        eprintln!("[model-load] Current model: use 'tinyllama-1.1b-chat', 'gemma-4-E4B-it-Q4_K_M', etc.");
+        eprintln!(
+            "[model-load] Current model: use 'tinyllama-1.1b-chat', 'gemma-4-E4B-it-Q4_K_M', etc."
+        );
         eprintln!("[model-load] Workaround: Manually restart llama-server with desired model");
-        
+
         Ok(())
     }
 

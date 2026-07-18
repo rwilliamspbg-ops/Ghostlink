@@ -487,10 +487,11 @@ start_services() {
      local BACKEND_FLAGS=""
      case "$BACKEND" in
          cuda)     BACKEND_FLAGS="" ;;
-         vulkan)   BACKEND_FLAGS="--no-cuda --vulkan" ;;
+        vulkan)   BACKEND_FLAGS="--vulkan" ;;
          rocm)     BACKEND_FLAGS="" ;;
-         metal)    BACKEND_FLAGS="--no-cuda --metal" ;;
-         *)        BACKEND_FLAGS="--no-cuda --no-vulkan --no-metal" ;;
+        metal)    BACKEND_FLAGS="--metal" ;;
+        cpu)      BACKEND_FLAGS="" ;;
+        *)        BACKEND_FLAGS="" ;;
      esac
      
      # Memory lock
@@ -528,29 +529,27 @@ start_services() {
     
     progress_bar 1 2
     echo " ${DIM}Waiting for llama-server...${NC}"
-    wait_for_http "http://127.0.0.1:8080/health" "llama-server" 60
+    if ! wait_for_http "http://127.0.0.1:8080/health" "llama-server" 60; then
+        return 1
+    fi
     
     # Start Ghostlink API
     GHOSTLINK_INFERENCE_BACKEND=native \
     GHOSTLINK_NATIVE_ENGINE=llama_server \
     GHOSTLINK_LLAMA_SERVER_URL="http://127.0.0.1:8080/completion" \
     GHOSTLINK_LLAMA_NGL="${LLAMA_NGL:-0}" \
-    bash -c "
-        if [ -f '$PROJECT_ROOT/target/release/ghost-link' ]; then
-            '$PROJECT_ROOT/target/release/ghost-link' serve 127.0.0.1 8003
-        elif [ -f '$PROJECT_ROOT/target/debug/ghost-link' ]; then
-            '$PROJECT_ROOT/target/debug/ghost-link' serve 127.0.0.1 8003
-        else
-            cargo run -p ghost-link -- serve 127.0.0.1 8003
-        fi
-    " \
+    cargo run -p ghost-link -- serve 127.0.0.1 8003 \
         >/tmp/ghostlink_api.log 2>&1 &
     API_PID=$!
     
-    wait_for_http "http://127.0.0.1:8003/health" "Ghostlink API" 60
+    if ! wait_for_http "http://127.0.0.1:8003/health" "Ghostlink API" 60; then
+        return 1
+    fi
     
     # Wait for API endpoint to be fully ready
-    wait_for_http "http://127.0.0.1:8003/api/health" "API endpoint" 30
+    if ! wait_for_http "http://127.0.0.1:8003/api/health" "API endpoint" 30; then
+        return 1
+    fi
     echo ""
     
     # 3. React Frontend
@@ -575,7 +574,9 @@ start_services() {
     GUI_PID=$!
     cd ..
     
-    wait_for_http "http://127.0.0.1:5173" "React Frontend" 60
+    if ! wait_for_http "http://127.0.0.1:5173" "React Frontend" 60; then
+        return 1
+    fi
     progress_bar 3 3
     echo " ${GREEN}Frontend ready${NC}              "
     echo ""

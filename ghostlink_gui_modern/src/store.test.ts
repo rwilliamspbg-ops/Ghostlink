@@ -11,6 +11,9 @@ beforeEach(() => {
     metrics: null,
     sessions: [],
     workers: [],
+    backends: [],
+    currentBackend: 'cpu',
+    backendStatus: null,
     selectedModel: null,
     activeTab: 0,
   });
@@ -51,6 +54,23 @@ describe('AppStore', () => {
     const workers = [{ id: 'w1', host: '127.0.0.1', port: 8003, status: 'Connected', model: 't', threads: 4, load: 50 }];
     useAppStore.getState().setWorkers(workers);
     expect(useAppStore.getState().workers).toHaveLength(1);
+  });
+
+  it('setBackends updates backend list', () => {
+    const backends = [{ name: 'rocm', device_name: 'AMD Radeon 860M', vram_gb: 14.2, compute_capability: 'gfx906', driver_version: 'ROCm 6.1', status: 'active' }];
+    useAppStore.getState().setBackends(backends);
+    expect(useAppStore.getState().backends).toEqual(backends);
+  });
+
+  it('setCurrentBackend updates active backend', () => {
+    useAppStore.getState().setCurrentBackend('rocm');
+    expect(useAppStore.getState().currentBackend).toBe('rocm');
+  });
+
+  it('setBackendStatus updates backend status', () => {
+    const backendStatus = { name: 'rocm', device_name: 'AMD Radeon 860M', vram_gb: 14.2, status: 'active', health: 'healthy', utilization: 24.5, temperature: 45 };
+    useAppStore.getState().setBackendStatus(backendStatus);
+    expect(useAppStore.getState().backendStatus).toEqual(backendStatus);
   });
 
   it('setSessions updates session list', () => {

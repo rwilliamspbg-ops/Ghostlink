@@ -19,48 +19,6 @@ describe('Config Validation', () => {
       }
     });
 
-    it('should reject invalid native_engine', () => {
-      const result = validateConfig({ ...defaultConfig, native_engine: 'invalid' });
-      expect(result.success).toBe(false);
-      if (!result.success) {
-        expect(result.errors.some(e => e.includes('native_engine'))).toBe(true);
-      }
-    });
-
-    it('should reject ngl out of range', () => {
-      const result = validateConfig({ ...defaultConfig, ngl: 300 });
-      expect(result.success).toBe(false);
-      if (!result.success) {
-        expect(result.errors.some(e => e.includes('ngl'))).toBe(true);
-      }
-    });
-
-    it('should reject negative ngl less than -1', () => {
-      const result = validateConfig({ ...defaultConfig, ngl: -5 });
-      expect(result.success).toBe(false);
-      if (!result.success) {
-        expect(result.errors.some(e => e.includes('ngl'))).toBe(true);
-      }
-    });
-
-    it('should accept ngl = -1 (all layers)', () => {
-      const result = validateConfig({ ...defaultConfig, ngl: -1 });
-      expect(result.success).toBe(true);
-    });
-
-    it('should reject invalid llama_server_url', () => {
-      const result = validateConfig({ ...defaultConfig, llama_server_url: 'not-a-url' });
-      expect(result.success).toBe(false);
-      if (!result.success) {
-        expect(result.errors.some(e => e.includes('llama_server_url'))).toBe(true);
-      }
-    });
-
-    it('should accept empty llama_server_url', () => {
-      const result = validateConfig({ ...defaultConfig, llama_server_url: '' });
-      expect(result.success).toBe(true);
-    });
-
     it('should reject invalid api_host', () => {
       const result = validateConfig({ ...defaultConfig, api_host: 'invalid host!' });
       expect(result.success).toBe(false);
@@ -93,23 +51,8 @@ describe('Config Validation', () => {
       }
     });
 
-    it('should reject ctx_size not multiple of 512', () => {
-      const result = validateConfig({ ...defaultConfig, ctx_size: 513 });
-      expect(result.success).toBe(false);
-      if (!result.success) {
-        expect(result.errors.some(e => e.includes('ctx_size'))).toBe(true);
-      }
-    });
-
-    it('should accept valid ctx_size multiples', () => {
-      for (const size of [512, 1024, 2048, 4096, 8192, 16384, 32768]) {
-        const result = validateConfig({ ...defaultConfig, ctx_size: size });
-        expect(result.success).toBe(true);
-      }
-    });
-
     it('should reject negative threads', () => {
-      const result = validateConfig({ ...defaultConfig, threads: 0 });
+      const result = validateConfig({ ...defaultConfig, chat_micro_batch: 0 });
       expect(result.success).toBe(false);
     });
 
@@ -117,12 +60,11 @@ describe('Config Validation', () => {
       const customConfig = {
         ...defaultConfig,
         inference_backend: 'ollama',
-        native_engine: 'llama_cpp',
-        ngl: 20,
         temperature: 0.8,
         top_p: 0.95,
-        ctx_size: 8192,
-        threads: 8,
+        top_k: 32,
+        repeat_penalty: 1.05,
+        max_tokens: 1024,
       };
       const result = validateConfig(customConfig);
       expect(result.success).toBe(true);
@@ -159,8 +101,8 @@ describe('Config Validation', () => {
       expect(result.success).toBe(true);
       if (result.success) {
         expect(result.data.inference_backend).toBe('ollama');
-        expect(result.data.native_engine).toBe('llama_server'); // default
-        expect(result.data.ngl).toBe(0); // default
+        expect(result.data.api_port).toBe(8003); // default
+        expect(result.data.top_k).toBe(40); // default
       }
     });
   });

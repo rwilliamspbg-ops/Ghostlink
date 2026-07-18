@@ -62,7 +62,7 @@ If Ollama detects GPU but generation fails with `POST /api/generate` returning `
 
 ## Known Limitations
 
-**Model Switching**: Currently requires page reload in browser before switching models. Backend optimization pending.
+**Model Switching**: Browser reload may still be needed for some UI state changes, but backend/runtime selection is now available through the Settings tab and API.
 
 ## Architecture
 

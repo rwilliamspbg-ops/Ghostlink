@@ -10,8 +10,30 @@ import {
   RotateCcw,
   CheckCircle2,
   AlertTriangle,
+  RefreshCw,
+  Check,
+  Gauge,
 } from 'lucide-react';
 import { Settings as SettingsType } from '../store';
+
+type BackendInfo = {
+  name: string;
+  device_name: string;
+  vram_gb: number | null;
+  compute_capability: string;
+  driver_version: string;
+  status: string;
+};
+
+type BackendStatus = {
+  name: string;
+  device_name: string;
+  vram_gb: number | null;
+  status: string;
+  health: string;
+  utilization: number | null;
+  temperature: number | null;
+};
 
 export const SettingsTab: React.FC<{ api: any }> = ({ api }) => {
   const [settings, setSettings] = useState<SettingsType | null>(null);
@@ -20,6 +42,12 @@ export const SettingsTab: React.FC<{ api: any }> = ({ api }) => {
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState('');
   const [validationErrors, setValidationErrors] = useState<Record<string, string>>({});
+  const [backends, setBackends] = useState<BackendInfo[]>([]);
+  const [currentBackend, setCurrentBackend] = useState('cpu');
+  const [backendStatus, setBackendStatus] = useState<BackendStatus | null>(null);
+  const [backendLoading, setBackendLoading] = useState(false);
+  const [backendMessage, setBackendMessage] = useState('');
+  const [switchingBackend, setSwitchingBackend] = useState(false);
 
   const validate = () => {
     if (!settings) return true;
@@ -62,6 +90,33 @@ export const SettingsTab: React.FC<{ api: any }> = ({ api }) => {
     loadSettings();
   }, [loadSettings]);
 
+  const loadBackends = useCallback(async () => {
+    setBackendLoading(true);
+    setBackendMessage('');
+    const result = await api.getBackends();
+    if (result.error) {
+      setBackendMessage(result.error);
+      setBackends([]);
+      setCurrentBackend('cpu');
+      setBackendStatus(null);
+      setBackendLoading(false);
+      return;
+    }
+
+    setBackends(result.available || []);
+    setCurrentBackend(result.current || 'cpu');
+
+    const statusResult = await api.getBackendStatus(result.current || 'cpu');
+    if (statusResult.status) {
+      setBackendStatus(statusResult.status);
+    }
+    setBackendLoading(false);
+  }, [api]);
+
+  useEffect(() => {
+    loadBackends();
+  }, [loadBackends]);
+
   const update = (key: string, value: any) => {
     if (!settings) return;
     setSettings({ ...settings, [key]: value });
@@ -76,6 +131,27 @@ export const SettingsTab: React.FC<{ api: any }> = ({ api }) => {
       setTimeout(() => setSaved(false), 2000);
     }
     setSaving(false);
+  };
+
+  const handleSwitchBackend = async (backend: string) => {
+    if (!backend || backend === currentBackend) return;
+    setSwitchingBackend(true);
+    setBackendMessage('');
+
+    const result = await api.switchBackend(backend);
+    if (result.success) {
+      setCurrentBackend(backend);
+      const statusResult = await api.getBackendStatus(backend);
+      if (statusResult.status) {
+        setBackendStatus(statusResult.status);
+      }
+      setBackendMessage(result.restart_required ? 'Backend switched; restart required to fully apply.' : 'Backend switched successfully.');
+      loadBackends();
+    } else {
+      setBackendMessage(result.error || 'Failed to switch backend');
+    }
+
+    setSwitchingBackend(false);
   };
 
   if (loading) {
@@ -224,6 +300,82 @@ export const SettingsTab: React.FC<{ api: any }> = ({ api }) => {
       <div className="flex-1 overflow-y-auto p-6">
         <div className="max-w-5xl mx-auto space-y-6">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <Section title="Compute Backend" icon={Gauge}>
+              <div className="space-y-4">
+                <div className="rounded-2xl border border-slate-800 bg-slate-950/60 p-4 space-y-2">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <p className="text-xs uppercase tracking-wider text-slate-500">Current Backend</p>
+                      <p className="text-lg font-bold text-white capitalize">{currentBackend}</p>
+                    </div>
+                    <button
+                      onClick={loadBackends}
+                      disabled={backendLoading}
+                      className="flex items-center gap-2 px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-sm transition disabled:opacity-50"
+                    >
+                      <RefreshCw size={14} className={backendLoading ? 'animate-spin' : ''} />
+                      Refresh
+                    </button>
+                  </div>
+
+                  {backendStatus && (
+                    <div className="grid grid-cols-2 gap-3 text-sm text-slate-300">
+                      <div>
+                        <span className="block text-[10px] uppercase text-slate-500">Device</span>
+                        <span className="block truncate">{backendStatus.device_name}</span>
+                      </div>
+                      <div>
+                        <span className="block text-[10px] uppercase text-slate-500">Health</span>
+                        <span className="block capitalize">{backendStatus.health}</span>
+                      </div>
+                      <div>
+                        <span className="block text-[10px] uppercase text-slate-500">VRAM</span>
+                        <span className="block">{backendStatus.vram_gb != null ? `${backendStatus.vram_gb.toFixed(1)} GB` : 'n/a'}</span>
+                      </div>
+                      <div>
+                        <span className="block text-[10px] uppercase text-slate-500">Utilization</span>
+                        <span className="block">{backendStatus.utilization != null ? `${backendStatus.utilization.toFixed(1)}%` : 'n/a'}</span>
+                      </div>
+                    </div>
+                  )}
+
+                  {backendMessage && (
+                    <p className="text-xs text-slate-400">{backendMessage}</p>
+                  )}
+                </div>
+
+                <div className="space-y-2">
+                  {backends.map((backend) => {
+                    const isCurrent = backend.name === currentBackend;
+                    return (
+                      <div key={backend.name} className={`rounded-2xl border p-4 ${isCurrent ? 'border-blue-500/40 bg-blue-500/5' : 'border-slate-800 bg-slate-950/40'}`}>
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-2">
+                              <span className="font-semibold text-white capitalize">{backend.name}</span>
+                              {isCurrent && <span className="text-[10px] px-2 py-0.5 rounded-full bg-blue-500/20 text-blue-300">Active</span>}
+                            </div>
+                            <p className="text-xs text-slate-500 truncate">{backend.device_name}</p>
+                            <p className="text-[10px] text-slate-600 truncate">{backend.compute_capability} · {backend.driver_version}</p>
+                          </div>
+                          {!isCurrent && (
+                            <button
+                              onClick={() => handleSwitchBackend(backend.name)}
+                              disabled={switchingBackend}
+                              className="flex items-center gap-2 px-3 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-sm transition disabled:opacity-50"
+                            >
+                              {switchingBackend ? <RefreshCw size={14} className="animate-spin" /> : <Check size={14} />}
+                              Switch
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            </Section>
+
             {/* Runtime Section */}
             <Section title="Inference Runtime" icon={Cpu}>
               <SelectField

@@ -50,12 +50,13 @@ pub struct BackendStatus {
     pub backend: ComputeBackend,
     pub device_name: String,
     pub vram_gb: Option<f32>,
-    pub status: String, // "active", "ready", "unavailable"
-    pub health: String, // "healthy", "degraded", "error"
+    pub status: String,           // "active", "ready", "unavailable"
+    pub health: String,           // "healthy", "degraded", "error"
     pub utilization: Option<f32>, // percentage 0-100
     pub temperature: Option<f32>, // celsius
 }
 
+#[derive(Debug)]
 pub struct BackendRegistry {
     backends: Arc<Mutex<Vec<BackendInfo>>>,
     current: Arc<Mutex<ComputeBackend>>,
@@ -116,8 +117,8 @@ impl BackendRegistry {
 
     fn detect_cuda() -> Option<BackendInfo> {
         let output = Command::new("nvidia-smi")
-            .args(&["--query-gpu=name,memory.total,compute_cap,driver_version"])
-            .args(&["--format=csv,noheader,nounits"])
+            .args(["--query-gpu=name,memory.total,compute_cap,driver_version"])
+            .args(["--format=csv,noheader,nounits"])
             .output()
             .ok()?;
 
@@ -150,7 +151,7 @@ impl BackendRegistry {
 
     fn detect_rocm() -> Option<BackendInfo> {
         let output = Command::new("rocm-smi")
-            .args(&["--showproductname"])
+            .args(["--showproductname"])
             .output()
             .ok()?;
 
@@ -161,52 +162,43 @@ impl BackendRegistry {
         let output_str = String::from_utf8_lossy(&output.stdout);
         let device_name = output_str
             .lines()
-            .find_map(|line| {
-                line.split(':')
-                    .nth(1)
-                    .map(|s| s.trim().to_string())
-            })
+            .find_map(|line| line.split(':').nth(1).map(|s| s.trim().to_string()))
             .unwrap_or_else(|| "AMD ROCm GPU".to_string());
 
         // Get VRAM info
         let vram_output = Command::new("rocm-smi")
-            .args(&["--showmeminfo", "vram"])
+            .args(["--showmeminfo", "vram"])
             .output()
             .ok();
 
         let vram_gb = vram_output.and_then(|output| {
             let text = String::from_utf8_lossy(&output.stdout);
-            text.lines()
-                .find_map(|line| {
-                    if line.contains("vram Heap") {
-                        line.split_whitespace()
-                            .find_map(|s| s.parse::<f32>().ok())
-                            .map(|mb| mb / 1024.0)
-                    } else {
-                        None
-                    }
-                })
+            text.lines().find_map(|line| {
+                if line.contains("vram Heap") {
+                    line.split_whitespace()
+                        .find_map(|s| s.parse::<f32>().ok())
+                        .map(|mb| mb / 1024.0)
+                } else {
+                    None
+                }
+            })
         });
 
         // Detect GFX version
-        let gfx_output = Command::new("rocm-smi")
-            .args(&["--showid"])
-            .output()
-            .ok();
+        let gfx_output = Command::new("rocm-smi").args(["--showid"]).output().ok();
 
         let compute_capability = gfx_output
             .and_then(|output| {
                 let text = String::from_utf8_lossy(&output.stdout);
                 text.lines().find_map(|line| {
                     if line.contains("gfx") {
-                        line.split_whitespace()
-                            .find_map(|s| {
-                                if s.starts_with("gfx") {
-                                    Some(s.to_string())
-                                } else {
-                                    None
-                                }
-                            })
+                        line.split_whitespace().find_map(|s| {
+                            if s.starts_with("gfx") {
+                                Some(s.to_string())
+                            } else {
+                                None
+                            }
+                        })
                     } else {
                         None
                     }
@@ -216,17 +208,13 @@ impl BackendRegistry {
 
         // Get ROCm version
         let driver_version = Command::new("rocm-smi")
-            .args(&["--version"])
+            .args(["--version"])
             .output()
             .ok()
             .and_then(|output| {
                 let text = String::from_utf8_lossy(&output.stderr);
                 text.lines()
-                    .find_map(|line| {
-                        line.split_whitespace()
-                            .last()
-                            .map(|s| s.to_string())
-                    })
+                    .find_map(|line| line.split_whitespace().last().map(|s| s.to_string()))
             })
             .unwrap_or_else(|| "unknown".to_string());
 
@@ -241,16 +229,14 @@ impl BackendRegistry {
     }
 
     fn detect_oneapi() -> Option<BackendInfo> {
-        let output = Command::new("sycl-ls")
-            .output()
-            .ok()?;
+        let output = Command::new("sycl-ls").output().ok()?;
 
         if !output.status.success() {
             return None;
         }
 
         let output_str = String::from_utf8_lossy(&output.stdout);
-        
+
         // Find Intel GPU device
         if let Some(device_line) = output_str.lines().find(|line| line.contains("Intel")) {
             return Some(BackendInfo {
@@ -278,8 +264,11 @@ impl BackendRegistry {
         }
 
         let output_str = String::from_utf8_lossy(&output.stdout);
-        
-        if let Some(chipset_line) = output_str.lines().find(|line| line.contains("Chipset Model")) {
+
+        if let Some(chipset_line) = output_str
+            .lines()
+            .find(|line| line.contains("Chipset Model"))
+        {
             let device_name = chipset_line
                 .split(':')
                 .nth(1)
@@ -302,9 +291,7 @@ impl BackendRegistry {
     fn detect_cpu_name() -> String {
         #[cfg(target_os = "linux")]
         {
-            let output = Command::new("lscpu")
-                .output()
-                .ok();
+            let output = Command::new("lscpu").output().ok();
 
             if let Some(output) = output {
                 let text = String::from_utf8_lossy(&output.stdout);
@@ -380,7 +367,7 @@ impl BackendRegistry {
     /// Switch to a different backend
     pub fn switch_backend(&self, backend: ComputeBackend) -> Result<(), String> {
         let backends = self.backends.lock().unwrap();
-        
+
         if !backends.iter().any(|b| b.backend == backend && b.available) {
             return Err(format!("Backend {} is not available", backend.as_str()));
         }
@@ -426,7 +413,7 @@ mod tests {
     fn test_backend_registry_discover() {
         let registry = BackendRegistry::discover();
         let backends = registry.available_backends();
-        
+
         // CPU should always be available
         assert!(backends.iter().any(|b| b.backend == ComputeBackend::Cpu));
     }
@@ -435,7 +422,7 @@ mod tests {
     fn test_backend_registry_current() {
         let registry = BackendRegistry::discover();
         let current = registry.current_backend();
-        
+
         // Should have a current backend
         let backends = registry.available_backends();
         assert!(backends.iter().any(|b| b.backend == current));
@@ -444,7 +431,7 @@ mod tests {
     #[test]
     fn test_backend_switch() {
         let registry = BackendRegistry::discover();
-        
+
         // Switch to CPU should always work
         assert!(registry.switch_backend(ComputeBackend::Cpu).is_ok());
         assert_eq!(registry.current_backend(), ComputeBackend::Cpu);
@@ -454,7 +441,7 @@ mod tests {
     fn test_backend_info_get() {
         let registry = BackendRegistry::discover();
         let cpu_info = registry.get_backend(&ComputeBackend::Cpu);
-        
+
         assert!(cpu_info.is_some());
         assert_eq!(cpu_info.unwrap().backend, ComputeBackend::Cpu);
     }
@@ -463,7 +450,7 @@ mod tests {
     fn test_backend_status() {
         let registry = BackendRegistry::discover();
         let status = registry.get_status(&ComputeBackend::Cpu);
-        
+
         assert!(status.is_some());
         let s = status.unwrap();
         assert_eq!(s.status, "active"); // CPU is currently active by default

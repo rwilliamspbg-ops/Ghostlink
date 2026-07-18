@@ -125,10 +125,13 @@ Open http://127.0.0.1:5173 → **Models tab** → pick a model → **Chat tab** 
 # Install Rust: curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 
 cargo build --release -p ghost-link
-./launch.sh
 
-# Or launch the complete stack directly
-# ./launch-complete.sh
+# Preferred launcher for the full stack
+./launch-complete.sh
+
+# Legacy launcher if you only want the older minimal path
+# ./launch.sh
+
 ```
 
 ## Hardware Detection
@@ -255,6 +258,10 @@ cargo run -p ghost-link -- dashboard
 | `/api/runtime/models?runtime=directml` | GET | Models filtered by runtime |
 | `/api/metrics` | GET | Performance metrics |
 | `/api/inference/chat` | POST | Chat completion |
+
+## Documentation
+
+The current operational docs live in [docs/](docs/) and the historical phase/status notes have been moved into [docs/archive/](docs/archive/).
 
 ### Environment Variables
 

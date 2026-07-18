@@ -1,9 +1,11 @@
 //! Ollama inference client for real model execution
+#![allow(dead_code)]
 use futures::Stream;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::error::Error;
+use std::io;
 use std::pin::Pin;
 use tokio::sync::mpsc;
 
@@ -139,7 +141,8 @@ pub struct EmbeddingResponse {
     pub embedding: Vec<f32>,
 }
 
-pub type OllamaStream = Pin<Box<dyn Stream<Item = Result<String, Box<dyn Error + Send + Sync>>> + Send>>;
+pub type OllamaStream =
+    Pin<Box<dyn Stream<Item = Result<String, Box<dyn Error + Send + Sync>>> + Send>>;
 
 impl OllamaClient {
     pub fn new(base_url: String) -> Self {
@@ -188,6 +191,7 @@ impl OllamaClient {
     }
 
     /// Generate text using Ollama (non-streaming)
+    #[allow(clippy::too_many_arguments)]
     pub async fn generate(
         &self,
         model: &str,
@@ -216,11 +220,24 @@ impl OllamaClient {
             .send()
             .await?;
 
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp
+                .text()
+                .await
+                .unwrap_or_else(|_| "<unreadable body>".to_string());
+            return Err(Box::new(io::Error::other(format!(
+                "Ollama generate failed: HTTP {} - {}",
+                status, body
+            ))));
+        }
+
         let data: OllamaResponse = resp.json().await?;
         Ok(data.response)
     }
 
     /// Generate text using Ollama (streaming)
+    #[allow(clippy::too_many_arguments)]
     pub async fn generate_stream(
         &self,
         model: &str,
@@ -250,7 +267,7 @@ impl OllamaClient {
             .await?;
 
         let stream = Box::pin(tokio_stream::wrappers::ReceiverStream::new(
-            Self::stream_response(resp).await?
+            Self::stream_response(resp).await?,
         ));
 
         Ok(stream)
@@ -260,14 +277,13 @@ impl OllamaClient {
         resp: reqwest::Response,
     ) -> Result<mpsc::Receiver<Result<String, Box<dyn Error + Send + Sync>>>, Box<dyn Error>> {
         let (tx, rx) = mpsc::channel(100);
-        
+
         let body = resp.bytes().await?;
 
         tokio::spawn(async move {
             let text = String::from_utf8_lossy(&body);
             for line in text.lines() {
-                if line.starts_with("data: ") {
-                    let json_str = &line[6..];
+                if let Some(json_str) = line.strip_prefix("data: ") {
                     if let Ok(data) = serde_json::from_str::<Value>(json_str) {
                         if let Some(response) = data.get("response").and_then(|v| v.as_str()) {
                             let _ = tx.send(Ok(response.to_string())).await;
@@ -291,6 +307,7 @@ impl OllamaClient {
     }
 
     /// Chat with Ollama (non-streaming)
+    #[allow(clippy::too_many_arguments)]
     pub async fn chat(
         &self,
         model: &str,
@@ -324,6 +341,7 @@ impl OllamaClient {
     }
 
     /// Chat with Ollama (streaming)
+    #[allow(clippy::too_many_arguments)]
     pub async fn chat_stream(
         &self,
         model: &str,
@@ -333,7 +351,10 @@ impl OllamaClient {
         top_k: Option<usize>,
         repeat_penalty: Option<f32>,
         max_tokens: Option<usize>,
-    ) -> Result<Pin<Box<dyn Stream<Item = Result<ChatResponse, Box<dyn Error + Send + Sync>>> + Send>>, Box<dyn Error>> {
+    ) -> Result<
+        Pin<Box<dyn Stream<Item = Result<ChatResponse, Box<dyn Error + Send + Sync>>> + Send>>,
+        Box<dyn Error>,
+    > {
         let request = ChatRequest {
             model: model.to_string(),
             messages: messages.to_vec(),
@@ -353,7 +374,7 @@ impl OllamaClient {
             .await?;
 
         let stream = Box::pin(tokio_stream::wrappers::ReceiverStream::new(
-            Self::stream_chat_response(resp).await?
+            Self::stream_chat_response(resp).await?,
         ));
 
         Ok(stream)
@@ -361,16 +382,16 @@ impl OllamaClient {
 
     async fn stream_chat_response(
         resp: reqwest::Response,
-    ) -> Result<mpsc::Receiver<Result<ChatResponse, Box<dyn Error + Send + Sync>>>, Box<dyn Error>> {
+    ) -> Result<mpsc::Receiver<Result<ChatResponse, Box<dyn Error + Send + Sync>>>, Box<dyn Error>>
+    {
         let (tx, rx) = mpsc::channel(100);
-        
+
         let body = resp.bytes().await?;
 
         tokio::spawn(async move {
             let text = String::from_utf8_lossy(&body);
             for line in text.lines() {
-                if line.starts_with("data: ") {
-                    let json_str = &line[6..];
+                if let Some(json_str) = line.strip_prefix("data: ") {
                     if let Ok(data) = serde_json::from_str::<ChatResponse>(json_str) {
                         let done = data.done;
                         let _ = tx.send(Ok(data)).await;
@@ -415,7 +436,15 @@ impl OllamaClient {
     pub async fn pull_model_stream(
         &self,
         model_name: &str,
-    ) -> Result<Pin<Box<dyn Stream<Item = Result<PullProgressResponse, Box<dyn Error + Send + Sync>>> + Send>>, Box<dyn Error>> {
+    ) -> Result<
+        Pin<
+            Box<
+                dyn Stream<Item = Result<PullProgressResponse, Box<dyn Error + Send + Sync>>>
+                    + Send,
+            >,
+        >,
+        Box<dyn Error>,
+    > {
         let payload = json!({
             "name": model_name,
             "stream": true,
@@ -429,7 +458,7 @@ impl OllamaClient {
             .await?;
 
         let stream = Box::pin(tokio_stream::wrappers::ReceiverStream::new(
-            Self::stream_pull_progress(resp).await?
+            Self::stream_pull_progress(resp).await?,
         ));
 
         Ok(stream)
@@ -437,9 +466,12 @@ impl OllamaClient {
 
     async fn stream_pull_progress(
         resp: reqwest::Response,
-    ) -> Result<mpsc::Receiver<Result<PullProgressResponse, Box<dyn Error + Send + Sync>>>, Box<dyn Error>> {
+    ) -> Result<
+        mpsc::Receiver<Result<PullProgressResponse, Box<dyn Error + Send + Sync>>>,
+        Box<dyn Error>,
+    > {
         let (tx, rx) = mpsc::channel(100);
-        
+
         let body = resp.bytes().await?;
 
         tokio::spawn(async move {
@@ -471,12 +503,60 @@ impl OllamaClient {
             .send()
             .await?;
 
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp
+                .text()
+                .await
+                .unwrap_or_else(|_| "<unreadable body>".to_string());
+            return Err(Box::new(io::Error::other(format!(
+                "Ollama show failed: HTTP {} - {}",
+                status, body
+            ))));
+        }
+
         let data: ModelInfoResponse = resp.json().await?;
         Ok(data)
     }
 
+    /// Unload a model by setting keep_alive to zero.
+    pub async fn unload_model(&self, model_name: &str) -> Result<String, Box<dyn Error>> {
+        let payload = json!({
+            "model": model_name,
+            "prompt": "",
+            "stream": false,
+            "keep_alive": 0,
+        });
+
+        let resp = self
+            .client
+            .post(format!("{}/api/generate", self.base_url))
+            .json(&payload)
+            .send()
+            .await?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp
+                .text()
+                .await
+                .unwrap_or_else(|_| "<unreadable body>".to_string());
+            return Err(Box::new(io::Error::other(format!(
+                "Ollama unload failed: HTTP {} - {}",
+                status, body
+            ))));
+        }
+
+        let body = resp.text().await.unwrap_or_default();
+        Ok(body)
+    }
+
     /// Create a model from a Modelfile
-    pub async fn create_model(&self, name: &str, modelfile: &str) -> Result<String, Box<dyn Error>> {
+    pub async fn create_model(
+        &self,
+        name: &str,
+        modelfile: &str,
+    ) -> Result<String, Box<dyn Error>> {
         let payload = json!({
             "name": name,
             "modelfile": modelfile,
@@ -497,7 +577,11 @@ impl OllamaClient {
     }
 
     /// Copy a model
-    pub async fn copy_model(&self, source: &str, destination: &str) -> Result<String, Box<dyn Error>> {
+    pub async fn copy_model(
+        &self,
+        source: &str,
+        destination: &str,
+    ) -> Result<String, Box<dyn Error>> {
         let payload = json!({
             "source": source,
             "destination": destination,

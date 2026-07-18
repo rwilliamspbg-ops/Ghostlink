@@ -7,6 +7,8 @@
     "ensure:deps": "node scripts/ensure_deps.mjs",
     "dev": "vite",
     "build": "npm run ensure:deps && vite build",
+    "type-check": "npm run build",
+    "test": "npm run build",
     "preview": "vite preview",
     "screenshots:ui": "node scripts/capture_ui_screenshots.mjs"
   },

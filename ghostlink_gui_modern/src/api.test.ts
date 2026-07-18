@@ -294,6 +294,72 @@ describe('GhostlinkAPI', () => {
     });
   });
 
+  describe('Backend Operations', () => {
+    it('should fetch available backends', async () => {
+      mockAxiosInstance.get.mockResolvedValue({
+        data: {
+          available: [
+            {
+              name: 'rocm',
+              device_name: 'AMD Radeon 860M',
+              vram_gb: 14.2,
+              compute_capability: 'gfx906',
+              driver_version: 'ROCm 6.1',
+              status: 'active',
+            },
+          ],
+          current: 'rocm',
+        },
+      });
+
+      const result = await api.getBackends();
+
+      expect(result.current).toBe('rocm');
+      expect(result.available).toHaveLength(1);
+      expect(mockAxiosInstance.get).toHaveBeenCalledWith('/api/backends');
+    });
+
+    it('should switch backend', async () => {
+      mockAxiosInstance.post.mockResolvedValue({ data: { restart_required: false, status: 'success' } });
+
+      const result = await api.switchBackend('cpu');
+
+      expect(result.success).toBe(true);
+      expect(result.restart_required).toBe(false);
+      expect(mockAxiosInstance.post).toHaveBeenCalledWith('/api/backends/switch', { backend: 'cpu' });
+    });
+
+    it('should fetch backend status', async () => {
+      mockAxiosInstance.get.mockResolvedValue({
+        data: {
+          name: 'rocm',
+          device_name: 'AMD Radeon 860M',
+          vram_gb: 14.2,
+          status: 'active',
+          health: 'healthy',
+          utilization: 24.5,
+          temperature: 45,
+        },
+      });
+
+      const result = await api.getBackendStatus('rocm');
+
+      expect(result.status?.name).toBe('rocm');
+      expect(mockAxiosInstance.get).toHaveBeenCalledWith('/api/backends/rocm/status');
+    });
+
+    it('should surface backend switch errors', async () => {
+      const error: any = new Error('Bad Request');
+      error.response = { data: { message: 'Unknown backend' } };
+      mockAxiosInstance.post.mockRejectedValue(error);
+
+      const result = await api.switchBackend('invalid');
+
+      expect(result.success).toBe(false);
+      expect(result.error).toBe('Unknown backend');
+    });
+  });
+
   describe('Security Operations', () => {
     it('should fetch PQC state', async () => {
       mockAxiosInstance.get.mockResolvedValue({ data: { enabled: true } });

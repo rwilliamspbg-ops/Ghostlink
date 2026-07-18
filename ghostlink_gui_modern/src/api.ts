@@ -136,7 +136,7 @@ export class GhostlinkAPI {
 
   async deleteModel(modelName: string) {
     try {
-      const response = await this.http.delete(`/api/models/${modelName}`);
+      const response = await this.http.delete(`/api/models/${encodeURIComponent(modelName)}`);
       return { success: true, data: response.data };
     } catch (error: any) {
       return { success: false, error: error.response?.data?.error || error.message };
@@ -145,7 +145,7 @@ export class GhostlinkAPI {
 
   async unloadModel(modelName: string) {
     try {
-      const response = await this.http.post(`/api/models/${modelName}/unload`);
+      const response = await this.http.post(`/api/models/${encodeURIComponent(modelName)}/unload`);
       return { success: true, data: response.data };
     } catch (error: any) {
       return { success: false, error: error.response?.data?.error || error.message };
@@ -347,6 +347,40 @@ export class GhostlinkAPI {
     }
   }
 
+  async getBackends(): Promise<{ available: any[]; current: string; error?: string }> {
+    try {
+      const response = await this.http.get('/api/backends');
+      return {
+        available: response.data.available || [],
+        current: response.data.current || 'cpu',
+      };
+    } catch (error: any) {
+      return { available: [], current: 'cpu', error: error.response?.data?.error || error.message };
+    }
+  }
+
+  async switchBackend(backend: string): Promise<{ success: boolean; restart_required?: boolean; error?: string; data?: any }> {
+    try {
+      const response = await this.http.post('/api/backends/switch', { backend });
+      return {
+        success: true,
+        restart_required: !!response.data?.restart_required,
+        data: response.data,
+      };
+    } catch (error: any) {
+      return { success: false, error: error.response?.data?.message || error.response?.data?.error || error.message };
+    }
+  }
+
+  async getBackendStatus(name: string): Promise<{ status?: any; error?: string }> {
+    try {
+      const response = await this.http.get(`/api/backends/${encodeURIComponent(name)}/status`);
+      return { status: response.data };
+    } catch (error: any) {
+      return { error: error.response?.data?.error || error.response?.data?.message || error.message };
+    }
+  }
+
   async getPQCState(): Promise<{ enabled: boolean; error?: string }> {
     try {
       const response = await this.http.get('/api/security/pqc/state');
@@ -398,7 +432,7 @@ export class GhostlinkAPI {
 
   async pullOllamaModel(modelName: string): Promise<{ success: boolean; error?: string }> {
     try {
-      const response = await this.http.post('/api/ollama/pull', { model: modelName });
+      await this.http.post('/api/ollama/pull', { model: modelName });
       return { success: true };
     } catch (error: any) {
       return { success: false, error: error.response?.data?.error || error.message };
@@ -459,7 +493,7 @@ export class GhostlinkAPI {
 
   async createOllamaModel(name: string, modelfile: string): Promise<{ success: boolean; error?: string }> {
     try {
-      const response = await this.http.post('/api/ollama/create', { name, modelfile });
+      await this.http.post('/api/ollama/create', { name, modelfile });
       return { success: true };
     } catch (error: any) {
       return { success: false, error: error.response?.data?.error || error.message };
@@ -468,7 +502,7 @@ export class GhostlinkAPI {
 
   async copyOllamaModel(source: string, destination: string): Promise<{ success: boolean; error?: string }> {
     try {
-      const response = await this.http.post('/api/ollama/copy', { source, destination });
+      await this.http.post('/api/ollama/copy', { source, destination });
       return { success: true };
     } catch (error: any) {
       return { success: false, error: error.response?.data?.error || error.message };
@@ -477,7 +511,7 @@ export class GhostlinkAPI {
 
   async deleteOllamaModel(name: string): Promise<{ success: boolean; error?: string }> {
     try {
-      const response = await this.http.post('/api/ollama/delete', { name });
+      await this.http.post('/api/ollama/delete', { name });
       return { success: true };
     } catch (error: any) {
       return { success: false, error: error.response?.data?.error || error.message };

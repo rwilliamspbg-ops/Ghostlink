@@ -49,45 +49,60 @@ describe('ModelsTab', () => {
     });
   });
 
-  it('renders model list', () => {
+  it('renders model list', async () => {
     const api = createMockApi();
     render(<ModelsTab api={api} />);
-    expect(screen.getByText('llama-3-8b')).toBeInTheDocument();
-    expect(screen.getByText('mistral-7b')).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.getByText('llama-3-8b')).toBeInTheDocument();
+      expect(screen.getByText('mistral-7b')).toBeInTheDocument();
+    });
   });
 
-  it('shows Library tab by default', () => {
+  it('shows Ollama tab by default', async () => {
     const api = createMockApi();
     render(<ModelsTab api={api} />);
-    expect(screen.getByText('Library')).toBeInTheDocument();
-    expect(screen.getByText('Local Models')).toBeInTheDocument();
+    await waitFor(() => {
+      expect(api.getModels).toHaveBeenCalled();
+      expect(screen.getAllByText('Ollama Models').length).toBeGreaterThanOrEqual(2);
+      expect(screen.getByText('Popular Ollama Models')).toBeInTheDocument();
+    });
   });
 
-  it('switches to Hugging Face tab', () => {
+  it('switches to Hugging Face tab', async () => {
     const api = createMockApi();
     render(<ModelsTab api={api} />);
+    await waitFor(() => {
+      expect(api.getModels).toHaveBeenCalled();
+    });
     fireEvent.click(screen.getByText('Hugging Face'));
-    expect(screen.getByText('Hugging Face Models')).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.getByText('Hugging Face Models')).toBeInTheDocument();
+    });
   });
 
-  it('shows Load button for non-loaded models', () => {
+  it('shows Use button for non-loaded models', async () => {
     const api = createMockApi();
     render(<ModelsTab api={api} />);
-    const loadButtons = screen.getAllByText('Load');
-    expect(loadButtons.length).toBeGreaterThanOrEqual(1);
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'Use' })).toBeInTheDocument();
+    });
   });
 
-  it('shows Unload button for loaded model', () => {
+  it('shows Unload button for loaded model', async () => {
     const api = createMockApi();
     render(<ModelsTab api={api} />);
-    expect(screen.getByText('Unload')).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'Unload' })).toBeInTheDocument();
+    });
   });
 
   it('calls loadModel when Load clicked', async () => {
     const api = createMockApi();
     render(<ModelsTab api={api} />);
-    const loadBtn = screen.getAllByText('Load')[0];
-    fireEvent.click(loadBtn);
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'Use' })).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Use' }));
     await waitFor(() => {
       expect(api.loadModel).toHaveBeenCalled();
     });
