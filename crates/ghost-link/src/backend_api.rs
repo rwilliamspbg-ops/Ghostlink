@@ -15,13 +15,13 @@ use crate::backend_registry::{BackendRegistry, ComputeBackend};
 use crate::runtime_switcher::{RuntimeSwitcher, SwitchingConfig};
 
 /// Response for available backends query
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct BackendListResponse {
     pub available: Vec<BackendInfoResponse>,
     pub current: String,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct BackendInfoResponse {
     pub name: String,
     pub device_name: String,
@@ -47,7 +47,7 @@ pub struct SwitchBackendResponse {
 }
 
 /// Response for backend status
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct BackendStatusResponse {
     pub name: String,
     pub device_name: String,
@@ -59,34 +59,54 @@ pub struct BackendStatusResponse {
 }
 
 /// API Handler: GET /api/backends - List all available backends
-pub async fn handle_list_backends() -> Response {
-    let registry = BackendRegistry::discover();
-    let backends = registry.available_backends();
-    let current = registry.current_backend();
+pub async fn handle_list_backends() -> Result<Json<BackendListResponse>, (StatusCode, String)> {
+    match std::panic::catch_unwind(|| {
+        let registry = BackendRegistry::discover();
+        let backends = registry.available_backends();
+        let current = registry.current_backend();
 
-    let available: Vec<BackendInfoResponse> = backends
-        .iter()
-        .map(|info| {
-            let current_name = current.as_str();
-            let is_active = info.backend.as_str() == current_name;
+        let available: Vec<BackendInfoResponse> = backends
+            .iter()
+            .map(|info| {
+                let current_name = current.as_str();
+                let is_active = info.backend.as_str() == current_name;
 
-            BackendInfoResponse {
-                name: info.backend.as_str().to_string(),
-                device_name: info.device_name.clone(),
-                vram_gb: info.vram_gb,
-                compute_capability: info.compute_capability.clone(),
-                driver_version: info.driver_version.clone(),
-                status: if is_active { "active" } else { "ready" }.to_string(),
-            }
-        })
-        .collect();
+                BackendInfoResponse {
+                    name: info.backend.as_str().to_string(),
+                    device_name: info.device_name.clone(),
+                    vram_gb: info.vram_gb,
+                    compute_capability: info.compute_capability.clone(),
+                    driver_version: info.driver_version.clone(),
+                    status: if is_active { "active" } else { "ready" }.to_string(),
+                }
+            })
+            .collect();
 
-    let response = BackendListResponse {
-        available,
-        current: current.as_str().to_string(),
-    };
-
-    (StatusCode::OK, Json(response)).into_response()
+        BackendListResponse {
+            available,
+            current: current.as_str().to_string(),
+        }
+    }) {
+        Ok(response) => {
+            tracing::info!("Phase2: Listed {} backends", response.available.len());
+            Ok(Json(response))
+        }
+        Err(_) => {
+            tracing::error!("Phase2: Failed to list backends - panic in discovery");
+            // Fallback: return at least CPU backend
+            Ok(Json(BackendListResponse {
+                available: vec![BackendInfoResponse {
+                    name: "cpu".to_string(),
+                    device_name: "CPU Fallback".to_string(),
+                    vram_gb: None,
+                    compute_capability: "system".to_string(),
+                    driver_version: "N/A".to_string(),
+                    status: "ready".to_string(),
+                }],
+                current: "cpu".to_string(),
+            }))
+        }
+    }
 }
 
 /// API Handler: POST /api/backends/switch - Switch to a different backend
@@ -122,6 +142,10 @@ pub async fn handle_switch_backend(Json(payload): Json<SwitchBackendRequest>) ->
     // Perform graceful switch with request draining and env updates
     match switcher.switch_backend(&registry, backend.clone()).await {
         Ok(result) => {
+            tracing::info!(
+                "Phase3: Successfully switched to {} backend",
+                result.backend
+            );
             let response = Json(serde_json::json!({
                 "status": "success",
                 "backend": result.backend,
@@ -133,6 +157,7 @@ pub async fn handle_switch_backend(Json(payload): Json<SwitchBackendRequest>) ->
             (StatusCode::OK, response).into_response()
         }
         Err(err) => {
+            tracing::error!("Phase3: Failed to switch backend: {}", err);
             let response = Json(serde_json::json!({
                 "status": "error",
                 "backend": payload.backend,
