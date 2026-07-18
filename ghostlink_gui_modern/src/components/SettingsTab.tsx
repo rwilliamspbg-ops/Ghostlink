@@ -10,6 +10,8 @@ import {
   RotateCcw,
   CheckCircle2,
   AlertTriangle,
+  Loader,
+  Gpu,
 } from 'lucide-react';
 import { Settings as SettingsType } from '../store';
 
@@ -20,6 +22,14 @@ export const SettingsTab: React.FC<{ api: any }> = ({ api }) => {
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState('');
   const [validationErrors, setValidationErrors] = useState<Record<string, string>>({});
+  
+  // Phase 5: Backend selector state
+  const [backends, setBackends] = useState<any[]>([]);
+  const [currentBackend, setCurrentBackend] = useState('cpu');
+  const [backendLoading, setBackendLoading] = useState(false);
+  const [backendSwitching, setBackendSwitching] = useState(false);
+  const [backendError, setBackendError] = useState('');
+  const [backendSuccess, setBackendSuccess] = useState('');
 
   const validate = () => {
     if (!settings) return true;
@@ -58,9 +68,41 @@ export const SettingsTab: React.FC<{ api: any }> = ({ api }) => {
     setLoading(false);
   }, [api]);
 
+  // Phase 5: Load backends on mount
+  const loadBackends = useCallback(async () => {
+    setBackendLoading(true);
+    setBackendError('');
+    const result = await api.getBackends();
+    if (!result.error) {
+      setBackends(result.backends);
+      setCurrentBackend(result.current);
+    } else {
+      setBackendError(result.error);
+    }
+    setBackendLoading(false);
+  }, [api]);
+
+  // Phase 5: Switch backend
+  const handleBackendSwitch = async (newBackend: string) => {
+    setBackendSwitching(true);
+    setBackendError('');
+    setBackendSuccess('');
+
+    const result = await api.switchBackend(newBackend);
+    if (result.success) {
+      setCurrentBackend(newBackend);
+      setBackendSuccess(`Switched to ${newBackend} backend`);
+      setTimeout(() => setBackendSuccess(''), 3000);
+    } else {
+      setBackendError(result.error || 'Failed to switch backend');
+    }
+    setBackendSwitching(false);
+  };
+
   useEffect(() => {
     loadSettings();
-  }, [loadSettings]);
+    loadBackends();
+  }, [loadSettings, loadBackends]);
 
   const update = (key: string, value: any) => {
     if (!settings) return;
@@ -223,7 +265,71 @@ export const SettingsTab: React.FC<{ api: any }> = ({ api }) => {
 
       <div className="flex-1 overflow-y-auto p-6">
         <div className="max-w-5xl mx-auto space-y-6">
+          {/* Phase 5: GPU/CPU Compute Backend Section */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <Section title="Compute Backend" icon={Gpu}>
+              {backendError && (
+                <div className="flex items-center gap-2 text-xs text-red-400 bg-red-500/10 px-3 py-2 rounded-lg mb-3">
+                  <AlertTriangle size={14} /> {backendError}
+                </div>
+              )}
+              {backendSuccess && (
+                <div className="flex items-center gap-2 text-xs text-green-400 bg-green-500/10 px-3 py-2 rounded-lg mb-3">
+                  <CheckCircle2 size={14} /> {backendSuccess}
+                </div>
+              )}
+              
+              {backendLoading ? (
+                <div className="flex items-center justify-center py-4">
+                  <Loader size={16} className="animate-spin text-blue-400 mr-2" />
+                  <span className="text-sm text-slate-400">Loading backends...</span>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  <div className="grid grid-cols-1 gap-2">
+                    {backends.length > 0 ? (
+                      backends.map((backend) => (
+                        <button
+                          key={backend.name}
+                          onClick={() => handleBackendSwitch(backend.name)}
+                          disabled={backendSwitching || currentBackend === backend.name}
+                          className={`p-3 rounded-xl text-left text-sm transition ${
+                            currentBackend === backend.name
+                              ? 'bg-blue-600 border border-blue-500 text-white'
+                              : backendSwitching
+                              ? 'bg-slate-800 border border-slate-700 text-slate-400 opacity-50 cursor-not-allowed'
+                              : 'bg-slate-800 border border-slate-700 text-slate-300 hover:bg-slate-700 hover:border-slate-600'
+                          }`}
+                        >
+                          <div className="flex items-center justify-between">
+                            <div>
+                              <div className="font-semibold capitalize">{backend.name}</div>
+                              <div className={`text-[10px] ${currentBackend === backend.name ? 'text-blue-200' : 'text-slate-500'}`}>
+                                {backend.device_name} • {backend.vram_gb ? `${backend.vram_gb.toFixed(1)}GB` : 'No VRAM'} • {backend.compute_capability}
+                              </div>
+                            </div>
+                            {currentBackend === backend.name && (
+                              <CheckCircle2 size={16} className="flex-shrink-0" />
+                            )}
+                            {backendSwitching && currentBackend !== backend.name && backend.name === 'cpu' && (
+                              <Loader size={16} className="animate-spin flex-shrink-0" />
+                            )}
+                          </div>
+                        </button>
+                      ))
+                    ) : (
+                      <div className="text-center py-4 text-slate-500 text-sm">
+                        No backends available
+                      </div>
+                    )}
+                  </div>
+                  <p className="text-[10px] text-slate-500 bg-slate-800/50 px-3 py-2 rounded-lg">
+                    Current: <span className="text-slate-300 font-semibold capitalize">{currentBackend}</span> backend
+                  </p>
+                </div>
+              )}
+            </Section>
+
             {/* Runtime Section */}
             <Section title="Inference Runtime" icon={Cpu}>
               <SelectField
@@ -237,7 +343,9 @@ export const SettingsTab: React.FC<{ api: any }> = ({ api }) => {
                 onChange={(v) => update('inference_backend', v)}
               />
             </Section>
+          </div>
 
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             {/* Sampling Section */}
             <Section title="Sampling Parameters" icon={Sliders}>
               <SliderField
@@ -294,7 +402,9 @@ export const SettingsTab: React.FC<{ api: any }> = ({ api }) => {
                 onChange={(v) => update('chat_micro_batch', v)}
               />
             </Section>
+          </div>
 
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             {/* Network Section */}
             <Section title="Network" icon={Network}>
               <InputField
