@@ -59,7 +59,7 @@ pub struct BackendStatusResponse {
 }
 
 /// API Handler: GET /api/backends - List all available backends
-pub async fn handle_list_backends() -> Result<Json<BackendListResponse>, (StatusCode, String)> {
+pub async fn handle_list_backends() -> Response {
     match std::panic::catch_unwind(|| {
         let registry = BackendRegistry::discover();
         let backends = registry.available_backends();
@@ -89,12 +89,12 @@ pub async fn handle_list_backends() -> Result<Json<BackendListResponse>, (Status
     }) {
         Ok(response) => {
             tracing::info!("Phase2: Listed {} backends", response.available.len());
-            Ok(Json(response))
+            (StatusCode::OK, Json(response)).into_response()
         }
         Err(_) => {
             tracing::error!("Phase2: Failed to list backends - panic in discovery");
             // Fallback: return at least CPU backend
-            Ok(Json(BackendListResponse {
+            let fallback = BackendListResponse {
                 available: vec![BackendInfoResponse {
                     name: "cpu".to_string(),
                     device_name: "CPU Fallback".to_string(),
@@ -104,7 +104,8 @@ pub async fn handle_list_backends() -> Result<Json<BackendListResponse>, (Status
                     status: "ready".to_string(),
                 }],
                 current: "cpu".to_string(),
-            }))
+            };
+            (StatusCode::OK, Json(fallback)).into_response()
         }
     }
 }
