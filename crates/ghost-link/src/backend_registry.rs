@@ -130,8 +130,8 @@ impl BackendRegistry {
 
     fn detect_cuda() -> Option<BackendInfo> {
         let output = Command::new("nvidia-smi")
-            .args(&["--query-gpu=name,memory.total,compute_cap,driver_version"])
-            .args(&["--format=csv,noheader,nounits"])
+            .args(["--query-gpu=name,memory.total,compute_cap,driver_version"])
+            .args(["--format=csv,noheader,nounits"])
             .output()
             .ok()?;
 
@@ -187,7 +187,7 @@ impl BackendRegistry {
         }
 
         let output = Command::new("rocm-smi")
-            .args(&["--showproductname"])
+            .args(["--showproductname"])
             .output()
             .ok()?;
 
@@ -207,7 +207,7 @@ impl BackendRegistry {
 
         // Get VRAM info
         let vram_output = Command::new("rocm-smi")
-            .args(&["--showmeminfo", "vram"])
+            .args(["--showmeminfo", "vram"])
             .output()
             .ok();
 
@@ -227,7 +227,7 @@ impl BackendRegistry {
 
         // Detect GFX version
         let gfx_output = Command::new("rocm-smi")
-            .args(&["--showid"])
+            .args(["--showid"])
             .output()
             .ok();
 
@@ -253,7 +253,7 @@ impl BackendRegistry {
 
         // Get ROCm version
         let driver_version = Command::new("rocm-smi")
-            .args(&["--version"])
+            .args(["--version"])
             .output()
             .ok()
             .and_then(|output| {

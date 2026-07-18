@@ -153,7 +153,7 @@ impl EnvironmentManager {
             .get(backend_name)
             .ok_or_else(|| format!("No environment configuration for backend: {}", backend_name))?;
 
-        for (key, _) in env_vars {
+        for key in env_vars.keys() {
             std::env::remove_var(key);
         }
 

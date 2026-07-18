@@ -293,7 +293,7 @@ mod tests {
 
     #[test]
     fn test_cli_overrides_from_args() {
-        let args = vec![
+        let args = [
             "cmd".to_string(),
             "--backend".to_string(),
             "cpu".to_string(),
@@ -357,7 +357,7 @@ mod tests {
 
     #[test]
     fn test_cli_overrides_no_backend() {
-        let args = vec!["cmd".to_string(), "--other".to_string()];
+        let args = ["cmd".to_string(), "--other".to_string()];
 
         let overrides = CLIOverrides::from_args(&args[1..]);
         assert!(overrides.preferred_backend.is_none());
@@ -365,8 +365,8 @@ mod tests {
 
     #[test]
     fn test_compute_config_defaults() {
-        let config = ComputeConfig::new();
-        assert_eq!(default_auto_discover(), true);
+        let _config = ComputeConfig::new();
+        assert!(default_auto_discover());
         assert_eq!(default_gpu_memory_allocation(), 0.80);
         assert_eq!(default_request_drain_timeout_secs(), 30);
     }
