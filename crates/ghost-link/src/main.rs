@@ -2199,14 +2199,10 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             // If using llama_server native engine, load the model into llama-server
             if backend.settings.native_engine == "llama_server" {
                 if let Err(e) = backend.native_engine_client.load_model_into_slot(&path) {
-<<<<<<< HEAD
-                    eprintln!("Warning: failed to load model into llama-server slot: {}", e);
-=======
                     eprintln!(
                         "Warning: failed to load model into llama-server slot: {}",
                         e
                     );
->>>>>>> e71b1dc998b67d1b257ab2ae2977ac19cba263d6
                 }
             }
         }
@@ -3658,10 +3654,6 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             .route("/api/runtime/recommend", get(handle_model_recommendations))
             // Phase 2: Backend API endpoints
             .route("/api/backends", get(backend_api::handle_list_backends))
-<<<<<<< HEAD
-            .route("/api/backends/switch", post(backend_api::handle_switch_backend))
-            .route("/api/backends/:name/status", get(backend_api::handle_backend_status))
-=======
             .route(
                 "/api/backends/switch",
                 post(backend_api::handle_switch_backend),
@@ -3670,7 +3662,6 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                 "/api/backends/:name/status",
                 get(backend_api::handle_backend_status),
             )
->>>>>>> e71b1dc998b67d1b257ab2ae2977ac19cba263d6
             .with_state(state)
             .layer(CorsLayer::permissive());
 
@@ -5670,16 +5661,9 @@ fn run_gui_preflight_checks() -> Result<()> {
     Ok(())
 }
 
-<<<<<<< HEAD
-mod backend_registry;
-mod backend_api;
-mod backend_config;
-mod runtime_switcher;
-=======
 mod backend_api;
 mod backend_config;
 mod backend_registry;
->>>>>>> e71b1dc998b67d1b257ab2ae2977ac19cba263d6
 mod native_engine;
 mod ollama;
 mod runtime;

@@ -153,11 +153,7 @@ impl EnvironmentManager {
             .get(backend_name)
             .ok_or_else(|| format!("No environment configuration for backend: {}", backend_name))?;
 
-<<<<<<< HEAD
-        for (key, _) in env_vars {
-=======
         for key in env_vars.keys() {
->>>>>>> e71b1dc998b67d1b257ab2ae2977ac19cba263d6
             std::env::remove_var(key);
         }
 
@@ -311,14 +307,10 @@ mod tests {
 
         manager.set_backend_env(&ComputeBackend::Cpu).unwrap();
 
-<<<<<<< HEAD
-        assert_eq!(std::env::var("OLLAMA_NUM_THREAD").ok(), Some("16".to_string()));
-=======
         assert_eq!(
             std::env::var("OLLAMA_NUM_THREAD").ok(),
             Some("16".to_string())
         );
->>>>>>> e71b1dc998b67d1b257ab2ae2977ac19cba263d6
         assert_eq!(
             std::env::var("OLLAMA_GPU_MEMORY").ok(),
             Some("0".to_string())
@@ -367,13 +359,7 @@ mod tests {
         // Should timeout
         let result = tracker.drain(Duration::from_millis(100)).await;
         assert!(result.is_err());
-<<<<<<< HEAD
-        assert!(result
-            .unwrap_err()
-            .contains("Request drain timeout"));
-=======
         assert!(result.unwrap_err().contains("Request drain timeout"));
->>>>>>> e71b1dc998b67d1b257ab2ae2977ac19cba263d6
 
         tracker.decrement().await;
     }

@@ -3,9 +3,8 @@
 //! This is a launch-focused adapter that provides a stable native execution
 //! interface while the full transformer runtime is being integrated.
 
-use std::process::{Command, Child};
+use std::process::Command;
 use std::time::Duration;
-use std::sync::{Arc, Mutex};
 
 #[derive(Debug, Clone)]
 pub struct NativeGeneration {
@@ -15,9 +14,6 @@ pub struct NativeGeneration {
 
 #[derive(Debug, Clone)]
 pub struct NativeEngineClient;
-
-// Static variable to track the llama-server process
-static LLAMA_SERVER_PROCESS: std::sync::OnceLock<Arc<Mutex<Option<Child>>>> = std::sync::OnceLock::new();
 
 impl NativeEngineClient {
     pub fn new() -> Self {
@@ -30,11 +26,7 @@ impl NativeEngineClient {
     pub fn load_model_into_slot(&self, model_path: &str) -> Result<(), String> {
         let normalized_path = model_path.replace('\\', "/");
         eprintln!("[model-load] Preparing to load model: {}", normalized_path);
-<<<<<<< HEAD
-        
-=======
 
->>>>>>> e71b1dc998b67d1b257ab2ae2977ac19cba263d6
         // In a real implementation, this would:
         // 1. Kill the current llama-server process
         // 2. Get llama-server binary path and launch flags from environment
@@ -44,13 +36,6 @@ impl NativeEngineClient {
         //
         // For now, we just log a note since restarting llama-server from the backend
         // would require careful process management and coordination with the launch script.
-<<<<<<< HEAD
-        
-        eprintln!("[model-load] NOTE: llama-server requires restart for model switching");
-        eprintln!("[model-load] Current model: use 'tinyllama-1.1b-chat', 'gemma-4-E4B-it-Q4_K_M', etc.");
-        eprintln!("[model-load] Workaround: Manually restart llama-server with desired model");
-        
-=======
 
         eprintln!("[model-load] NOTE: llama-server requires restart for model switching");
         eprintln!(
@@ -58,7 +43,6 @@ impl NativeEngineClient {
         );
         eprintln!("[model-load] Workaround: Manually restart llama-server with desired model");
 
->>>>>>> e71b1dc998b67d1b257ab2ae2977ac19cba263d6
         Ok(())
     }
 
