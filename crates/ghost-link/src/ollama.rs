@@ -108,6 +108,7 @@ pub struct ModelInfoResponse {
     pub details: Option<ModelDetails>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateModelRequest {
     pub name: String,
@@ -117,17 +118,20 @@ pub struct CreateModelRequest {
     pub stream: bool,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CopyModelRequest {
     pub source: String,
     pub destination: String,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeleteModelRequest {
     pub name: String,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EmbeddingRequest {
     pub model: String,
@@ -139,6 +143,7 @@ pub struct EmbeddingResponse {
     pub embedding: Vec<f32>,
 }
 
+#[allow(dead_code)]
 pub type OllamaStream = Pin<Box<dyn Stream<Item = Result<String, Box<dyn Error + Send + Sync>>> + Send>>;
 
 impl OllamaClient {
@@ -188,6 +193,7 @@ impl OllamaClient {
     }
 
     /// Generate text using Ollama (non-streaming)
+    #[allow(clippy::too_many_arguments)]
     pub async fn generate(
         &self,
         model: &str,
@@ -221,6 +227,7 @@ impl OllamaClient {
     }
 
     /// Generate text using Ollama (streaming)
+    #[allow(dead_code, clippy::too_many_arguments)]
     pub async fn generate_stream(
         &self,
         model: &str,
@@ -256,6 +263,7 @@ impl OllamaClient {
         Ok(stream)
     }
 
+    #[allow(dead_code)]
     async fn stream_response(
         resp: reqwest::Response,
     ) -> Result<mpsc::Receiver<Result<String, Box<dyn Error + Send + Sync>>>, Box<dyn Error>> {
@@ -266,8 +274,7 @@ impl OllamaClient {
         tokio::spawn(async move {
             let text = String::from_utf8_lossy(&body);
             for line in text.lines() {
-                if line.starts_with("data: ") {
-                    let json_str = &line[6..];
+                if let Some(json_str) = line.strip_prefix("data: ") {
                     if let Ok(data) = serde_json::from_str::<Value>(json_str) {
                         if let Some(response) = data.get("response").and_then(|v| v.as_str()) {
                             let _ = tx.send(Ok(response.to_string())).await;
@@ -291,6 +298,7 @@ impl OllamaClient {
     }
 
     /// Chat with Ollama (non-streaming)
+    #[allow(clippy::too_many_arguments)]
     pub async fn chat(
         &self,
         model: &str,
@@ -324,6 +332,7 @@ impl OllamaClient {
     }
 
     /// Chat with Ollama (streaming)
+    #[allow(dead_code, clippy::too_many_arguments)]
     pub async fn chat_stream(
         &self,
         model: &str,
@@ -359,6 +368,7 @@ impl OllamaClient {
         Ok(stream)
     }
 
+    #[allow(dead_code)]
     async fn stream_chat_response(
         resp: reqwest::Response,
     ) -> Result<mpsc::Receiver<Result<ChatResponse, Box<dyn Error + Send + Sync>>>, Box<dyn Error>> {
@@ -369,8 +379,7 @@ impl OllamaClient {
         tokio::spawn(async move {
             let text = String::from_utf8_lossy(&body);
             for line in text.lines() {
-                if line.starts_with("data: ") {
-                    let json_str = &line[6..];
+                if let Some(json_str) = line.strip_prefix("data: ") {
                     if let Ok(data) = serde_json::from_str::<ChatResponse>(json_str) {
                         let done = data.done;
                         let _ = tx.send(Ok(data)).await;
