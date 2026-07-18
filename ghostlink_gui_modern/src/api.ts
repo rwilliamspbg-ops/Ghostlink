@@ -27,6 +27,10 @@ export class GhostlinkAPI {
     });
   }
 
+  private isNotFound(error: any): boolean {
+    return Number(error?.response?.status) === 404;
+  }
+
   getCircuitBreakerState(): CircuitBreakerState {
     return { ...this.circuitBreaker };
   }
@@ -343,6 +347,23 @@ export class GhostlinkAPI {
       const response = await this.http.post('/api/runtime/select', { runtime });
       return { success: true, data: response.data };
     } catch (error: any) {
+      if (this.isNotFound(error)) {
+        // Compatibility fallback: newer backend switching API.
+        try {
+          const normalized = runtime.trim().toLowerCase();
+          const backend =
+            normalized === 'directml'
+              ? 'cpu'
+              : normalized;
+          const response = await this.http.post('/api/backends/switch', { backend });
+          return { success: response.data?.status === 'success', data: response.data };
+        } catch (fallbackError: any) {
+          return {
+            success: false,
+            error: fallbackError.response?.data?.error || fallbackError.message || error.message,
+          };
+        }
+      }
       return { success: false, error: error.response?.data?.error || error.message };
     }
   }
@@ -426,6 +447,22 @@ export class GhostlinkAPI {
       const response = await this.http.get('/api/ollama/models');
       return { models: response.data.models || [] };
     } catch (error: any) {
+      if (this.isNotFound(error)) {
+        try {
+          const fallback = await this.getModels();
+          const models = (fallback.models || []).map((m: any) => ({
+            name: m.name,
+            size: Math.max(0, Number(m.size_gb || 0)) * 1024 * 1024 * 1024,
+            details: {
+              family: m.model_type || 'LLM',
+              quantization_level: m.quantization || 'unknown',
+            },
+          }));
+          return { models };
+        } catch (fallbackError: any) {
+          return { models: [], error: fallbackError.message || error.message };
+        }
+      }
       return { models: [], error: error.message };
     }
   }
@@ -435,6 +472,14 @@ export class GhostlinkAPI {
       await this.http.post('/api/ollama/pull', { model: modelName });
       return { success: true };
     } catch (error: any) {
+      if (this.isNotFound(error)) {
+        try {
+          const fallback = await this.downloadModel(modelName);
+          return { success: !!fallback.success, error: fallback.error };
+        } catch (fallbackError: any) {
+          return { success: false, error: fallbackError.message || error.message };
+        }
+      }
       return { success: false, error: error.response?.data?.error || error.message };
     }
   }
@@ -478,16 +523,41 @@ export class GhostlinkAPI {
       }
       return { success: true };
     } catch (error: any) {
+      const is404 = error?.message?.includes('HTTP 404') || this.isNotFound(error);
+      if (is404) {
+        onProgress({ completed: 0, total: 1, status: 'starting' });
+        const fallback = await this.pullOllamaModel(modelName);
+        onProgress({ completed: fallback.success ? 1 : 0, total: 1, status: fallback.success ? 'success' : 'failed' });
+        return fallback;
+      }
       return { success: false, error: error.message };
     }
   }
 
-  async showOllamaModel(modelName: string): Promise<{ info: any; error?: string }> {
+  async showOllamaModel(modelName: string): Promise<{ info?: any; modelfile?: string; error?: string }> {
     try {
       const response = await this.http.post('/api/ollama/show', { model: modelName });
-      return { info: response.data };
+      return {
+        info: response.data,
+        modelfile: response.data?.modelfile || response.data?.template || '',
+      };
     } catch (error: any) {
-      return { info: null, error: error.response?.data?.error || error.message };
+      if (this.isNotFound(error)) {
+        const fallback = await this.getModels();
+        const model = (fallback.models || []).find((m: any) => m.name === modelName);
+        if (model) {
+          const localPath = (model as any).local_path as string | undefined;
+          const generated = [
+            `FROM ${model.name}`,
+            model.quantization ? `# quantization: ${model.quantization}` : '',
+            localPath ? `# local_path: ${localPath}` : '',
+          ]
+            .filter(Boolean)
+            .join('\n');
+          return { info: model, modelfile: generated };
+        }
+      }
+      return { info: null, modelfile: '', error: error.response?.data?.error || error.message };
     }
   }
 
@@ -514,6 +584,14 @@ export class GhostlinkAPI {
       await this.http.post('/api/ollama/delete', { name });
       return { success: true };
     } catch (error: any) {
+      if (this.isNotFound(error)) {
+        try {
+          const fallback = await this.deleteModel(name);
+          return { success: !!fallback.success, error: fallback.error };
+        } catch (fallbackError: any) {
+          return { success: false, error: fallbackError.message || error.message };
+        }
+      }
       return { success: false, error: error.response?.data?.error || error.message };
     }
   }
@@ -523,6 +601,11 @@ export class GhostlinkAPI {
       const response = await this.http.get('/api/ollama/ps');
       return { models: response.data.models || [] };
     } catch (error: any) {
+      if (this.isNotFound(error)) {
+        const fallback = await this.getModels();
+        const loaded = (fallback.models || []).filter((m: any) => String(m.status).toLowerCase() === 'loaded');
+        return { models: loaded, error: fallback.error };
+      }
       return { models: [], error: error.message };
     }
   }
@@ -562,4 +645,5 @@ export class GhostlinkAPI {
       return { response: null, error: error.response?.data?.error || error.message };
     }
   }
+
 }

@@ -65,9 +65,9 @@ echo [OK] Ollama ready (GPU: AMD ROCm gfx906)
 echo [3/4] Starting Ghostlink Backend...
 set "GHOSTLINK_INFERENCE_BACKEND=ollama"
 if exist "%PROJECT_ROOT%target\release\ghost-link.exe" (
-    start "Ghostlink Backend" "%PROJECT_ROOT%target\release\ghost-link.exe" serve %BACKEND_HOST% %BACKEND_PORT%
+    start "Ghostlink Backend" cmd /c "set HSA_OVERRIDE_GFX_VERSION=gfx906& set HIP_PLATFORM=amd& "%PROJECT_ROOT%target\release\ghost-link.exe" serve %BACKEND_HOST% %BACKEND_PORT%"
 ) else (
-    start "Ghostlink Backend" cmd /c "cd /d "%PROJECT_ROOT%" && cargo run -p ghost-link -- serve %BACKEND_HOST% %BACKEND_PORT%"
+    start "Ghostlink Backend" cmd /c "set HSA_OVERRIDE_GFX_VERSION=gfx906& set HIP_PLATFORM=amd& cd /d "%PROJECT_ROOT%" && cargo run -p ghost-link -- serve %BACKEND_HOST% %BACKEND_PORT%"
 )
 
 set /a "WAIT=0"

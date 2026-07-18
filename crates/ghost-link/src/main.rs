@@ -1670,6 +1670,42 @@ struct ModelDeleteRequest {
     model: String,
 }
 #[derive(Debug, Deserialize)]
+struct OllamaModelRequest {
+    model: String,
+}
+#[derive(Debug, Deserialize)]
+struct OllamaCreateRequest {
+    name: String,
+    modelfile: String,
+}
+#[derive(Debug, Deserialize)]
+struct OllamaCopyRequest {
+    source: String,
+    destination: String,
+}
+#[derive(Debug, Deserialize)]
+struct OllamaEmbeddingRequest {
+    model: String,
+    prompt: String,
+}
+#[derive(Debug, Deserialize)]
+struct OllamaChatRequest {
+    model: String,
+    messages: Vec<serde_json::Value>,
+    #[allow(dead_code)]
+    stream: Option<bool>,
+    #[allow(dead_code)]
+    temperature: Option<f32>,
+    #[allow(dead_code)]
+    top_p: Option<f32>,
+    #[allow(dead_code)]
+    top_k: Option<usize>,
+    #[allow(dead_code)]
+    repeat_penalty: Option<f32>,
+    #[allow(dead_code)]
+    max_tokens: Option<usize>,
+}
+#[derive(Debug, Deserialize)]
 struct OllamaNameRequest {
     name: String,
 }
@@ -2620,7 +2656,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
 
     async fn handle_gui_ollama_pull(
         State(state): State<Arc<Mutex<BackendState>>>,
-        Json(req): Json<ModelLoadRequest>,
+        Json(req): Json<OllamaModelRequest>,
     ) -> Json<serde_json::Value> {
         let model = req.model.trim().to_string();
         if model.is_empty() {
@@ -2638,9 +2674,74 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         }
     }
 
+    async fn handle_gui_ollama_pull_stream(
+        State(state): State<Arc<Mutex<BackendState>>>,
+        Json(req): Json<OllamaModelRequest>,
+    ) -> axum::response::Response {
+        let model_name = req.model.trim().to_string();
+        if model_name.is_empty() {
+            return Json(serde_json::json!({ "error": "model cannot be empty" })).into_response();
+        }
+
+        let ollama_client = {
+            let backend = lock_state(&state);
+            backend.ollama_client.clone()
+        };
+
+        let progress_stream = match ollama_client.pull_model_stream(&model_name).await {
+            Ok(stream) => stream,
+            Err(err) => {
+                return Json(serde_json::json!({
+                    "status": "error",
+                    "error": format!(
+                        "failed to start pull stream for '{}': {}",
+                        model_name, err
+                    ),
+                }))
+                .into_response()
+            }
+        };
+
+        let (tx, rx) = tokio::sync::mpsc::channel::<Result<Event, Infallible>>(16);
+
+        tokio::spawn(async move {
+            let mut stream = progress_stream;
+            while let Some(item) = stream.next().await {
+                match item {
+                    Ok(progress) => {
+                        let payload = serde_json::json!({
+                            "status": progress.status,
+                            "digest": progress.digest,
+                            "total": progress.total,
+                            "completed": progress.completed,
+                        })
+                        .to_string();
+                        if tx.send(Ok(Event::default().data(payload))).await.is_err() {
+                            return;
+                        }
+                    }
+                    Err(err) => {
+                        let payload = serde_json::json!({
+                            "status": "error",
+                            "error": err.to_string(),
+                        })
+                        .to_string();
+                        let _ = tx.send(Ok(Event::default().data(payload))).await;
+                        return;
+                    }
+                }
+            }
+
+            let done_payload = serde_json::json!({ "status": "success" }).to_string();
+            let _ = tx.send(Ok(Event::default().data(done_payload))).await;
+        });
+
+        Sse::new(tokio_stream::wrappers::ReceiverStream::new(rx)).into_response()
+    }
+
     async fn handle_gui_ollama_show(
         State(state): State<Arc<Mutex<BackendState>>>,
-        Json(req): Json<ModelLoadRequest>,
+        Json(req): Json<OllamaModelRequest>,
     ) -> Json<serde_json::Value> {
         let model = req.model.trim().to_string();
         if model.is_empty() {
@@ -2664,6 +2765,56 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         }
     }
 
+    async fn handle_gui_ollama_create(
+        State(state): State<Arc<Mutex<BackendState>>>,
+        Json(req): Json<OllamaCreateRequest>,
+    ) -> Json<serde_json::Value> {
+        let name = req.name.trim().to_string();
+        if name.is_empty() {
+            return Json(serde_json::json!({ "error": "name cannot be empty" }));
+        }
+        if req.modelfile.trim().is_empty() {
+            return Json(serde_json::json!({ "error": "modelfile cannot be empty" }));
+        }
+
+        let ollama_client = {
+            let backend = lock_state(&state);
+            backend.ollama_client.clone()
+        };
+
+        match ollama_client.create_model(&name, &req.modelfile).await {
+            Ok(detail) => Json(serde_json::json!({ "status": "success", "detail": detail })),
+            Err(err) => Json(serde_json::json!({
+                "status": "error",
+                "error": format!("failed to create model '{}': {}", name, err),
+            })),
+        }
+    }
+
+    async fn handle_gui_ollama_copy(
+        State(state): State<Arc<Mutex<BackendState>>>,
+        Json(req): Json<OllamaCopyRequest>,
+    ) -> Json<serde_json::Value> {
+        let source = req.source.trim().to_string();
+        let destination = req.destination.trim().to_string();
+        if source.is_empty() || destination.is_empty() {
+            return Json(serde_json::json!({ "error": "source and destination are required" }));
+        }
+
+        let ollama_client = {
+            let backend = lock_state(&state);
+            backend.ollama_client.clone()
+        };
+
+        match ollama_client.copy_model(&source, &destination).await {
+            Ok(detail) => Json(serde_json::json!({ "status": "success", "detail": detail })),
+            Err(err) => Json(serde_json::json!({
+                "status": "error",
+                "error": format!("failed to copy model '{}': {}", source, err),
+            })),
+        }
+    }
+
     async fn handle_gui_ollama_delete(
         State(state): State<Arc<Mutex<BackendState>>>,
         Json(req): Json<OllamaNameRequest>,
@@ -2681,6 +2832,115 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         match ollama_client.delete_model(&name).await {
             Ok(result) => Json(serde_json::json!({ "status": "ok", "result": result })),
             Err(err) => Json(serde_json::json!({ "error": err.to_string() })),
+        }
+    }
+
+    async fn handle_gui_ollama_ps(
+        State(state): State<Arc<Mutex<BackendState>>>,
+    ) -> Json<serde_json::Value> {
+        let ollama_client = {
+            let backend = lock_state(&state);
+            backend.ollama_client.clone()
+        };
+
+        match ollama_client.list_running().await {
+            Ok(models) => Json(serde_json::json!({ "models": models })),
+            Err(err) => Json(serde_json::json!({
+                "models": [],
+                "error": format!("failed to list running models: {}", err),
+            })),
+        }
+    }
+
+    async fn handle_gui_ollama_embeddings(
+        State(state): State<Arc<Mutex<BackendState>>>,
+        Json(req): Json<OllamaEmbeddingRequest>,
+    ) -> Json<serde_json::Value> {
+        let model = req.model.trim().to_string();
+        if model.is_empty() {
+            return Json(serde_json::json!({ "error": "model cannot be empty" }));
+        }
+        if req.prompt.trim().is_empty() {
+            return Json(serde_json::json!({ "error": "prompt cannot be empty" }));
+        }
+
+        let ollama_client = {
+            let backend = lock_state(&state);
+            backend.ollama_client.clone()
+        };
+
+        match ollama_client.embeddings(&model, &req.prompt).await {
+            Ok(embedding) => Json(serde_json::json!({ "embedding": embedding })),
+            Err(err) => Json(serde_json::json!({
+                "error": format!("failed to generate embeddings: {}", err),
+            })),
+        }
+    }
+
+    async fn handle_gui_ollama_version(
+        State(state): State<Arc<Mutex<BackendState>>>,
+    ) -> Json<serde_json::Value> {
+        let ollama_client = {
+            let backend = lock_state(&state);
+            backend.ollama_client.clone()
+        };
+
+        match ollama_client.version().await {
+            Ok(version) => Json(serde_json::json!({ "version": version })),
+            Err(err) => Json(serde_json::json!({
+                "version": "unknown",
+                "error": format!("failed to read Ollama version: {}", err),
+            })),
+        }
+    }
+
+    async fn handle_gui_ollama_chat(
+        State(state): State<Arc<Mutex<BackendState>>>,
+        Json(req): Json<OllamaChatRequest>,
+    ) -> Json<serde_json::Value> {
+        let model = req.model.trim().to_string();
+        if model.is_empty() {
+            return Json(serde_json::json!({ "error": "model cannot be empty" }));
+        }
+
+        let messages = req
+            .messages
+            .into_iter()
+            .filter_map(|message| {
+                let role = message.get("role").and_then(|v| v.as_str())?;
+                let content = message.get("content").and_then(|v| v.as_str())?;
+                Some(ollama::ChatMessage {
+                    role: role.to_string(),
+                    content: content.to_string(),
+                })
+            })
+            .collect::<Vec<_>>();
+
+        if messages.is_empty() {
+            return Json(serde_json::json!({ "error": "messages cannot be empty" }));
+        }
+
+        let ollama_client = {
+            let backend = lock_state(&state);
+            backend.ollama_client.clone()
+        };
+
+        match ollama_client
+            .chat(
+                &model,
+                &messages,
+                req.temperature,
+                req.top_p,
+                req.top_k,
+                req.repeat_penalty,
+                req.max_tokens,
+            )
+            .await
+        {
+            Ok(response) => Json(serde_json::json!(response)),
+            Err(err) => Json(serde_json::json!({
+                "error": format!("failed to chat with Ollama: {}", err),
+            })),
         }
     }
 
@@ -3317,8 +3577,15 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
     println!("  - GET  /api/ollama/health");
     println!("  - GET  /api/ollama/models");
     println!("  - POST /api/ollama/pull");
+    println!("  - POST /api/ollama/pull/stream");
     println!("  - POST /api/ollama/show");
+    println!("  - POST /api/ollama/create");
+    println!("  - POST /api/ollama/copy");
     println!("  - POST /api/ollama/delete");
+    println!("  - GET  /api/ollama/ps");
+    println!("  - POST /api/ollama/embeddings");
+    println!("  - GET  /api/ollama/version");
+    println!("  - POST /api/ollama/chat");
     println!("  - GET  /api/workers");
     println!("  - POST /api/workers/connect");
     println!("  - POST /api/workers/add");
@@ -3533,8 +3800,18 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             .route("/api/ollama/health", get(handle_gui_ollama_health))
             .route("/api/ollama/models", get(handle_gui_ollama_models))
             .route("/api/ollama/pull", post(handle_gui_ollama_pull))
+            .route(
+                "/api/ollama/pull/stream",
+                post(handle_gui_ollama_pull_stream),
+            )
             .route("/api/ollama/show", post(handle_gui_ollama_show))
+            .route("/api/ollama/create", post(handle_gui_ollama_create))
+            .route("/api/ollama/copy", post(handle_gui_ollama_copy))
             .route("/api/ollama/delete", post(handle_gui_ollama_delete))
+            .route("/api/ollama/ps", get(handle_gui_ollama_ps))
+            .route("/api/ollama/embeddings", post(handle_gui_ollama_embeddings))
+            .route("/api/ollama/version", get(handle_gui_ollama_version))
+            .route("/api/ollama/chat", post(handle_gui_ollama_chat))
             .route("/api/workers", get(handle_gui_workers))
             .route("/api/workers/connect", post(handle_gui_workers_connect))
             .route("/api/workers/add", post(handle_gui_workers_add))

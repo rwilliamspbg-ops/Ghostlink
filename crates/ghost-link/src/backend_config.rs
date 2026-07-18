@@ -54,6 +54,27 @@ impl ComputeConfig {
     pub fn set_preferred_backend(&mut self, backend: ComputeBackend) {
         self.preferred_backend = Some(backend.as_str().to_string());
     }
+
+    pub fn validate(&self) -> Result<(), String> {
+        if !(0.0..=1.0).contains(&self.gpu_memory_allocation) {
+            return Err(format!(
+                "gpu_memory_allocation must be between 0.0 and 1.0, got {}",
+                self.gpu_memory_allocation
+            ));
+        }
+
+        if self.request_drain_timeout_secs == 0 {
+            return Err("request_drain_timeout_secs must be > 0".to_string());
+        }
+
+        if let Some(backend) = &self.preferred_backend {
+            if ComputeBackend::from_str(backend).is_none() {
+                return Err(format!("Unknown backend: {}", backend));
+            }
+        }
+
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -84,6 +105,7 @@ impl ConfigManager {
                 .clone()
                 .try_into()
                 .map_err(|err| format!("Failed to parse [compute] section: {}", err))?;
+            config.validate()?;
             Ok(config)
         } else {
             Ok(ComputeConfig::default())
@@ -101,6 +123,8 @@ impl ConfigManager {
     }
 
     pub fn save_compute_config(&self, config: &ComputeConfig) -> Result<(), String> {
+        config.validate()?;
+
         let mut root = if self.config_path.exists() {
             let content = std::fs::read_to_string(&self.config_path)
                 .map_err(|err| format!("Failed to read config file: {}", err))?;
@@ -122,6 +146,56 @@ impl ConfigManager {
         std::fs::write(&self.config_path, output)
             .map_err(|err| format!("Failed to write config file: {}", err))?;
         Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct CLIOverrides {
+    pub preferred_backend: Option<String>,
+}
+
+impl CLIOverrides {
+    pub fn new() -> Self {
+        Self {
+            preferred_backend: None,
+        }
+    }
+
+    pub fn from_args(args: &[String]) -> Self {
+        let mut overrides = Self::new();
+        let mut index = 0;
+
+        while index < args.len() {
+            match args[index].as_str() {
+                "--backend" => {
+                    if let Some(next) = args.get(index + 1) {
+                        overrides.preferred_backend = Some(next.clone());
+                        index += 2;
+                    } else {
+                        index += 1;
+                    }
+                }
+                _ if args[index].starts_with("--backend=") => {
+                    overrides.preferred_backend =
+                        Some(args[index].trim_start_matches("--backend=").to_string());
+                    index += 1;
+                }
+                _ => index += 1,
+            }
+        }
+
+        overrides
+    }
+
+    pub fn get_effective_backend(
+        &self,
+        config_backend: Option<ComputeBackend>,
+    ) -> Option<ComputeBackend> {
+        if let Some(backend_str) = &self.preferred_backend {
+            return ComputeBackend::from_str(backend_str);
+        }
+
+        config_backend
     }
 }
 
@@ -151,6 +225,32 @@ mod tests {
     }
 
     #[test]
+    fn test_compute_config_validate() {
+        let mut config = ComputeConfig::new();
+        assert!(config.validate().is_ok());
+
+        config.gpu_memory_allocation = 1.5;
+        assert!(config.validate().is_err());
+
+        config.gpu_memory_allocation = 0.80;
+        config.request_drain_timeout_secs = 0;
+        assert!(config.validate().is_err());
+
+        config.request_drain_timeout_secs = 30;
+        config.preferred_backend = Some("invalid".to_string());
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn test_compute_config_set_backend() {
+        let mut config = ComputeConfig::new();
+        assert!(config.get_preferred_backend().is_none());
+
+        config.set_preferred_backend(ComputeBackend::Rocm);
+        assert_eq!(config.get_preferred_backend(), Some(ComputeBackend::Rocm));
+    }
+
+    #[test]
     fn test_config_manager_save_and_load_preferred_backend() {
         let path = temp_config_path();
         let manager = ConfigManager::new(&path);
@@ -163,5 +263,71 @@ mod tests {
         assert_eq!(loaded, Some(ComputeBackend::Rocm));
 
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn test_cli_overrides_from_args() {
+        let args = [
+            "cmd".to_string(),
+            "--backend".to_string(),
+            "cpu".to_string(),
+            "other".to_string(),
+        ];
+
+        let overrides = CLIOverrides::from_args(&args[1..]);
+        assert_eq!(overrides.preferred_backend, Some("cpu".to_string()));
+    }
+
+    #[test]
+    fn test_cli_overrides_equals_syntax() {
+        let args = vec!["--backend=rocm".to_string()];
+
+        let overrides = CLIOverrides::from_args(&args);
+        assert_eq!(overrides.preferred_backend, Some("rocm".to_string()));
+    }
+
+    #[test]
+    fn test_cli_overrides_get_effective_backend() {
+        let mut overrides = CLIOverrides::new();
+
+        assert!(overrides.get_effective_backend(None).is_none());
+        assert_eq!(
+            overrides.get_effective_backend(Some(ComputeBackend::Rocm)),
+            Some(ComputeBackend::Rocm)
+        );
+
+        overrides.preferred_backend = Some("cpu".to_string());
+        assert_eq!(
+            overrides.get_effective_backend(Some(ComputeBackend::Rocm)),
+            Some(ComputeBackend::Cpu)
+        );
+    }
+
+    #[test]
+    fn test_compute_config_serialization() {
+        let mut config = ComputeConfig::new();
+        config.set_preferred_backend(ComputeBackend::Rocm);
+
+        let toml_str = toml::to_string(&config).unwrap();
+        assert!(toml_str.contains("rocm"));
+        assert!(toml_str.contains("0.8"));
+
+        let parsed: ComputeConfig = toml::from_str(&toml_str).unwrap();
+        assert_eq!(parsed.get_preferred_backend(), Some(ComputeBackend::Rocm));
+    }
+
+    #[test]
+    fn test_config_manager_path_handling() {
+        let config_path = PathBuf::from("/tmp/test_ghostlink.toml");
+        let manager = ConfigManager::new(&config_path);
+        assert_eq!(manager.config_path, config_path);
+    }
+
+    #[test]
+    fn test_cli_overrides_no_backend() {
+        let args = ["cmd".to_string(), "--other".to_string()];
+
+        let overrides = CLIOverrides::from_args(&args[1..]);
+        assert!(overrides.preferred_backend.is_none());
     }
 }
