@@ -47,6 +47,19 @@ If Ollama doesn't detect GPU:
    - `gfx1030`, `gfx1050`, `gfx1100`, or `gfx906`
 4. Edit `launch-ollama.bat` and change line with `HSA_OVERRIDE_GFX_VERSION`
 
+If Ollama detects GPU but generation fails with `POST /api/generate` returning `404`:
+
+1. Confirm Ollama is reachable and has tags:
+   - `curl http://127.0.0.1:11434/api/tags`
+2. List installed models and verify the exact tag:
+   - `ollama list`
+3. Pull the exact model tag you will use:
+   - `ollama pull qwen2.5:3b`
+4. In Ghostlink, select the exact installed tag (including suffix like `:latest` when present).
+5. If logs show warning about overridden visible devices, clear override and restart:
+   - Windows: `setx HSA_OVERRIDE_GFX_VERSION ""`
+   - Linux/macOS: `unset HSA_OVERRIDE_GFX_VERSION`
+
 ## Known Limitations
 
 **Model Switching**: Currently requires page reload in browser before switching models. Backend optimization pending.
