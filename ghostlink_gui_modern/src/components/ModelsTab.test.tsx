@@ -4,6 +4,8 @@ import { ModelsTab } from './ModelsTab';
 import { useAppStore } from '../store';
 import { GhostlinkAPI } from '../api';
 
+let setCurrentModelMock = vi.fn();
+
 function createMockApi(): GhostlinkAPI {
   const api = new GhostlinkAPI('http://localhost:8003');
   vi.spyOn(api, 'getModels').mockResolvedValue({
@@ -16,12 +18,19 @@ function createMockApi(): GhostlinkAPI {
   vi.spyOn(api, 'loadModel').mockResolvedValue({ success: true, data: {} });
   vi.spyOn(api, 'unloadModel').mockResolvedValue({ success: true, data: {} });
   vi.spyOn(api, 'deleteModel').mockResolvedValue({ success: true, data: {} });
+  vi.spyOn(api, 'getOllamaModels').mockResolvedValue({
+    models: [
+      { name: 'llama-3-8b', size: 8 * 1024 * 1024 * 1024, details: { family: 'llama', quantization_level: 'Q4_K_M' } },
+      { name: 'mistral-7b', size: 7 * 1024 * 1024 * 1024, details: { family: 'mistral', quantization_level: 'Q8_0' } },
+    ],
+  });
   vi.spyOn(api, 'searchHuggingFace').mockResolvedValue({ models: [{ id: 'test/model', name: 'Test Model', downloads: 1000, likes: 50 }] });
   return api;
 }
 
 describe('ModelsTab', () => {
   beforeEach(() => {
+    setCurrentModelMock = vi.fn();
     useAppStore.setState({
       currentModel: 'mistral-7b',
       models: [
@@ -38,7 +47,7 @@ describe('ModelsTab', () => {
       activeTab: 1,
       setApiBase: vi.fn(),
       setBackendOnline: vi.fn(),
-      setCurrentModel: vi.fn(),
+      setCurrentModel: setCurrentModelMock,
       setUptime: vi.fn(),
       setModels: vi.fn(),
       setMetrics: vi.fn(),
@@ -52,15 +61,14 @@ describe('ModelsTab', () => {
   it('renders model list', () => {
     const api = createMockApi();
     render(<ModelsTab api={api} />);
-    expect(screen.getByText('llama-3-8b')).toBeInTheDocument();
-    expect(screen.getByText('mistral-7b')).toBeInTheDocument();
+    expect(screen.getByText('Popular Ollama Models')).toBeInTheDocument();
   });
 
-  it('shows Library tab by default', () => {
+  it('shows Ollama tab by default', () => {
     const api = createMockApi();
     render(<ModelsTab api={api} />);
-    expect(screen.getByText('Library')).toBeInTheDocument();
-    expect(screen.getByText('Local Models')).toBeInTheDocument();
+    expect(screen.getAllByText('Ollama Models').length).toBeGreaterThanOrEqual(1);
+    expect(screen.getByText('Popular Ollama Models')).toBeInTheDocument();
   });
 
   it('switches to Hugging Face tab', () => {
@@ -70,26 +78,29 @@ describe('ModelsTab', () => {
     expect(screen.getByText('Hugging Face Models')).toBeInTheDocument();
   });
 
-  it('shows Load button for non-loaded models', () => {
+  it('shows Use button for non-active models', async () => {
     const api = createMockApi();
     render(<ModelsTab api={api} />);
-    const loadButtons = screen.getAllByText('Load');
-    expect(loadButtons.length).toBeGreaterThanOrEqual(1);
+    fireEvent.click(screen.getByText('Refresh'));
+    const useButtons = await screen.findAllByText('Use');
+    expect(useButtons.length).toBeGreaterThanOrEqual(1);
   });
 
-  it('shows Unload button for loaded model', () => {
+  it('shows Active badge for current model', async () => {
     const api = createMockApi();
     render(<ModelsTab api={api} />);
-    expect(screen.getByText('Unload')).toBeInTheDocument();
+    fireEvent.click(screen.getByText('Refresh'));
+    expect(await screen.findByText('Active')).toBeInTheDocument();
   });
 
-  it('calls loadModel when Load clicked', async () => {
+  it('calls setCurrentModel when Use clicked', async () => {
     const api = createMockApi();
     render(<ModelsTab api={api} />);
-    const loadBtn = screen.getAllByText('Load')[0];
-    fireEvent.click(loadBtn);
+    fireEvent.click(screen.getByText('Refresh'));
+    const useBtn = await screen.findAllByText('Use');
+    fireEvent.click(useBtn[0]);
     await waitFor(() => {
-      expect(api.loadModel).toHaveBeenCalled();
+      expect(setCurrentModelMock).toHaveBeenCalled();
     });
   });
 });
