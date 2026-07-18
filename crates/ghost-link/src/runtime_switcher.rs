@@ -1,6 +1,8 @@
 //! Phase 3: Runtime Backend Switching
 //! Implements graceful backend switching with request draining, environment updates, and process restart
 
+#![allow(dead_code)] // Public API for runtime switching
+
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;

@@ -528,4 +528,40 @@ export class GhostlinkAPI {
       return { response: null, error: error.response?.data?.error || error.message };
     }
   }
+
+  // Phase 5: GPU/CPU Backend API Methods
+  async getBackends(): Promise<{ backends: any[]; current: string; error?: string }> {
+    try {
+      const response = await this.http.get('/api/backends');
+      return { 
+        backends: response.data.available || [], 
+        current: response.data.current || 'cpu',
+        error: undefined
+      };
+    } catch (error: any) {
+      return { backends: [], current: 'cpu', error: error.message };
+    }
+  }
+
+  async switchBackend(backend: string): Promise<{ success: boolean; message?: string; error?: string }> {
+    try {
+      const response = await this.http.post('/api/backends/switch', { backend });
+      return { 
+        success: response.data.status === 'success',
+        message: response.data.message,
+        error: response.data.error
+      };
+    } catch (error: any) {
+      return { success: false, error: error.response?.data?.error || error.message };
+    }
+  }
+
+  async getBackendStatus(backend: string): Promise<{ status: any; error?: string }> {
+    try {
+      const response = await this.http.get(`/api/backends/${backend}/status`);
+      return { status: response.data, error: undefined };
+    } catch (error: any) {
+      return { status: null, error: error.message };
+    }
+  }
 }

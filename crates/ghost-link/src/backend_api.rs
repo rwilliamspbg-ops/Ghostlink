@@ -1,6 +1,8 @@
 // Phase 2: Backend API Handlers
 // These handlers provide REST endpoints for GPU/CPU backend management and switching
 
+#![allow(dead_code)] // Public API for REST endpoints
+
 use axum::{
     extract::Path,
     http::StatusCode,

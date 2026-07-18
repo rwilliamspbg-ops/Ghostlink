@@ -1,6 +1,8 @@
 //! Phase 4: Backend Configuration & Persistence
 //! Implements saving/loading backend preferences to/from ghostlink.toml
 
+#![allow(dead_code)] // Public API for config management
+
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
