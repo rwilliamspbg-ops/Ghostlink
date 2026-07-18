@@ -11,7 +11,7 @@ import {
   CheckCircle2,
   AlertTriangle,
   Loader,
-  Gpu,
+  BarChart3,
 } from 'lucide-react';
 import { Settings as SettingsType } from '../store';
 
@@ -267,7 +267,7 @@ export const SettingsTab: React.FC<{ api: any }> = ({ api }) => {
         <div className="max-w-5xl mx-auto space-y-6">
           {/* Phase 5: GPU/CPU Compute Backend Section */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            <Section title="Compute Backend" icon={Gpu}>
+            <Section title="Compute Backend" icon={BarChart3}>
               {backendError && (
                 <div className="flex items-center gap-2 text-xs text-red-400 bg-red-500/10 px-3 py-2 rounded-lg mb-3">
                   <AlertTriangle size={14} /> {backendError}
@@ -288,7 +288,10 @@ export const SettingsTab: React.FC<{ api: any }> = ({ api }) => {
                 <div className="space-y-3">
                   <div className="grid grid-cols-1 gap-2">
                     {backends.length > 0 ? (
-                      backends.map((backend) => (
+                      backends.map((backend: any) => {
+                        const displayVram = backend.vram_gb ? Number(backend.vram_gb).toFixed(1) : 'N/A';
+                        const displayCapability = backend.compute_capability || 'N/A';
+                        return (
                         <button
                           key={backend.name}
                           onClick={() => handleBackendSwitch(backend.name)}
@@ -305,7 +308,7 @@ export const SettingsTab: React.FC<{ api: any }> = ({ api }) => {
                             <div>
                               <div className="font-semibold capitalize">{backend.name}</div>
                               <div className={`text-[10px] ${currentBackend === backend.name ? 'text-blue-200' : 'text-slate-500'}`}>
-                                {backend.device_name} • {backend.vram_gb ? `${backend.vram_gb.toFixed(1)}GB` : 'No VRAM'} • {backend.compute_capability}
+                                {backend.device_name || 'Unknown'} • {displayVram}GB • {displayCapability}
                               </div>
                             </div>
                             {currentBackend === backend.name && (
@@ -316,7 +319,8 @@ export const SettingsTab: React.FC<{ api: any }> = ({ api }) => {
                             )}
                           </div>
                         </button>
-                      ))
+                        );
+                      })
                     ) : (
                       <div className="text-center py-4 text-slate-500 text-sm">
                         No backends available
