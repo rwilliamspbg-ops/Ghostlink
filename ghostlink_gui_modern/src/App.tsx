@@ -24,6 +24,7 @@ import { WorkersTab } from './components/WorkersTab';
 import { SecurityTab } from './components/SecurityTab';
 import { SettingsTab } from './components/SettingsTab';
 import { ErrorBoundary, OfflineBanner, useOnlineStatus } from './components/ErrorBoundary';
+import { resolveApiBase } from './config';
 
 const tabs = [
   { label: 'Chat', icon: MessageSquare, id: 0 },
@@ -132,7 +133,12 @@ function App() {
 
   // CRITICAL FIX: Initialize API base on app load
   useEffect(() => {
-    const detectedApiBase = import.meta.env.VITE_GHOSTLINK_API_BASE || (window as any)._env_?.GHOSTLINK_API_BASE || 'http://127.0.0.1:8003';
+    const detectedApiBase = resolveApiBase({
+      GHOSTLINK_API_BASE: (window as any)._env_?.GHOSTLINK_API_BASE,
+      GHOSTLINK_BACKEND_URL: (window as any)._env_?.GHOSTLINK_BACKEND_URL,
+      VITE_GHOSTLINK_API_BASE: import.meta.env.VITE_GHOSTLINK_API_BASE,
+      VITE_GHOSTLINK_BACKEND_URL: import.meta.env.VITE_GHOSTLINK_BACKEND_URL,
+    });
     setApiBase(detectedApiBase);
     setApi(new GhostlinkAPI(detectedApiBase));
   }, [setApiBase]);

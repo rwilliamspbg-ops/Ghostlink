@@ -135,6 +135,11 @@ describe('Config Validation', () => {
       expect(result.valid).toBe(true);
     });
 
+    it('should accept valid VITE_GHOSTLINK_BACKEND_URL', () => {
+      const result = validateEnvVars({ VITE_GHOSTLINK_BACKEND_URL: 'http://127.0.0.1:9999' });
+      expect(result.valid).toBe(true);
+    });
+
     it('should reject invalid VITE_GHOSTLINK_API_BASE', () => {
       const result = validateEnvVars({ VITE_GHOSTLINK_API_BASE: 'not-a-url' });
       expect(result.valid).toBe(false);

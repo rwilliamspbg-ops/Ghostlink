@@ -151,6 +151,9 @@ def main():
     os.environ['GHOSTLINK_PROXY_HOST'] = bind_host
     os.environ['GHOSTLINK_PROXY_PORT'] = str(gateway_port)
     os.environ['GHOSTLINK_PROXY_URL'] = gateway_url
+    os.environ['GHOSTLINK_API_BASE'] = gateway_url
+    os.environ['GHOSTLINK_BACKEND_URL'] = gateway_url
+    os.environ['VITE_GHOSTLINK_API_BASE'] = gateway_url
     os.environ['VITE_GHOSTLINK_BACKEND_URL'] = gateway_url
 
     chat_backend_mode = os.getenv('GHOSTLINK_STUDIO_CHAT_BACKEND', 'backend').strip().lower()
