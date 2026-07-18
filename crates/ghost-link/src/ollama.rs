@@ -530,7 +530,10 @@ impl OllamaClient {
             .iter()
             .any(|model| Self::matches_model_name(&model.name, model_name))
         {
-            return Ok(format!("model '{}' is not running; unload skipped", model_name));
+            return Ok(format!(
+                "model '{}' is not running; unload skipped",
+                model_name
+            ));
         }
 
         let payload = json!({
