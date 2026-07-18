@@ -1,5 +1,12 @@
 import { z } from 'zod';
 
+const API_BASE_ENV_KEYS = [
+  'VITE_GHOSTLINK_API_BASE',
+  'VITE_GHOSTLINK_BACKEND_URL',
+  'GHOSTLINK_API_BASE',
+  'GHOSTLINK_BACKEND_URL',
+] as const;
+
 export const AppConfigSchema = z.object({
   inference_backend: z.enum(['native', 'ollama']).default('ollama'),
   api_host: z.string().regex(/^[\w.*:-]+$/).default('127.0.0.1'),
@@ -57,21 +64,39 @@ return { success: true, config: result.data };
 
 export function validateEnvVars(env?: Record<string, string>): { valid: boolean; errors: string[] } {
   const errors: string[] = [];
-  
+
   // Use provided env or fallback to import.meta.env
   const envVars = env || (import.meta as any).env || {};
-  
-  // Check for required environment variables
-  const apiBase = envVars.VITE_GHOSTLINK_API_BASE;
-  if (apiBase) {
+
+  // Check the configured API base regardless of which launcher alias set it.
+  const apiBase = resolveApiBase(envVars);
+  const apiBaseKey = API_BASE_ENV_KEYS.find((key) => {
+    const value = envVars[key];
+    return typeof value === 'string' && value.trim().length > 0;
+  });
+
+  if (apiBaseKey) {
     try {
       new URL(apiBase);
     } catch {
-      errors.push(`VITE_GHOSTLINK_API_BASE must be a valid URL, got: ${apiBase}`);
+      errors.push(`${apiBaseKey} must be a valid URL, got: ${apiBase}`);
     }
   }
-  
+
   return { valid: errors.length === 0, errors };
+}
+
+export function resolveApiBase(env?: Record<string, string>): string {
+  const envVars = env || (import.meta as any).env || {};
+
+  for (const key of API_BASE_ENV_KEYS) {
+    const value = envVars[key];
+    if (typeof value === 'string' && value.trim().length > 0) {
+      return value.trim();
+    }
+  }
+
+  return 'http://127.0.0.1:8003';
 }
 
 export const RuntimeSettingsSchema = z.object({
