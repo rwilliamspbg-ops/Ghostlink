@@ -12,10 +12,6 @@ import {
   Loader,
   Power,
   ChevronRight,
-<<<<<<< HEAD
-  ArrowUpRight,
-=======
->>>>>>> e71b1dc998b67d1b257ab2ae2977ac19cba263d6
   Copy,
 } from 'lucide-react';
 import { useAppStore } from '../store';
