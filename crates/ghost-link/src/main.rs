@@ -3061,6 +3061,9 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
     println!("  - POST /api/settings");
     println!("  - POST /api/settings/reset");
     println!("  - POST /api/inference/chat");
+    println!("  - GET  /api/backends");
+    println!("  - POST /api/backends/switch");
+    println!("  - GET  /api/backends/:name/status");
 
     let profile = detect_runtime_profile("studio-api");
     let backend_url = format!("http://{}:{}", host, port);
