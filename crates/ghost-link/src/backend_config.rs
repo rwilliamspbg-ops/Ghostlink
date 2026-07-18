@@ -102,8 +102,13 @@ impl ConfigManager {
             .map_err(|err| format!("Failed to read config file: {}", err))?;
 
         // Parse as TOML
+<<<<<<< HEAD
         let config: toml::Table = toml::from_str(&content)
             .map_err(|err| format!("Failed to parse TOML: {}", err))?;
+=======
+        let config: toml::Table =
+            toml::from_str(&content).map_err(|err| format!("Failed to parse TOML: {}", err))?;
+>>>>>>> e71b1dc998b67d1b257ab2ae2977ac19cba263d6
 
         // Extract [compute] section or use defaults
         let compute_config = if let Some(compute) = config.get("compute") {
@@ -130,8 +135,12 @@ impl ConfigManager {
             let content = std::fs::read_to_string(&self.config_path)
                 .map_err(|err| format!("Failed to read config file: {}", err))?;
 
+<<<<<<< HEAD
             toml::from_str(&content)
                 .map_err(|err| format!("Failed to parse TOML: {}", err))?
+=======
+            toml::from_str(&content).map_err(|err| format!("Failed to parse TOML: {}", err))?
+>>>>>>> e71b1dc998b67d1b257ab2ae2977ac19cba263d6
         } else {
             toml::Table::new()
         };
@@ -189,7 +198,13 @@ impl ConfigManager {
 
     /// Save preferred backend to config
     pub fn save_preferred_backend(&self, backend: ComputeBackend) -> Result<(), String> {
+<<<<<<< HEAD
         let mut config = self.load_compute_config().unwrap_or_else(|_| ComputeConfig::new());
+=======
+        let mut config = self
+            .load_compute_config()
+            .unwrap_or_else(|_| ComputeConfig::new());
+>>>>>>> e71b1dc998b67d1b257ab2ae2977ac19cba263d6
         config.set_preferred_backend(backend);
         self.save_compute_config(&config)
     }
@@ -285,15 +300,23 @@ mod tests {
         assert!(config.get_preferred_backend().is_none());
 
         config.set_preferred_backend(ComputeBackend::Rocm);
+<<<<<<< HEAD
         assert_eq!(
             config.get_preferred_backend(),
             Some(ComputeBackend::Rocm)
         );
+=======
+        assert_eq!(config.get_preferred_backend(), Some(ComputeBackend::Rocm));
+>>>>>>> e71b1dc998b67d1b257ab2ae2977ac19cba263d6
     }
 
     #[test]
     fn test_cli_overrides_from_args() {
+<<<<<<< HEAD
         let args = vec![
+=======
+        let args = [
+>>>>>>> e71b1dc998b67d1b257ab2ae2977ac19cba263d6
             "cmd".to_string(),
             "--backend".to_string(),
             "cpu".to_string(),
@@ -317,9 +340,13 @@ mod tests {
         let mut overrides = CLIOverrides::new();
 
         // No override, no config
+<<<<<<< HEAD
         assert!(overrides
             .get_effective_backend(None)
             .is_none());
+=======
+        assert!(overrides.get_effective_backend(None).is_none());
+>>>>>>> e71b1dc998b67d1b257ab2ae2977ac19cba263d6
 
         // No override, with config
         assert_eq!(
@@ -357,7 +384,11 @@ mod tests {
 
     #[test]
     fn test_cli_overrides_no_backend() {
+<<<<<<< HEAD
         let args = vec!["cmd".to_string(), "--other".to_string()];
+=======
+        let args = ["cmd".to_string(), "--other".to_string()];
+>>>>>>> e71b1dc998b67d1b257ab2ae2977ac19cba263d6
 
         let overrides = CLIOverrides::from_args(&args[1..]);
         assert!(overrides.preferred_backend.is_none());
@@ -365,8 +396,13 @@ mod tests {
 
     #[test]
     fn test_compute_config_defaults() {
+<<<<<<< HEAD
         let config = ComputeConfig::new();
         assert_eq!(default_auto_discover(), true);
+=======
+        let _config = ComputeConfig::new();
+        assert!(default_auto_discover());
+>>>>>>> e71b1dc998b67d1b257ab2ae2977ac19cba263d6
         assert_eq!(default_gpu_memory_allocation(), 0.80);
         assert_eq!(default_request_drain_timeout_secs(), 30);
     }

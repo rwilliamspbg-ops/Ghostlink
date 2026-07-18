@@ -19,45 +19,45 @@ describe('Config Validation', () => {
       }
     });
 
-    it('should reject invalid native_engine', () => {
-      const result = validateConfig({ ...defaultConfig, native_engine: 'invalid' });
+    it('should reject top_k out of range', () => {
+      const result = validateConfig({ ...defaultConfig, top_k: 999 });
       expect(result.success).toBe(false);
       if (!result.success) {
-        expect(result.errors.some(e => e.includes('native_engine'))).toBe(true);
+        expect(result.errors.some(e => e.includes('top_k'))).toBe(true);
       }
     });
 
-    it('should reject ngl out of range', () => {
-      const result = validateConfig({ ...defaultConfig, ngl: 300 });
+    it('should reject chat_micro_batch out of range', () => {
+      const result = validateConfig({ ...defaultConfig, chat_micro_batch: 64 });
       expect(result.success).toBe(false);
       if (!result.success) {
-        expect(result.errors.some(e => e.includes('ngl'))).toBe(true);
+        expect(result.errors.some(e => e.includes('chat_micro_batch'))).toBe(true);
       }
     });
 
-    it('should reject negative ngl less than -1', () => {
-      const result = validateConfig({ ...defaultConfig, ngl: -5 });
+    it('should reject chat_exec_tokens not multiple of 64', () => {
+      const result = validateConfig({ ...defaultConfig, chat_exec_tokens: 65 });
       expect(result.success).toBe(false);
       if (!result.success) {
-        expect(result.errors.some(e => e.includes('ngl'))).toBe(true);
+        expect(result.errors.some(e => e.includes('chat_exec_tokens'))).toBe(true);
       }
     });
 
-    it('should accept ngl = -1 (all layers)', () => {
-      const result = validateConfig({ ...defaultConfig, ngl: -1 });
+    it('should accept valid chat_exec_tokens step', () => {
+      const result = validateConfig({ ...defaultConfig, chat_exec_tokens: 512 });
       expect(result.success).toBe(true);
     });
 
-    it('should reject invalid llama_server_url', () => {
-      const result = validateConfig({ ...defaultConfig, llama_server_url: 'not-a-url' });
+    it('should reject repeat_penalty out of range', () => {
+      const result = validateConfig({ ...defaultConfig, repeat_penalty: 3 });
       expect(result.success).toBe(false);
       if (!result.success) {
-        expect(result.errors.some(e => e.includes('llama_server_url'))).toBe(true);
+        expect(result.errors.some(e => e.includes('repeat_penalty'))).toBe(true);
       }
     });
 
-    it('should accept empty llama_server_url', () => {
-      const result = validateConfig({ ...defaultConfig, llama_server_url: '' });
+    it('should accept empty xdp_interface', () => {
+      const result = validateConfig({ ...defaultConfig, xdp_interface: '' });
       expect(result.success).toBe(true);
     });
 
@@ -93,23 +93,23 @@ describe('Config Validation', () => {
       }
     });
 
-    it('should reject ctx_size not multiple of 512', () => {
-      const result = validateConfig({ ...defaultConfig, ctx_size: 513 });
+    it('should reject max_tokens not multiple of 16', () => {
+      const result = validateConfig({ ...defaultConfig, max_tokens: 513 });
       expect(result.success).toBe(false);
       if (!result.success) {
-        expect(result.errors.some(e => e.includes('ctx_size'))).toBe(true);
+        expect(result.errors.some(e => e.includes('max_tokens'))).toBe(true);
       }
     });
 
-    it('should accept valid ctx_size multiples', () => {
-      for (const size of [512, 1024, 2048, 4096, 8192, 16384, 32768]) {
-        const result = validateConfig({ ...defaultConfig, ctx_size: size });
+    it('should accept valid max_tokens multiples', () => {
+      for (const size of [512, 1024, 2048, 4096, 8192]) {
+        const result = validateConfig({ ...defaultConfig, max_tokens: size });
         expect(result.success).toBe(true);
       }
     });
 
-    it('should reject negative threads', () => {
-      const result = validateConfig({ ...defaultConfig, threads: 0 });
+    it('should reject invalid tcp_max_inflight minimum', () => {
+      const result = validateConfig({ ...defaultConfig, tcp_max_inflight: 0 });
       expect(result.success).toBe(false);
     });
 
@@ -117,12 +117,10 @@ describe('Config Validation', () => {
       const customConfig = {
         ...defaultConfig,
         inference_backend: 'ollama',
-        native_engine: 'llama_cpp',
-        ngl: 20,
         temperature: 0.8,
         top_p: 0.95,
-        ctx_size: 8192,
-        threads: 8,
+        max_tokens: 4096,
+        chat_micro_batch: 4,
       };
       const result = validateConfig(customConfig);
       expect(result.success).toBe(true);
@@ -159,8 +157,8 @@ describe('Config Validation', () => {
       expect(result.success).toBe(true);
       if (result.success) {
         expect(result.data.inference_backend).toBe('ollama');
-        expect(result.data.native_engine).toBe('llama_server'); // default
-        expect(result.data.ngl).toBe(0); // default
+        expect(result.data.api_port).toBe(8003);
+        expect(result.data.chat_exec_tokens).toBe(512);
       }
     });
   });
