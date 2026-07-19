@@ -5,7 +5,6 @@ import {
   Sliders,
   Network,
   Server,
-  Zap,
   Save,
   RotateCcw,
   CheckCircle2,
@@ -14,8 +13,6 @@ import {
   Gauge,
   Info,
   Cpu as CpuIcon,
-  Monitor,
-  Zap as ZapIcon,
   Loader2,
 } from 'lucide-react';
 import { Settings as SettingsType } from '../store';
@@ -28,13 +25,6 @@ type BackendInfo = {
   compute_capability: string;
   driver_version: string;
   status: string;
-};
-
-type SwitchBackendResponse = {
-  status: string;
-  backend: string;
-  message: string;
-  restart_required: boolean;
 };
 
 export const SettingsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
