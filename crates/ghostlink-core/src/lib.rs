@@ -41,6 +41,7 @@ pub mod protocol;
 pub mod ring;
 pub mod runtime;
 pub mod system_profile;
+pub mod watcher;
 #[doc(hidden)]
 pub mod xdp;
 
@@ -57,6 +58,7 @@ pub use host::{
 pub use system_profile::{
     CpuInfo, CpuFeatures, GpuInfo, MemoryInfo, NetworkInfo, NpuInfo, SystemProfile,
 };
+pub use watcher::{ProfileChange, SystemProfileWatcher};
 pub use planning::{
     assign_layers_sequentially, assign_layers_with_fault_tolerance_and_runtime,
     assign_layers_with_runtime_profile, chunk_assignments_for_workers, select_quantization_mode,
