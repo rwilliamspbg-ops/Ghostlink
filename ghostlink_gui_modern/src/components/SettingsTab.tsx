@@ -5,6 +5,7 @@ import {
   Sliders,
   Network,
   Server,
+  Zap,
   Save,
   RotateCcw,
   CheckCircle2,
