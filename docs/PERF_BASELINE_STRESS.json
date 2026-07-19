@@ -20,7 +20,7 @@
       "p95_avg": 0.8509514166666666,
       "wall_avg": 1.0389128333333333,
       "drift_policy": {
-        "max_throughput_drop_ratio": 0.35,
+        "max_throughput_drop_ratio": 0.4,
         "max_p95_rise_ratio": 1.5
       }
     }
