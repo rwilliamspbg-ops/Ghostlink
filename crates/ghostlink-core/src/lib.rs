@@ -39,6 +39,7 @@ pub mod planning;
 pub mod protocol;
 pub mod ring;
 pub mod runtime;
+pub mod system_profile;
 #[doc(hidden)]
 pub mod xdp;
 
@@ -48,7 +49,11 @@ pub use cluster::{ClusterState, NodeMetrics, NodeStatus};
 pub use discovery::{broadcast_and_collect, UdpDiscoveryConfig, DEFAULT_DISCOVERY_PORT};
 pub use host::{
     detect_local_node_resources, detect_runtime_profile, detect_runtime_profile_full,
-    detect_runtime_profile_with_mode, AccelerationMode, GpuBackend, ProbeMode, RuntimeProfile,
+    detect_runtime_profile_with_mode, infer_compute_capability_from_name, is_apple_silicon,
+    AccelerationMode, GpuBackend, ProbeMode, RuntimeProfile,
+};
+pub use system_profile::{
+    CpuInfo, CpuFeatures, GpuInfo, MemoryInfo, NetworkInfo, NpuInfo, SystemProfile,
 };
 pub use planning::{
     assign_layers_sequentially, assign_layers_with_fault_tolerance_and_runtime,

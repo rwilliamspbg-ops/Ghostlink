@@ -666,9 +666,9 @@ fn parse_lspci_gpu(stdout: &str) -> Option<GpuProbeResult> {
     })
 }
 
-fn infer_compute_capability_from_name(name: &str) -> String {
+pub fn infer_compute_capability_from_name(name: &str) -> String {
     let lowered = name.to_ascii_lowercase();
-    if lowered.contains("rtx 50") || lowered.contains("rtx50") {
+    if lowered.contains("rtx 50") || lowered.contains("rtx50") || lowered.contains("b100") || lowered.contains("b200") {
         String::from("9.0")
     } else if lowered.contains("rtx 40") || lowered.contains("rtx40") {
         String::from("8.9")
@@ -676,24 +676,41 @@ fn infer_compute_capability_from_name(name: &str) -> String {
         String::from("8.6")
     } else if lowered.contains("arc") {
         String::from("xe")
-    } else if cfg!(feature = "rocm")
-        && (lowered.contains("radeon")
-            || lowered.contains("amd")
-            || lowered.contains("advanced micro")
-            || lowered.contains("rx ")
-            || lowered.contains("w7900")
-            || lowered.contains("w6800")
-            || lowered.contains("mi250")
-            || lowered.contains("mi300")
-            || lowered.contains("mi350")
-            || lowered.contains("instinct"))
+    } else if lowered.contains("radeon")
+        || lowered.contains("amd")
+        || lowered.contains("advanced micro")
+        || lowered.contains("rx ")
+        || lowered.contains("w7900")
+        || lowered.contains("w6800")
+        || lowered.contains("mi250")
+        || lowered.contains("mi300")
+        || lowered.contains("mi350")
+        || lowered.contains("instinct")
     {
-        String::from("rocm")
+        if cfg!(feature = "rocm") { String::from("rocm") } else { String::from("gpu") }
     } else if lowered.contains("intel") || lowered.contains("iris") || lowered.contains("uhd") {
         String::from("xe")
+    } else if lowered.contains("apple") || lowered.contains("m1") || lowered.contains("m2") || lowered.contains("m3") || lowered.contains("m4") {
+        String::from("apple_metal")
     } else {
         String::from("gpu")
     }
+}
+
+/// Whether the current host is Apple Silicon (ARM64 Mac).
+#[cfg(target_os = "macos")]
+pub fn is_apple_silicon() -> bool {
+    std::process::Command::new("sysctl")
+        .arg("hw.optional.arm64")
+        .output()
+        .map(|output| String::from_utf8_lossy(&output.stdout).contains("1"))
+        .unwrap_or(false)
+}
+
+/// Whether the current host is Apple Silicon (ARM64 Mac).
+#[cfg(not(target_os = "macos"))]
+pub fn is_apple_silicon() -> bool {
+    false
 }
 
 fn detect_acceleration_mode(vram_gb: f32, gpu_name: Option<&str>) -> AccelerationMode {
