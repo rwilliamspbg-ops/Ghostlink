@@ -14,6 +14,7 @@ use ghostlink_core::discovery::{
     UdpDiscoveryConfig, DEFAULT_DISCOVERY_PORT,
 };
 use ghostlink_core::health::NetworkHealthMonitor;
+use ghostlink_core::autotune::AutoTuner;
 use ghostlink_core::host::{detect_runtime_profile, detect_runtime_profile_full, ProbeMode};
 use ghostlink_core::load_balance::LoadBalancer;
 use ghostlink_core::planning::{
@@ -4575,6 +4576,17 @@ fn print_probe(node_id: &str, probe_mode: ProbeMode) -> Result<()> {
         ProbeMode::Full => detect_runtime_profile_full(node_id),
     };
     println!("{}", profile.summary());
+
+    // Auto-tune all subsystems from the detected profile and persist the cache
+    let sp = ghostlink_core::system_profile::SystemProfile::detect_fast();
+    let tuner = AutoTuner::from_system_profile(&sp);
+    tuner.save_cache();
+    println!(
+        "Auto-tuned: {} compute workers, {} max inflight, {:.0}µs healthy latency",
+        tuner.worker_pool.compute_workers,
+        tuner.tcp_config.max_inflight_batches,
+        tuner.health_config.healthy_latency_us,
+    );
     Ok(())
 }
 
