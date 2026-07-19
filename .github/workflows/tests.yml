@@ -58,8 +58,12 @@ jobs:
         run: cargo clippy --all-targets -- -D warnings
 
   workspace-tests:
-    name: Workspace Tests
-    runs-on: ubuntu-latest
+    name: Workspace Tests - ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable

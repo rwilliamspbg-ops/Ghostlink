@@ -17,11 +17,9 @@ cargo build --workspace
 ## Before Opening a PR
 
 ```bash
-cargo fmt
+cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
-python3 scripts/validate_gui_api_contract.py
-python3 scripts/validate_flow_canary.py --summary ./tmp/perf_snapshot/summary.json --profile production
 ```
 
 ## Pre-Push Checklist (Required)
@@ -34,58 +32,54 @@ cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 
-# 2) Core Python contract checks
-python3 scripts/validate_gui_api_contract.py
-python3 scripts/validate_flow_metrics_schema_contract.py --tcp-file ./tmp/flow-metrics-tcp.json --inmem-file ./tmp/flow-metrics-inmem.json
-python3 scripts/validate_production_gate_verdict.py --file ./tmp/production-gate-verdict.json
+# 2) Platform awareness
+# CI runs the same checks on ubuntu-latest, windows-latest, macos-latest.
+# If you changed platform-specific code (#[cfg(unix)] or #[cfg(windows)]),
+# verify it compiles on the target platform.
 
-# 3) Security and dependency checks
+# 3) Performance (if runtime/transport code changed)
+# Check baseline benchmarks haven't regressed:
+cargo bench --package ghostlink-core
+
+# 4) Security and dependency checks
 cargo audit
-python3 -m pip install --upgrade pip-audit
-pip-audit -r third_party/mohawk_gui/requirements-runtime.txt
-
-# 4) Workflow consistency sanity checks
-bash scripts/check_license_consistency.sh
 ```
 
-When perf/runtime code changes, also run gate-like performance checks and include the artifact paths and canary results in the PR body:
+### If you changed transport, ring buffer, or pipeline code
+
+Include benchmark results in the PR body:
 
 ```bash
-python3 scripts/flow_perf_snapshot.py --release --runs 3 --warmup-runs 1 --modes tcp inmem --output-dir ./tmp/perf_snapshot_gate
-python3 scripts/flow_perf_snapshot.py --release --runs 4 --warmup-runs 1 --modes tcp inmem --exec-tokens 512 --micro-batch 8 --output-dir ./tmp/perf_snapshot_stress_gate
-python3 scripts/perf_maturity_profile.py --summary ./tmp/perf_snapshot_gate/summary.json --baseline ./docs/PERF_BASELINE.json --stage-glob-template './tmp/perf_snapshot_gate/{mode}-*.json' --output-json ./tmp/perf_snapshot_gate/maturity_scorecard.json
-python3 scripts/perf_maturity_profile.py --summary ./tmp/perf_snapshot_stress_gate/summary.json --baseline ./docs/PERF_BASELINE_STRESS.json --stage-glob-template './tmp/perf_snapshot_stress_gate/{mode}-*.json' --output-json ./tmp/perf_snapshot_stress_gate/maturity_scorecard.json
-python3 scripts/validate_flow_canary.py --summary ./tmp/perf_snapshot_gate/summary.json --profile production
-python3 scripts/validate_flow_canary.py --summary ./tmp/perf_snapshot_stress_gate/summary.json --profile stress
+cargo bench --package ghostlink-core
 ```
 
-Include both `maturity_scorecard.json` artifact paths in the PR body when perf/runtime behavior changes.
+Key metrics to report:
+- `in-process` throughput (tok/s) and latency (ms) at 1024 tok
+- `TCP loopback` throughput (tok/s) and latency (ms) at 1024 tok
+- `ring_buffer: SPSC batch cross-thread` ops/sec
 
-If you touch integration behavior, also run:
+### If you changed hardware detection or system profile
+
+Run the probe command and verify no regressions:
 
 ```bash
-cargo test -p ghostlink-core --test integration
-```
-
-If you touch model/bootstrap/download workflow, also run:
-
-```bash
-python3 scripts/verify_hf_models.py
+cargo run -p ghost-link -- probe my-node --full
 ```
 
 ## Test Location
 
-Package-owned integration tests live in `crates/ghostlink-core/tests/`.
+- Unit tests live alongside the code they test (`#[cfg(test)] mod tests`)
+- Integration tests live in `crates/ghostlink-core/tests/`
+- Multi-node and NPU tests live in `crates/ghostlink-core/tests/`
 
 ## Documentation Expectations
 
 If behavior changes, update the relevant docs in:
 
 - `README.md`
+- `CHANGELOG.md`
 - `docs/INDEX.md`
-- `TESTING.md`
-- `docs/ARCHITECTURE.md`
-- `docs/EXAMPLES.md`
+- `ghostlink.toml` (if config keys changed)
 
 If a status document is no longer current, move it to `docs/archive/` and update
 `docs/archive/INDEX.md`.
@@ -95,6 +89,8 @@ If a status document is no longer current, move it to `docs/archive/` and update
 - keep changes focused
 - include validation commands in the PR body
 - call out host-specific caveats if runtime detection or probe behavior changes
+- if performance metrics change, include before/after benchmark results
+- if new Clippy lints trigger on CI (different Rust version), fix them before pushing
 
 ## Scope Guidance
 
@@ -106,16 +102,21 @@ If a status document is no longer current, move it to `docs/archive/` and update
 
 For release-oriented PRs, include a checklist based on:
 
-- required CI gates (production gate, tests, lint)
-- runtime/perf checks (baseline drift, stage-tail/canary where applicable)
-- GUI readiness checks (if GUI code changed)
-- documentation completeness and operational caveats
+1. **Hard gates (must pass)**
+   - CI: ubuntu, windows, macos — all green
+   - `cargo fmt --all --check` — OK
+   - `cargo clippy --workspace --all-targets -- -D warnings` — OK
+   - `cargo test --workspace` — all pass
+   - Performance baseline — no regression
 
-Recommended rubric reporting format:
+2. **Scoring factors (for readiness trend)**
+   - Documentation completeness
+   - Changelog updated
+   - Version bumped
+   - Operational caveats documented
 
-1. Hard gates (must pass)
-2. Weighted score (for readiness trend tracking)
-3. Final recommendation (GO / Conditional GO / NO-GO)
+3. **Final recommendation**
+   - GO / Conditional GO / NO-GO
 
 ## Code of Conduct
 

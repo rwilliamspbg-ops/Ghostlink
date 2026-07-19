@@ -28,6 +28,7 @@
 //! ```
 
 pub mod accelerator;
+pub mod autotune;
 pub mod cluster;
 pub mod dashboard;
 pub mod discovery;
@@ -39,16 +40,20 @@ pub mod planning;
 pub mod protocol;
 pub mod ring;
 pub mod runtime;
+pub mod system_profile;
+pub mod watcher;
 #[doc(hidden)]
 pub mod xdp;
 
 // Re-export common types for convenience
 pub use accelerator::ExecutionBackend;
+pub use autotune::AutoTuner;
 pub use cluster::{ClusterState, NodeMetrics, NodeStatus};
 pub use discovery::{broadcast_and_collect, UdpDiscoveryConfig, DEFAULT_DISCOVERY_PORT};
 pub use host::{
     detect_local_node_resources, detect_runtime_profile, detect_runtime_profile_full,
-    detect_runtime_profile_with_mode, AccelerationMode, GpuBackend, ProbeMode, RuntimeProfile,
+    detect_runtime_profile_with_mode, infer_compute_capability_from_name, is_apple_silicon,
+    AccelerationMode, GpuBackend, ProbeMode, RuntimeProfile,
 };
 pub use planning::{
     assign_layers_sequentially, assign_layers_with_fault_tolerance_and_runtime,
@@ -59,6 +64,11 @@ pub use protocol::NodeResources;
 pub use ring::{RingConfig, SpscRingBuffer};
 pub use runtime::{
     build_token_schedule, execute_pipeline, execute_pipeline_tcp_loopback,
-    execute_pipeline_tcp_loopback_with_config, DeviceKind, ExecutionResult, PipelinePlan,
-    StageExecutionStats, StagePlacement, TcpTransportConfig, TokenStep,
+    execute_pipeline_tcp_loopback_with_config, BridgeAddr, BridgeListener, BridgeStream,
+    DeviceKind, ExecutionResult, PipelinePlan, StageExecutionStats, StagePlacement,
+    TcpTransportConfig, TokenStep, TransportKind,
 };
+pub use system_profile::{
+    CpuFeatures, CpuInfo, GpuInfo, MemoryInfo, NetworkInfo, NpuInfo, SystemProfile,
+};
+pub use watcher::{ProfileChange, SystemProfileWatcher};

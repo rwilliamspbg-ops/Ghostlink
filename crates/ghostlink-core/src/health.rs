@@ -5,6 +5,7 @@
 //! - Delivery ratio monitoring
 //! - Automatic quantization fallback triggers
 //! - Fault detection and recovery
+//! - Dynamic reconfiguration on hardware changes via `SystemProfileWatcher`.
 
 use std::collections::HashMap;
 use std::net::{SocketAddr, TcpStream};
@@ -13,6 +14,8 @@ use std::time::{Duration, Instant};
 
 use crate::cluster::{ClusterState, NodeStatus};
 use crate::host::{AccelerationMode, RuntimeProfile};
+use crate::system_profile::SystemProfile;
+use crate::watcher::ProfileChange;
 
 /// Health check configuration
 #[derive(Clone, Copy, Debug)]
@@ -119,8 +122,8 @@ pub struct HealthCheckResult {
 pub struct NetworkHealthMonitor {
     /// Cluster state
     cluster: Arc<ClusterState>,
-    /// Configuration
-    config: HealthConfig,
+    /// Configuration (behind Mutex for atomic re-tune from watcher)
+    config: Arc<Mutex<HealthConfig>>,
     /// Last check timestamp
     last_check: Arc<Mutex<Option<Instant>>>,
     /// Recent check results per node
@@ -134,7 +137,7 @@ impl NetworkHealthMonitor {
     pub fn new(cluster: Arc<ClusterState>, config: HealthConfig) -> Self {
         Self {
             cluster,
-            config,
+            config: Arc::new(Mutex::new(config)),
             last_check: Arc::new(Mutex::new(None)),
             recent_checks: Arc::new(Mutex::new(HashMap::new())),
             tcp_probe_targets: Arc::new(Mutex::new(HashMap::new())),
@@ -144,6 +147,16 @@ impl NetworkHealthMonitor {
     /// Create a monitor with thresholds derived from runtime auto-detection.
     pub fn with_runtime_profile(cluster: Arc<ClusterState>, profile: &RuntimeProfile) -> Self {
         Self::new(cluster, HealthConfig::autotuned(profile))
+    }
+
+    /// Read the current configuration.
+    pub fn config(&self) -> HealthConfig {
+        self.config
+            .lock()
+            .ok()
+            .as_deref()
+            .copied()
+            .unwrap_or_default()
     }
 
     /// Register a node-specific TCP probe target.
@@ -164,6 +177,7 @@ impl NetworkHealthMonitor {
     }
 
     fn run_active_tcp_probe(&self, node_id: &str) -> Option<bool> {
+        let cfg = self.config();
         let target = self
             .tcp_probe_targets
             .lock()
@@ -171,11 +185,12 @@ impl NetworkHealthMonitor {
             .get(node_id)
             .copied();
 
-        target.map(|addr| TcpStream::connect_timeout(&addr, self.config.timeout).is_ok())
+        target.map(|addr| TcpStream::connect_timeout(&addr, cfg.timeout).is_ok())
     }
 
     /// Run health check on all nodes
     pub fn check_all(&self) {
+        let cfg = self.config();
         let now = Instant::now();
 
         for node in self.cluster.nodes_snapshot().iter() {
@@ -206,7 +221,7 @@ impl NetworkHealthMonitor {
                 };
 
                 let measured_latency_us = if tcp_probe_ok == Some(false) {
-                    self.config.timeout.as_secs_f32() * 1_000_000.0
+                    cfg.timeout.as_secs_f32() * 1_000_000.0
                 } else {
                     latency_us
                 };
@@ -261,12 +276,11 @@ impl NetworkHealthMonitor {
 
     /// Get health status based on metrics
     fn get_health_status(&self, latency_us: f32, delivery_ratio: f32) -> HealthStatus {
-        if delivery_ratio >= self.config.healthy_delivery_ratio
-            && latency_us <= self.config.healthy_latency_us
-        {
+        let cfg = self.config();
+        if delivery_ratio >= cfg.healthy_delivery_ratio && latency_us <= cfg.healthy_latency_us {
             HealthStatus::Healthy
-        } else if delivery_ratio >= self.config.degraded_delivery_ratio
-            || latency_us <= self.config.degraded_latency_us
+        } else if delivery_ratio >= cfg.degraded_delivery_ratio
+            || latency_us <= cfg.degraded_latency_us
         {
             HealthStatus::Degraded
         } else {
@@ -314,6 +328,7 @@ impl NetworkHealthMonitor {
 
     /// Check if node needs quantization fallback
     pub fn needs_quantization_fallback(&self, node_id: &str) -> bool {
+        let cfg = self.config();
         let checks = self
             .recent_checks
             .lock()
@@ -335,8 +350,8 @@ impl NetworkHealthMonitor {
             let avg_latency_us: f32 = recent.iter().map(|r| r.latency_us).sum::<f32>() / 3.0;
 
             // Need fallback if delivery ratio dropped below threshold or latency increased significantly
-            avg_delivery_ratio < self.config.healthy_delivery_ratio
-                || avg_latency_us > self.config.healthy_latency_us
+            avg_delivery_ratio < cfg.healthy_delivery_ratio
+                || avg_latency_us > cfg.healthy_latency_us
         } else {
             false
         }
@@ -392,12 +407,53 @@ impl NetworkHealthMonitor {
 
     /// Start periodic health checks in background
     pub fn start_periodic_checks(&self) {
+        let check_interval = self.config().check_interval;
         let this = self.clone();
 
         std::thread::spawn(move || loop {
             this.check_all();
-            std::thread::sleep(this.config.check_interval);
+            std::thread::sleep(check_interval);
         });
+    }
+
+    // ------------------------------------------------------------------
+    // SystemProfileWatcher integration
+    // ------------------------------------------------------------------
+
+    /// Re-tune health thresholds from a system profile detected at runtime.
+    ///
+    /// This is the main integration point with `SystemProfileWatcher`: when
+    /// hardware changes (GPU hot-plug, CPU scaling), call this to keep the
+    /// health monitor's expectations aligned with reality.
+    pub fn reconfigure_from_system_profile(&self, profile: &SystemProfile) {
+        let rp: RuntimeProfile = profile.into();
+        if let Ok(mut guard) = self.config.lock() {
+            *guard = HealthConfig::autotuned(&rp);
+        }
+    }
+
+    /// Subscribe to a `SystemProfileWatcher`'s broadcast channel and
+    /// automatically re-tune whenever hardware changes are detected.
+    ///
+    /// Returns a `JoinHandle` that can be cancelled by dropping it.
+    pub fn subscribe_to_watcher(
+        self: &Arc<Self>,
+        watcher: &crate::watcher::SystemProfileWatcher,
+    ) -> tokio::task::JoinHandle<()> {
+        let this = self.clone();
+        let mut rx = watcher.subscribe();
+        tokio::spawn(async move {
+            while let Ok(event) = rx.recv().await {
+                if let ProfileChange::Updated(profile) = event {
+                    this.reconfigure_from_system_profile(&profile);
+                    tracing::info!(
+                        "health monitor re-tuned from profile: {} workers, {:?} accel",
+                        profile.recommended_workers,
+                        profile.acceleration_mode,
+                    );
+                }
+            }
+        })
     }
 }
 

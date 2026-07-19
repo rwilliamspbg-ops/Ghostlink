@@ -550,17 +550,26 @@ mod tests {
 
     #[test]
     fn broadcast_fallback_can_send_without_responses() {
+        // Bind a sink socket on loopback so send_to succeeds without requiring a
+        // broadcast-capable physical interface (which may be absent on CI runners,
+        // especially macOS, where sending to 255.255.255.255 returns EHOSTUNREACH).
+        let sink = UdpSocket::bind("127.0.0.1:0").expect("bind sink");
+        let port = sink.local_addr().expect("local addr").port();
+
         let frame = DiscoveryFrame {
             kind: FrameKind::Join,
             node: NodeResources::new("node-a", 24.0, 64.0, "8.9", None),
         };
 
         let config = UdpDiscoveryConfig {
+            bind_addr: SocketAddr::from(([127, 0, 0, 1], 0)),
+            broadcast_addr: SocketAddr::from(([127, 0, 0, 1], port)),
             response_timeout: Duration::from_millis(10),
             ..UdpDiscoveryConfig::default()
         };
 
         let result = broadcast_and_collect(&frame, &config);
+        drop(sink);
         assert!(result.is_ok());
     }
 

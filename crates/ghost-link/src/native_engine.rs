@@ -7,7 +7,7 @@
 
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 use tokio::time::sleep as tokio_sleep;
 
@@ -21,8 +21,7 @@ pub struct NativeGeneration {
 pub struct NativeEngineClient;
 
 // Static variable to track the llama-server process
-static LLAMA_SERVER_PROCESS: std::sync::OnceLock<Arc<Mutex<Option<Child>>>> =
-    std::sync::OnceLock::new();
+static LLAMA_SERVER_PROCESS: OnceLock<Arc<Mutex<Option<Child>>>> = OnceLock::new();
 
 impl NativeEngineClient {
     pub fn new() -> Self {
@@ -173,7 +172,8 @@ impl NativeEngineClient {
         }
 
         Err(format!(
-            "llama-server did not become ready within {timeout_secs} seconds"
+            "llama-server did not become ready within {} seconds",
+            timeout_secs
         ))
     }
 
@@ -182,11 +182,11 @@ impl NativeEngineClient {
     /// so we must restart it with the new model path.
     pub fn load_model_into_slot(&self, model_path: &str) -> Result<(), String> {
         let normalized_path = model_path.replace('\\', "/");
-        eprintln!("[model-load] Preparing to load model: {normalized_path}");
+        eprintln!("[model-load] Preparing to load model: {}", normalized_path);
 
         // Validate the model file exists before spawning
         if !Path::new(model_path).exists() {
-            return Err(format!("model file not found: {normalized_path}"));
+            return Err(format!("model file not found: {}", normalized_path));
         }
 
         // Kill existing llama-server process
@@ -229,7 +229,10 @@ impl NativeEngineClient {
             .stderr(Stdio::piped())
             .stdin(Stdio::null());
 
-        eprintln!("[model-load] Starting llama-server with model: {normalized_path}");
+        eprintln!(
+            "[model-load] Starting llama-server with model: {}",
+            normalized_path
+        );
         eprintln!(
             "[model-load] Command: {} {}",
             bin,
@@ -242,10 +245,10 @@ impl NativeEngineClient {
         // Spawn the process
         let child = cmd
             .spawn()
-            .map_err(|err| format!("failed to start llama-server: {err}"))?;
+            .map_err(|err| format!("failed to start llama-server: {}", err))?;
 
         let pid = child.id();
-        eprintln!("[model-load] Started llama-server with PID: {pid}");
+        eprintln!("[model-load] Started llama-server with PID: {}", pid);
 
         // Store the process handle
         let handle = Self::get_process_handle();
@@ -258,7 +261,7 @@ impl NativeEngineClient {
 
         // Wait for server to be ready (using tokio runtime)
         let rt = tokio::runtime::Runtime::new()
-            .map_err(|e| format!("failed to create async runtime: {e}"))?;
+            .map_err(|e| format!("failed to create async runtime: {}", e))?;
 
         let ready = rt.block_on(Self::wait_for_llama_server_ready(&url, 60));
         if let Err(ref _e) = ready {
@@ -273,7 +276,10 @@ impl NativeEngineClient {
         }
         ready?;
 
-        eprintln!("[model-load] Successfully loaded model: {normalized_path}");
+        eprintln!(
+            "[model-load] Successfully loaded model: {}",
+            normalized_path
+        );
         Ok(())
     }
 
@@ -288,10 +294,10 @@ impl NativeEngineClient {
                 );
                 child
                     .kill()
-                    .map_err(|e| format!("failed to kill llama-server: {e}"))?;
+                    .map_err(|e| format!("failed to kill llama-server: {}", e))?;
                 child
                     .wait()
-                    .map_err(|e| format!("failed to wait for llama-server: {e}"))?;
+                    .map_err(|e| format!("failed to wait for llama-server: {}", e))?;
                 eprintln!("[model-unload] llama-server stopped");
             }
         }
@@ -310,7 +316,7 @@ impl NativeEngineClient {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub fn generate(
+    pub async fn generate(
         &self,
         model: &str,
         prompt: &str,
@@ -329,7 +335,8 @@ impl NativeEngineClient {
         if cleaned_prompt.is_empty() {
             return Ok(NativeGeneration {
                 text: format!(
-                    "Native backend is ready for model '{model}'. Provide a non-empty prompt for generation."
+                    "Native backend is ready for model '{}'. Provide a non-empty prompt for generation.",
+                    model
                 ),
                 real_inference: false,
             });
@@ -339,15 +346,17 @@ impl NativeEngineClient {
 
         match native_engine.trim().to_ascii_lowercase().as_str() {
             "llama_server" | "llama-server" => {
-                let text = self.generate_with_llama_server(
-                    model,
-                    cleaned_prompt,
-                    max_tokens,
-                    temperature,
-                    top_p,
-                    top_k,
-                    repeat_penalty,
-                )?;
+                let text = self
+                    .generate_with_llama_server(
+                        model,
+                        cleaned_prompt,
+                        max_tokens,
+                        temperature,
+                        top_p,
+                        top_k,
+                        repeat_penalty,
+                    )
+                    .await?;
                 Ok(NativeGeneration {
                     text,
                     real_inference: true,
@@ -378,7 +387,8 @@ impl NativeEngineClient {
 
         Ok(NativeGeneration {
             text: format!(
-                "[native:{model}] generated response with token budget {max_tokens}. Prompt preview: {preview}"
+                "[native:{}] generated response with token budget {}. Prompt preview: {}",
+                model, max_tokens, preview
             ),
             real_inference: false,
         })
@@ -407,7 +417,7 @@ impl NativeEngineClient {
             .arg("-st")
             .arg("--no-display-prompt")
             .output()
-            .map_err(|err| format!("failed to execute '{bin}': {err}"))?;
+            .map_err(|err| format!("failed to execute '{}': {}", bin, err))?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -435,7 +445,7 @@ impl NativeEngineClient {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn generate_with_llama_server(
+    async fn generate_with_llama_server(
         &self,
         model: &str,
         cleaned_prompt: &str,
@@ -462,7 +472,7 @@ impl NativeEngineClient {
 
         // Try chat completion endpoint first (for models with chat templates)
         let chat_url = if let Some(base) = url.strip_suffix("/completion") {
-            format!("{base}/v1/chat/completions")
+            format!("{}/v1/chat/completions", base)
         } else {
             format!("{}/v1/chat/completions", url.trim_end_matches('/'))
         };
@@ -481,23 +491,25 @@ impl NativeEngineClient {
             "stream": false
         });
 
-        let client = reqwest::blocking::Client::builder()
+        let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(timeout_secs))
             .build()
-            .map_err(|e| format!("failed to create HTTP client: {e}"))?;
+            .map_err(|e| format!("failed to create HTTP client: {}", e))?;
 
         // Try chat endpoint first
         let chat_response = client
             .post(&chat_url)
             .header("Content-Type", "application/json")
             .json(&chat_payload)
-            .send();
+            .send()
+            .await;
 
         if let Ok(response) = chat_response {
             if response.status().is_success() {
                 let parsed: serde_json::Value = response
                     .json()
-                    .map_err(|e| format!("invalid llama_server JSON response: {e}"))?;
+                    .await
+                    .map_err(|e| format!("invalid llama_server JSON response: {}", e))?;
 
                 if let Some(content) = parsed.get("content").and_then(|v| v.as_str()) {
                     let text = content.trim();
@@ -527,13 +539,16 @@ impl NativeEngineClient {
 
         // Fall back to completion endpoint for models without chat template
         let completion_url = if let Some(base) = url.strip_suffix("/completion") {
-            format!("{base}/completion")
+            format!("{}/completion", base)
         } else {
             url
         };
 
         // Format prompt for completion endpoint: system + user
-        let completion_prompt = format!("{system_prompt}\n\nUser: {cleaned_prompt}\n\nAssistant:");
+        let completion_prompt = format!(
+            "{}\n\nUser: {}\n\nAssistant:",
+            system_prompt, cleaned_prompt
+        );
 
         let completion_payload = serde_json::json!({
             "model": model,
@@ -551,19 +566,22 @@ impl NativeEngineClient {
             .header("Content-Type", "application/json")
             .json(&completion_payload)
             .send()
-            .map_err(|e| format!("llama_server request failed: {e}"))?;
+            .await
+            .map_err(|e| format!("llama_server request failed: {}", e))?;
 
         if !response.status().is_success() {
             let status = response.status();
-            let error_text = response.text().unwrap_or_default();
+            let error_text = response.text().await.unwrap_or_default();
             return Err(format!(
-                "llama_server request failed with status {status}: {error_text}"
+                "llama_server request failed with status {}: {}",
+                status, error_text
             ));
         }
 
         let parsed: serde_json::Value = response
             .json()
-            .map_err(|e| format!("invalid llama_server JSON response: {e}"))?;
+            .await
+            .map_err(|e| format!("invalid llama_server JSON response: {}", e))?;
 
         if let Some(content) = parsed.get("content").and_then(|v| v.as_str()) {
             let text = content.trim();
@@ -642,18 +660,23 @@ mod tests {
         std::env::remove_var("GHOSTLINK_NATIVE_ENGINE");
         std::env::remove_var("GHOSTLINK_MODEL_PATH");
 
+        let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
         let engine = NativeEngineClient::new();
-        let out = engine
-            .generate(
-                "ghostlink-30b-v1",
-                "summarize distributed runtime scheduling",
-                128,
-                0.7,
-                0.9,
-                40,
-                1.1,
-                "simulated",
-            )
+        let out = rt
+            .block_on(async {
+                engine
+                    .generate(
+                        "ghostlink-30b-v1",
+                        "summarize distributed runtime scheduling",
+                        128,
+                        0.7,
+                        0.9,
+                        40,
+                        1.1,
+                        "simulated",
+                    )
+                    .await
+            })
             .expect("native generation should succeed");
         assert!(out.text.contains("[native:ghostlink-30b-v1]"));
         assert!(out.text.contains("token budget 128"));
@@ -664,20 +687,25 @@ mod tests {
     fn llama_mode_requires_model_path() {
         let _guard = env_lock().lock().expect("env lock poisoned");
 
+        let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
         let engine = NativeEngineClient::new();
         std::env::set_var("GHOSTLINK_NATIVE_ENGINE", "llama_cpp");
         std::env::remove_var("GHOSTLINK_MODEL_PATH");
-        let err = engine
-            .generate(
-                "ghostlink-30b-v1",
-                "hello",
-                32,
-                0.7,
-                0.9,
-                40,
-                1.1,
-                "llama_cpp",
-            )
+        let err = rt
+            .block_on(async {
+                engine
+                    .generate(
+                        "ghostlink-30b-v1",
+                        "hello",
+                        32,
+                        0.7,
+                        0.9,
+                        40,
+                        1.1,
+                        "llama_cpp",
+                    )
+                    .await
+            })
             .expect_err("llama mode without model path should fail");
         assert!(err.contains("GHOSTLINK_MODEL_PATH"));
         std::env::remove_var("GHOSTLINK_NATIVE_ENGINE");

@@ -214,36 +214,142 @@ impl<T> SpscRingBuffer<T> {
         len >= self.config.backpressure_threshold
     }
 
+    /// Number of elements that can currently be pushed without blocking.
+    pub fn write_available(&self) -> usize {
+        let tail = self.tail.load(Ordering::Relaxed);
+        let mut head = self.cached_head.load(Ordering::Relaxed);
+        let mut len = tail.wrapping_sub(head) & (Self::CAPACITY - 1);
+        if len >= self.config.capacity {
+            head = self.head.load(Ordering::Acquire);
+            self.cached_head.store(head, Ordering::Relaxed);
+            len = tail.wrapping_sub(head) & (Self::CAPACITY - 1);
+        }
+        self.config.capacity.saturating_sub(len)
+    }
+
+    /// Number of elements currently available to pop (best-effort, not a snapshot).
+    pub fn read_available(&self) -> usize {
+        let head = self.head.load(Ordering::Relaxed);
+        let mut tail = self.cached_tail.load(Ordering::Relaxed);
+        if head == tail {
+            tail = self.tail.load(Ordering::Acquire);
+            self.cached_tail.store(tail, Ordering::Relaxed);
+        }
+        tail.wrapping_sub(head) & (Self::CAPACITY - 1)
+    }
+
     /// Wait for space to become available
     ///
-    /// Spins until there's room in the ring buffer.
+    /// Uses exponential backoff: spins with PAUSE up to 256 iterations,
+    /// then transitions to OS yield to avoid starving the consumer.
     pub fn wait_for_space(&self) {
-        let mut spins = 0;
-        while self.should_backpressure() {
-            if spins < 100 {
+        let mut backoff = 1u32;
+        loop {
+            if !self.should_backpressure() {
+                return;
+            }
+            // Exponential backoff: 1, 2, 4, 8, … 256
+            let limit = backoff.min(256);
+            for _ in 0..limit {
                 core::hint::spin_loop();
-                spins += 1;
-            } else {
-                // Yield to allow consumer to make progress
+            }
+            backoff = backoff.saturating_mul(2);
+            if backoff > 256 {
                 std::thread::yield_now();
+                backoff = 1;
             }
         }
     }
 
     /// Wait for an element to become available
     ///
-    /// Spins until there's data in the ring buffer.
+    /// Uses exponential backoff: spins with PAUSE up to 256 iterations,
+    /// then transitions to OS yield to avoid starving the producer.
     pub fn wait_for_data(&self) {
-        let mut spins = 0;
-        while self.is_empty() {
-            if spins < 100 {
+        let mut backoff = 1u32;
+        loop {
+            if !self.is_empty() {
+                return;
+            }
+            let limit = backoff.min(256);
+            for _ in 0..limit {
                 core::hint::spin_loop();
-                spins += 1;
-            } else {
-                // Yield to allow producer to make progress
+            }
+            backoff = backoff.saturating_mul(2);
+            if backoff > 256 {
                 std::thread::yield_now();
+                backoff = 1;
             }
         }
+    }
+
+    /// Push a batch of elements, returning the number successfully pushed.
+    ///
+    /// Stops early if the ring becomes full. This amortizes atomic store
+    /// overhead across multiple elements: only two atomic stores (tail + cached_head)
+    /// for up to `slice.len()` pushes.
+    pub fn push_batch(&self, slice: &[T]) -> usize
+    where
+        T: Copy,
+    {
+        let tail = self.tail.load(Ordering::Relaxed);
+        let mut head = self.cached_head.load(Ordering::Relaxed);
+        let mut current_len = tail.wrapping_sub(head) & (Self::CAPACITY - 1);
+
+        if current_len >= self.config.capacity {
+            head = self.head.load(Ordering::Acquire);
+            self.cached_head.store(head, Ordering::Relaxed);
+            current_len = tail.wrapping_sub(head) & (Self::CAPACITY - 1);
+            if current_len >= self.config.capacity {
+                return 0;
+            }
+        }
+
+        let available = self.config.capacity - current_len;
+        let count = available.min(slice.len());
+        if count == 0 {
+            return 0;
+        }
+
+        let buf = unsafe { &mut *self.buffer.get() };
+        for i in 0..count {
+            buf[tail.wrapping_add(i) & (Self::CAPACITY - 1)].write(slice[i]);
+        }
+        let new_tail = tail.wrapping_add(count) & (Self::CAPACITY - 1);
+        self.tail.store(new_tail, Ordering::Release);
+        count
+    }
+
+    /// Pop up to `count` elements into the provided mutable slice, returning
+    /// the number of elements actually popped.
+    ///
+    /// Uses `MaybeUninit` to avoid zero-initialisation overhead.
+    pub fn pop_batch(&self, out: &mut [std::mem::MaybeUninit<T>]) -> usize {
+        let head = self.head.load(Ordering::Relaxed);
+        let mut tail = self.cached_tail.load(Ordering::Relaxed);
+
+        if head == tail {
+            tail = self.tail.load(Ordering::Acquire);
+            self.cached_tail.store(tail, Ordering::Relaxed);
+            if head == tail {
+                return 0;
+            }
+        }
+
+        let available = tail.wrapping_sub(head) & (Self::CAPACITY - 1);
+        let count = available.min(out.len());
+        if count == 0 {
+            return 0;
+        }
+
+        let buf = unsafe { &mut *self.buffer.get() };
+        for (i, slot) in out.iter_mut().enumerate().take(count) {
+            let src = head.wrapping_add(i) & (Self::CAPACITY - 1);
+            *slot = std::mem::MaybeUninit::new(unsafe { buf[src].assume_init_read() });
+        }
+        let new_head = head.wrapping_add(count) & (Self::CAPACITY - 1);
+        self.head.store(new_head, Ordering::Release);
+        count
     }
 
     fn increment(index: usize) -> usize {
@@ -399,5 +505,122 @@ mod tests {
 
         // Consumer should be able to pop now
         assert_eq!(ring.pop(), Some(42));
+    }
+
+    #[test]
+    fn push_batch_writes_multiple_elements() {
+        let ring = SpscRingBuffer::<u64>::new(RingConfig::default());
+        let data: Vec<u64> = (0..100).collect();
+        let n = ring.push_batch(&data);
+        assert_eq!(n, 100);
+        assert_eq!(ring.len(), 100);
+    }
+
+    #[test]
+    fn push_batch_respects_capacity() {
+        let config = RingConfig {
+            capacity: 10,
+            backpressure_threshold: 8,
+        };
+        let ring = SpscRingBuffer::<u64>::new(config);
+        let data: Vec<u64> = (0..100).collect();
+        let n = ring.push_batch(&data);
+        assert_eq!(n, 10);
+        assert_eq!(ring.len(), 10);
+    }
+
+    #[test]
+    fn pop_batch_reads_multiple_elements() {
+        let ring = SpscRingBuffer::<u64>::new(RingConfig::default());
+        for i in 0..50u64 {
+            ring.push(i).unwrap();
+        }
+        let mut out = vec![std::mem::MaybeUninit::uninit(); 20];
+        let n = ring.pop_batch(&mut out);
+        assert_eq!(n, 20);
+        let drained: Vec<u64> = out[..n]
+            .iter()
+            .map(|x| unsafe { x.assume_init_read() })
+            .collect();
+        assert_eq!(drained, (0..20).collect::<Vec<u64>>());
+        assert_eq!(ring.len(), 30);
+    }
+
+    #[test]
+    fn pop_batch_returns_available_count() {
+        let ring = SpscRingBuffer::<u64>::new(RingConfig::default());
+        for i in 0..5u64 {
+            ring.push(i).unwrap();
+        }
+        let mut out = vec![std::mem::MaybeUninit::uninit(); 100];
+        let n = ring.pop_batch(&mut out);
+        assert_eq!(n, 5);
+    }
+
+    #[test]
+    fn push_pop_batch_round_trip_spsc() {
+        let ring = Arc::new(SpscRingBuffer::<u64>::new(RingConfig::default()));
+        let prod = Arc::clone(&ring);
+        let cons = Arc::clone(&ring);
+        let iters = 5_000u64;
+        let batch_size = 64;
+
+        let h_prod = std::thread::spawn(move || {
+            let mut sent = 0u64;
+            while sent < iters {
+                let chunk_size = batch_size.min((iters - sent) as usize);
+                let chunk: Vec<u64> = (sent..sent + chunk_size as u64).collect();
+                let n = prod.push_batch(&chunk);
+                sent += n as u64;
+                if n == 0 {
+                    prod.wait_for_space();
+                }
+            }
+        });
+
+        let h_cons = std::thread::spawn(move || {
+            let mut received = 0u64;
+            let mut buf = vec![std::mem::MaybeUninit::uninit(); batch_size];
+            while received < iters {
+                let n = cons.pop_batch(&mut buf);
+                if n > 0 {
+                    received += n as u64;
+                } else {
+                    cons.wait_for_data();
+                }
+            }
+        });
+
+        h_prod.join().unwrap();
+        h_cons.join().unwrap();
+        assert!(ring.is_empty());
+    }
+
+    #[test]
+    fn write_read_available_tracking() {
+        let config = RingConfig {
+            capacity: 100,
+            backpressure_threshold: 70,
+        };
+        let ring = SpscRingBuffer::<u64>::new(config);
+        assert_eq!(ring.write_available(), 100);
+        assert_eq!(ring.read_available(), 0);
+
+        for i in 0..30u64 {
+            ring.push(i).unwrap();
+        }
+        assert_eq!(ring.write_available(), 70);
+        assert_eq!(ring.read_available(), 30);
+
+        // pop() advances head; write_available() is conservatively stale
+        // (cached_head not refreshed since no push failed), so it may report
+        // slightly less than the true capacity.
+        ring.pop();
+        assert_eq!(ring.read_available(), 29);
+        let wa = ring.write_available();
+        assert!(
+            wa == 70 || wa == 71,
+            "write_available should be 70 (conservative) or 71 (true): got {wa}"
+        );
     }
 }
