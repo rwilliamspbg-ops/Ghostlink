@@ -402,17 +402,7 @@ fn detect_cpu_brand() -> String {
 
 fn detect_cpu_features(arch: &str) -> CpuFeatures {
     match arch {
-        "x86_64" | "x86" => {
-            let avx2 = is_x86_feature_detected!("avx2");
-            let avx_512 = is_x86_feature_detected!("avx512f");
-            let amx = is_x86_feature_detected!("avx512f") && cfg!(target_feature = "amx-tile");
-            CpuFeatures {
-                avx2,
-                avx_512,
-                amx,
-                ..Default::default()
-            }
-        }
+        "x86_64" | "x86" => detect_x86_features(),
         "aarch64" | "arm" => {
             let neon = true; // all ARMv8+ have NEON
             let sve = detect_sve();
@@ -424,6 +414,24 @@ fn detect_cpu_features(arch: &str) -> CpuFeatures {
         }
         _ => CpuFeatures::default(),
     }
+}
+
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+fn detect_x86_features() -> CpuFeatures {
+    let avx2 = is_x86_feature_detected!("avx2");
+    let avx_512 = is_x86_feature_detected!("avx512f");
+    let amx = is_x86_feature_detected!("avx512f") && cfg!(target_feature = "amx-tile");
+    CpuFeatures {
+        avx2,
+        avx_512,
+        amx,
+        ..Default::default()
+    }
+}
+
+#[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
+fn detect_x86_features() -> CpuFeatures {
+    CpuFeatures::default()
 }
 
 fn detect_sve() -> bool {
