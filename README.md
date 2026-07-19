@@ -132,7 +132,7 @@ Ghostlink's SPSC ring buffer uses exponential-backoff spin-wait for sub-microsec
 | TCP loopback | 497K tok/s | 2.06 ms |
 | Unix domain socket | Comparable to TCP | — |
 
-Compiling with `target-cpu=native` (enabled by default via `.cargo/config.toml`) further improves performance by enabling CPU-specific instruction sets.
+Compiling with `RUSTFLAGS="-C target-cpu=native"` further improves performance by enabling CPU-specific instruction sets (opt-in; not set by default).
 
 ## Launch Scripts
 
