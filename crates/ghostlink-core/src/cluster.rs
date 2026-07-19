@@ -343,7 +343,6 @@ impl ClusterState {
             nodes.sort_by(|a, b| a.id.cmp(&b.id));
             self.nodes_snapshot.store(Arc::new(nodes));
         }
-
         self.nodes_snapshot.load_full()
     }
 
@@ -609,8 +608,7 @@ mod tests {
         // EMA: 1.0 * 0.9 + 2.0 * 0.1 = 1.1
         assert!(
             (avg2 - 1.1).abs() < 1e-6,
-            "EMA calculation: expected 1.1, got {}",
-            avg2
+            "EMA calculation: expected 1.1, got {avg2}"
         );
 
         metrics.record_latency(3.0);
@@ -618,8 +616,7 @@ mod tests {
         // EMA: 1.1 * 0.9 + 3.0 * 0.1 = 0.99 + 0.3 = 1.29
         assert!(
             (avg3 - 1.29).abs() < 1e-5,
-            "EMA calculation: expected 1.29, got {}",
-            avg3
+            "EMA calculation: expected 1.29, got {avg3}"
         );
     }
 
@@ -681,7 +678,7 @@ mod tests {
         for iteration in 0..5 {
             for i in 0..10 {
                 cluster.register(NodeResources::new(
-                    format!("node-{}", i),
+                    format!("node-{i}"),
                     24.0 + (iteration as f32),
                     64.0,
                     "8.9",
@@ -693,8 +690,7 @@ mod tests {
             assert_eq!(
                 nodes.len(),
                 10,
-                "Should have 10 nodes at iteration {}",
-                iteration
+                "Should have 10 nodes at iteration {iteration}"
             );
 
             // Verify VRAM reflects latest registration

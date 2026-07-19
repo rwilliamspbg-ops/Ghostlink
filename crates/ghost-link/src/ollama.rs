@@ -231,8 +231,7 @@ impl OllamaClient {
                 .await
                 .unwrap_or_else(|_| "<unreadable body>".to_string());
             return Err(Box::new(io::Error::other(format!(
-                "Ollama generate failed: HTTP {} - {}",
-                status, body
+                "Ollama generate failed: HTTP {status} - {body}"
             ))));
         }
 
@@ -514,8 +513,7 @@ impl OllamaClient {
                 .await
                 .unwrap_or_else(|_| "<unreadable body>".to_string());
             return Err(Box::new(io::Error::other(format!(
-                "Ollama show failed: HTTP {} - {}",
-                status, body
+                "Ollama show failed: HTTP {status} - {body}"
             ))));
         }
 
@@ -531,8 +529,7 @@ impl OllamaClient {
             .any(|model| Self::matches_model_name(&model.name, model_name))
         {
             return Ok(format!(
-                "model '{}' is not running; unload skipped",
-                model_name
+                "model '{model_name}' is not running; unload skipped"
             ));
         }
 
@@ -557,8 +554,7 @@ impl OllamaClient {
                 .await
                 .unwrap_or_else(|_| "<unreadable body>".to_string());
             return Err(Box::new(io::Error::other(format!(
-                "Ollama unload failed: HTTP {} - {}",
-                status, body
+                "Ollama unload failed: HTTP {status} - {body}"
             ))));
         }
 

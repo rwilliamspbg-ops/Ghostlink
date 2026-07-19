@@ -1,6 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import {
-  Play,
   Trash2,
   RefreshCw,
   Download,
@@ -10,9 +9,10 @@ import {
   Layers,
   CheckCircle2,
   Loader,
-  Power,
   ChevronRight,
   Copy,
+  Check,
+  X,
 } from 'lucide-react';
 import { useAppStore } from '../store';
 import { GhostlinkAPI } from '../api';
@@ -30,7 +30,7 @@ const POPULAR_MODELS = [
 
 export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
   const { currentModel, setModels, setCurrentModel } = useAppStore();
-  const [activeTab, setActiveTab] = useState<'local' | 'huggingface'>('local');
+  const [activeTab, setActiveTab] = useState<'local' | 'huggingface' | 'recommended'>('local');
   const [loading, setLoading] = useState(false);
   const [hfSearch, setHfSearch] = useState('');
   const [message, setMessage] = useState<string | null>(null);
@@ -39,6 +39,10 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
   const [downloadProgress, setDownloadProgress] = useState<Record<string, number>>({});
   const [ollamaModels, setOllamaModels] = useState<any[]>([]);
   const [showModelfile, setShowModelfile] = useState<string | null>(null);
+  const [recommendedModels, setRecommendedModels] = useState<any[]>([]);
+  const [recommendedLoading, setRecommendedLoading] = useState(false);
+  const [detectedRuntime, setDetectedRuntime] = useState<string>('cpu');
+  const [availableMemoryGb, setAvailableMemoryGb] = useState<number>(0);
 
   const searchHF = useCallback(async (query: string) => {
     try {
@@ -61,6 +65,34 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
     }, 300);
     return () => clearTimeout(timer);
   }, [hfSearch, searchHF]);
+
+  const fetchRecommendations = useCallback(async () => {
+    setRecommendedLoading(true);
+    try {
+      const runtimeResult = await api.getRuntimes();
+      if (!runtimeResult.error && runtimeResult.available_runtimes && runtimeResult.available_runtimes.length > 0) {
+        const primary = runtimeResult.available_runtimes.find((r: any) => r.is_primary || r.is_available);
+        const runtime = primary || runtimeResult.available_runtimes[0];
+        const runtimeName = runtime.runtime || runtime.name || 'cpu';
+        const memoryGb = runtime.memory_gb || runtime.vram_gb || runtime.system_memory_gb || 8;
+        
+        setDetectedRuntime(runtimeName);
+        setAvailableMemoryGb(memoryGb);
+
+        const recResult = await api.getModelRecommendations(runtimeName, memoryGb);
+        if (!recResult.error && recResult.recommended_models) {
+          setRecommendedModels(recResult.recommended_models);
+        }
+      }
+    } catch (e) {
+      console.error('Failed to fetch recommendations:', e);
+    }
+    setRecommendedLoading(false);
+  }, [api]);
+
+  useEffect(() => {
+    fetchRecommendations();
+  }, [fetchRecommendations]);
 
   const filteredHfResults = hfResults.filter(model =>
     model.name.toLowerCase().includes(hfSearch.toLowerCase()) ||
@@ -96,9 +128,9 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
     refreshModels();
   }, [refreshModels]);
 
-  const handleLoadModel = async (name: string) => {
-    setPendingActions(prev => ({ ...prev, [name]: 'loading' }));
-    setMessage(`Loading ${name}...`);
+  const handleSetModel = async (name: string) => {
+    setPendingActions(prev => ({ ...prev, [name]: 'setting' }));
+    setMessage(`Setting current model to ${name}...`);
     try {
       const result = await api.loadModel(name);
       if (result.success) {
@@ -242,29 +274,6 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
     }
   };
 
-  const handleUnloadModel = async (name: string) => {
-    setPendingActions(prev => ({ ...prev, [name]: 'unloading' }));
-    setMessage(`Unloading ${name}...`);
-    try {
-      const result = await api.unloadModel(name);
-      if (result.success) {
-        if (name === currentModel) {
-          setCurrentModel('none');
-        }
-        setMessage(`Unloaded ${name}`);
-        refreshModels();
-      } else {
-        setMessage(`Error: ${result.error}`);
-      }
-    } finally {
-      setPendingActions(prev => {
-        const newState = { ...prev };
-        delete newState[name];
-        return newState;
-      });
-    }
-  };
-
   const copyModelfile = () => {
     if (showModelfile) {
       navigator.clipboard.writeText(showModelfile);
@@ -283,6 +292,14 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
             }`}
           >
             Ollama Models
+          </button>
+          <button
+            onClick={() => setActiveTab('recommended')}
+            className={`px-3 py-1.5 rounded-lg text-sm font-bold transition ${
+              activeTab === 'recommended' ? 'bg-blue-600 text-white shadow-lg shadow-blue-500/20' : 'text-slate-400 hover:bg-slate-900'
+            }`}
+          >
+            Recommended
           </button>
           <button
             onClick={() => setActiveTab('huggingface')}
@@ -364,29 +381,17 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                             <span className="px-3 py-1 bg-blue-600 text-white text-xs font-medium rounded-full">
                               Active
                             </span>
-                            <button
-                              onClick={() => handleUnloadModel(model.name)}
-                              disabled={pendingActions[model.name] === 'unloading' || loading}
-                              className="flex items-center gap-2 px-3 py-1 bg-slate-800 hover:bg-amber-600 text-xs font-medium rounded-full transition"
-                            >
-                              {pendingActions[model.name] === 'unloading' ? (
-                                <Loader size={16} className="mr-1" />
-                              ) : (
-                                <Power size={16} />
-                              )}
-                              Unload
-                            </button>
                           </div>
                         ) : (
                           <button
-                            onClick={() => handleLoadModel(model.name)}
-                            disabled={pendingActions[model.name] === 'loading' || loading}
+                            onClick={() => handleSetModel(model.name)}
+                            disabled={pendingActions[model.name] === 'setting' || loading}
                             className="flex items-center gap-2 px-3 py-1 bg-slate-800 hover:bg-blue-600 text-xs font-medium rounded-full transition"
                           >
-                            {pendingActions[model.name] === 'loading' ? (
+                            {pendingActions[model.name] === 'setting' ? (
                               <Loader size={16} className="mr-1" />
                             ) : (
-                              <Play size={16} />
+                              <Check size={16} />
                             )}
                             Use
                           </button>
@@ -459,6 +464,126 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
               </div>
             </div>
           </div>
+        ) : activeTab === 'recommended' ? (
+          <div className="space-y-4">
+            <div className="flex items-center justify-between px-4 py-3 bg-slate-800 rounded-lg">
+              <div className="flex items-center gap-3">
+                <Cpu size={20} className="text-blue-400" />
+                <h2 className="text-lg font-bold text-white">Recommended for Your Hardware</h2>
+              </div>
+              <div className="text-sm text-slate-400">
+                Runtime: <span className="font-mono text-blue-400 capitalize">{detectedRuntime}</span> • {availableMemoryGb > 0 ? `${availableMemoryGb.toFixed(1)} GB available` : 'Unknown memory'}
+              </div>
+            </div>
+            {recommendedLoading ? (
+              <div className="text-center py-12 text-slate-500">
+                <Loader size={48} className="mx-auto mb-4 text-slate-700 animate-spin" />
+                <p>Analyzing hardware & finding best models...</p>
+              </div>
+            ) : recommendedModels.length === 0 ? (
+              <div className="text-center py-12 text-slate-500">
+                <Cpu size={48} className="mx-auto mb-4 text-slate-700" />
+                <p>No model recommendations available.</p>
+                <p className="text-xs text-slate-400 mt-1">Try refreshing or check if runtime detection is working.</p>
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {recommendedModels.map((model: any) => (
+                  <div key={model.name} className="flex items-center justify-between px-4 py-3 hover:bg-slate-800/50 rounded-lg transition">
+                    <div className="flex items-center gap-3 min-w-0">
+                      <div className="flex items-center justify-center text-blue-500 bg-blue-500/10 h-10 w-10 rounded-lg shrink-0">
+                        <CheckCircle2 size={14} />
+                      </div>
+                      <div className="min-w-0">
+                        <div className="font-bold text-slate-200 truncate">{model.name}</div>
+                        <div className="text-[10px] text-slate-500 font-mono truncate">{model.parameters} • {model.size_gb} GB • {model.quality_tier} • {model.inference_speed}</div>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-4 shrink-0">
+                      <div className="text-xs text-slate-400">
+                        {model.reason}
+                      </div>
+                      <button
+                        onClick={() => handlePullModel(model.name)}
+                        disabled={pendingActions[model.name] === 'downloading' || loading}
+                        className="inline-flex items-center gap-2 px-4 py-2 bg-slate-800 hover:bg-blue-600 text-white rounded-xl text-xs font-bold transition group-hover:shadow-lg group-hover:shadow-blue-500/20"
+                      >
+                        {pendingActions[model.name] === 'downloading' ? (
+                          <>
+                            <Loader size={14} className="mr-2" />
+                            {downloadProgress[model.name] !== undefined ? `${Math.round(downloadProgress[model.name] * 100)}%` : '...'}
+                          </>
+                        ) : (
+                          <Download size={14} />
+                        )}
+                        {pendingActions[model.name] === 'downloading' ? '' : 'Pull'}
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        ) : (activeTab as 'local' | 'huggingface' | 'recommended') === 'recommended' ? (
+          <div className="space-y-4">
+            <div className="flex items-center justify-between px-4 py-3 bg-slate-800 rounded-lg">
+              <div className="flex items-center gap-3">
+                <Cpu size={20} className="text-blue-400" />
+                <h2 className="text-lg font-bold text-white">Recommended for Your Hardware</h2>
+              </div>
+              <div className="text-sm text-slate-400">
+                Runtime: <span className="font-mono text-blue-400 capitalize">{detectedRuntime}</span> • {availableMemoryGb > 0 ? `${availableMemoryGb.toFixed(1)} GB available` : 'Unknown memory'}
+              </div>
+            </div>
+            {recommendedLoading ? (
+              <div className="text-center py-12 text-slate-500">
+                <Loader size={48} className="mx-auto mb-4 text-slate-700 animate-spin" />
+                <p>Analyzing hardware & finding best models...</p>
+              </div>
+            ) : recommendedModels.length === 0 ? (
+              <div className="text-center py-12 text-slate-500">
+                <Cpu size={48} className="mx-auto mb-4 text-slate-700" />
+                <p>No model recommendations available.</p>
+                <p className="text-xs text-slate-400 mt-1">Try refreshing or check if runtime detection is working.</p>
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {recommendedModels.map((model: any) => (
+                  <div key={model.name} className="flex items-center justify-between px-4 py-3 hover:bg-slate-800/50 rounded-lg transition">
+                    <div className="flex items-center gap-3 min-w-0">
+                      <div className="flex items-center justify-center text-blue-500 bg-blue-500/10 h-10 w-10 rounded-lg shrink-0">
+                        <CheckCircle2 size={14} />
+                      </div>
+                      <div className="min-w-0">
+                        <div className="font-bold text-slate-200 truncate">{model.name}</div>
+                        <div className="text-[10px] text-slate-500 font-mono truncate">{model.parameters} • {model.size_gb} GB • {model.quality_tier} • {model.inference_speed}</div>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-4 shrink-0">
+                      <div className="text-xs text-slate-400">
+                        {model.reason}
+                      </div>
+                      <button
+                        onClick={() => handlePullModel(model.name)}
+                        disabled={pendingActions[model.name] === 'downloading' || loading}
+                        className="inline-flex items-center gap-2 px-4 py-2 bg-slate-800 hover:bg-blue-600 text-white rounded-xl text-xs font-bold transition group-hover:shadow-lg group-hover:shadow-blue-500/20"
+                      >
+                        {pendingActions[model.name] === 'downloading' ? (
+                          <>
+                            <Loader size={14} className="mr-2" />
+                            {downloadProgress[model.name] !== undefined ? `${Math.round(downloadProgress[model.name] * 100)}%` : '...'}
+                          </>
+                        ) : (
+                          <Download size={14} />
+                        )}
+                        {pendingActions[model.name] === 'downloading' ? '' : 'Pull'}
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
         ) : (
           <div className="space-y-4">
             <div className="flex items-center justify-between px-4 py-3 bg-slate-800 rounded-lg">
@@ -514,7 +639,7 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
             <div className="flex items-center justify-between p-4 border-b border-slate-800">
               <h3 className="text-lg font-bold text-white">Modelfile</h3>
               <button onClick={() => setShowModelfile(null)} className="text-slate-400 hover:text-white">
-                <Power size={20} />
+                <X size={20} />
               </button>
             </div>
             <div className="p-4 overflow-y-auto max-h-[60vh]">

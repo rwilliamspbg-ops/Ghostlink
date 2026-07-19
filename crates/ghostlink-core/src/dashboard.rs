@@ -62,21 +62,16 @@ impl DashboardState {
         };
 
         if active_count == 0 && total_nodes > 0 {
-            self.status_message = format!(
-                "No active nodes | {} | {}",
-                quantization_label, health_label
-            );
+            self.status_message =
+                format!("No active nodes | {quantization_label} | {health_label}");
         } else if active_count < total_nodes {
             self.status_message = format!(
-                "{} of {} nodes active | {} | {}",
-                active_count, total_nodes, quantization_label, health_label
+                "{active_count} of {total_nodes} nodes active | {quantization_label} | {health_label}"
             );
         } else {
             self.status_message = format!(
-                "Cluster healthy: {:.1} GB total VRAM | {} | {}",
+                "Cluster healthy: {:.1} GB total VRAM | {quantization_label} | {health_label}",
                 self.cluster.total_vram_gb(),
-                quantization_label,
-                health_label
             );
         }
     }
@@ -147,7 +142,9 @@ impl AsciiDashboard {
         for node in &self.nodes {
             let blocks = ((node.used_vram_gb / node.total_vram_gb) * 20.0).round() as usize;
             let blocks = blocks.min(20);
-            let gauge = format!("{}{}", "█".repeat(blocks), "░".repeat(20 - blocks));
+            let filled = "█".repeat(blocks);
+            let empty = "░".repeat(20 - blocks);
+            let gauge = format!("{filled}{empty}");
             output.push_str(&format!(
                 "| {:<7} ({:<8}) [{}] {:>4.1} / {:>4.1} GB VRAM |\n",
                 node.name,
@@ -188,7 +185,7 @@ impl TerminalApp {
         let stdout = std::io::stdout();
 
         if let Err(err) = enable_raw_mode() {
-            println!("Failed to enable raw mode: {:?}", err);
+            println!("Failed to enable raw mode: {err:?}");
             return;
         }
 
@@ -202,8 +199,8 @@ impl TerminalApp {
         disable_raw_mode().unwrap();
 
         match result {
-            Ok(msg) if !msg.is_empty() => println!("{}", msg),
-            Err(err) => println!("Application error: {}", err),
+            Ok(msg) if !msg.is_empty() => println!("{msg}"),
+            Err(err) => println!("Application error: {err}"),
             _ => {}
         }
     }

@@ -46,8 +46,7 @@ impl TransportSocketHandle {
     /// Create new XDP socket handle
     pub fn new(interface_name: &str) -> Result<Self, String> {
         Err(format!(
-            "High_Performance_Transport sockets are not enabled in this build (requested interface: {})",
-            interface_name
+            "High_Performance_Transport sockets are not enabled in this build (requested interface: {interface_name})"
         ))
     }
 

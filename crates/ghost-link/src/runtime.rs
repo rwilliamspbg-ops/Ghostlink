@@ -38,7 +38,7 @@ impl std::str::FromStr for Runtime {
             "directml" | "dml" | "directml-gpu" => Ok(Runtime::DirectML),
             "npu" | "neural" | "neural-processor" => Ok(Runtime::NPU),
             "cpu" | "default" => Ok(Runtime::CPU),
-            other => Err(format!("unknown runtime '{}'", other)),
+            other => Err(format!("unknown runtime '{other}'")),
         }
     }
 }

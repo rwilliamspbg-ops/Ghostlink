@@ -69,7 +69,7 @@ impl ComputeConfig {
 
         if let Some(backend) = &self.preferred_backend {
             if ComputeBackend::from_str(backend).is_none() {
-                return Err(format!("Unknown backend: {}", backend));
+                return Err(format!("Unknown backend: {backend}"));
             }
         }
 
@@ -95,16 +95,16 @@ impl ConfigManager {
         }
 
         let content = std::fs::read_to_string(&self.config_path)
-            .map_err(|err| format!("Failed to read config file: {}", err))?;
+            .map_err(|err| format!("Failed to read config file: {err}"))?;
 
         let root: toml::Value =
-            toml::from_str(&content).map_err(|err| format!("Failed to parse TOML: {}", err))?;
+            toml::from_str(&content).map_err(|err| format!("Failed to parse TOML: {err}"))?;
 
         if let Some(compute) = root.get("compute") {
             let config: ComputeConfig = compute
                 .clone()
                 .try_into()
-                .map_err(|err| format!("Failed to parse [compute] section: {}", err))?;
+                .map_err(|err| format!("Failed to parse [compute] section: {err}"))?;
             config.validate()?;
             Ok(config)
         } else {
@@ -127,9 +127,9 @@ impl ConfigManager {
 
         let mut root = if self.config_path.exists() {
             let content = std::fs::read_to_string(&self.config_path)
-                .map_err(|err| format!("Failed to read config file: {}", err))?;
+                .map_err(|err| format!("Failed to read config file: {err}"))?;
             toml::from_str::<toml::Value>(&content)
-                .map_err(|err| format!("Failed to parse TOML: {}", err))?
+                .map_err(|err| format!("Failed to parse TOML: {err}"))?
                 .as_table()
                 .cloned()
                 .unwrap_or_default()
@@ -138,13 +138,13 @@ impl ConfigManager {
         };
 
         let compute_value = toml::Value::try_from(config)
-            .map_err(|err| format!("Failed to serialize compute config: {}", err))?;
+            .map_err(|err| format!("Failed to serialize compute config: {err}"))?;
         root.insert("compute".to_string(), compute_value);
 
         let output = toml::to_string_pretty(&toml::Value::Table(root))
-            .map_err(|err| format!("Failed to serialize TOML: {}", err))?;
+            .map_err(|err| format!("Failed to serialize TOML: {err}"))?;
         std::fs::write(&self.config_path, output)
-            .map_err(|err| format!("Failed to write config file: {}", err))?;
+            .map_err(|err| format!("Failed to write config file: {err}"))?;
         Ok(())
     }
 }

@@ -13,6 +13,12 @@ function createMockApi(): GhostlinkAPI {
     ],
     current_model: 'mistral-7b',
   });
+  vi.spyOn(api, 'getOllamaModels').mockResolvedValue({
+    models: [
+      { name: 'llama-3-8b', size: 8 * 1024 * 1024 * 1024, details: { family: 'llama', quantization_level: 'Q4_K_M' } },
+      { name: 'mistral-7b', size: 7 * 1024 * 1024 * 1024, details: { family: 'mistral', quantization_level: 'Q8_0' } },
+    ],
+  });
   vi.spyOn(api, 'loadModel').mockResolvedValue({ success: true, data: {} });
   vi.spyOn(api, 'unloadModel').mockResolvedValue({ success: true, data: {} });
   vi.spyOn(api, 'deleteModel').mockResolvedValue({ success: true, data: {} });
@@ -88,11 +94,11 @@ describe('ModelsTab', () => {
     });
   });
 
-  it('shows Unload button for loaded model', async () => {
+  it('shows Active badge for current model', async () => {
     const api = createMockApi();
     render(<ModelsTab api={api} />);
     await waitFor(() => {
-      expect(screen.getByRole('button', { name: 'Unload' })).toBeInTheDocument();
+      expect(screen.getByText('Active')).toBeInTheDocument();
     });
   });
 

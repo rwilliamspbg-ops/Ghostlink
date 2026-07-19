@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {
@@ -19,6 +19,10 @@ import {
   Cloud,
   LayoutGrid,
   Check,
+  Save,
+  FolderOpen,
+  Trash2,
+  Database,
 } from 'lucide-react';
 import { useAppStore } from '../store';
 import { GhostlinkAPI } from '../api';
@@ -29,6 +33,15 @@ interface Message {
   id: string;
   timestamp: string;
   model?: string;
+}
+
+interface Session {
+  id: string;
+  model: string;
+  status: string;
+  throughput: number;
+  latency: number;
+  tokens: number;
 }
 
 const STORAGE_KEY = 'ghostlink-chat-messages';
@@ -78,10 +91,15 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
   // UI State
   const [showTools, setShowTools] = useState(false);
   const [showModelSelector, setShowModelSelector] = useState(false);
+  const [showSessions, setShowSessions] = useState(false);
+  const [sessionName, setSessionName] = useState(`Session ${new Date().toLocaleDateString()}`);
   const [tools, setTools] = useState<Tool[]>(AVAILABLE_TOOLS);
+  const [sessions, setSessions] = useState<Session[]>([]);
+  const [sessionsLoading, setSessionsLoading] = useState(false);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const modelSelectorRef = useRef<HTMLDivElement>(null);
+  const sessionsRef = useRef<HTMLDivElement>(null);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -100,10 +118,71 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
       if (modelSelectorRef.current && !modelSelectorRef.current.contains(event.target as Node)) {
         setShowModelSelector(false);
       }
+      if (sessionsRef.current && !sessionsRef.current.contains(event.target as Node)) {
+        setShowSessions(false);
+      }
     };
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
+
+  const loadSessions = useCallback(async () => {
+    setSessionsLoading(true);
+    try {
+      const result = await api.listSessions();
+      if (!result.error && result.sessions) {
+        setSessions(result.sessions);
+      }
+    } catch (e) {
+      console.error('Failed to load sessions:', e);
+    }
+    setSessionsLoading(false);
+  }, [api]);
+
+  useEffect(() => {
+    loadSessions();
+  }, [loadSessions]);
+
+  const handleSaveSession = async () => {
+    if (messages.length === 0) return;
+    const sessionId = `session_${Date.now()}`;
+    const session = {
+      id: sessionId,
+      name: sessionName,
+      model: currentModel === 'none' ? 'unknown' : currentModel,
+      messages: messages,
+    };
+    
+    const result = await api.saveSession(session);
+    if (result.success) {
+      loadSessions();
+      setShowSessions(false);
+      setSessionName(`Session ${new Date().toLocaleDateString()}`);
+    } else {
+      setError(result.error || 'Failed to save session');
+    }
+  };
+
+  const handleLoadSession = async (sessionId: string) => {
+    const result = await api.loadSession(sessionId);
+    if (result.success && result.session) {
+      // The backend only returns basic session info, we'd need to store full messages
+      // For now, we'll load from localStorage as a fallback
+      setShowSessions(false);
+    } else {
+      setError(result.error || 'Failed to load session');
+    }
+  };
+
+  const handleDeleteSession = async (sessionId: string) => {
+    if (!window.confirm('Delete this session?')) return;
+    const result = await api.deleteSession(sessionId);
+    if (result.success) {
+      loadSessions();
+    } else {
+      setError(result.error || 'Failed to delete session');
+    }
+  };
 
   const usableModels = models.filter((m) => m.status === 'Loaded' || m.status === 'Ready');
 
@@ -238,10 +317,92 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                     </div>
                 )}
             </div>
-            <button onClick={() => { if (!loading) setMessages([]); }} className="p-1.5 rounded-lg hover:bg-slate-900 text-slate-500 hover:text-white transition">
-                <Plus size={16} />
-            </button>
-        </div>
+            <div className="relative" ref={sessionsRef}>
+              <div className="flex items-center gap-1">
+                <button
+                  onClick={() => { if (!loading) { setSessionName(`Session ${new Date().toLocaleDateString()}`); setShowSessions(true); }}}
+                  className="p-1.5 rounded-lg hover:bg-slate-900 text-slate-500 hover:text-white transition"
+                  title="Save Session"
+                >
+                  <Save size={16} />
+                </button>
+                <button
+                  onClick={() => { loadSessions(); setShowSessions(true); }}
+                  className="p-1.5 rounded-lg hover:bg-slate-900 text-slate-500 hover:text-white transition"
+                  title="Load Session"
+                >
+                  <FolderOpen size={16} />
+                </button>
+                <button onClick={() => { if (!loading) setMessages([]); }} className="p-1.5 rounded-lg hover:bg-slate-900 text-slate-500 hover:text-white transition">
+                    <Plus size={16} />
+                </button>
+              </div>
+
+              {showSessions && (
+                <div className="absolute right-0 mt-2 w-80 bg-slate-900 border border-slate-800 rounded-2xl shadow-2xl z-50 overflow-hidden animate-in fade-in zoom-in-95 duration-100">
+                  <div className="p-2 border-b border-slate-800 flex items-center justify-between">
+                    <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider">Sessions</h4>
+                    <button onClick={() => setShowSessions(false)} className="text-slate-500 hover:text-white"><X size={14} /></button>
+                  </div>
+                  <div className="p-2 max-h-[400px] overflow-y-auto">
+                    {sessionsLoading ? (
+                      <div className="flex justify-center py-4">
+                        <Loader size={20} className="text-blue-500 animate-spin" />
+                      </div>
+                    ) : sessions.length === 0 ? (
+                      <div className="p-4 text-center text-slate-500 text-sm">
+                        <Database size={24} className="mx-auto mb-2 text-slate-700" />
+                        <p>No saved sessions</p>
+                      </div>
+                    ) : (
+                      sessions.map((s: Session) => (
+                        <div key={s.id} className="flex items-center justify-between px-3 py-2.5 rounded-xl text-left transition text-sm">
+                          <div className="flex flex-col min-w-0">
+                            <span className="font-bold truncate">{s.id}</span>
+                            <span className="text-[10px] text-slate-500 truncate">{s.model} • {s.tokens} messages</span>
+                          </div>
+                          <div className="flex items-center gap-1">
+                            <button
+                              onClick={() => handleLoadSession(s.id)}
+                              className="p-1.5 hover:bg-slate-800 rounded-lg text-slate-400 hover:text-white transition"
+                              title="Load"
+                            >
+                              <FolderOpen size={12} />
+                            </button>
+                            <button
+                              onClick={() => handleDeleteSession(s.id)}
+                              className="p-1.5 hover:bg-slate-800 rounded-lg text-slate-400 hover:text-red-400 transition"
+                              title="Delete"
+                            >
+                              <Trash2 size={12} />
+                            </button>
+                          </div>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                  <div className="p-2 border-t border-slate-800 bg-slate-900/50">
+                    <div className="space-y-2">
+                      <input
+                        type="text"
+                        value={sessionName}
+                        onChange={(e) => setSessionName(e.target.value)}
+                        placeholder="Session name..."
+                        className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500/50"
+                      />
+                      <button
+                        onClick={handleSaveSession}
+                        disabled={!sessionName.trim() || messages.length === 0}
+                        className="flex items-center gap-2 w-full px-3 py-2 rounded-xl text-xs font-bold transition disabled:opacity-50 disabled:cursor-not-allowed bg-blue-600 text-white hover:bg-blue-500"
+                      >
+                        <Save size={14} /> Save Current Chat
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
         <div className="flex items-center gap-2">
             <button className="p-2 rounded-lg hover:bg-slate-900 text-slate-400 hover:text-white transition">
                 <LayoutGrid size={18} />

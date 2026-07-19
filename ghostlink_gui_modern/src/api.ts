@@ -288,12 +288,72 @@ export class GhostlinkAPI {
     }
   }
 
+  async saveSession(sessionData: { id: string; name: string; messages: any[]; model: string }): Promise<{ success: boolean; session_id?: string; error?: string }> {
+    try {
+      const response = await this.http.post('/api/sessions/save', sessionData);
+      return { success: true, session_id: response.data.session_id };
+    } catch (error: any) {
+      return { success: false, error: error.response?.data?.error || error.message };
+    }
+  }
+
+  async loadSession(sessionId: string): Promise<{ success: boolean; session?: any; error?: string }> {
+    try {
+      const response = await this.http.get(`/api/sessions/${sessionId}`);
+      return { success: true, session: response.data.session };
+    } catch (error: any) {
+      return { success: false, error: error.response?.data?.error || error.message };
+    }
+  }
+
   async getRuntimes(): Promise<{ available_runtimes: any[]; error?: string }> {
     try {
       const response = await this.http.get('/api/runtime/detect');
       return { available_runtimes: response.data.available_runtimes || [] };
     } catch (error: any) {
       return { available_runtimes: [], error: error.message };
+    }
+  }
+
+  async getModelsByRuntime(runtime: string): Promise<{ models: any[]; best_model?: any; error?: string }> {
+    try {
+      const response = await this.http.get('/api/runtime/models', { params: { runtime } });
+      return { models: response.data.models || [], best_model: response.data.best_model };
+    } catch (error: any) {
+      return { models: [], error: error.message };
+    }
+  }
+
+  async getModelRecommendations(runtime: string, memoryGb?: number): Promise<{ recommended_models: any[]; detected_runtime: string; available_memory_gb: number; error?: string }> {
+    try {
+      const params: Record<string, string> = { runtime };
+      if (memoryGb) params.memory_gb = memoryGb.toString();
+      const response = await this.http.get('/api/runtime/recommend', { params });
+      return {
+        recommended_models: response.data.recommended_models || [],
+        detected_runtime: response.data.detected_runtime || runtime,
+        available_memory_gb: response.data.available_memory_gb || 0,
+      };
+    } catch (error: any) {
+      return { recommended_models: [], detected_runtime: runtime, available_memory_gb: 0, error: error.message };
+    }
+}
+
+  async listSessions(): Promise<{ sessions: any[]; error?: string }> {
+    try {
+      const response = await this.http.get('/api/sessions');
+      return { sessions: response.data.sessions || [] };
+    } catch (error: any) {
+      return { sessions: [], error: error.message };
+    }
+  }
+
+  async deleteSession(sessionId: string): Promise<{ success: boolean; error?: string }> {
+    try {
+      await this.http.delete(`/api/sessions/${encodeURIComponent(sessionId)}`);
+      return { success: true };
+    } catch (error: any) {
+      return { success: false, error: error.response?.data?.error || error.message };
     }
   }
 

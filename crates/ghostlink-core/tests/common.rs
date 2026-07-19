@@ -26,7 +26,7 @@ pub fn sample_nodes(count: usize, base_vram_gb: f32) -> Vec<NodeResources> {
     (0..count)
         .map(|i| {
             NodeResources::new(
-                format!("node-{}", i),
+                format!("node-{i}"),
                 base_vram_gb + (i as f32 * 12.0),
                 64.0,
                 format!("8.{}", 6 + (i % 4)),
@@ -63,9 +63,7 @@ pub fn assert_cluster_state(cluster: &ClusterState, expected_nodes: usize, expec
     let total = cluster.total_vram_gb();
     assert!(
         (total - expected_vram).abs() < 0.1,
-        "Expected {:.1} GB total VRAM, got {:.1} GB",
-        expected_vram,
-        total
+        "Expected {expected_vram:.1} GB total VRAM, got {total:.1} GB"
     );
 }
 

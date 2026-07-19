@@ -112,11 +112,11 @@ impl LoadDistributionPlan {
         output.push_str("======================\n\n");
 
         for (node_id, slices) in &self.distributions {
-            output.push_str(&format!("Node: {}\n", node_id));
+            output.push_str(&format!("Node: {node_id}\n"));
 
             let total_size_gb: f32 = slices.iter().map(|s| s.size_gb).sum();
 
-            output.push_str(&format!("  Total size: {:.1} GB\n", total_size_gb));
+            output.push_str(&format!("  Total size: {total_size_gb:.1} GB\n"));
             output.push_str(&format!(
                 "  Layers: {}-{}\n",
                 slices.first().map(|s| s.layer_range.0).unwrap_or(0),
@@ -490,7 +490,7 @@ mod tests {
         (0..count)
             .map(|i| {
                 NodeResources::new(
-                    format!("node-{}", i),
+                    format!("node-{i}"),
                     base_vram + (i as f32 * 6.0),
                     64.0,
                     "8.9".to_string(),

@@ -499,7 +499,7 @@ mod tests {
             ) {
                 let frame = DiscoveryFrame {
                     kind: FrameKind::Discovery,
-                    node: NodeResources::new(format!("node-{}", node_id), vram, ram, "8.9", None),
+                    node: NodeResources::new(format!("node-{node_id}"), vram, ram, "8.9", None),
                 };
 
                 let encoded = frame.encode();
@@ -529,7 +529,7 @@ mod tests {
 
                         // Should fail CRC check
                         let result = DiscoveryFrame::decode(&encoded);
-                        assert!(result.is_err(), "Corruption at byte {} should be detected", corruption_pos);
+                        assert!(result.is_err(), "Corruption at byte {corruption_pos} should be detected");
                     }
                 }
             }
@@ -542,12 +542,12 @@ mod tests {
             ) {
                 let frame1 = DiscoveryFrame {
                     kind: FrameKind::Discovery,
-                    node: NodeResources::new(format!("node-{}", node_id), vram, 64.0, "8.9", None),
+                    node: NodeResources::new(format!("node-{node_id}"), vram, 64.0, "8.9", None),
                 };
 
                 let frame2 = DiscoveryFrame {
                     kind: FrameKind::Discovery,
-                    node: NodeResources::new(format!("node-{}", node_id), vram, 64.0, "8.9", None),
+                    node: NodeResources::new(format!("node-{node_id}"), vram, 64.0, "8.9", None),
                 };
 
                 let enc1 = frame1.encode();

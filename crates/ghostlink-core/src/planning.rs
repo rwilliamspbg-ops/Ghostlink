@@ -448,20 +448,18 @@ impl MigrationPlanner {
     /// Generate a safe handoff sequence for a migration.
     pub fn generate_handoff_plan(&self) -> Vec<String> {
         let mut steps = Vec::new();
+        let target_node = &self.target_node;
+        let source_node = &self.source_node;
         steps.push(format!(
-            "PREPARE: Target node {} allocating VRAM",
-            self.target_node
+            "PREPARE: Target node {target_node} allocating VRAM"
         ));
         steps.push(format!(
-            "STREAM: Moving layers {:?} to {}",
-            self.layers, self.target_node
+            "STREAM: Moving layers {:?} to {target_node}",
+            self.layers
         ));
-        steps.push(format!("VERIFY: Integrity check on {}", self.target_node));
-        steps.push(format!("COMMIT: Switch routing to {}", self.target_node));
-        steps.push(format!(
-            "CLEANUP: Free VRAM on source node {}",
-            self.source_node
-        ));
+        steps.push(format!("VERIFY: Integrity check on {target_node}"));
+        steps.push(format!("COMMIT: Switch routing to {target_node}"));
+        steps.push(format!("CLEANUP: Free VRAM on source node {source_node}"));
         steps
     }
 }

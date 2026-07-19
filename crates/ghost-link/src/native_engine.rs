@@ -5,9 +5,11 @@
 
 #![allow(dead_code)]
 
-use std::process::{Child, Command};
+use std::path::Path;
+use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use tokio::time::sleep as tokio_sleep;
 
 #[derive(Debug, Clone)]
 pub struct NativeGeneration {
@@ -27,30 +29,284 @@ impl NativeEngineClient {
         Self
     }
 
+    /// Get or initialize the llama-server process handle
+    fn get_process_handle() -> Arc<Mutex<Option<Child>>> {
+        LLAMA_SERVER_PROCESS
+            .get_or_init(|| Arc::new(Mutex::new(None)))
+            .clone()
+    }
+
+    /// Resolve llama-server binary path with multi-location fallback.
+    ///
+    /// Priority:
+    /// 1. `GHOSTLINK_LLAMA_SERVER_BIN` env var (must point to an existing file)
+    /// 2. `<exe-dir>/llama-server` (side-by-side with the running binary)
+    /// 3. `target/release/llama-server` (typical cargo build output from cwd)
+    /// 4. `llama-server` on PATH
+    fn get_llama_server_bin() -> String {
+        // 1. Explicit env var
+        if let Ok(bin) = std::env::var("GHOSTLINK_LLAMA_SERVER_BIN") {
+            let bin = bin.trim().to_string();
+            if !bin.is_empty() && Path::new(&bin).exists() {
+                return bin;
+            }
+        }
+        // 2. Side-by-side with the running executable
+        if let Ok(exe) = std::env::current_exe() {
+            if let Some(parent) = exe.parent() {
+                let candidate = parent.join("llama-server");
+                if candidate.exists() {
+                    return candidate.to_string_lossy().to_string();
+                }
+            }
+        }
+        // 3. target/release relative to cwd
+        let cwd_target = Path::new("target").join("release").join("llama-server");
+        if cwd_target.exists() {
+            return cwd_target.to_string_lossy().to_string();
+        }
+        // 4. Fallback to PATH
+        "llama-server".to_string()
+    }
+
+    /// Get llama-server base URL from environment
+    fn get_llama_server_url() -> String {
+        std::env::var("GHOSTLINK_LLAMA_SERVER_URL")
+            .ok()
+            .filter(|v| !v.trim().is_empty())
+            .unwrap_or_else(|| "http://127.0.0.1:8080".to_string())
+    }
+
+    /// Get user-configured extra llama-server args from environment (no defaults).
+    /// Host/port/ngl/threads are set programmatically from the URL and settings.
+    fn get_llama_server_args() -> Vec<String> {
+        std::env::var("GHOSTLINK_LLAMA_SERVER_ARGS")
+            .ok()
+            .filter(|v| !v.trim().is_empty())
+            .map(|v| v.split_whitespace().map(|s| s.to_string()).collect())
+            .unwrap_or_default()
+    }
+
+    /// Parse host and port from `GHOSTLINK_LLAMA_SERVER_URL`.
+    /// Used both for spawning (--host, --port) and health checks so they can't drift.
+    fn parse_host_port_from_url(url: &str) -> (String, u16) {
+        let url = url.trim().trim_end_matches('/');
+        let without_scheme = url
+            .strip_prefix("https://")
+            .or_else(|| url.strip_prefix("http://"))
+            .unwrap_or(url);
+        let host_port = without_scheme.split('/').next().unwrap_or(without_scheme);
+        if let Some((host, port_str)) = host_port.rsplit_once(':') {
+            let port = port_str.parse::<u16>().unwrap_or(8080);
+            (host.to_string(), port)
+        } else {
+            (host_port.to_string(), 8080)
+        }
+    }
+
+    /// Determine GPU offload layers (`-ngl`).
+    ///
+    /// Priority:
+    /// 1. `GHOSTLINK_LLAMA_NGL` env var
+    /// 2. Auto-detect from `GHOSTLINK_VRAM_GB` env var (set by launch scripts)
+    /// 3. `-1` — let llama-server decide (offload all layers it can)
+    fn get_ngl() -> i32 {
+        if let Ok(val) = std::env::var("GHOSTLINK_LLAMA_NGL") {
+            if let Ok(n) = val.trim().parse::<i32>() {
+                return n;
+            }
+        }
+        if let Ok(val) = std::env::var("GHOSTLINK_VRAM_GB") {
+            if let Ok(vram) = val.trim().parse::<f32>() {
+                return if vram >= 12.0 {
+                    40
+                } else if vram >= 8.0 {
+                    24
+                } else {
+                    99
+                };
+            }
+        }
+        -1
+    }
+
+    /// Determine thread count (`-t`).
+    ///
+    /// Priority:
+    /// 1. `GHOSTLINK_LLAMA_THREADS` env var
+    /// 2. `std::thread::available_parallelism()`
+    /// 3. `4` (safe fallback)
+    fn get_threads() -> usize {
+        if let Ok(val) = std::env::var("GHOSTLINK_LLAMA_THREADS") {
+            if let Ok(n) = val.trim().parse::<usize>() {
+                return n.max(1);
+            }
+        }
+        std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(4)
+            .max(1)
+    }
+
+    /// Check if llama-server is healthy
+    async fn check_llama_server_health(url: &str) -> bool {
+        let client = reqwest::Client::new();
+        client
+            .get(format!("{}/health", url.trim_end_matches('/')))
+            .timeout(Duration::from_secs(2))
+            .send()
+            .await
+            .map(|r| r.status().is_success())
+            .unwrap_or(false)
+    }
+
+    /// Wait for llama-server to become ready
+    async fn wait_for_llama_server_ready(url: &str, timeout_secs: u64) -> Result<(), String> {
+        let start = std::time::Instant::now();
+        let timeout = Duration::from_secs(timeout_secs);
+
+        while start.elapsed() < timeout {
+            if Self::check_llama_server_health(url).await {
+                return Ok(());
+            }
+            tokio_sleep(Duration::from_millis(500)).await;
+        }
+
+        Err(format!(
+            "llama-server did not become ready within {timeout_secs} seconds"
+        ))
+    }
+
     /// Load a model into llama-server by restarting it with the new model.
     /// llama-server loads models at startup and doesn't support runtime hot-swapping,
     /// so we must restart it with the new model path.
     pub fn load_model_into_slot(&self, model_path: &str) -> Result<(), String> {
         let normalized_path = model_path.replace('\\', "/");
-        eprintln!("[model-load] Preparing to load model: {}", normalized_path);
+        eprintln!("[model-load] Preparing to load model: {normalized_path}");
 
-        // In a real implementation, this would:
-        // 1. Kill the current llama-server process
-        // 2. Get llama-server binary path and launch flags from environment
-        // 3. Start llama-server with new model
-        // 4. Wait for it to be ready
-        // 5. Verify model is loaded
-        //
-        // For now, we just log a note since restarting llama-server from the backend
-        // would require careful process management and coordination with the launch script.
+        // Validate the model file exists before spawning
+        if !Path::new(model_path).exists() {
+            return Err(format!("model file not found: {normalized_path}"));
+        }
 
-        eprintln!("[model-load] NOTE: llama-server requires restart for model switching");
+        // Kill existing llama-server process
+        let handle = Self::get_process_handle();
+        if let Ok(mut guard) = handle.lock() {
+            if let Some(mut child) = guard.take() {
+                eprintln!(
+                    "[model-load] Stopping existing llama-server process (PID: {:?})",
+                    child.id()
+                );
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+        }
+
+        // Get binary and configuration
+        let bin = Self::get_llama_server_bin();
+        let url = Self::get_llama_server_url();
+        let (host, port) = Self::parse_host_port_from_url(&url);
+        let ngl = Self::get_ngl();
+        let threads = Self::get_threads();
+        let extra_args = Self::get_llama_server_args();
+
+        // Build the command:
+        //   llama-server -m <model> --host <host> --port <port> [-ngl <n>] [-t <n>] [extra...]
+        let mut cmd = Command::new(&bin);
+        cmd.arg("-m").arg(&normalized_path);
+        cmd.arg("--host").arg(&host);
+        cmd.arg("--port").arg(port.to_string());
+        if ngl >= 0 {
+            cmd.arg("-ngl").arg(ngl.to_string());
+        }
+        cmd.arg("-t").arg(threads.to_string());
+        for arg in &extra_args {
+            cmd.arg(arg);
+        }
+
+        // Set up process
+        cmd.stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .stdin(Stdio::null());
+
+        eprintln!("[model-load] Starting llama-server with model: {normalized_path}");
         eprintln!(
-            "[model-load] Current model: use 'tinyllama-1.1b-chat', 'gemma-4-E4B-it-Q4_K_M', etc."
+            "[model-load] Command: {} {}",
+            bin,
+            cmd.get_args()
+                .map(|a| a.to_string_lossy())
+                .collect::<Vec<_>>()
+                .join(" ")
         );
-        eprintln!("[model-load] Workaround: Manually restart llama-server with desired model");
 
+        // Spawn the process
+        let child = cmd
+            .spawn()
+            .map_err(|err| format!("failed to start llama-server: {err}"))?;
+
+        let pid = child.id();
+        eprintln!("[model-load] Started llama-server with PID: {pid}");
+
+        // Store the process handle
+        let handle = Self::get_process_handle();
+        if let Ok(mut guard) = handle.lock() {
+            *guard = Some(child);
+        }
+
+        // Drop the lock before the blocking health poll so other threads aren't stalled
+        drop(handle);
+
+        // Wait for server to be ready (using tokio runtime)
+        let rt = tokio::runtime::Runtime::new()
+            .map_err(|e| format!("failed to create async runtime: {e}"))?;
+
+        let ready = rt.block_on(Self::wait_for_llama_server_ready(&url, 60));
+        if let Err(ref _e) = ready {
+            let handle = Self::get_process_handle();
+            let locked = handle.lock();
+            if let Ok(mut guard) = locked {
+                if let Some(mut child) = guard.take() {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                }
+            }
+        }
+        ready?;
+
+        eprintln!("[model-load] Successfully loaded model: {normalized_path}");
         Ok(())
+    }
+
+    /// Unload the current model by stopping llama-server
+    pub fn unload_model(&self) -> Result<(), String> {
+        let handle = Self::get_process_handle();
+        if let Ok(mut guard) = handle.lock() {
+            if let Some(mut child) = guard.take() {
+                eprintln!(
+                    "[model-unload] Stopping llama-server process (PID: {:?})",
+                    child.id()
+                );
+                child
+                    .kill()
+                    .map_err(|e| format!("failed to kill llama-server: {e}"))?;
+                child
+                    .wait()
+                    .map_err(|e| format!("failed to wait for llama-server: {e}"))?;
+                eprintln!("[model-unload] llama-server stopped");
+            }
+        }
+        Ok(())
+    }
+
+    /// Check if a llama-server process is currently running
+    pub fn has_running_llama_server(&self) -> bool {
+        let handle = Self::get_process_handle();
+        let locked = handle.lock();
+        if let Ok(guard) = locked {
+            guard.as_ref().map(|c| c.id() > 0).unwrap_or(false)
+        } else {
+            false
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -63,6 +319,7 @@ impl NativeEngineClient {
         top_p: f32,
         top_k: usize,
         repeat_penalty: f32,
+        native_engine: &str,
     ) -> Result<NativeGeneration, String> {
         if model.trim().is_empty() {
             return Err("model cannot be empty".to_string());
@@ -72,8 +329,7 @@ impl NativeEngineClient {
         if cleaned_prompt.is_empty() {
             return Ok(NativeGeneration {
                 text: format!(
-                    "Native backend is ready for model '{}'. Provide a non-empty prompt for generation.",
-                    model
+                    "Native backend is ready for model '{model}'. Provide a non-empty prompt for generation."
                 ),
                 real_inference: false,
             });
@@ -81,15 +337,10 @@ impl NativeEngineClient {
 
         let max_tokens = max_tokens.clamp(16, 4096);
 
-        match std::env::var("GHOSTLINK_NATIVE_ENGINE")
-            .unwrap_or_else(|_| "simulated".to_string())
-            .trim()
-            .to_ascii_lowercase()
-            .as_str()
-        {
+        match native_engine.trim().to_ascii_lowercase().as_str() {
             "llama_server" | "llama-server" => {
                 let text = self.generate_with_llama_server(
-                    model, // Pass model name
+                    model,
                     cleaned_prompt,
                     max_tokens,
                     temperature,
@@ -127,8 +378,7 @@ impl NativeEngineClient {
 
         Ok(NativeGeneration {
             text: format!(
-                "[native:{}] generated response with token budget {}. Prompt preview: {}",
-                model, max_tokens, preview
+                "[native:{model}] generated response with token budget {max_tokens}. Prompt preview: {preview}"
             ),
             real_inference: false,
         })
@@ -157,7 +407,7 @@ impl NativeEngineClient {
             .arg("-st")
             .arg("--no-display-prompt")
             .output()
-            .map_err(|err| format!("failed to execute '{}': {}", bin, err))?;
+            .map_err(|err| format!("failed to execute '{bin}': {err}"))?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -195,10 +445,7 @@ impl NativeEngineClient {
         top_k: usize,
         repeat_penalty: f32,
     ) -> Result<String, String> {
-        let url = std::env::var("GHOSTLINK_LLAMA_SERVER_URL")
-            .ok()
-            .filter(|v| !v.trim().is_empty())
-            .unwrap_or_else(|| "http://127.0.0.1:8080/completion".to_string());
+        let url = Self::get_llama_server_url();
 
         let timeout_secs = std::env::var("GHOSTLINK_LLAMA_SERVER_TIMEOUT_SECS")
             .ok()
@@ -215,7 +462,7 @@ impl NativeEngineClient {
 
         // Try chat completion endpoint first (for models with chat templates)
         let chat_url = if let Some(base) = url.strip_suffix("/completion") {
-            format!("{}/v1/chat/completions", base)
+            format!("{base}/v1/chat/completions")
         } else {
             format!("{}/v1/chat/completions", url.trim_end_matches('/'))
         };
@@ -237,7 +484,7 @@ impl NativeEngineClient {
         let client = reqwest::blocking::Client::builder()
             .timeout(Duration::from_secs(timeout_secs))
             .build()
-            .map_err(|e| format!("failed to create HTTP client: {}", e))?;
+            .map_err(|e| format!("failed to create HTTP client: {e}"))?;
 
         // Try chat endpoint first
         let chat_response = client
@@ -250,7 +497,7 @@ impl NativeEngineClient {
             if response.status().is_success() {
                 let parsed: serde_json::Value = response
                     .json()
-                    .map_err(|e| format!("invalid llama_server JSON response: {}", e))?;
+                    .map_err(|e| format!("invalid llama_server JSON response: {e}"))?;
 
                 if let Some(content) = parsed.get("content").and_then(|v| v.as_str()) {
                     let text = content.trim();
@@ -280,16 +527,13 @@ impl NativeEngineClient {
 
         // Fall back to completion endpoint for models without chat template
         let completion_url = if let Some(base) = url.strip_suffix("/completion") {
-            format!("{}/completion", base)
+            format!("{base}/completion")
         } else {
             url
         };
 
         // Format prompt for completion endpoint: system + user
-        let completion_prompt = format!(
-            "{}\n\nUser: {}\n\nAssistant:",
-            system_prompt, cleaned_prompt
-        );
+        let completion_prompt = format!("{system_prompt}\n\nUser: {cleaned_prompt}\n\nAssistant:");
 
         let completion_payload = serde_json::json!({
             "model": model,
@@ -307,20 +551,19 @@ impl NativeEngineClient {
             .header("Content-Type", "application/json")
             .json(&completion_payload)
             .send()
-            .map_err(|e| format!("llama_server request failed: {}", e))?;
+            .map_err(|e| format!("llama_server request failed: {e}"))?;
 
         if !response.status().is_success() {
             let status = response.status();
             let error_text = response.text().unwrap_or_default();
             return Err(format!(
-                "llama_server request failed with status {}: {}",
-                status, error_text
+                "llama_server request failed with status {status}: {error_text}"
             ));
         }
 
         let parsed: serde_json::Value = response
             .json()
-            .map_err(|e| format!("invalid llama_server JSON response: {}", e))?;
+            .map_err(|e| format!("invalid llama_server JSON response: {e}"))?;
 
         if let Some(content) = parsed.get("content").and_then(|v| v.as_str()) {
             let text = content.trim();
@@ -409,6 +652,7 @@ mod tests {
                 0.9,
                 40,
                 1.1,
+                "simulated",
             )
             .expect("native generation should succeed");
         assert!(out.text.contains("[native:ghostlink-30b-v1]"));
@@ -424,7 +668,16 @@ mod tests {
         std::env::set_var("GHOSTLINK_NATIVE_ENGINE", "llama_cpp");
         std::env::remove_var("GHOSTLINK_MODEL_PATH");
         let err = engine
-            .generate("ghostlink-30b-v1", "hello", 32, 0.7, 0.9, 40, 1.1)
+            .generate(
+                "ghostlink-30b-v1",
+                "hello",
+                32,
+                0.7,
+                0.9,
+                40,
+                1.1,
+                "llama_cpp",
+            )
             .expect_err("llama mode without model path should fail");
         assert!(err.contains("GHOSTLINK_MODEL_PATH"));
         std::env::remove_var("GHOSTLINK_NATIVE_ENGINE");
