@@ -1826,6 +1826,33 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         env_default_usize("GHOSTLINK_CHAT_EXEC_TOKENS", default_tokens).clamp(16, 4096)
     }
 
+    async fn run_native_generation(
+        native_engine_client: native_engine::NativeEngineClient,
+        model: String,
+        prompt: String,
+        max_tokens: usize,
+        temperature: f32,
+        top_p: f32,
+        top_k: usize,
+        repeat_penalty: f32,
+        native_engine: String,
+    ) -> Result<native_engine::NativeGeneration, String> {
+        tokio::task::spawn_blocking(move || {
+            native_engine_client.generate(
+                &model,
+                &prompt,
+                max_tokens,
+                temperature,
+                top_p,
+                top_k,
+                repeat_penalty,
+                &native_engine,
+            )
+        })
+        .await
+        .map_err(|err| format!("native generation task failed: {}", err))?
+    }
+
     async fn handle_chat_completions(
         State(state): State<Arc<Mutex<BackendState>>>,
         Json(req): Json<ChatCompletionRequest>,
@@ -1940,43 +1967,30 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         }
 
         let (response_text, real_inference, backend_used) = match inference_backend {
-            InferenceBackend::Ollama => {
-                let ollama_temp = temp;
-                let ollama_top_p = top_p;
-                let ollama_top_k = top_k;
-                let ollama_penalty = penalty;
-                let ollama_max_tokens = max_tokens;
-                let ollama_model = model.clone();
-
-                match ollama_client
-                    .generate(
-                        &ollama_model,
-                        &prompt,
-                        ollama_temp,
-                        ollama_top_p,
-                        ollama_top_k,
-                        ollama_penalty,
-                        ollama_max_tokens,
-                    )
-                    .await
-                {
-                    Ok(text) => (
-                        text,
-                        true,
-                        InferenceBackend::Ollama.as_str(),
-                    ),
-                    Err(err) => (
-                        format!(
-                            "Ollama generation failed for model '{}': {}",
-                            ollama_model, err
-                        ),
-                        false,
-                        InferenceBackend::Ollama.as_str(),
-                    ),
-                }
-            }
-InferenceBackend::Native => match native_engine_client
-            .generate(&model, &prompt, exec_tokens, 0.7, 0.9, 40, 1.1, &settings.native_engine)
+            InferenceBackend::Ollama => (
+                format!(
+                    "Ghostlink '{}' backend accepted completion request #{} for model '{}'. Prompt length: {} chars.{}",
+                    InferenceBackend::Ollama.as_str(),
+                    chat_req_id,
+                    model,
+                    prompt.len(),
+                    execution_info
+                ),
+                false,
+                InferenceBackend::Ollama.as_str(),
+            ),
+            InferenceBackend::Native => match run_native_generation(
+                native_engine_client,
+                model.clone(),
+                prompt.clone(),
+                exec_tokens,
+                0.7,
+                0.9,
+                40,
+                1.1,
+                settings.native_engine.clone(),
+            )
+            .await
             {
                 Ok(gen) => (
                     gen.text,
@@ -3310,11 +3324,19 @@ InferenceBackend::Native => match native_engine_client
                 }
             }
             InferenceBackend::Native => {
-                match native_engine_client.generate(
-                    &current_model, &req.message, exec_tokens,
-                    temp, top_p, top_k, penalty,
-                    &settings.native_engine,
-                ) {
+                match run_native_generation(
+                    native_engine_client,
+                    current_model.clone(),
+                    req.message.clone(),
+                    exec_tokens,
+                    temp,
+                    top_p,
+                    top_k,
+                    penalty,
+                    settings.native_engine.clone(),
+                )
+                .await
+                {
                     Ok(gen) => (
                         gen.text,
                         gen.real_inference,
