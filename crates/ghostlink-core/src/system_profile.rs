@@ -500,7 +500,9 @@ fn detect_physical_cores() -> Option<usize> {
                                 * std::thread::available_parallelism()
                                     .map(|n| n.get())
                                     .unwrap_or(1)
-                                / logical_cores_fallback(),
+                                / std::thread::available_parallelism()
+                                    .map(usize::from)
+                                    .unwrap_or(1),
                         );
                     }
                 }
@@ -509,12 +511,6 @@ fn detect_physical_cores() -> Option<usize> {
     }
 
     None
-}
-
-fn logical_cores_fallback() -> usize {
-    std::thread::available_parallelism()
-        .map(usize::from)
-        .unwrap_or(1)
 }
 
 // ---------------------------------------------------------------------------
