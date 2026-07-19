@@ -307,18 +307,18 @@ Ghost-Link demonstrates elite-tier throughput scaling, particularly under heavy 
 
 #### 1. Superior TCP Stack Efficiency
 In standard commercial software architectures, network serialization overhead frequently drops TCP throughput down to 20–30% of raw in-memory performance. Ghost-Link retains roughly **44% to 52%** of its raw `inmem` speed over the network. This efficiency highlights the impact of:
-* **Zero-copy memory mapping** that minimizes user-space to kernel-space context switching.
-* **Minimized frame serialization tax**, avoiding heavy telemetry layers that plague typical enterprise engines.
+- **Zero-copy memory mapping** that minimizes user-space to kernel-space context switching.
+- **Minimized frame serialization tax**, avoiding heavy telemetry layers that plague typical enterprise engines.
 
 #### 2. High-Load Parallel Scaling
 Rather than hitting a resource wall or experiencing lock contention under intense workloads, Ghost-Link accelerates as data density increases. During the max-stress runs (`2048 tokens`, `batch 256`), throughput reached its absolute peaks:
-* **In-Memory Peak:** `673,396 t/s`
-* **TCP Network Peak:** `353,255 t/s`
+- **In-Memory Peak:** `673,396 t/s`
+- **TCP Network Peak:** `353,255 t/s`
 
 #### 3. Jitter Elimination Under Chaos Conditions
 During the injection of simulated chaos routines, the performance delta between baseline trends and chaos runs stayed negligible:
-* **Baseline Trends vs. Chaos `inmem-512`:** Maintained a stable `551,313 t/s` average across 4 consecutive disruptive intervals.
-* This proves Ghost-Link's async scheduler handles packet bursts and thread preemption without incurring micro-stuttering or cascading tail-latency spikes.
+- **Baseline Trends vs. Chaos `inmem-512`:** Maintained a stable `551,313 t/s` average across 4 consecutive disruptive intervals.
+- This proves Ghost-Link's async scheduler handles packet bursts and thread preemption without incurring micro-stuttering or cascading tail-latency spikes.
 
 ---
 *Generated automatically from the Full Spectrum Benchmark run on Sun Jul 19 08:43:09 AM PDT 2026.*
