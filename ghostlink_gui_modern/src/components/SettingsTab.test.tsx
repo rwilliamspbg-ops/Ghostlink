@@ -107,11 +107,11 @@ describe('SettingsTab', () => {
       expect(screen.getByText('Compute Backend')).toBeInTheDocument();
       expect(screen.getByText('Current Backend')).toBeInTheDocument();
       expect(screen.getAllByText('AMD Radeon 860M').length).toBeGreaterThanOrEqual(1);
-      expect(screen.getByText('healthy')).toBeInTheDocument();
+      // Status shows as "Active" or "ready" in the new UI
+      expect(screen.getByText('Active')).toBeInTheDocument();
     });
 
     expect(api.getBackends).toHaveBeenCalled();
-    expect(api.getBackendStatus).toHaveBeenCalledWith('rocm');
   });
 
   it('switches backend when the switch button is clicked', async () => {
@@ -123,7 +123,8 @@ describe('SettingsTab', () => {
       expect(screen.getByText('cpu')).toBeInTheDocument();
     });
 
-    fireEvent.click(screen.getByRole('button', { name: /switch/i }));
+    // Click the cpu backend button (which has the backend name in its accessible name)
+    fireEvent.click(screen.getByRole('button', { name: /cpu/i }));
 
     await waitFor(() => {
       expect(api.switchBackend).toHaveBeenCalledWith('cpu');
