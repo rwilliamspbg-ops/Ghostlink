@@ -653,7 +653,7 @@ fn platform_detect_available_memory_gb() -> Option<f32> {
         let mut page_size = 16384.0f64;
         for line in text.lines() {
             if let Some(val) = line.strip_prefix("Mach Virtual Memory Statistics: (page size of ") {
-                if let Some(size) = val.trim_end_matches(" bytes)").parse::<f64>().ok() {
+                if let Ok(size) = val.trim_end_matches(" bytes)").parse::<f64>() {
                     page_size = size;
                 }
             }
