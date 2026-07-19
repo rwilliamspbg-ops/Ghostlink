@@ -284,7 +284,7 @@ impl BackendRegistry {
     #[cfg(target_os = "macos")]
     fn detect_metal() -> Option<BackendInfo> {
         let output = Command::new("system_profiler")
-            .args(&["SPDisplaysDataType"])
+            .args(["SPDisplaysDataType"])
             .output()
             .ok()?;
 
@@ -352,7 +352,7 @@ impl BackendRegistry {
         #[cfg(target_os = "macos")]
         {
             let output = Command::new("sysctl")
-                .args(&["-n", "machdep.cpu.brand_string"])
+                .args(["-n", "machdep.cpu.brand_string"])
                 .output()
                 .ok();
 
