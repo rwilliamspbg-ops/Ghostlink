@@ -28,6 +28,7 @@
 //! ```
 
 pub mod accelerator;
+pub mod autotune;
 pub mod cluster;
 pub mod dashboard;
 pub mod discovery;
@@ -45,6 +46,7 @@ pub mod xdp;
 
 // Re-export common types for convenience
 pub use accelerator::ExecutionBackend;
+pub use autotune::AutoTuner;
 pub use cluster::{ClusterState, NodeMetrics, NodeStatus};
 pub use discovery::{broadcast_and_collect, UdpDiscoveryConfig, DEFAULT_DISCOVERY_PORT};
 pub use host::{

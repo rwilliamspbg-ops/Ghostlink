@@ -20,8 +20,9 @@ static FULL_PROBE_CACHE: OnceLock<Mutex<Option<CachedProbeEntry>>> = OnceLock::n
 static FAST_PROFILE_CACHE: OnceLock<Mutex<Option<CachedRuntimeProfileEntry>>> = OnceLock::new();
 
 /// Selected acceleration path for the current host.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum AccelerationMode {
+    #[default]
     /// GPU-backed execution is available.
     Gpu,
     /// AVX-512 optimized CPU path is preferred.
@@ -35,7 +36,7 @@ pub enum AccelerationMode {
 }
 
 /// Backend technology hint for the detected accelerator path.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum GpuBackend {
     Cuda,
     Rocm,

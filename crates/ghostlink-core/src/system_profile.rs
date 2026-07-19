@@ -22,7 +22,7 @@ use crate::protocol::NodeResources;
 // ---------------------------------------------------------------------------
 
 /// CPU topology and feature-set information.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Hash)]
 pub struct CpuInfo {
     /// Human-readable brand string (e.g. "Intel(R) Core(TM) i9-14900K").
     pub brand: String,
@@ -37,7 +37,7 @@ pub struct CpuInfo {
 }
 
 /// CPU SIMD / accelerator features.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Hash)]
 pub struct CpuFeatures {
     pub avx2: bool,
     pub avx_512: bool,
@@ -82,7 +82,7 @@ pub struct NpuInfo {
 }
 
 /// Network interface information relevant to cluster tuning.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Hash)]
 pub struct NetworkInfo {
     pub xdp_supported: bool,
     pub interfaces: Vec<String>,
@@ -93,7 +93,7 @@ pub struct NetworkInfo {
 // ---------------------------------------------------------------------------
 
 /// Complete, platform-agnostic description of the local host.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct SystemProfile {
     pub cpu: CpuInfo,
     pub memory: MemoryInfo,
