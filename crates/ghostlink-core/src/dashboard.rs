@@ -62,9 +62,8 @@ impl DashboardState {
         };
 
         if active_count == 0 && total_nodes > 0 {
-            self.status_message = format!(
-                "No active nodes | {quantization_label} | {health_label}"
-            );
+            self.status_message =
+                format!("No active nodes | {quantization_label} | {health_label}");
         } else if active_count < total_nodes {
             self.status_message = format!(
                 "{active_count} of {total_nodes} nodes active | {quantization_label} | {health_label}"

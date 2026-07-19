@@ -229,9 +229,7 @@ impl NativeEngineClient {
             .stderr(Stdio::piped())
             .stdin(Stdio::null());
 
-        eprintln!(
-            "[model-load] Starting llama-server with model: {normalized_path}"
-        );
+        eprintln!("[model-load] Starting llama-server with model: {normalized_path}");
         eprintln!(
             "[model-load] Command: {} {}",
             bin,
@@ -275,9 +273,7 @@ impl NativeEngineClient {
         }
         ready?;
 
-        eprintln!(
-            "[model-load] Successfully loaded model: {normalized_path}"
-        );
+        eprintln!("[model-load] Successfully loaded model: {normalized_path}");
         Ok(())
     }
 
@@ -537,9 +533,7 @@ impl NativeEngineClient {
         };
 
         // Format prompt for completion endpoint: system + user
-        let completion_prompt = format!(
-            "{system_prompt}\n\nUser: {cleaned_prompt}\n\nAssistant:"
-        );
+        let completion_prompt = format!("{system_prompt}\n\nUser: {cleaned_prompt}\n\nAssistant:");
 
         let completion_payload = serde_json::json!({
             "model": model,

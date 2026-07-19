@@ -459,9 +459,7 @@ impl MigrationPlanner {
         ));
         steps.push(format!("VERIFY: Integrity check on {target_node}"));
         steps.push(format!("COMMIT: Switch routing to {target_node}"));
-        steps.push(format!(
-            "CLEANUP: Free VRAM on source node {source_node}"
-        ));
+        steps.push(format!("CLEANUP: Free VRAM on source node {source_node}"));
         steps
     }
 }

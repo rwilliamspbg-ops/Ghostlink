@@ -1025,9 +1025,7 @@ fn autotune_tcp_transport_config(
         if let Some(cached_inflight) = load_cached_autotune_inflight(&cache_key, &candidates) {
             let mut cached_cfg = base.clone();
             cached_cfg.max_inflight_batches = cached_inflight;
-            println!(
-                "TCP autotune reused cached max_inflight={cached_inflight} (key={cache_key})"
-            );
+            println!("TCP autotune reused cached max_inflight={cached_inflight} (key={cache_key})");
             return Ok(cached_cfg);
         }
     }
@@ -1883,14 +1881,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         let request_tracker = active_runtime_switcher().request_tracker().clone();
         request_tracker.increment().await;
 
-        let (
-            model,
-            cluster,
-            chat_req_id,
-            inference_backend,
-            native_engine_client,
-            settings,
-        ) = {
+        let (model, cluster, chat_req_id, inference_backend, native_engine_client, settings) = {
             let mut backend = lock_state(&state);
             backend.chat_requests = backend.chat_requests.saturating_add(1);
             let model = if req.model.trim().is_empty() {
@@ -2107,10 +2098,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             return Err(format!("Model '{model_id}' not found on HuggingFace"));
         }
 
-        let data: serde_json::Value = resp
-            .json()
-            .await
-            .map_err(|e| format!("Parse error: {e}"))?;
+        let data: serde_json::Value = resp.json().await.map_err(|e| format!("Parse error: {e}"))?;
 
         let gguf_files: Vec<String> = data
             .get("siblings")
@@ -2129,9 +2117,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         }
 
         let filename = &gguf_files[0];
-        let file_url = format!(
-            "https://huggingface.co/{model_id}/resolve/main/{filename}"
-        );
+        let file_url = format!("https://huggingface.co/{model_id}/resolve/main/{filename}");
         let dest_path = models_dir.join(filename);
 
         if dest_path.exists() {
@@ -3205,9 +3191,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                 "native" => InferenceBackend::Native,
                 _ => InferenceBackend::Ollama,
             };
-            eprintln!(
-                "[DEBUG] Selected inference_backend = {inference_backend:?}"
-            );
+            eprintln!("[DEBUG] Selected inference_backend = {inference_backend:?}");
             (
                 backend.current_model.clone(),
                 Arc::clone(&backend.cluster),
@@ -3937,9 +3921,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         let models_dir = &settings.models_dir;
         if !models_dir.is_empty() {
             fs::create_dir_all(models_dir).unwrap_or_else(|e| {
-                eprintln!(
-                    "Warning: could not create models directory '{models_dir}': {e}"
-                );
+                eprintln!("Warning: could not create models directory '{models_dir}': {e}");
             });
         }
     }
@@ -4513,9 +4495,7 @@ fn print_cluster_start(node_count: usize, base_port: u16) -> Result<()> {
             .env("GHOSTLINK_DISCOVERY_TIMEOUT_MS", "2500")
             .spawn()
             .map_err(|err| {
-                anyhow::anyhow!(
-                    "failed to spawn listener {node_id} at {listen_addr}: {err}"
-                )
+                anyhow::anyhow!("failed to spawn listener {node_id} at {listen_addr}: {err}")
             })?;
         listeners.push((node_id, listen_addr, child));
     }
@@ -4555,14 +4535,10 @@ fn print_cluster_start(node_count: usize, base_port: u16) -> Result<()> {
 
     for (node_id, listen_addr, mut child) in listeners {
         let status = child.wait().map_err(|err| {
-            anyhow::anyhow!(
-                "failed waiting for listener {node_id} ({listen_addr}) to exit: {err}"
-            )
+            anyhow::anyhow!("failed waiting for listener {node_id} ({listen_addr}) to exit: {err}")
         })?;
         if !status.success() {
-            anyhow::bail!(
-                "listener {node_id} ({listen_addr}) exited with status {status}"
-            );
+            anyhow::bail!("listener {node_id} ({listen_addr}) exited with status {status}");
         }
     }
 
@@ -5389,9 +5365,7 @@ fn print_doctor_report(options: &DoctorOptions) -> Result<()> {
         .filter(|check| check.status == DoctorStatus::Fail)
         .count();
 
-    println!(
-        "Summary: {pass_count} pass, {warn_count} warn, {fail_count} fail"
-    );
+    println!("Summary: {pass_count} pass, {warn_count} warn, {fail_count} fail");
 
     if let Some(path) = options.json_out.as_deref() {
         write_doctor_report_json(path, &checks, pass_count, warn_count, fail_count)?;
@@ -5415,9 +5389,7 @@ Review areas for accuracy:"
     println!("- Runtime SLO/canary/perf-drift validators and baseline presence");
 
     if options.strict && fail_count > 0 {
-        anyhow::bail!(
-            "doctor strict mode failed with {fail_count} failing checks"
-        );
+        anyhow::bail!("doctor strict mode failed with {fail_count} failing checks");
     }
 
     Ok(())
@@ -5466,9 +5438,7 @@ fn launch_mohawk_gui(args: &[String]) -> Result<()> {
         .env("GHOSTLINK_GUI_BASE_URL", &backend_url)
         .args(&forwarded_args)
         .status()
-        .map_err(|err| {
-            anyhow::anyhow!("failed to launch Ghostlink GUI with {python}: {err}")
-        })?;
+        .map_err(|err| anyhow::anyhow!("failed to launch Ghostlink GUI with {python}: {err}"))?;
 
     if let Some(child) = managed_backend.as_mut() {
         let _ = child.kill();
@@ -5586,9 +5556,7 @@ fn maybe_spawn_managed_gui_backend(
         return Ok(None);
     }
 
-    println!(
-        "No backend detected at {host}:{port}; starting managed Ghostlink API backend..."
-    );
+    println!("No backend detected at {host}:{port}; starting managed Ghostlink API backend...");
 
     let executable = std::env::current_exe().map_err(|err| {
         anyhow::anyhow!("failed to resolve current executable for auto-backend launch: {err}")
