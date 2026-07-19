@@ -1562,8 +1562,20 @@ impl ToolDispatcher {
     }
 }
 
+fn models_path() -> PathBuf {
+    std::env::var("GHOSTLINK_MODELS_PATH")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("models.json"))
+}
+
+fn settings_path() -> PathBuf {
+    std::env::var("GHOSTLINK_SETTINGS_PATH")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("settings.json"))
+}
+
 fn load_persistent_models() -> Vec<ModelRecord> {
-    let path = Path::new("models.json");
+    let path = models_path();
     if path.exists() {
         if let Ok(data) = fs::read_to_string(path) {
             if let Ok(models) = serde_json::from_str::<Vec<ModelRecord>>(&data) {
@@ -1609,12 +1621,12 @@ fn load_persistent_models() -> Vec<ModelRecord> {
 
 fn save_persistent_models(models: &[ModelRecord]) {
     if let Ok(data) = serde_json::to_string_pretty(models) {
-        let _ = fs::write("models.json", data);
+        let _ = fs::write(models_path(), data);
     }
 }
 
 fn load_settings() -> RuntimeSettings {
-    let path = Path::new("settings.json");
+    let path = settings_path();
     if path.exists() {
         if let Ok(data) = fs::read_to_string(path) {
             if let Ok(settings) = serde_json::from_str::<RuntimeSettings>(&data) {
@@ -1627,7 +1639,7 @@ fn load_settings() -> RuntimeSettings {
 
 fn save_settings(settings: &RuntimeSettings) {
     if let Ok(data) = serde_json::to_string_pretty(settings) {
-        let _ = fs::write("settings.json", data);
+        let _ = fs::write(settings_path(), data);
     }
 }
 
