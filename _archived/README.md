@@ -8,36 +8,39 @@ This directory contains outdated and legacy files that are no longer used.
 
 ## What's Here
 
-### Deprecated GUI
-- `ghostlink_gui_tkinter.py` - Old Tkinter GUI (REPLACED by modern web GUI)
+### `legacy-scripts/`
+One-shot fix scripts, deprecated launchers, and old entry points:
+- `fix_backend_registry.py`, `fix_rocm_detection.py` — One-time Rust patchers (patches applied)
+- `ghostlink_gui_tkinter.py` — Old Tkinter GUI (REPLACED by modern web GUI)
+- `launch.bat`, `launch-splash.bat`, `launch-splash.sh`, `launch-fast.sh` — Deprecated launchers
+- `OPEN_PR.sh` — Historical PR creation instructions
 
-### Legacy Documentation
-- `MIGRATION.md` - Tkinter to modern GUI migration guide
-- `SETUP_GUIDE.md` - Old setup instructions
-- Other legacy guides
+### `legacy-root-docs/`
+Session completion summaries, fix reports, and status tracking that have served their purpose:
+- `PHASES_*_COMPLETE.md` — Phase completion artifacts (sessions 1-5)
+- `FINAL_*.md`, `FIX_SUMMARY.md`, `COMPLETION_SUMMARY.md` — Historic status reports
+- `API_404_FIX_FINAL.md`, `BACKEND_API_FIX.md`, etc. — One-time fix documentation
+- Various PR, test, and delivery summaries
 
 ---
 
 ## Why Archived?
 
-1. **Tkinter GUI** - Replaced by modern React web interface
-2. **Legacy Docs** - Superseded by new documentation
-3. **Old Scripts** - Auto-launch scripts now in root
+1. **Legacy Scripts** — Superseded by `launch-complete.sh` / `launch-complete.bat`
+2. **Legacy Docs** — Superseded by `README.md`, `CHANGELOG.md`, `docs/`
+3. **One-shot Fixes** — Patches were applied; scripts/docs kept only for reference
+4. **Session Artifacts** — Phase completion summaries are no longer needed day-to-day
 
 ---
 
 ## Current Setup
 
 Use instead:
-- **Modern GUI**: `ghostlink_gui_modern/`
-- **Launch**: `launch-complete.sh` or `launch-complete.bat`
-- **Docs**: `README.md`, `STARTUP_GUIDE.md`, `CHANGELOG.md`
-
----
-
-## If You Need Legacy Info
-
-Tkinter GUI migration details: See `MIGRATION.md` in this folder
+- **Launchers**: `launch-complete.sh` (Linux), `launch-complete.bat` / `launch-ollama.bat` (Windows)
+- **Backend**: `cargo run -p ghost-link -- serve` — or use the launchers above
+- **GUI**: `ghostlink_gui_modern/` (React/TypeScript)
+- **Docs**: `README.md`, `CHANGELOG.md`, `docs/`
+- **CI/Validation**: `scripts/` test harnesses
 
 ---
 

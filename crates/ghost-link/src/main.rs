@@ -121,13 +121,19 @@ enum InferenceBackend {
 }
 
 impl InferenceBackend {
+    #[allow(dead_code)]
     fn from_env() -> Self {
-        match std::env::var("GHOSTLINK_INFERENCE_BACKEND")
-            .unwrap_or_else(|_| "ollama".to_string())
-            .trim()
-            .to_ascii_lowercase()
-            .as_str()
-        {
+        Self::parse(
+            &std::env::var("GHOSTLINK_INFERENCE_BACKEND").unwrap_or_else(|_| "ollama".to_string()),
+        )
+    }
+
+    /// Parse a backend name the same way regardless of whether it came from
+    /// an env var (startup) or a live settings update (runtime). This is the
+    /// single place backend-name strings get interpreted so the two paths
+    /// can't silently disagree.
+    fn parse(raw: &str) -> Self {
+        match raw.trim().to_ascii_lowercase().as_str() {
             "native" | "fabric" => Self::Native,
             _ => Self::Ollama,
         }
@@ -1632,6 +1638,16 @@ struct ChatCompletionRequest {
     messages: Vec<serde_json::Value>,
     #[allow(dead_code)]
     stream: Option<bool>,
+    #[allow(dead_code)]
+    temperature: Option<f32>,
+    #[allow(dead_code)]
+    top_p: Option<f32>,
+    #[allow(dead_code)]
+    top_k: Option<usize>,
+    #[allow(dead_code)]
+    penalty: Option<f32>,
+    #[allow(dead_code)]
+    max_tokens: Option<usize>,
 }
 #[derive(Debug, Deserialize)]
 struct GuiChatRequest {
@@ -1816,7 +1832,21 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         let request_tracker = active_runtime_switcher().request_tracker().clone();
         request_tracker.increment().await;
 
-        let (model, cluster, chat_req_id, inference_backend, native_engine_client) = {
+        let temp = req.temperature.unwrap_or(0.7);
+        let top_p = req.top_p.unwrap_or(0.9);
+        let top_k = req.top_k.unwrap_or(40);
+        let penalty = req.penalty.unwrap_or(1.1);
+        let max_tokens = req.max_tokens.unwrap_or(1024).clamp(16, 4096);
+
+        let (
+            model,
+            cluster,
+            chat_req_id,
+            inference_backend,
+            native_engine_client,
+            ollama_client,
+            settings,
+        ) = {
             let mut backend = lock_state(&state);
             backend.chat_requests = backend.chat_requests.saturating_add(1);
             let model = if req.model.trim().is_empty() {
@@ -1830,6 +1860,8 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                 backend.chat_requests,
                 backend.inference_backend,
                 backend.native_engine_client.clone(),
+                backend.ollama_client.clone(),
+                backend.settings.clone(),
             )
         };
 
@@ -1896,20 +1928,43 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         }
 
         let (response_text, real_inference, backend_used) = match inference_backend {
-            InferenceBackend::Ollama => (
-                format!(
-                    "Ghostlink '{}' backend accepted completion request #{} for model '{}'. Prompt length: {} chars.{}",
-                    InferenceBackend::Ollama.as_str(),
-                    chat_req_id,
-                    model,
-                    prompt.len(),
-                    execution_info
-                ),
-                false,
-                InferenceBackend::Ollama.as_str(),
-            ),
-            InferenceBackend::Native => match native_engine_client
-                .generate(&model, &prompt, exec_tokens, 0.7, 0.9, 40, 1.1)
+            InferenceBackend::Ollama => {
+                let ollama_temp = temp;
+                let ollama_top_p = top_p;
+                let ollama_top_k = top_k;
+                let ollama_penalty = penalty;
+                let ollama_max_tokens = max_tokens;
+                let ollama_model = model.clone();
+
+                match ollama_client
+                    .generate(
+                        &ollama_model,
+                        &prompt,
+                        ollama_temp,
+                        ollama_top_p,
+                        ollama_top_k,
+                        ollama_penalty,
+                        ollama_max_tokens,
+                    )
+                    .await
+                {
+                    Ok(text) => (
+                        text,
+                        true,
+                        InferenceBackend::Ollama.as_str(),
+                    ),
+                    Err(err) => (
+                        format!(
+                            "Ollama generation failed for model '{}': {}",
+                            ollama_model, err
+                        ),
+                        false,
+                        InferenceBackend::Ollama.as_str(),
+                    ),
+                }
+            }
+InferenceBackend::Native => match native_engine_client
+            .generate(&model, &prompt, exec_tokens, 0.7, 0.9, 40, 1.1, &settings.native_engine)
             {
                 Ok(gen) => (
                     gen.text,
@@ -2255,43 +2310,65 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             requested_model.clone()
         };
 
-        let mut backend = lock_state(&state);
+        // Extract model info and settings under the lock, then drop it before
+        // the potentially-long blocking load_model_into_slot call.
+        let (native_engine_client, local_path, native_engine) = {
+            let mut backend = lock_state(&state);
 
-        // Merge local scans so we can find local_path for locally-downloaded models
-        let local = scan_local_models_dir(&backend.settings.models_dir);
-        for l in &local {
-            if !backend.models.iter().any(|m| m.name == l.name) {
-                backend.models.push(l.clone());
-            }
-        }
-
-        let local_path = backend
-            .models
-            .iter()
-            .find(|m| m.name == selected_model)
-            .and_then(|m| {
-                if m.local_path.is_empty() {
-                    None
-                } else {
-                    Some(m.local_path.clone())
+            // Merge local scans so we can find local_path for locally-downloaded models
+            let local = scan_local_models_dir(&backend.settings.models_dir);
+            for l in &local {
+                if !backend.models.iter().any(|m| m.name == l.name) {
+                    backend.models.push(l.clone());
                 }
-            });
+            }
 
+            let local_path = backend
+                .models
+                .iter()
+                .find(|m| m.name == selected_model)
+                .and_then(|m| {
+                    if m.local_path.is_empty() {
+                        None
+                    } else {
+                        Some(m.local_path.clone())
+                    }
+                });
+
+            // Save the selected model path to settings
+            if let Some(ref path) = local_path {
+                backend.settings.model_path = path.clone();
+                save_settings(&backend.settings);
+            }
+
+            (
+                backend.native_engine_client.clone(),
+                local_path,
+                backend.settings.native_engine.clone(),
+            )
+        }; // <-- state lock dropped here
+
+        // If using llama_server native engine, load the model into llama-server
+        // Run on spawn_blocking so we don't stall the async runtime for up to 60s.
         if let Some(path) = local_path {
-            backend.settings.model_path = path.clone();
-            save_settings(&backend.settings);
+            if native_engine == "llama_server" {
+                let result = tokio::task::spawn_blocking(move || {
+                    native_engine_client.load_model_into_slot(&path)
+                })
+                .await
+                .map_err(|e| format!("task join error: {}", e))
+                .and_then(|r| r);
 
-            // If using llama_server native engine, load the model into llama-server
-            if backend.settings.native_engine == "llama_server" {
-                if let Err(e) = backend.native_engine_client.load_model_into_slot(&path) {
-                    eprintln!(
-                        "Warning: failed to load model into llama-server slot: {}",
-                        e
-                    );
+                if let Err(e) = result {
+                    return Json(serde_json::json!({
+                        "error": format!("failed to load model into llama-server: {}", e),
+                    }));
                 }
             }
         }
 
+        // Re-acquire lock to update model statuses
+        let mut backend = lock_state(&state);
         for m in &mut backend.models {
             if m.status == "Loaded" {
                 m.status = "Ready".to_string();
@@ -2433,12 +2510,14 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             return Json(serde_json::json!({ "error": "model cannot be empty" }));
         }
 
-        let (inference_backend, ollama_client, ollama_available) = {
+        let (inference_backend, ollama_client, ollama_available, native_engine_client, settings) = {
             let backend = lock_state(&state);
             (
                 backend.inference_backend,
                 backend.ollama_client.clone(),
                 Arc::clone(&backend.ollama_available),
+                backend.native_engine_client.clone(),
+                backend.settings.clone(),
             )
         };
 
@@ -2450,6 +2529,13 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             }
             let mut available_flag = ollama_available.lock().await;
             *available_flag = true;
+        } else if settings.native_engine == "llama_server" {
+            // For llama_server, unload means stopping the llama-server process
+            if let Err(e) = native_engine_client.unload_model() {
+                return Json(serde_json::json!({
+                    "error": format!("failed to unload model from llama-server: {}", e),
+                }));
+            }
         }
 
         let mut backend = lock_state(&state);
@@ -2568,14 +2654,39 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         State(state): State<Arc<Mutex<BackendState>>>,
     ) -> Json<serde_json::Value> {
         let backend = lock_state(&state);
+        let cluster = Arc::clone(&backend.cluster);
+        let total_vram = cluster.total_vram_gb();
+        let nodes = cluster.nodes();
+        let mut total_latency = 0.0;
+        let mut total_throughput = 0.0;
+        let mut node_count = 0;
+        for node in nodes {
+            if let Some(metrics) = cluster.get_metrics(&node.id) {
+                total_latency += metrics.avg_latency_us / 1000.0; // Convert us to ms
+                total_throughput += metrics.throughput_gbps * 1000.0; // Convert GB/s to MB/s
+                node_count += 1;
+            }
+        }
+        let avg_latency = if node_count > 0 {
+            total_latency / node_count as f32
+        } else {
+            backend.last_latency_ms
+        };
+        let avg_throughput = if node_count > 0 {
+            total_throughput / node_count as f32
+        } else {
+            0.0
+        };
         Json(serde_json::json!({
             "metrics": {
-                "throughput": 125.4,
-                "cpu": 45.2,
-                "memory": 62.8,
-                "gpu": 88.5,
-                "latency_p50": backend.last_latency_ms,
-                "latency_p95": backend.last_latency_ms * 1.5,
+                "throughput": avg_throughput,
+                "cpu": 0.0,
+                "memory": 0.0,
+                "gpu": if total_vram > 0.0 { 50.0 } else { 0.0 },
+                "latency_p50": avg_latency,
+                "latency_p95": avg_latency * 1.5,
+                "active_nodes": node_count,
+                "total_vram_gb": total_vram,
             }
         }))
     }
@@ -2589,6 +2700,84 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
 
     async fn handle_gui_session_cancel(Path(session_id): Path<String>) -> Json<serde_json::Value> {
         Json(serde_json::json!({ "status": "ok", "session_id": session_id, "cancelled": true }))
+    }
+
+    async fn handle_gui_session_save(
+        State(state): State<Arc<Mutex<BackendState>>>,
+        Json(req): Json<serde_json::Value>,
+    ) -> Json<serde_json::Value> {
+        let session_id = req.get("id").and_then(|v| v.as_str()).unwrap_or("");
+        let _name = req
+            .get("name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("Unnamed Session");
+        let model = req
+            .get("model")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
+        let messages = req
+            .get("messages")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+
+        if session_id.is_empty() {
+            return Json(
+                serde_json::json!({ "status": "error", "error": "session id is required" }),
+            );
+        }
+
+        let mut backend = lock_state(&state);
+        let session = SessionRecord {
+            id: session_id.to_string(),
+            model: model.to_string(),
+            status: "saved".to_string(),
+            throughput: 0,
+            latency: 0,
+            tokens: messages.len(),
+        };
+
+        // Remove existing session with same id
+        backend.sessions.retain(|s| s.id != session_id);
+        backend.sessions.push(session);
+
+        Json(serde_json::json!({ "status": "ok", "session_id": session_id }))
+    }
+
+    async fn handle_gui_session_load(
+        State(state): State<Arc<Mutex<BackendState>>>,
+        Path(session_id): Path<String>,
+    ) -> Json<serde_json::Value> {
+        let backend = lock_state(&state);
+        if let Some(session) = backend.sessions.iter().find(|s| s.id == session_id) {
+            Json(serde_json::json!({
+                "status": "ok",
+                "session": {
+                    "id": session.id,
+                    "model": session.model,
+                    "status": session.status,
+                    "throughput": session.throughput,
+                    "latency": session.latency,
+                    "tokens": session.tokens,
+                }
+            }))
+        } else {
+            Json(serde_json::json!({ "status": "error", "error": "session not found" }))
+        }
+    }
+
+    async fn handle_gui_session_delete(
+        State(state): State<Arc<Mutex<BackendState>>>,
+        Path(session_id): Path<String>,
+    ) -> Json<serde_json::Value> {
+        let mut backend = lock_state(&state);
+        let len_before = backend.sessions.len();
+        backend.sessions.retain(|s| s.id != session_id);
+        if backend.sessions.len() < len_before {
+            Json(serde_json::json!({ "status": "ok", "deleted": true }))
+        } else {
+            Json(serde_json::json!({ "status": "error", "error": "session not found" }))
+        }
     }
 
     async fn handle_gui_queue() -> Json<serde_json::Value> {
@@ -2968,7 +3157,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
 
         let (
             current_model,
-            cluster,
+            _cluster,
             ollama_client,
             ollama_available,
             inference_backend,
@@ -2976,12 +3165,25 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             settings,
         ) = {
             let backend = lock_state(&state);
+            eprintln!(
+                "[DEBUG] settings.inference_backend = '{}'",
+                backend.settings.inference_backend
+            );
+            let inference_backend = match backend.settings.inference_backend.as_str() {
+                "ollama" => InferenceBackend::Ollama,
+                "native" => InferenceBackend::Native,
+                _ => InferenceBackend::Ollama,
+            };
+            eprintln!(
+                "[DEBUG] Selected inference_backend = {:?}",
+                inference_backend
+            );
             (
                 backend.current_model.clone(),
                 Arc::clone(&backend.cluster),
                 backend.ollama_client.clone(),
                 Arc::clone(&backend.ollama_available),
-                backend.inference_backend,
+                inference_backend,
                 backend.native_engine_client.clone(),
                 backend.settings.clone(),
             )
@@ -3099,6 +3301,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                 match native_engine_client.generate(
                     &current_model, &req.message, exec_tokens,
                     temp, top_p, top_k, penalty,
+                    &settings.native_engine,
                 ) {
                     Ok(gen) => (
                         gen.text,
@@ -3117,77 +3320,24 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             }
         };
 
+        let exec_result: Option<()> = None; // Track if we have real execution metrics
+
         {
             let mut available_flag = ollama_available.lock().await;
             *available_flag = real_inference;
         }
-
-        let nodes = cluster.nodes();
-        let total_vram = cluster.total_vram_gb();
-        let layer_count = (total_vram * 2.0).clamp(8.0, 60.0) as usize;
-        let layers: Vec<LayerSpec> = (0..layer_count)
-            .map(|index| LayerSpec {
-                index,
-                vram_gb: (total_vram / (layer_count as f32 + 1.0)).min(0.4),
-                num_weights: 500_000_000 / 60,
-            })
-            .collect();
-
-        let profile = detect_runtime_profile("studio-api");
-        let result = match assign_layers_with_runtime_profile(&nodes, &layers, &profile) {
-            Ok(assignments) => {
-                let device_map = build_device_map_from_cluster(&profile, &cluster);
-                let pipeline_plan = PipelinePlan::from_assignments(&assignments, &device_map);
-                let pipeline_plan_clone = pipeline_plan.clone();
-
-                let exec_result = if nodes.len() > 1 {
-                    ghostlink_core::runtime::execute_pipeline_distributed(
-                        &pipeline_plan,
-                        exec_tokens,
-                        exec_micro_batch,
-                        tcp_transport_config_from_env(),
-                        &cluster,
-                        None,
-                        None,
-                    )
-                    .ok()
-                } else {
-                    execute_pipeline_tcp_loopback(&pipeline_plan, exec_tokens, exec_micro_batch)
-                        .ok()
-                };
-
-                if let Some(ref exec) = exec_result {
-                    let mut backend = lock_state(&state);
-                    backend.last_latency_ms = exec.avg_token_latency_ms;
-                    let tokens_per_sec = exec.throughput_tokens_per_sec;
-                    for stage in &exec.stage_stats {
-                        if let Some(stage_p) = pipeline_plan_clone.stages.get(stage.stage_idx) {
-                            backend.cluster.get_metrics_mut(&stage_p.node_id, |m| {
-                                m.record_latency(stage.avg_compute_ms * 1000.0);
-                                m.record_throughput(tokens_per_sec / 100.0);
-                            });
-                        }
-                    }
-                }
-                exec_result
-            }
-            Err(_) => None,
-        };
 
         let (request_id, session_id) = {
             let mut backend = lock_state(&state);
             backend.chat_requests = backend.chat_requests.saturating_add(1);
             let request_seq = backend.chat_requests;
 
-            if result.is_none() {
+            if exec_result.is_none() {
                 backend.last_latency_ms = (started.elapsed().as_secs_f32() * 1000.0).max(1.0);
             }
 
             let latency = backend.last_latency_ms.round() as u32;
-            let throughput = result
-                .as_ref()
-                .map(|r| r.throughput_tokens_per_sec as usize)
-                .unwrap_or(1200);
+            let throughput = 1200;
 
             let maybe_session = backend.sessions.first_mut();
             if let Some(session) = maybe_session {
@@ -3234,9 +3384,9 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             "exec_tokens": exec_tokens,
             "exec_micro_batch": exec_micro_batch,
             "real_inference": real_inference,
-            "metrics": result.map(|r| serde_json::json!({
-                "throughput": r.throughput_tokens_per_sec,
-                "p95_ms": r.p95_token_latency_ms
+            "metrics": exec_result.map(|_| serde_json::json!({
+                "throughput": 0.0,
+                "p95_ms": 0.0
             }))
         });
 
@@ -3413,6 +3563,14 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                     "inference_backend" => {
                         if let Some(v) = value.as_str() {
                             current.inference_backend = v.to_string();
+                            // This used to only update the display string in
+                            // `settings`, while the enum that every load/
+                            // unload/generate code path actually reads
+                            // (`backend.inference_backend`) stayed frozen at
+                            // whatever GHOSTLINK_INFERENCE_BACKEND resolved
+                            // to at process startup. Update both so a live
+                            // settings change actually takes effect.
+                            backend.inference_backend = InferenceBackend::parse(v);
                         }
                     }
                     "native_engine" => {
@@ -3551,15 +3709,28 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
 
     async fn handle_health(
         State(state): State<Arc<Mutex<BackendState>>>,
-    ) -> Json<serde_json::Value> {
+    ) -> Json<serde_json::value::Value> {
         let backend = lock_state(&state);
         let uptime_s = backend.started_at.elapsed().as_secs();
+
+        // Detect GPU availability via runtime profile (uses fast cache)
+        let profile = detect_runtime_profile("health-check");
+        let gpu_available =
+            profile.acceleration_mode == ghostlink_core::host::AccelerationMode::Gpu;
+        let gpu_name = profile.node_resources.gpu_name.clone();
+        let vram_gb = profile.node_resources.vram_gb;
+
         Json(serde_json::json!({
             "status": "healthy",
             "version": "0.1.0-alpha.0",
             "backend_url": backend.backend_url,
             "uptime_s": uptime_s,
             "current_model": backend.current_model,
+            "inference_backend": backend.inference_backend.as_str(),
+            "native_engine": backend.settings.native_engine,
+            "gpu_available": gpu_available,
+            "gpu_name": gpu_name,
+            "vram_gb": vram_gb,
         }))
     }
 
@@ -3688,7 +3859,41 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
     let models = load_persistent_models();
     save_persistent_models(&models);
 
-    let settings = load_settings();
+    let mut settings = load_settings();
+
+    // Auto-compute ngl from GPU VRAM if still at default (-1)
+    if settings.ngl < 0 {
+        let ngl = if profile.node_resources.vram_gb >= 12.0 {
+            40
+        } else if profile.node_resources.vram_gb >= 8.0 {
+            24
+        } else if profile.node_resources.vram_gb >= 4.0 {
+            99
+        } else {
+            -1
+        };
+        if ngl > 0 {
+            settings.ngl = ngl;
+            // Also set the env var so NativeEngineClient::get_ngl() picks it up
+            std::env::set_var("GHOSTLINK_LLAMA_NGL", ngl.to_string());
+            eprintln!(
+                "[startup] Auto-configured ngl={} from detected VRAM ({:.1} GB)",
+                ngl, profile.node_resources.vram_gb
+            );
+        }
+    }
+
+    // Auto-compute threads from available parallelism if still at default (4)
+    if settings.threads <= 1 {
+        let threads = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(4);
+        settings.threads = threads;
+        // Also set the env var so NativeEngineClient::get_threads() picks it up
+        std::env::set_var("GHOSTLINK_LLAMA_THREADS", threads.to_string());
+        eprintln!("[startup] Auto-configured threads={}", threads);
+    }
+
     save_settings(&settings);
 
     {
@@ -3706,7 +3911,14 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
     let ollama_url = std::env::var("OLLAMA_BASE_URL")
         .ok()
         .unwrap_or_else(|| "http://localhost:11434".to_string());
-    let inference_backend = InferenceBackend::from_env();
+
+    // Load settings to get initial inference backend
+    let settings = load_settings();
+    let inference_backend = match settings.inference_backend.as_str() {
+        "ollama" => InferenceBackend::Ollama,
+        "native" => InferenceBackend::Native,
+        _ => InferenceBackend::Ollama,
+    };
     let native_engine_client = native_engine::NativeEngineClient::new();
     let ollama_client = ollama::OllamaClient::new(ollama_url);
     let ollama_available = Arc::new(tokio::sync::Mutex::new(false));
@@ -3822,6 +4034,12 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             )
             .route("/api/metrics", get(handle_gui_metrics))
             .route("/api/sessions", get(handle_gui_sessions))
+            .route("/api/sessions/save", post(handle_gui_session_save))
+            .route("/api/sessions/:session_id", get(handle_gui_session_load))
+            .route(
+                "/api/sessions/:session_id",
+                delete(handle_gui_session_delete),
+            )
             .route(
                 "/api/sessions/:session_id/cancel",
                 post(handle_gui_session_cancel),

@@ -11,10 +11,15 @@ import {
   CheckCircle2,
   AlertTriangle,
   RefreshCw,
-  Check,
   Gauge,
+  Info,
+  Cpu as CpuIcon,
+  Monitor,
+  Zap as ZapIcon,
+  Loader2,
 } from 'lucide-react';
 import { Settings as SettingsType } from '../store';
+import { GhostlinkAPI } from '../api';
 
 type BackendInfo = {
   name: string;
@@ -25,17 +30,14 @@ type BackendInfo = {
   status: string;
 };
 
-type BackendStatus = {
-  name: string;
-  device_name: string;
-  vram_gb: number | null;
+type SwitchBackendResponse = {
   status: string;
-  health: string;
-  utilization: number | null;
-  temperature: number | null;
+  backend: string;
+  message: string;
+  restart_required: boolean;
 };
 
-export const SettingsTab: React.FC<{ api: any }> = ({ api }) => {
+export const SettingsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
   const [settings, setSettings] = useState<SettingsType | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -43,11 +45,10 @@ export const SettingsTab: React.FC<{ api: any }> = ({ api }) => {
   const [error, setError] = useState('');
   const [validationErrors, setValidationErrors] = useState<Record<string, string>>({});
   const [backends, setBackends] = useState<BackendInfo[]>([]);
-  const [currentBackend, setCurrentBackend] = useState('cpu');
-  const [backendStatus, setBackendStatus] = useState<BackendStatus | null>(null);
+  const [currentBackend, setCurrentBackend] = useState<string>('cpu');
   const [backendLoading, setBackendLoading] = useState(false);
-  const [backendMessage, setBackendMessage] = useState('');
-  const [switchingBackend, setSwitchingBackend] = useState(false);
+  const [switchingBackend, setSwitchingBackend] = useState<string | null>(null);
+  const [restartRequired, setRestartRequired] = useState(false);
 
   const validate = () => {
     if (!settings) return true;
@@ -86,40 +87,40 @@ export const SettingsTab: React.FC<{ api: any }> = ({ api }) => {
     setLoading(false);
   }, [api]);
 
-  useEffect(() => {
-    loadSettings();
-  }, [loadSettings]);
-
   const loadBackends = useCallback(async () => {
     setBackendLoading(true);
-    setBackendMessage('');
-    const result = await api.getBackends();
-    if (result.error) {
-      setBackendMessage(result.error);
-      setBackends([]);
-      setCurrentBackend('cpu');
-      setBackendStatus(null);
-      setBackendLoading(false);
-      return;
-    }
-
-    setBackends(result.available || []);
-    setCurrentBackend(result.current || 'cpu');
-
-    const statusResult = await api.getBackendStatus(result.current || 'cpu');
-    if (statusResult.status) {
-      setBackendStatus(statusResult.status);
+    try {
+      const result = await api.getBackends();
+      if (!result.error && result.available) {
+        setBackends(result.available);
+        setCurrentBackend(result.current);
+      }
+    } catch (e: any) {
+      console.error('Failed to load backends:', e);
     }
     setBackendLoading(false);
   }, [api]);
 
-  useEffect(() => {
-    loadBackends();
-  }, [loadBackends]);
-
-  const update = (key: string, value: any) => {
-    if (!settings) return;
-    setSettings({ ...settings, [key]: value });
+  const handleSwitchBackend = async (backendName: string) => {
+    setSwitchingBackend(backendName);
+    try {
+      const result = await api.switchBackend(backendName);
+      if (result.success) {
+        setCurrentBackend(backendName);
+        setBackends(prev => prev.map(b => ({
+          ...b,
+          status: b.name === backendName ? 'active' : 'ready'
+        })));
+        if (result.restart_required) {
+          setRestartRequired(true);
+        }
+      } else {
+        setError(result.error || 'Failed to switch backend');
+      }
+    } catch (e: any) {
+      setError(e.message);
+    }
+    setSwitchingBackend(null);
   };
 
   const handleReset = async () => {
@@ -133,25 +134,14 @@ export const SettingsTab: React.FC<{ api: any }> = ({ api }) => {
     setSaving(false);
   };
 
-  const handleSwitchBackend = async (backend: string) => {
-    if (!backend || backend === currentBackend) return;
-    setSwitchingBackend(true);
-    setBackendMessage('');
+  useEffect(() => {
+    loadSettings();
+    loadBackends();
+  }, [loadSettings, loadBackends]);
 
-    const result = await api.switchBackend(backend);
-    if (result.success) {
-      setCurrentBackend(backend);
-      const statusResult = await api.getBackendStatus(backend);
-      if (statusResult.status) {
-        setBackendStatus(statusResult.status);
-      }
-      setBackendMessage(result.restart_required ? 'Backend switched; restart required to fully apply.' : 'Backend switched successfully.');
-      loadBackends();
-    } else {
-      setBackendMessage(result.error || 'Failed to switch backend');
-    }
-
-    setSwitchingBackend(false);
+  const update = (key: string, value: any) => {
+    if (!settings) return;
+    setSettings({ ...settings, [key]: value });
   };
 
   if (loading) {
@@ -302,78 +292,121 @@ export const SettingsTab: React.FC<{ api: any }> = ({ api }) => {
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             <Section title="Compute Backend" icon={Gauge}>
               <div className="space-y-4">
-                <div className="rounded-2xl border border-slate-800 bg-slate-950/60 p-4 space-y-2">
-                  <div className="flex items-center justify-between gap-3">
-                    <div>
-                      <p className="text-xs uppercase tracking-wider text-slate-500">Current Backend</p>
-                      <p className="text-lg font-bold text-white capitalize">{currentBackend}</p>
-                    </div>
-                    <button
-                      onClick={loadBackends}
-                      disabled={backendLoading}
-                      className="flex items-center gap-2 px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-sm transition disabled:opacity-50"
-                    >
-                      <RefreshCw size={14} className={backendLoading ? 'animate-spin' : ''} />
-                      Refresh
-                    </button>
+                {backendLoading ? (
+                  <div className="flex items-center justify-center py-8">
+                    <Loader2 size={24} className="text-blue-400 animate-spin" />
+                    <span className="ml-3 text-slate-400">Detecting backends...</span>
                   </div>
+                ) : (
+                  <>
+                    <div className="rounded-2xl border border-slate-800 bg-slate-950/60 p-4 space-y-3">
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="flex items-center gap-3">
+                          <div className="p-2 bg-blue-500/10 rounded-xl text-blue-400">
+                            <CpuIcon size={20} />
+                          </div>
+                          <div>
+                            <p className="text-xs uppercase tracking-wider text-slate-500">Current Backend</p>
+                            <p className="text-lg font-bold text-white capitalize">{currentBackend}</p>
+                          </div>
+                        </div>
+                        <button
+                          onClick={loadBackends}
+                          disabled={backendLoading}
+                          className="flex items-center gap-2 px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-sm transition disabled:opacity-50"
+                        >
+                          <RefreshCw size={14} className={backendLoading ? 'animate-spin' : ''} />
+                          Re-detect
+                        </button>
+                      </div>
 
-                  {backendStatus && (
-                    <div className="grid grid-cols-2 gap-3 text-sm text-slate-300">
-                      <div>
-                        <span className="block text-[10px] uppercase text-slate-500">Device</span>
-                        <span className="block truncate">{backendStatus.device_name}</span>
-                      </div>
-                      <div>
-                        <span className="block text-[10px] uppercase text-slate-500">Health</span>
-                        <span className="block capitalize">{backendStatus.health}</span>
-                      </div>
-                      <div>
-                        <span className="block text-[10px] uppercase text-slate-500">VRAM</span>
-                        <span className="block">{backendStatus.vram_gb != null ? `${backendStatus.vram_gb.toFixed(1)} GB` : 'n/a'}</span>
-                      </div>
-                      <div>
-                        <span className="block text-[10px] uppercase text-slate-500">Utilization</span>
-                        <span className="block">{backendStatus.utilization != null ? `${backendStatus.utilization.toFixed(1)}%` : 'n/a'}</span>
+                      <div className="space-y-2">
+                        {backends.map((backend) => (
+                          <button
+                            key={backend.name}
+                            onClick={() => handleSwitchBackend(backend.name)}
+                            disabled={switchingBackend !== null || backend.name === currentBackend}
+                            className={`flex items-center justify-between w-full px-3 py-2.5 rounded-xl text-left transition text-sm ${
+                              backend.name === currentBackend
+                                ? 'bg-blue-600/10 text-blue-400 border border-blue-500/30'
+                                : 'text-slate-300 hover:bg-slate-800 border border-slate-800'
+                            } ${switchingBackend === backend.name ? 'opacity-50' : ''}`}
+                          >
+                            <div className="flex items-center gap-3 min-w-0">
+                              <div className={`flex items-center justify-center h-8 w-8 rounded-lg ${
+                                backend.name === 'cuda' ? 'bg-green-500/20 text-green-400' :
+                                backend.name === 'rocm' ? 'bg-red-500/20 text-red-400' :
+                                backend.name === 'metal' ? 'bg-orange-500/20 text-orange-400' :
+                                backend.name === 'directml' ? 'bg-purple-500/20 text-purple-400' :
+                                backend.name === 'npu' ? 'bg-yellow-500/20 text-yellow-400' :
+                                'bg-slate-500/20 text-slate-400'
+                              }`}>
+                                <CpuIcon size={16} />
+                              </div>
+                              <div className="min-w-0">
+                                <div className="font-bold truncate capitalize">{backend.name}</div>
+                                <div className="text-[10px] text-slate-500 truncate">{backend.device_name}</div>
+                              </div>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              {backend.vram_gb != null && (
+                                <span className="text-xs text-slate-400 px-2 py-0.5 bg-slate-800 rounded">
+                                  {backend.vram_gb.toFixed(1)} GB VRAM
+                                </span>
+                              )}
+                              <span className={`px-2 py-0.5 rounded text-xs font-medium ${
+                                backend.name === currentBackend
+                                  ? 'bg-blue-500/20 text-blue-400'
+                                  : backend.status === 'ready'
+                                  ? 'bg-green-500/20 text-green-400'
+                                  : 'bg-slate-700 text-slate-500'
+                              }`}>
+                                {backend.name === currentBackend ? 'Active' : backend.status}
+                              </span>
+                              {switchingBackend === backend.name && <Loader2 size={14} className="animate-spin" />}
+                            </div>
+                          </button>
+                        ))}
                       </div>
                     </div>
-                  )}
 
-                  {backendMessage && (
-                    <p className="text-xs text-slate-400">{backendMessage}</p>
-                  )}
-                </div>
-
-                <div className="space-y-2">
-                  {backends.map((backend) => {
-                    const isCurrent = backend.name === currentBackend;
-                    return (
-                      <div key={backend.name} className={`rounded-2xl border p-4 ${isCurrent ? 'border-blue-500/40 bg-blue-500/5' : 'border-slate-800 bg-slate-950/40'}`}>
-                        <div className="flex items-start justify-between gap-3">
-                          <div className="min-w-0">
-                            <div className="flex items-center gap-2">
-                              <span className="font-semibold text-white capitalize">{backend.name}</span>
-                              {isCurrent && <span className="text-[10px] px-2 py-0.5 rounded-full bg-blue-500/20 text-blue-300">Active</span>}
-                            </div>
-                            <p className="text-xs text-slate-500 truncate">{backend.device_name}</p>
-                            <p className="text-[10px] text-slate-600 truncate">{backend.compute_capability} · {backend.driver_version}</p>
-                          </div>
-                          {!isCurrent && (
-                            <button
-                              onClick={() => handleSwitchBackend(backend.name)}
-                              disabled={switchingBackend}
-                              className="flex items-center gap-2 px-3 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-sm transition disabled:opacity-50"
-                            >
-                              {switchingBackend ? <RefreshCw size={14} className="animate-spin" /> : <Check size={14} />}
-                              Switch
-                            </button>
-                          )}
+                    {restartRequired && (
+                      <div className="flex items-center gap-2 px-4 py-3 bg-orange-500/10 border border-orange-500/30 rounded-xl text-orange-400">
+                        <AlertTriangle size={20} />
+                        <div>
+                          <p className="font-medium">Restart Required</p>
+                          <p className="text-sm text-slate-400">The backend has been switched but requires a server restart to take full effect.</p>
                         </div>
                       </div>
-                    );
-                  })}
-                </div>
+                    )}
+
+                    <div className="flex items-center gap-2 text-xs text-slate-500 bg-slate-900/50 rounded-xl p-3">
+                      <Info size={14} />
+                      <span>
+                        Backend is auto-detected at startup. Override with <code className="text-blue-400 bg-slate-800 px-1.5 py-0.5 rounded font-mono">GHOSTLINK_INFERENCE_BACKEND=native|ollama</code> env var.
+                        {' '}
+                        <a href="https://github.com/ghostlink/ghostlink/blob/main/docs/RUNTIMES.md" target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:underline ml-1">
+                          Docs
+                        </a>
+                      </span>
+                    </div>
+                  </>
+                )}
               </div>
+            </Section>
+
+            {/* Inference Runtime Section */}
+            <Section title="Inference Runtime" icon={Cpu}>
+              <SelectField
+                label="Backend"
+                desc="Inference engine backend"
+                value={settings.inference_backend}
+                options={[
+                  { value: 'ollama', label: 'Ollama' },
+                  { value: 'native', label: 'Native (legacy)' },
+                ]}
+                onChange={(v) => update('inference_backend', v)}
+              />
             </Section>
 
             {/* Runtime Section */}

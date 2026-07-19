@@ -347,7 +347,7 @@ impl BackendRegistry {
         #[cfg(target_os = "windows")]
         {
             let output = Command::new("wmic")
-                .args(&["cpu", "get", "name"])
+                .args(["cpu", "get", "name"])
                 .output()
                 .ok();
 

@@ -9,6 +9,7 @@ use std::path::Path;
 use std::process::Command;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
+use tokio::task;
 
 use crate::protocol::NodeResources;
 
@@ -373,6 +374,51 @@ fn detect_visible_hint_probe() -> Option<GpuProbeResult> {
     })
 }
 
+/// Run a blocking command with timeout, returning None if timeout or error.
+async fn run_probe_with_timeout<F, T>(f: F) -> Option<T>
+where
+    F: FnOnce() -> Option<T> + Send + 'static,
+    T: Send + 'static,
+{
+    task::spawn_blocking(f).await.ok().flatten()
+}
+
+type GpuProbeEntry = (&'static str, fn() -> Option<GpuProbeResult>);
+
+/// Run all GPU detection probes in parallel with timeout.
+async fn detect_full_gpu_probe_parallel() -> Option<GpuProbeResult> {
+    const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
+
+    let probes: Vec<GpuProbeEntry> = vec![
+        ("nvidia-smi", detect_nvidia_smi),
+        #[cfg(feature = "rocm")]
+        ("rocm-smi", detect_rocm_smi),
+        ("windows-wmi", detect_windows_any_gpu),
+        ("lspci", detect_lspci_gpu),
+    ];
+
+    let mut tasks = Vec::new();
+    for (name, probe_fn) in probes {
+        let task = tokio::spawn(async move {
+            let result = tokio::time::timeout(PROBE_TIMEOUT, run_probe_with_timeout(probe_fn))
+                .await
+                .ok()
+                .flatten();
+            (name, result)
+        });
+        tasks.push(task);
+    }
+
+    // Wait for all probes, return first successful result
+    for task in tasks {
+        if let Ok((name, Some(result))) = task.await {
+            tracing::debug!("GPU detection succeeded via: {}", name);
+            return Some(result);
+        }
+    }
+    None
+}
+
 fn detect_full_gpu_probe_cached() -> Option<GpuProbeResult> {
     let cache = FULL_PROBE_CACHE.get_or_init(|| Mutex::new(None));
     if let Some(probe) = cache
@@ -385,16 +431,10 @@ fn detect_full_gpu_probe_cached() -> Option<GpuProbeResult> {
         return Some(probe);
     }
 
-    // Probe chain: NVIDIA SMI -> [AMD ROCm SMI] -> Windows WMI (any GPU) -> lspci (Linux)
-    #[allow(unused_mut)]
-    let mut probe = detect_nvidia_smi();
-    #[cfg(feature = "rocm")]
-    {
-        probe = probe.or_else(detect_rocm_smi);
-    }
-    let probe = probe
-        .or_else(detect_windows_any_gpu)
-        .or_else(detect_lspci_gpu)?;
+    // Run parallel detection using tokio runtime
+    let rt = tokio::runtime::Runtime::new().ok()?;
+    let probe = rt.block_on(detect_full_gpu_probe_parallel())?;
+
     *cache.lock().unwrap_or_else(|poison| poison.into_inner()) = Some(CachedProbeEntry {
         captured_at: Instant::now(),
         probe: probe.clone(),
