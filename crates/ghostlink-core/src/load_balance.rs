@@ -4,10 +4,13 @@
 //! - Tensor distribution across nodes based on VRAM capacity
 //! - Dynamic load shedding
 //! - Deadlock prevention with timeout
+//! - Dynamic reconfiguration on hardware changes via `SystemProfileWatcher`.
 
 use crate::accelerator::ExecutionBackend;
 use crate::cluster::{ClusterState, NodeMetrics};
 use crate::host::{AccelerationMode, RuntimeProfile};
+use crate::system_profile::SystemProfile;
+use crate::watcher::ProfileChange;
 use std::sync::Arc;
 
 /// Load balancing configuration
@@ -137,19 +140,27 @@ impl LoadDistributionPlan {
 pub struct LoadBalancer {
     /// Cluster state
     cluster: Arc<ClusterState>,
-    /// Configuration
-    config: LoadBalanceConfig,
+    /// Configuration (behind Mutex for atomic re-tune from watcher)
+    config: Arc<std::sync::Mutex<LoadBalanceConfig>>,
 }
 
 impl LoadBalancer {
     /// Create new load balancer
     pub fn new(cluster: Arc<ClusterState>, config: LoadBalanceConfig) -> Self {
-        Self { cluster, config }
+        Self {
+            cluster,
+            config: Arc::new(std::sync::Mutex::new(config)),
+        }
     }
 
     /// Create a load balancer with configuration derived from the local runtime profile.
     pub fn with_runtime_profile(cluster: Arc<ClusterState>, profile: &RuntimeProfile) -> Self {
         Self::new(cluster, LoadBalanceConfig::autotuned(profile))
+    }
+
+    /// Access the current configuration.
+    pub fn config(&self) -> LoadBalanceConfig {
+        self.config.lock().ok().as_deref().copied().unwrap_or_default()
     }
 
     /// Distribute tensor layers across nodes based on VRAM capacity
@@ -230,11 +241,11 @@ impl LoadBalancer {
         layers: &[crate::planning::LayerSpec],
         profile: &RuntimeProfile,
     ) -> Result<LoadDistributionPlan, String> {
+        let cfg = self.config();
         let plan = self.distribute_layers(layers)?;
         let backend = ExecutionBackend::from_runtime_profile(profile);
         let vector_bias = (backend.vector_width_bits / 128).max(1);
-        let max_layers_per_slice = self
-            .config
+        let max_layers_per_slice = cfg
             .max_layers_per_assignment
             .min(profile.recommended_workers.max(1).saturating_mul(2))
             .min(backend.preferred_batch_size / vector_bias)
@@ -244,6 +255,7 @@ impl LoadBalancer {
 
     /// Rebalance load based on current node metrics
     pub fn rebalance(&self) -> bool {
+        let cfg = self.config();
         let active_nodes = self.cluster.active_nodes();
 
         if active_nodes.is_empty() {
@@ -269,11 +281,11 @@ impl LoadBalancer {
             max_available / min_available
         };
 
-        if skew_ratio >= self.config.min_load_threshold {
+        if skew_ratio >= cfg.min_load_threshold {
             tracing::info!(
                 "Detected load skew ratio {:.2} (threshold {:.2})",
                 skew_ratio,
-                self.config.min_load_threshold
+                cfg.min_load_threshold
             );
             return true;
         }
@@ -283,6 +295,7 @@ impl LoadBalancer {
 
     /// Shed load from overloaded nodes to underloaded ones
     pub fn shed_load(&self) -> Vec<(String, String)> {
+        let cfg = self.config();
         let mut transfers: Vec<(String, String)> = Vec::new();
 
         // Overloaded nodes are close to exhausted VRAM (low available headroom).
@@ -303,7 +316,7 @@ impl LoadBalancer {
 
         // For each overloaded node, find a suitable underloaded target
         for overloaded in &overloaded_nodes {
-            if transfers.len() >= self.config.max_concurrent_rebalances {
+            if transfers.len() >= cfg.max_concurrent_rebalances {
                 break;
             }
             if let Some(target) = self.find_best_target(underloaded_nodes.as_slice(), overloaded) {
@@ -338,15 +351,52 @@ impl LoadBalancer {
         best_target.cloned()
     }
 
+    // ------------------------------------------------------------------
+    // SystemProfileWatcher integration
+    // ------------------------------------------------------------------
+
+    /// Re-tune load-balancing thresholds from a system profile detected at runtime.
+    pub fn reconfigure_from_system_profile(&self, profile: &SystemProfile) {
+        let rp: RuntimeProfile = profile.into();
+        if let Ok(mut guard) = self.config.lock() {
+            *guard = LoadBalanceConfig::autotuned(&rp);
+        }
+    }
+
+    /// Subscribe to a `SystemProfileWatcher`'s broadcast channel and
+    /// automatically re-tune whenever hardware changes are detected.
+    ///
+    /// Returns a `JoinHandle` that can be cancelled by dropping it.
+    pub fn subscribe_to_watcher(
+        self: &Arc<Self>,
+        watcher: &crate::watcher::SystemProfileWatcher,
+    ) -> tokio::task::JoinHandle<()> {
+        let this = self.clone();
+        let mut rx = watcher.subscribe();
+        tokio::spawn(async move {
+            while let Ok(event) = rx.recv().await {
+                if let ProfileChange::Updated(profile) = event {
+                    this.reconfigure_from_system_profile(&profile);
+                    tracing::info!(
+                        "load balancer re-tuned from profile: {} workers, {:?} accel",
+                        profile.recommended_workers,
+                        profile.acceleration_mode,
+                    );
+                }
+            }
+        })
+    }
+
     /// Distribute layers with deadlock prevention
     pub fn distribute_with_deadlock_prevention(
         &self,
         layers: &[crate::planning::LayerSpec],
     ) -> Result<LoadDistributionPlan, String> {
+        let cfg = self.config();
         // Use timeout-based acquisition to prevent deadlocks
         let start_time = std::time::Instant::now();
 
-        while start_time.elapsed().as_micros() < self.config.lock_timeout_us as u128 {
+        while start_time.elapsed().as_micros() < cfg.lock_timeout_us as u128 {
             match self.distribute_layers(layers) {
                 Ok(plan) => return Ok(plan),
                 Err(_) => {

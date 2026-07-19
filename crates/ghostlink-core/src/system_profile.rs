@@ -839,43 +839,133 @@ fn detect_rocm_version() -> Option<String> {
 
 #[cfg(target_os = "windows")]
 fn probe_windows_wmi_gpu() -> Option<Vec<GpuInfo>> {
+    // Primary: WMI query with Name, AdapterRAM, DriverVersion, PNPDeviceID
     let output = Command::new("powershell")
         .args([
             "-NoProfile",
             "-Command",
-            "Get-CimInstance Win32_VideoController | Where-Object { $_.Name -notmatch 'Microsoft Basic Display' } | Select-Object Name, AdapterRAM, DriverVersion | ConvertTo-Csv -NoTypeInformation",
+            "Get-CimInstance Win32_VideoController | Where-Object { $_.Name -notmatch '(?i)(Microsoft Basic Display|Remote Display|VirtualBox|VMware)' } | Select-Object Name, AdapterRAM, DriverVersion, PNPDeviceID | ConvertTo-Csv -NoTypeInformation",
         ])
         .output()
         .ok()?;
     if !output.status.success() { return None; }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let mut gpus = Vec::new();
+    let mut gpus: Vec<GpuInfo> = Vec::new();
 
     for line in stdout.lines().skip(1) {
         let trimmed = line.trim();
         if trimmed.is_empty() || trimmed.starts_with('#') { continue; }
-        let parts: Vec<&str> = trimmed.split(',').map(|s| s.trim().trim_matches('"')).collect();
+        // CSV: "Name","AdapterRAM","DriverVersion","PNPDeviceID"
+        let mut parts: Vec<String> = Vec::new();
+        let mut current = String::new();
+        let mut in_quotes = false;
+        for ch in trimmed.chars() {
+            match ch {
+                '"' => in_quotes = !in_quotes,
+                ',' if !in_quotes => {
+                    parts.push(std::mem::take(&mut current));
+                }
+                c => current.push(c),
+            }
+        }
+        parts.push(current);
         if parts.len() < 3 { continue; }
-        let name = parts[0].to_string();
+        let name = parts[0].trim().to_string();
         if name.is_empty() { continue; }
 
-        let vram_bytes: f32 = parts[1].parse().unwrap_or(0.0);
-        let vram_gb = if vram_bytes > 0.0 { vram_bytes / 1_073_741_824.0 } else { 0.0 };
-        let driver = parts[2].to_string();
+        let vram_bytes: f64 = parts[1].trim().parse().unwrap_or(0.0);
+        let vram_gb = if vram_bytes > 0.0 { (vram_bytes / 1_073_741_824.0) as f32 } else { 0.0 };
+        let driver = parts[2].trim().to_string();
+        let pnp_id = parts.get(3).map(|s| s.trim().to_string());
         let compute_cap = super::host::infer_compute_capability_from_name(&name);
+
+        // Determine backend from PNP ID or name
+        let backend = if let Some(ref id) = pnp_id {
+            let id_lower = id.to_ascii_lowercase();
+            if id_lower.contains("ven_10de") { super::host::GpuBackend::Cuda }
+            else if id_lower.contains("ven_1002") || id_lower.contains("ven_1022") {
+                if cfg!(feature = "rocm") { super::host::GpuBackend::Rocm }
+                else { super::host::GpuBackend::Directml }
+            }
+            else if id_lower.contains("ven_8086") { super::host::GpuBackend::Directml }
+            else if id_lower.contains("ven_14e4") { super::host::GpuBackend::Vulkan }
+            else { super::host::GpuBackend::Directml }
+        } else {
+            super::host::GpuBackend::Directml
+        };
+
+        // If WMI returned 0 VRAM for a real GPU, try a secondary DXGI-based probe
+        let actual_vram = if vram_gb <= 0.0 {
+            probe_windows_dxgi_vram().unwrap_or(0.0)
+        } else {
+            vram_gb
+        };
 
         gpus.push(GpuInfo {
             name,
-            vram_gb,
-            backend: super::host::GpuBackend::Directml,
+            vram_gb: actual_vram,
+            backend,
             compute_capability: compute_cap,
             driver_version: driver,
-            pci_address: None,
+            pci_address: pnp_id,
         });
     }
 
     if gpus.is_empty() { None } else { Some(gpus) }
+}
+
+/// Secondary DXGI-based VRAM probe via PowerShell `Add-Type` with C# DXGI wrapper.
+/// Only called when WMI returns 0 VRAM for a detected GPU.
+#[cfg(target_os = "windows")]
+fn probe_windows_dxgi_vram() -> Option<f32> {
+    let script = r#"
+Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+public class DXGIVram {
+    [DllImport("dxgi.dll")]
+    private static extern int CreateDXGIFactory1(ref Guid riid, out IntPtr ppFactory);
+    public static float GetVRAM() {
+        Guid iid = new Guid("7706bb9b-3be9-49f2-9fac-271a00c72f78");
+        if (CreateDXGIFactory1(ref iid, out IntPtr factory) != 0) return 0;
+        try {
+            IntPtr vtable = Marshal.ReadIntPtr(factory);
+            IntPtr enumAdapters = Marshal.ReadIntPtr(vtable, 9 * IntPtr.Size);
+            var enumFunc = Marshal.GetDelegateForFunctionPointer<EnumAdaptersDelegate>(enumAdapters);
+            IntPtr adapter;
+            if (enumFunc(factory, 0, out adapter) != 0) return 0;
+            try {
+                IntPtr adapterVtable = Marshal.ReadIntPtr(adapter);
+                IntPtr descPtr = Marshal.ReadIntPtr(adapterVtable, 4 * IntPtr.Size);
+                var descFunc = Marshal.GetDelegateForFunctionPointer<GetDescDelegate>(descPtr);
+                DXGI_ADAPTER_DESC desc;
+                if (descFunc(adapter, out desc) != 0) return 0;
+                return (float)(desc.DedicatedVideoMemory / (1024.0 * 1024.0 * 1024.0));
+            } finally { Marshal.Release(adapter); }
+        } finally { Marshal.Release(factory); }
+    }
+    [StructLayout(LayoutKind.Sequential)]
+    private struct DXGI_ADAPTER_DESC {
+        public uint VendorId; public uint DeviceId; public uint SubSysId; public uint Revision;
+        public ulong DedicatedVideoMemory; public ulong DedicatedSystemMemory; public ulong SharedSystemMemory;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst=128)] public string Description;
+    }
+    [UnmanagedFunctionPointer(CallingConvention.StdCall)]
+    private delegate int EnumAdaptersDelegate(IntPtr factory, uint index, out IntPtr adapter);
+    [UnmanagedFunctionPointer(CallingConvention.StdCall)]
+    private delegate int GetDescDelegate(IntPtr adapter, out DXGI_ADAPTER_DESC desc);
+}
+"@
+[DXGIVram]::GetVRAM()
+"#;
+    let output = Command::new("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-Command", script])
+        .output()
+        .ok()?;
+    if !output.status.success() { return None; }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    stdout.trim().parse::<f32>().ok().filter(|&v| v > 0.0)
 }
 
 #[cfg(target_os = "linux")]
@@ -942,8 +1032,9 @@ fn probe_sysfs_gpu() -> Option<GpuInfo> {
 
 #[cfg(target_os = "macos")]
 fn probe_macos_gpu() -> Option<GpuInfo> {
+    // Fast path: try `system_profiler SPDisplaysDataType -detailLevel mini` first
     let output = Command::new("system_profiler")
-        .args(["SPDisplaysDataType"])
+        .args(["SPDisplaysDataType", "-detailLevel", "mini"])
         .output()
         .ok()?;
     if !output.status.success() { return None; }
@@ -951,14 +1042,17 @@ fn probe_macos_gpu() -> Option<GpuInfo> {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let mut name = String::from("Apple GPU");
     let mut vram_gb = 0.0;
+    let mut metal_support = String::from("metal");
+    let mut gpu_metal_family = String::new();
 
     for line in stdout.lines() {
-        if let Some(val) = line.strip_prefix("Chipset Model: ") {
-            name = val.trim().to_string();
+        if line.contains("Chipset Model:") {
+            if let Some(val) = line.split(':').nth(1) {
+                name = val.trim().to_string();
+            }
         }
-        let lower = line.to_lowercase();
-        if lower.contains("vram") || lower.contains("vram (total):") || lower.contains("vram (dynamic):") {
-            // e.g. "VRAM (Total): 16 GB"
+        // "VRAM (Total): 16 GB" or "VRAM (Dynamic, Max): 16 GB"
+        if line.contains("VRAM") {
             let val = line.split(':').nth(1).unwrap_or("").trim();
             if let Some(num_str) = val.split_whitespace().next() {
                 if let Ok(num) = num_str.parse::<f32>() {
@@ -966,22 +1060,61 @@ fn probe_macos_gpu() -> Option<GpuInfo> {
                 }
             }
         }
+        if line.contains("Metal Support") {
+            if let Some(val) = line.split(':').nth(1) {
+                metal_support = val.trim().to_string();
+            }
+        }
+        if line.contains("Metal Family") {
+            if let Some(val) = line.split(':').nth(1) {
+                gpu_metal_family = val.trim().to_string();
+            }
+        }
     }
 
-    let backend = if super::host::is_apple_silicon() {
-        super::host::GpuBackend::Metal
-    } else if name.contains("Intel") || name.contains("AMD") || name.contains("Radeon") {
-        // Intel Macs often have AMD dGPU or Intel iGPU — Metal is still the runtime
-        super::host::GpuBackend::Metal
+    // On Apple Silicon, shared memory wasn't exported by system_profiler;
+    // query the IOKit registry for accurate GPU memory.
+    if vram_gb <= 0.0 && super::host::is_apple_silicon() {
+        if let Ok(ioreg) = Command::new("ioreg")
+            .args(["-r", "-c", "IOAccelerator", "-l"])
+            .output()
+        {
+            let iotext = String::from_utf8_lossy(&ioreg.stdout);
+            for line in iotext.lines() {
+                // "gpu-core-count" or "performanceState" indicate Apple GPU
+                if line.contains("\"gpu-core-count\"") {
+                    // Try "memory-available" which reports shared GPU memory
+                    if let Some(mem_line) = iotext.lines().find(|l| l.contains("\"memory-available\"")) {
+                        if let Some(val) = mem_line.split('=').nth(1) {
+                            if let Ok(bytes) = val.trim().trim_matches('"').parse::<f64>() {
+                                vram_gb = (bytes / 1_073_741_824.0) as f32;
+                            }
+                        }
+                    }
+                    break;
+                }
+            }
+            // Fallback: total system memory / 2 as rough ANE+GPU shared estimate
+            if vram_gb <= 0.0 {
+                vram_gb = detect_system_memory_gb().unwrap_or(16.0) * 0.5;
+            }
+        }
+    }
+
+    // Build compute capability string from Metal info
+    let compute_capability = if !metal_support.is_empty() && metal_support != "metal" {
+        metal_support
+    } else if !gpu_metal_family.is_empty() {
+        format!("apple_metal/{}", gpu_metal_family)
     } else {
-        super::host::GpuBackend::Metal
+        String::from("apple_metal")
     };
 
     Some(GpuInfo {
         name,
         vram_gb,
-        backend,
-        compute_capability: String::from("apple_metal"),
+        backend: super::host::GpuBackend::Metal,
+        compute_capability,
         driver_version: String::from("metal"),
         pci_address: None,
     })

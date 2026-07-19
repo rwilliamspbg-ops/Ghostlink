@@ -659,18 +659,23 @@ mod tests {
         std::env::remove_var("GHOSTLINK_NATIVE_ENGINE");
         std::env::remove_var("GHOSTLINK_MODEL_PATH");
 
+        let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
         let engine = NativeEngineClient::new();
-        let out = engine
-            .generate(
-                "ghostlink-30b-v1",
-                "summarize distributed runtime scheduling",
-                128,
-                0.7,
-                0.9,
-                40,
-                1.1,
-                "simulated",
-            )
+        let out = rt
+            .block_on(async {
+                engine
+                    .generate(
+                        "ghostlink-30b-v1",
+                        "summarize distributed runtime scheduling",
+                        128,
+                        0.7,
+                        0.9,
+                        40,
+                        1.1,
+                        "simulated",
+                    )
+                    .await
+            })
             .expect("native generation should succeed");
         assert!(out.text.contains("[native:ghostlink-30b-v1]"));
         assert!(out.text.contains("token budget 128"));
@@ -681,20 +686,25 @@ mod tests {
     fn llama_mode_requires_model_path() {
         let _guard = env_lock().lock().expect("env lock poisoned");
 
+        let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
         let engine = NativeEngineClient::new();
         std::env::set_var("GHOSTLINK_NATIVE_ENGINE", "llama_cpp");
         std::env::remove_var("GHOSTLINK_MODEL_PATH");
-        let err = engine
-            .generate(
-                "ghostlink-30b-v1",
-                "hello",
-                32,
-                0.7,
-                0.9,
-                40,
-                1.1,
-                "llama_cpp",
-            )
+        let err = rt
+            .block_on(async {
+                engine
+                    .generate(
+                        "ghostlink-30b-v1",
+                        "hello",
+                        32,
+                        0.7,
+                        0.9,
+                        40,
+                        1.1,
+                        "llama_cpp",
+                    )
+                    .await
+            })
             .expect_err("llama mode without model path should fail");
         assert!(err.contains("GHOSTLINK_MODEL_PATH"));
         std::env::remove_var("GHOSTLINK_NATIVE_ENGINE");

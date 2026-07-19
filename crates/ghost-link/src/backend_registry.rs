@@ -473,11 +473,12 @@ mod tests {
     #[test]
     fn test_backend_status() {
         let registry = BackendRegistry::discover();
-        let status = registry.get_status(&ComputeBackend::Cpu);
+        let current = registry.current_backend();
+        let status = registry.get_status(&current);
 
         assert!(status.is_some());
         let s = status.unwrap();
-        assert_eq!(s.status, "active"); // CPU is currently active by default
+        assert_eq!(s.status, "active");
         assert_eq!(s.health, "healthy");
     }
 }
