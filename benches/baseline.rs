@@ -81,7 +81,7 @@ fn main() {
             let mut n = 0u64;
             while n < iters {
                 cons.wait_for_data();
-                while let Some(_) = cons.pop() {
+                while cons.pop().is_some() {
                     n += 1;
                 }
             }
@@ -158,7 +158,7 @@ fn main() {
             let mut n = 0u64;
             while n < iters {
                 cons.wait_for_data();
-                while let Some(_) = cons.pop() {
+                while cons.pop().is_some() {
                     n += 1;
                 }
             }
@@ -222,9 +222,33 @@ fn main() {
         fn avg_stats(results: &[ExecutionResult]) -> (f64, f64, f64, f64) {
             let n = results.len() as f64;
             let total_ms: f64 = results.iter().map(|r| r.total_time_ms as f64).sum();
-            let recv: f64 = results.iter().map(|r| r.stage_stats.iter().map(|s| s.avg_recv_wait_ms as f64).sum::<f64>()).sum();
-            let comp: f64 = results.iter().map(|r| r.stage_stats.iter().map(|s| s.avg_compute_ms as f64).sum::<f64>()).sum();
-            let send: f64 = results.iter().map(|r| r.stage_stats.iter().map(|s| s.avg_send_wait_ms as f64).sum::<f64>()).sum();
+            let recv: f64 = results
+                .iter()
+                .map(|r| {
+                    r.stage_stats
+                        .iter()
+                        .map(|s| s.avg_recv_wait_ms as f64)
+                        .sum::<f64>()
+                })
+                .sum();
+            let comp: f64 = results
+                .iter()
+                .map(|r| {
+                    r.stage_stats
+                        .iter()
+                        .map(|s| s.avg_compute_ms as f64)
+                        .sum::<f64>()
+                })
+                .sum();
+            let send: f64 = results
+                .iter()
+                .map(|r| {
+                    r.stage_stats
+                        .iter()
+                        .map(|s| s.avg_send_wait_ms as f64)
+                        .sum::<f64>()
+                })
+                .sum();
             (total_ms / n, recv / n, comp / n, send / n)
         }
 
@@ -241,8 +265,10 @@ fn main() {
             let (total, recv, comp, send) = avg_stats(&inproc_results);
             let thru = tokens as f64 / (total / 1000.0);
             let suffix = format!("in-process ({} tok, {} batches)", tokens, batch_count);
-            println!("{:<30} {:>8.3} ms  (recv={:>6.3} compute={:>6.3} send={:>6.3})  {:>10.0} tok/s",
-                suffix, total, recv, comp, send, thru);
+            println!(
+                "{:<30} {:>8.3} ms  (recv={:>6.3} compute={:>6.3} send={:>6.3})  {:>10.0} tok/s",
+                suffix, total, recv, comp, send, thru
+            );
 
             // TCP loopback
             let mut tcp_results = Vec::with_capacity(runs);
@@ -254,8 +280,10 @@ fn main() {
             let (total, recv, comp, send) = avg_stats(&tcp_results);
             let thru = tokens as f64 / (total / 1000.0);
             let suffix = format!("TCP loopback ({} tok, {} batches)", tokens, batch_count);
-            println!("{:<30} {:>8.3} ms  (recv={:>6.3} compute={:>6.3} send={:>6.3})  {:>10.0} tok/s",
-                suffix, total, recv, comp, send, thru);
+            println!(
+                "{:<30} {:>8.3} ms  (recv={:>6.3} compute={:>6.3} send={:>6.3})  {:>10.0} tok/s",
+                suffix, total, recv, comp, send, thru
+            );
         }
     }
 

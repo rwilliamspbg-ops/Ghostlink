@@ -160,7 +160,12 @@ impl LoadBalancer {
 
     /// Access the current configuration.
     pub fn config(&self) -> LoadBalanceConfig {
-        self.config.lock().ok().as_deref().copied().unwrap_or_default()
+        self.config
+            .lock()
+            .ok()
+            .as_deref()
+            .copied()
+            .unwrap_or_default()
     }
 
     /// Distribute tensor layers across nodes based on VRAM capacity

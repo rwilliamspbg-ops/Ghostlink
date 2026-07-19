@@ -1,6 +1,6 @@
 [package]
 name = "ghost-link"
-version = "0.1.0-alpha.0"
+version = "1.3.0"
 edition = "2021"
 authors = ["Ryan K Williams"]
 description = "CLI and API runtime for Ghostlink, a distributed inference fabric for routing and scheduling custom LLM workloads across heterogeneous hardware."
@@ -21,7 +21,7 @@ cuda = []
 rocm = ["ghostlink-core/rocm"]
 
 [dependencies]
-ghostlink-core = { path = "../ghostlink-core", version = "0.1.0-alpha.0" }
+ghostlink-core = { path = "../ghostlink-core", version = "1.3.0" }
 
 # Local date/time for the assistant system prompt
 chrono = "0.4"

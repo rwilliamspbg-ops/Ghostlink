@@ -788,7 +788,7 @@ dependencies = [
 
 [[package]]
 name = "ghost-link"
-version = "0.1.0-alpha.0"
+version = "1.3.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -811,7 +811,7 @@ dependencies = [
 
 [[package]]
 name = "ghostlink-core"
-version = "0.1.0-alpha.0"
+version = "1.3.0"
 dependencies = [
  "anyhow",
  "arc-swap",

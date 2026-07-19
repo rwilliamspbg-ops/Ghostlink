@@ -7,6 +7,7 @@
 
 use crate::runtime::Runtime;
 use anyhow::Result;
+use ghostlink_core::autotune::AutoTuner;
 use ghostlink_core::cluster::{ClusterState, NodeMetrics};
 use ghostlink_core::dashboard::Dashboard;
 use ghostlink_core::discovery::{
@@ -14,7 +15,6 @@ use ghostlink_core::discovery::{
     UdpDiscoveryConfig, DEFAULT_DISCOVERY_PORT,
 };
 use ghostlink_core::health::NetworkHealthMonitor;
-use ghostlink_core::autotune::AutoTuner;
 use ghostlink_core::host::{detect_runtime_profile, detect_runtime_profile_full, ProbeMode};
 use ghostlink_core::load_balance::LoadBalancer;
 use ghostlink_core::planning::{

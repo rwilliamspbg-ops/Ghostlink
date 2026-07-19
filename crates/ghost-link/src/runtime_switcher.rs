@@ -220,7 +220,7 @@ impl RuntimeSwitcher {
 
         // Step 4: Switch backend in registry
         tracing::info!("Phase3: Switching backend in registry");
-        registry.switch_backend(target_backend.clone())?;
+        registry.switch_backend(target_backend)?;
 
         // Step 5: Note: Actual process restart would happen here
         // For now, we return info about what needs to happen

@@ -151,7 +151,12 @@ impl NetworkHealthMonitor {
 
     /// Read the current configuration.
     pub fn config(&self) -> HealthConfig {
-        self.config.lock().ok().as_deref().copied().unwrap_or_default()
+        self.config
+            .lock()
+            .ok()
+            .as_deref()
+            .copied()
+            .unwrap_or_default()
     }
 
     /// Register a node-specific TCP probe target.
@@ -272,9 +277,7 @@ impl NetworkHealthMonitor {
     /// Get health status based on metrics
     fn get_health_status(&self, latency_us: f32, delivery_ratio: f32) -> HealthStatus {
         let cfg = self.config();
-        if delivery_ratio >= cfg.healthy_delivery_ratio
-            && latency_us <= cfg.healthy_latency_us
-        {
+        if delivery_ratio >= cfg.healthy_delivery_ratio && latency_us <= cfg.healthy_latency_us {
             HealthStatus::Healthy
         } else if delivery_ratio >= cfg.degraded_delivery_ratio
             || latency_us <= cfg.degraded_latency_us

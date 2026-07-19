@@ -4,6 +4,89 @@ All notable changes to Ghostlink Studio are documented here.
 
 ---
 
+## [1.3.0] - 2026-07-19 (Performance Overhaul & Auto-Discovery)
+
+### 🚀 Performance
+
+#### SPSC Ring Buffer Spin-Wait
+- Replaced OS scheduler `yield_now()` polling with exponential-backoff spin-wait (`wait_for_data()` / `wait_for_space()`)
+- Stage threads now stay hot on core — no scheduler trip during hot-path communication
+- In-process pipeline throughput: **866K tok/s** at 1024 tokens (1.18 ms latency)
+
+#### `target-cpu=native` Compilation
+- `.cargo/config.toml` enables `-C target-cpu=native` for automatic CPU feature utilization
+- AVX-512, AVX2, FMA, and other ISA extensions enabled without manual flags
+
+#### Unix Domain Socket Transport
+- New `TransportKind::Unix` variant alongside existing `Tcp`
+- `BridgeListener`, `BridgeStream`, `BridgeAddr` enums wrapping platform-specific types
+- Socket path: `%TEMP%/ghostlink-bridge-{stage}.sock`
+- Linux/macOS only (runtime error on Windows)
+- TCP loopback benchmark: **497K tok/s** at 1024 tokens
+
+#### Pipeline Benchmarking
+- Added per-phase breakdown (recv / compute / send) to all transport benchmarks
+- Benchmarks confirm ~98% of pipeline latency is OS scheduling overhead, not data movement
+
+### 🧠 Auto-Discovery & System Profile
+
+#### Unified SystemProfile
+- Cross-platform hardware detection (CPU, GPU, NPU) consolidated into `system_profile.rs`
+- Memory detection via `/proc/meminfo` (Linux), `sysctl` (macOS), WMI (Windows)
+- Env overrides: `GHOSTLINK_SYSTEM_MEMORY_GB`, `NPU_DEVICE`, `QUALCOMM_NPU`
+
+#### AutoTuner with Persistent Cache
+- Hardware fingerprinting with JSON cache file
+- Tunable parameters (batch sizes, worker counts, chunk sizes) derived from detected hardware
+- Cache invalidates on hardware change
+- Wired into `probe` CLI command
+
+#### Dynamic SystemProfileWatcher
+- Background thread polls hardware state every N seconds
+- Detects hot-plug GPU/NPU changes at runtime
+- Feeds into health monitor and load balancer for live reconfiguration
+- Subscribe/notify pattern for downstream consumers
+
+### 🔒 Session-Level Transport Authentication
+
+- Transport frames now carry session keys
+- Mismatched auth tokens are rejected at the protocol level
+- Configurable via `auth_token` in `ghostlink.toml` `[tcp]` section
+
+### 🔧 Backend Switching & API
+
+- New `/api/backend/status` endpoint — reports current backend + available backends
+- New `/api/backend/switch` endpoint — switch inference backend at runtime
+- Backend registry refactored to delegate detection to `SystemProfile`
+- `RuntimeDetector` and `BackendRegistry` now source hardware info from unified profile
+
+### 🧪 CI & Quality
+
+- Cross-platform CI matrix: **ubuntu-latest**, **windows-latest**, **macos-latest**
+- Formatting and clippy enforcement on all three platforms
+- MSRV pinned at **1.85.0** with `rust-version` field in `Cargo.toml`
+- All 216 tests pass across all targets
+
+### 🐛 Clippy Fixes
+
+- 8 lints resolved across 3 crates:
+  - `needless_range_loop` → `iter_mut().enumerate().take()`
+  - `redundant_closure_call` → inline block expression
+  - `collapsible_if` → combined condition
+  - `clone_on_copy` (5 instances) → removed redundant `.clone()` calls
+  - `redundant_pattern_matching` → `.is_some()` idiom
+  - `unreachable_code` → extracted cfg-gated platform functions
+  - `unused_import` → cfg-gated Unix import
+
+### ✅ Build Verification
+
+- `cargo fmt --all --check` — **OK**
+- `cargo clippy --workspace --all-targets -- -D warnings` — **OK**
+- `cargo test --workspace` — **216/216 passed**
+- `cargo bench --package ghostlink-core` — **baseline updated**
+
+---
+
 ## [1.2.1] - 2026-07-18 (Repository Cleanup)
 
 ### 🧹 Documentation Hygiene
@@ -480,6 +563,9 @@ POST /api/runtime/recommend           ✅ Recommend models
 
 | Version | Date | Status | Notes |
 |---------|------|--------|-------|
+| 1.3.0 | 2026-07-19 | ✅ Release | Performance overhaul, auto-discovery, Unix sockets, auth, CI matrix |
+| 1.2.1 | 2026-07-18 | ✅ Release | Repository cleanup, docs hygiene |
+| 1.2.0 | 2026-07-15 | ✅ Release | Reliability, retry, circuit breaker, config validation |
 | 1.1.0 | 2025-07-14 | ✅ Release | Runtime fixes, model load/unload, real inference, runtime selection, real metrics |
 | 1.0.0 | 2024-12-19 | ✅ Production | All critical bugs fixed, production hardened |
 | 0.x | - | ❌ Archived | Alpha development phase |
@@ -508,7 +594,7 @@ MIT License - See LICENSE file for details
 ---
 
 **Status**: ✅ Production Ready  
-**Last Updated**: 2025-07-14  
+**Last Updated**: 2026-07-19  
 **Maintainer**: Ghostlink Team  
 
 (End of file)

@@ -346,16 +346,17 @@ impl NativeEngineClient {
 
         match native_engine.trim().to_ascii_lowercase().as_str() {
             "llama_server" | "llama-server" => {
-                let text = self.generate_with_llama_server(
-                    model,
-                    cleaned_prompt,
-                    max_tokens,
-                    temperature,
-                    top_p,
-                    top_k,
-                    repeat_penalty,
-                )
-                .await?;
+                let text = self
+                    .generate_with_llama_server(
+                        model,
+                        cleaned_prompt,
+                        max_tokens,
+                        temperature,
+                        top_p,
+                        top_k,
+                        repeat_penalty,
+                    )
+                    .await?;
                 Ok(NativeGeneration {
                     text,
                     real_inference: true,

@@ -235,7 +235,11 @@ fn store_cached_runtime_profile(profile: &RuntimeProfile) {
 /// Infer GPU compute capability from its marketing name.
 pub fn infer_compute_capability_from_name(name: &str) -> String {
     let lowered = name.to_ascii_lowercase();
-    if lowered.contains("rtx 50") || lowered.contains("rtx50") || lowered.contains("b100") || lowered.contains("b200") {
+    if lowered.contains("rtx 50")
+        || lowered.contains("rtx50")
+        || lowered.contains("b100")
+        || lowered.contains("b200")
+    {
         String::from("9.0")
     } else if lowered.contains("rtx 40") || lowered.contains("rtx40") {
         String::from("8.9")
@@ -254,10 +258,19 @@ pub fn infer_compute_capability_from_name(name: &str) -> String {
         || lowered.contains("mi350")
         || lowered.contains("instinct")
     {
-        if cfg!(feature = "rocm") { String::from("rocm") } else { String::from("gpu") }
+        if cfg!(feature = "rocm") {
+            String::from("rocm")
+        } else {
+            String::from("gpu")
+        }
     } else if lowered.contains("intel") || lowered.contains("iris") || lowered.contains("uhd") {
         String::from("xe")
-    } else if lowered.contains("apple") || lowered.contains("m1") || lowered.contains("m2") || lowered.contains("m3") || lowered.contains("m4") {
+    } else if lowered.contains("apple")
+        || lowered.contains("m1")
+        || lowered.contains("m2")
+        || lowered.contains("m3")
+        || lowered.contains("m4")
+    {
         String::from("apple_metal")
     } else {
         String::from("gpu")

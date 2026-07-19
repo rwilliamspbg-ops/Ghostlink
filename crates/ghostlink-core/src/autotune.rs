@@ -62,8 +62,7 @@ impl AutoTuner {
 
         let health_config = super::health::HealthConfig::autotuned(&rp);
         let load_balance_config = super::load_balance::LoadBalanceConfig::autotuned(&rp);
-        let planning_tuning =
-            super::planning::PlanningTuning::from_runtime_profile(&rp, 40);
+        let planning_tuning = super::planning::PlanningTuning::from_runtime_profile(&rp, 40);
 
         let tcp_config = tune_tcp(profile, &rp);
         let worker_pool = tune_worker_pool(profile, &rp);
@@ -188,7 +187,12 @@ fn tune_tcp(profile: &SystemProfile, _rp: &RuntimeProfile) -> TcpAutoConfig {
     };
 
     // Scale for multi-GPU
-    let gpu_count = profile.gpus.iter().filter(|g| g.vram_gb > 0.0).count().max(1);
+    let gpu_count = profile
+        .gpus
+        .iter()
+        .filter(|g| g.vram_gb > 0.0)
+        .count()
+        .max(1);
     TcpAutoConfig {
         max_inflight_batches: max_inflight * gpu_count,
         reconnect_attempts,
@@ -221,9 +225,15 @@ impl serde::Serialize for AutoTuner {
         st.serialize_field("fingerprint", &self.fingerprint)?;
         st.serialize_field("tuned_at", &self.tuned_at)?;
         st.serialize_field("healthy_latency_us", &self.health_config.healthy_latency_us)?;
-        st.serialize_field("degraded_latency_us", &self.health_config.degraded_latency_us)?;
+        st.serialize_field(
+            "degraded_latency_us",
+            &self.health_config.degraded_latency_us,
+        )?;
         st.serialize_field("lock_timeout_us", &self.load_balance_config.lock_timeout_us)?;
-        st.serialize_field("max_inflight_batches", &self.tcp_config.max_inflight_batches)?;
+        st.serialize_field(
+            "max_inflight_batches",
+            &self.tcp_config.max_inflight_batches,
+        )?;
         st.serialize_field("compute_workers", &self.worker_pool.compute_workers)?;
         st.end()
     }
@@ -256,7 +266,9 @@ impl<'de> serde::Deserialize<'de> for AutoTuner {
                         "lock_timeout_us" => lock_timeout_us = map.next_value()?,
                         "max_inflight_batches" => max_inflight_batches = map.next_value()?,
                         "compute_workers" => compute_workers = map.next_value()?,
-                        _ => { let _: serde_json::Value = map.next_value()?; }
+                        _ => {
+                            let _: serde_json::Value = map.next_value()?;
+                        }
                     }
                 }
 
@@ -347,8 +359,8 @@ mod tests {
 
     #[test]
     fn tcp_config_scales_with_multi_gpu() {
-        use crate::system_profile::{CpuInfo, GpuInfo, MemoryInfo};
         use crate::host::{AccelerationMode, GpuBackend};
+        use crate::system_profile::{CpuInfo, GpuInfo, MemoryInfo};
 
         let single = SystemProfile {
             gpus: vec![GpuInfo {
@@ -359,19 +371,45 @@ mod tests {
                 driver_version: "555".into(),
                 pci_address: None,
             }],
-            cpu: CpuInfo { logical_cores: 16, ..Default::default() },
-            memory: MemoryInfo { total_gb: 64.0, ..Default::default() },
+            cpu: CpuInfo {
+                logical_cores: 16,
+                ..Default::default()
+            },
+            memory: MemoryInfo {
+                total_gb: 64.0,
+                ..Default::default()
+            },
             acceleration_mode: AccelerationMode::Gpu,
             ..Default::default()
         };
 
         let dual = SystemProfile {
             gpus: vec![
-                GpuInfo { name: "RTX 4090".into(), vram_gb: 24.0, backend: GpuBackend::Cuda, compute_capability: "8.9".into(), driver_version: "555".into(), pci_address: None },
-                GpuInfo { name: "RTX 3090".into(), vram_gb: 24.0, backend: GpuBackend::Cuda, compute_capability: "8.6".into(), driver_version: "555".into(), pci_address: None },
+                GpuInfo {
+                    name: "RTX 4090".into(),
+                    vram_gb: 24.0,
+                    backend: GpuBackend::Cuda,
+                    compute_capability: "8.9".into(),
+                    driver_version: "555".into(),
+                    pci_address: None,
+                },
+                GpuInfo {
+                    name: "RTX 3090".into(),
+                    vram_gb: 24.0,
+                    backend: GpuBackend::Cuda,
+                    compute_capability: "8.6".into(),
+                    driver_version: "555".into(),
+                    pci_address: None,
+                },
             ],
-            cpu: CpuInfo { logical_cores: 16, ..Default::default() },
-            memory: MemoryInfo { total_gb: 64.0, ..Default::default() },
+            cpu: CpuInfo {
+                logical_cores: 16,
+                ..Default::default()
+            },
+            memory: MemoryInfo {
+                total_gb: 64.0,
+                ..Default::default()
+            },
             acceleration_mode: AccelerationMode::Gpu,
             ..Default::default()
         };

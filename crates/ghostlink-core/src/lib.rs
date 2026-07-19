@@ -55,10 +55,6 @@ pub use host::{
     detect_runtime_profile_with_mode, infer_compute_capability_from_name, is_apple_silicon,
     AccelerationMode, GpuBackend, ProbeMode, RuntimeProfile,
 };
-pub use system_profile::{
-    CpuInfo, CpuFeatures, GpuInfo, MemoryInfo, NetworkInfo, NpuInfo, SystemProfile,
-};
-pub use watcher::{ProfileChange, SystemProfileWatcher};
 pub use planning::{
     assign_layers_sequentially, assign_layers_with_fault_tolerance_and_runtime,
     assign_layers_with_runtime_profile, chunk_assignments_for_workers, select_quantization_mode,
@@ -67,8 +63,12 @@ pub use planning::{
 pub use protocol::NodeResources;
 pub use ring::{RingConfig, SpscRingBuffer};
 pub use runtime::{
-    BridgeAddr, BridgeListener, BridgeStream, build_token_schedule, execute_pipeline,
-    execute_pipeline_tcp_loopback, execute_pipeline_tcp_loopback_with_config, DeviceKind,
-    ExecutionResult, PipelinePlan, StageExecutionStats, StagePlacement, TcpTransportConfig,
-    TokenStep, TransportKind,
+    build_token_schedule, execute_pipeline, execute_pipeline_tcp_loopback,
+    execute_pipeline_tcp_loopback_with_config, BridgeAddr, BridgeListener, BridgeStream,
+    DeviceKind, ExecutionResult, PipelinePlan, StageExecutionStats, StagePlacement,
+    TcpTransportConfig, TokenStep, TransportKind,
 };
+pub use system_profile::{
+    CpuFeatures, CpuInfo, GpuInfo, MemoryInfo, NetworkInfo, NpuInfo, SystemProfile,
+};
+pub use watcher::{ProfileChange, SystemProfileWatcher};

@@ -343,9 +343,9 @@ impl<T> SpscRingBuffer<T> {
         }
 
         let buf = unsafe { &mut *self.buffer.get() };
-        for i in 0..count {
+        for (i, slot) in out.iter_mut().enumerate().take(count) {
             let src = head.wrapping_add(i) & (Self::CAPACITY - 1);
-            out[i] = std::mem::MaybeUninit::new(unsafe { buf[src].assume_init_read() });
+            *slot = std::mem::MaybeUninit::new(unsafe { buf[src].assume_init_read() });
         }
         let new_head = head.wrapping_add(count) & (Self::CAPACITY - 1);
         self.head.store(new_head, Ordering::Release);
@@ -518,7 +518,10 @@ mod tests {
 
     #[test]
     fn push_batch_respects_capacity() {
-        let config = RingConfig { capacity: 10, backpressure_threshold: 8 };
+        let config = RingConfig {
+            capacity: 10,
+            backpressure_threshold: 8,
+        };
         let ring = SpscRingBuffer::<u64>::new(config);
         let data: Vec<u64> = (0..100).collect();
         let n = ring.push_batch(&data);
@@ -535,7 +538,10 @@ mod tests {
         let mut out = vec![std::mem::MaybeUninit::uninit(); 20];
         let n = ring.pop_batch(&mut out);
         assert_eq!(n, 20);
-        let drained: Vec<u64> = out[..n].iter().map(|x| unsafe { x.assume_init_read() }).collect();
+        let drained: Vec<u64> = out[..n]
+            .iter()
+            .map(|x| unsafe { x.assume_init_read() })
+            .collect();
         assert_eq!(drained, (0..20).collect::<Vec<u64>>());
         assert_eq!(ring.len(), 30);
     }
@@ -592,7 +598,10 @@ mod tests {
 
     #[test]
     fn write_read_available_tracking() {
-        let config = RingConfig { capacity: 100, backpressure_threshold: 70 };
+        let config = RingConfig {
+            capacity: 100,
+            backpressure_threshold: 70,
+        };
         let ring = SpscRingBuffer::<u64>::new(config);
         assert_eq!(ring.write_available(), 100);
         assert_eq!(ring.read_available(), 0);
@@ -609,6 +618,9 @@ mod tests {
         ring.pop();
         assert_eq!(ring.read_available(), 29);
         let wa = ring.write_available();
-        assert!(wa == 70 || wa == 71, "write_available should be 70 (conservative) or 71 (true): got {wa}");
+        assert!(
+            wa == 70 || wa == 71,
+            "write_available should be 70 (conservative) or 71 (true): got {wa}"
+        );
     }
 }

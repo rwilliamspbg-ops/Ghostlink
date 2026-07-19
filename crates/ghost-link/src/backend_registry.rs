@@ -78,14 +78,19 @@ impl BackendRegistry {
                 ghostlink_core::host::GpuBackend::Metal => Some(ComputeBackend::Metal),
                 ghostlink_core::host::GpuBackend::Directml => Some(ComputeBackend::OneAPI),
                 ghostlink_core::host::GpuBackend::Vulkan => Some(ComputeBackend::OneAPI),
-                ghostlink_core::host::GpuBackend::Npu | ghostlink_core::host::GpuBackend::Cpu => None,
+                ghostlink_core::host::GpuBackend::Npu | ghostlink_core::host::GpuBackend::Cpu => {
+                    None
+                }
             };
 
             if let Some(b) = backend {
                 if backends.is_empty() {
                     current = b;
                 }
-                if !backends.iter().any(|bi: &BackendInfo| bi.backend == current) {
+                if !backends
+                    .iter()
+                    .any(|bi: &BackendInfo| bi.backend == current)
+                {
                     backends.push(BackendInfo {
                         backend: b,
                         device_name: gpu.name.clone(),
@@ -375,7 +380,7 @@ impl BackendRegistry {
 
     /// Get current active backend
     pub fn current_backend(&self) -> ComputeBackend {
-        self.current.lock().unwrap().clone()
+        *self.current.lock().unwrap()
     }
 
     /// Get a specific backend info
@@ -411,7 +416,7 @@ impl BackendRegistry {
         let health = "healthy".to_string(); // TODO: implement health checks
 
         Some(BackendStatus {
-            backend: info.backend.clone(),
+            backend: info.backend,
             device_name: info.device_name,
             vram_gb: info.vram_gb,
             status,

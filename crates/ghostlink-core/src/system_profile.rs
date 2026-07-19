@@ -159,11 +159,16 @@ impl SystemProfile {
         let npus = detect_npus();
         let network = detect_network_info();
         let acceleration_mode = pick_acceleration_mode(&gpus, &cpu);
-        let recommended_workers = compute_recommended_workers(&cpu, &memory, &gpus, acceleration_mode);
+        let recommended_workers =
+            compute_recommended_workers(&cpu, &memory, &gpus, acceleration_mode);
         let detection_source = gpus
             .first()
             .and_then(|g| {
-                if g.name == "cpu" || g.name.is_empty() { None } else { Some(g.name.clone()) }
+                if g.name == "cpu" || g.name.is_empty() {
+                    None
+                } else {
+                    Some(g.name.clone())
+                }
             })
             .unwrap_or_else(|| "cpu".into());
 
@@ -201,7 +206,9 @@ impl SystemProfile {
 impl From<&SystemProfile> for super::host::RuntimeProfile {
     fn from(sp: &SystemProfile) -> Self {
         let primary_gpu = sp.gpus.first();
-        let gpu_backend = primary_gpu.map(|g| g.backend).unwrap_or(super::host::GpuBackend::Cpu);
+        let gpu_backend = primary_gpu
+            .map(|g| g.backend)
+            .unwrap_or(super::host::GpuBackend::Cpu);
         let vram_gb = primary_gpu.map(|g| g.vram_gb).unwrap_or(0.0);
         let gpu_name = primary_gpu.map(|g| g.name.clone());
         let compute_cap = primary_gpu
@@ -256,14 +263,23 @@ impl SystemProfile {
 // ---------------------------------------------------------------------------
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ProbeMode { Fast, Full }
+enum ProbeMode {
+    Fast,
+    Full,
+}
 
 fn hostname() -> Option<String> {
     let output = Command::new("hostname").output().ok()?;
-    if !output.status.success() { return None; }
+    if !output.status.success() {
+        return None;
+    }
     let name = String::from_utf8_lossy(&output.stdout);
     let trimmed = name.trim();
-    if trimmed.is_empty() { None } else { Some(trimmed.to_string()) }
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -334,10 +350,7 @@ fn detect_cpu_brand() -> String {
             }
         }
         // For Apple Silicon, sysctl may not return a brand string
-        if let Ok(output) = Command::new("sysctl")
-            .args(["-n", "hw.model"])
-            .output()
-        {
+        if let Ok(output) = Command::new("sysctl").args(["-n", "hw.model"]).output() {
             let model = String::from_utf8_lossy(&output.stdout);
             let trimmed = model.trim();
             if !trimmed.is_empty() {
@@ -458,7 +471,10 @@ fn detect_physical_cores() -> Option<usize> {
             .args(["-n", "hw.physicalcpu"])
             .output()
         {
-            if let Ok(count) = String::from_utf8_lossy(&output.stdout).trim().parse::<usize>() {
+            if let Ok(count) = String::from_utf8_lossy(&output.stdout)
+                .trim()
+                .parse::<usize>()
+            {
                 return Some(count);
             }
         }
@@ -479,9 +495,13 @@ fn detect_physical_cores() -> Option<usize> {
             for line in text.lines() {
                 if let Ok(count) = line.trim().parse::<usize>() {
                     if count > 0 {
-                        return Some(count * std::thread::available_parallelism()
-                            .map(|n| n.get())
-                            .unwrap_or(1) / logical_cores_fallback());
+                        return Some(
+                            count
+                                * std::thread::available_parallelism()
+                                    .map(|n| n.get())
+                                    .unwrap_or(1)
+                                / logical_cores_fallback(),
+                        );
                     }
                 }
             }
@@ -492,7 +512,9 @@ fn detect_physical_cores() -> Option<usize> {
 }
 
 fn logical_cores_fallback() -> usize {
-    std::thread::available_parallelism().map(usize::from).unwrap_or(1)
+    std::thread::available_parallelism()
+        .map(usize::from)
+        .unwrap_or(1)
 }
 
 // ---------------------------------------------------------------------------
@@ -502,7 +524,10 @@ fn logical_cores_fallback() -> usize {
 fn detect_memory_info() -> MemoryInfo {
     let total_gb = detect_system_memory_gb().unwrap_or(0.0);
     let available_gb = detect_available_memory_gb().unwrap_or(total_gb * 0.5);
-    MemoryInfo { total_gb, available_gb }
+    MemoryInfo {
+        total_gb,
+        available_gb,
+    }
 }
 
 fn detect_system_memory_gb() -> Option<f32> {
@@ -513,134 +538,164 @@ fn detect_system_memory_gb() -> Option<f32> {
         }
     }
 
-    // Linux
-    #[cfg(target_os = "linux")]
-    {
-        let meminfo = fs::read_to_string("/proc/meminfo").ok()?;
-        let line = meminfo.lines().find(|l| l.starts_with("MemTotal:"))?;
-        let kb = line.split_whitespace().nth(1).and_then(|v| v.parse::<f32>().ok())?;
-        return Some(kb / 1024.0 / 1024.0);
-    }
+    platform_detect_system_memory_gb()
+}
 
-    // macOS
-    #[cfg(target_os = "macos")]
-    {
-        if let Ok(output) = Command::new("sysctl")
-            .args(["-n", "hw.memsize"])
-            .output()
+#[cfg(target_os = "linux")]
+fn platform_detect_system_memory_gb() -> Option<f32> {
+    let meminfo = fs::read_to_string("/proc/meminfo").ok()?;
+    let line = meminfo.lines().find(|l| l.starts_with("MemTotal:"))?;
+    let kb = line
+        .split_whitespace()
+        .nth(1)
+        .and_then(|v| v.parse::<f32>().ok())?;
+    Some(kb / 1024.0 / 1024.0)
+}
+
+#[cfg(target_os = "macos")]
+fn platform_detect_system_memory_gb() -> Option<f32> {
+    if let Ok(output) = Command::new("sysctl").args(["-n", "hw.memsize"]).output() {
+        if let Ok(bytes) = String::from_utf8_lossy(&output.stdout)
+            .trim()
+            .parse::<f64>()
         {
-            if let Ok(bytes) = String::from_utf8_lossy(&output.stdout).trim().parse::<f64>() {
+            return Some((bytes / 1_073_741_824.0) as f32);
+        }
+    }
+    None
+}
+
+#[cfg(target_os = "windows")]
+fn platform_detect_system_memory_gb() -> Option<f32> {
+    if let Ok(output) = Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-Command",
+            "(Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory",
+        ])
+        .output()
+    {
+        if let Ok(bytes) = String::from_utf8_lossy(&output.stdout)
+            .trim()
+            .parse::<f64>()
+        {
+            if bytes > 0.0 {
                 return Some((bytes / 1_073_741_824.0) as f32);
             }
         }
     }
-
-    // Windows
-    #[cfg(target_os = "windows")]
+    // Fallback: wmic
+    if let Ok(output) = Command::new("wmic")
+        .args([
+            "ComputerSystem",
+            "get",
+            "TotalPhysicalMemory",
+            "/format:csv",
+        ])
+        .output()
     {
-        if let Ok(output) = Command::new("powershell")
-            .args([
-                "-NoProfile",
-                "-Command",
-                "(Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory",
-            ])
-            .output()
-        {
-            if let Ok(bytes) = String::from_utf8_lossy(&output.stdout).trim().parse::<f64>() {
-                if bytes > 0.0 {
-                    return Some((bytes / 1_073_741_824.0) as f32);
-                }
-            }
-        }
-        // Fallback: wmic
-        if let Ok(output) = Command::new("wmic")
-            .args(["ComputerSystem", "get", "TotalPhysicalMemory", "/format:csv"])
-            .output()
-        {
-            let text = String::from_utf8_lossy(&output.stdout);
-            for line in text.lines().skip(1) {
-                if let Some(val) = line.split(',').nth(1) {
-                    if let Ok(bytes) = val.trim().parse::<f64>() {
-                        if bytes > 0.0 {
-                            return Some((bytes / 1_073_741_824.0) as f32);
-                        }
+        let text = String::from_utf8_lossy(&output.stdout);
+        for line in text.lines().skip(1) {
+            if let Some(val) = line.split(',').nth(1) {
+                if let Ok(bytes) = val.trim().parse::<f64>() {
+                    if bytes > 0.0 {
+                        return Some((bytes / 1_073_741_824.0) as f32);
                     }
                 }
             }
         }
     }
+    None
+}
 
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+fn platform_detect_system_memory_gb() -> Option<f32> {
     None
 }
 
 fn detect_available_memory_gb() -> Option<f32> {
-    // Linux
-    #[cfg(target_os = "linux")]
-    {
-        let meminfo = fs::read_to_string("/proc/meminfo").ok()?;
-        // Prefer MemAvailable, fall back to (MemFree + Cached)
-        if let Some(line) = meminfo.lines().find(|l| l.starts_with("MemAvailable:")) {
-            let kb = line.split_whitespace().nth(1).and_then(|v| v.parse::<f32>().ok())?;
-            return Some(kb / 1024.0 / 1024.0);
-        }
-        let free = meminfo.lines()
-            .find(|l| l.starts_with("MemFree:"))
-            .and_then(|l| l.split_whitespace().nth(1)?.parse::<f32>().ok())
-            .unwrap_or(0.0);
-        let cached = meminfo.lines()
-            .find(|l| l.starts_with("Cached:"))
-            .and_then(|l| l.split_whitespace().nth(1)?.parse::<f32>().ok())
-            .unwrap_or(0.0);
-        return Some((free + cached) / 1024.0 / 1024.0);
-    }
+    platform_detect_available_memory_gb()
+}
 
-    // macOS
-    #[cfg(target_os = "macos")]
-    {
-        if let Ok(output) = Command::new("vm_stat").output() {
-            let text = String::from_utf8_lossy(&output.stdout);
-            let mut free_pages = 0.0f64;
-            let mut inactive_pages = 0.0f64;
-            let mut page_size = 16384.0f64; // default Apple Silicon page size
-            for line in text.lines() {
-                if let Some(val) = line.strip_prefix("Mach Virtual Memory Statistics: (page size of ") {
-                    if let Some(size) = val.trim_end_matches(" bytes)").parse::<f64>().ok() {
-                        page_size = size;
-                    }
-                }
-                if line.contains("pages free") {
-                    free_pages = line.split(':').nth(1)
-                        .and_then(|s| s.trim().replace('.', "").parse::<f64>().ok())
-                        .unwrap_or(0.0);
-                }
-                if line.contains("pages inactive") {
-                    inactive_pages = line.split(':').nth(1)
-                        .and_then(|s| s.trim().replace('.', "").parse::<f64>().ok())
-                        .unwrap_or(0.0);
+#[cfg(target_os = "linux")]
+fn platform_detect_available_memory_gb() -> Option<f32> {
+    let meminfo = fs::read_to_string("/proc/meminfo").ok()?;
+    if let Some(line) = meminfo.lines().find(|l| l.starts_with("MemAvailable:")) {
+        let kb = line
+            .split_whitespace()
+            .nth(1)
+            .and_then(|v| v.parse::<f32>().ok())?;
+        return Some(kb / 1024.0 / 1024.0);
+    }
+    let free = meminfo
+        .lines()
+        .find(|l| l.starts_with("MemFree:"))
+        .and_then(|l| l.split_whitespace().nth(1)?.parse::<f32>().ok())
+        .unwrap_or(0.0);
+    let cached = meminfo
+        .lines()
+        .find(|l| l.starts_with("Cached:"))
+        .and_then(|l| l.split_whitespace().nth(1)?.parse::<f32>().ok())
+        .unwrap_or(0.0);
+    Some((free + cached) / 1024.0 / 1024.0)
+}
+
+#[cfg(target_os = "macos")]
+fn platform_detect_available_memory_gb() -> Option<f32> {
+    if let Ok(output) = Command::new("vm_stat").output() {
+        let text = String::from_utf8_lossy(&output.stdout);
+        let mut free_pages = 0.0f64;
+        let mut inactive_pages = 0.0f64;
+        let mut page_size = 16384.0f64;
+        for line in text.lines() {
+            if let Some(val) = line.strip_prefix("Mach Virtual Memory Statistics: (page size of ") {
+                if let Some(size) = val.trim_end_matches(" bytes)").parse::<f64>().ok() {
+                    page_size = size;
                 }
             }
-            let available_bytes = (free_pages + inactive_pages) * page_size;
-            return Some((available_bytes / 1_073_741_824.0) as f32);
+            if line.contains("pages free") {
+                free_pages = line
+                    .split(':')
+                    .nth(1)
+                    .and_then(|s| s.trim().replace('.', "").parse::<f64>().ok())
+                    .unwrap_or(0.0);
+            }
+            if line.contains("pages inactive") {
+                inactive_pages = line
+                    .split(':')
+                    .nth(1)
+                    .and_then(|s| s.trim().replace('.', "").parse::<f64>().ok())
+                    .unwrap_or(0.0);
+            }
         }
+        let available_bytes = (free_pages + inactive_pages) * page_size;
+        return Some((available_bytes / 1_073_741_824.0) as f32);
     }
+    None
+}
 
-    // Windows
-    #[cfg(target_os = "windows")]
+#[cfg(target_os = "windows")]
+fn platform_detect_available_memory_gb() -> Option<f32> {
+    if let Ok(output) = Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-Command",
+            "(Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory",
+        ])
+        .output()
     {
-        if let Ok(output) = Command::new("powershell")
-            .args([
-                "-NoProfile",
-                "-Command",
-                "(Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory",
-            ])
-            .output()
+        if let Ok(kb) = String::from_utf8_lossy(&output.stdout)
+            .trim()
+            .parse::<f64>()
         {
-            if let Ok(kb) = String::from_utf8_lossy(&output.stdout).trim().parse::<f64>() {
-                return Some((kb / 1024.0 / 1024.0) as f32);
-            }
+            return Some((kb / 1024.0 / 1024.0) as f32);
         }
     }
+    None
+}
 
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+fn platform_detect_available_memory_gb() -> Option<f32> {
     None
 }
 
@@ -708,7 +763,11 @@ fn detect_gpus(mode: ProbeMode) -> Vec<GpuInfo> {
     }
 
     if gpus.is_empty() {
-        let cc = if cfg!(feature = "rocm") { "rocm" } else { "gpu" };
+        let cc = if cfg!(feature = "rocm") {
+            "rocm"
+        } else {
+            "gpu"
+        };
         gpus.push(GpuInfo {
             name: String::from("cpu"),
             vram_gb: 0.0,
@@ -724,14 +783,18 @@ fn detect_gpus(mode: ProbeMode) -> Vec<GpuInfo> {
 
 fn detect_gpu_from_env() -> Option<GpuInfo> {
     let name = env::var("GHOSTLINK_GPU_NAME").ok();
-    let vram_gb = env::var("GHOSTLINK_VRAM_GB").ok()
+    let vram_gb = env::var("GHOSTLINK_VRAM_GB")
+        .ok()
         .and_then(|v| v.parse::<f32>().ok());
     let cc = env::var("GHOSTLINK_COMPUTE_CAPABILITY").ok();
     let has_any = name.is_some() || vram_gb.is_some() || cc.is_some();
-    if !has_any { return None; }
+    if !has_any {
+        return None;
+    }
 
     let gpu_name = name.unwrap_or_else(|| String::from("env-gpu"));
-    let compute_capability = cc.unwrap_or_else(|| super::host::infer_compute_capability_from_name(&gpu_name));
+    let compute_capability =
+        cc.unwrap_or_else(|| super::host::infer_compute_capability_from_name(&gpu_name));
     let backend = infer_backend(&gpu_name, &compute_capability);
 
     Some(GpuInfo {
@@ -752,19 +815,29 @@ fn probe_nvidia_smi() -> Option<Vec<GpuInfo>> {
         ])
         .output()
         .ok()?;
-    if !output.status.success() { return None; }
+    if !output.status.success() {
+        return None;
+    }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let mut gpus = Vec::new();
 
     for line in stdout.lines() {
         let trimmed = line.trim();
-        if trimmed.is_empty() { continue; }
+        if trimmed.is_empty() {
+            continue;
+        }
         let mut parts = trimmed.split(',').map(str::trim);
         let _index = parts.next()?;
         let name = parts.next()?.to_string();
-        let vram_mib = parts.next().and_then(|v| v.parse::<f32>().ok()).unwrap_or(0.0);
-        let compute_cap = parts.next().map(|s| s.to_string()).unwrap_or_else(|| String::from("gpu"));
+        let vram_mib = parts
+            .next()
+            .and_then(|v| v.parse::<f32>().ok())
+            .unwrap_or(0.0);
+        let compute_cap = parts
+            .next()
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| String::from("gpu"));
         let driver = parts.next().map(|s| s.to_string()).unwrap_or_default();
 
         gpus.push(GpuInfo {
@@ -777,7 +850,11 @@ fn probe_nvidia_smi() -> Option<Vec<GpuInfo>> {
         });
     }
 
-    if gpus.is_empty() { None } else { Some(gpus) }
+    if gpus.is_empty() {
+        None
+    } else {
+        Some(gpus)
+    }
 }
 
 #[cfg(feature = "rocm")]
@@ -786,7 +863,9 @@ fn probe_rocm_smi() -> Option<Vec<GpuInfo>> {
         .args(["--showproductname"])
         .output()
         .ok()?;
-    if !output.status.success() { return None; }
+    if !output.status.success() {
+        return None;
+    }
     let stdout = String::from_utf8_lossy(&output.stdout);
 
     let mut gpus = Vec::new();
@@ -794,7 +873,10 @@ fn probe_rocm_smi() -> Option<Vec<GpuInfo>> {
 
     for line in stdout.lines() {
         if line.contains("GPU[") && line.contains("Card model:") {
-            let name = line.split(':').nth(2).map(|s| s.trim().to_string())
+            let name = line
+                .split(':')
+                .nth(2)
+                .map(|s| s.trim().to_string())
                 .unwrap_or_else(|| String::from("AMD GPU"));
             let vram = probe_rocm_vram();
             let compute_cap = super::host::infer_compute_capability_from_name(&name);
@@ -809,23 +891,33 @@ fn probe_rocm_smi() -> Option<Vec<GpuInfo>> {
         }
     }
 
-    if gpus.is_empty() { None } else { Some(gpus) }
+    if gpus.is_empty() {
+        None
+    } else {
+        Some(gpus)
+    }
 }
 
 #[cfg(feature = "rocm")]
 fn probe_rocm_vram() -> Option<f32> {
     let output = Command::new("rocm-smi")
         .args(["--showmeminfo", "vram"])
-        .output().ok()?;
+        .output()
+        .ok()?;
     let stdout = String::from_utf8_lossy(&output.stdout);
-    stdout.lines()
+    stdout
+        .lines()
         .find(|l| l.contains("Total Memory"))
         .and_then(|l| {
             let val = l.split(':').nth(1)?.trim().to_lowercase();
             let num: f32 = val.split_whitespace().next()?.parse().ok()?;
-            if val.contains("gb") { Some(num) }
-            else if val.contains("mb") { Some(num / 1024.0) }
-            else { None }
+            if val.contains("gb") {
+                Some(num)
+            } else if val.contains("mb") {
+                Some(num / 1024.0)
+            } else {
+                None
+            }
         })
 }
 
@@ -833,7 +925,8 @@ fn probe_rocm_vram() -> Option<f32> {
 fn detect_rocm_version() -> Option<String> {
     let output = Command::new("rocm-smi").args(["--version"]).output().ok()?;
     let stderr = String::from_utf8_lossy(&output.stderr);
-    stderr.lines()
+    stderr
+        .lines()
         .find_map(|l| l.split_whitespace().last().map(|s| s.to_string()))
 }
 
@@ -848,14 +941,18 @@ fn probe_windows_wmi_gpu() -> Option<Vec<GpuInfo>> {
         ])
         .output()
         .ok()?;
-    if !output.status.success() { return None; }
+    if !output.status.success() {
+        return None;
+    }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let mut gpus: Vec<GpuInfo> = Vec::new();
 
     for line in stdout.lines().skip(1) {
         let trimmed = line.trim();
-        if trimmed.is_empty() || trimmed.starts_with('#') { continue; }
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
         // CSV: "Name","AdapterRAM","DriverVersion","PNPDeviceID"
         let mut parts: Vec<String> = Vec::new();
         let mut current = String::new();
@@ -870,12 +967,20 @@ fn probe_windows_wmi_gpu() -> Option<Vec<GpuInfo>> {
             }
         }
         parts.push(current);
-        if parts.len() < 3 { continue; }
+        if parts.len() < 3 {
+            continue;
+        }
         let name = parts[0].trim().to_string();
-        if name.is_empty() { continue; }
+        if name.is_empty() {
+            continue;
+        }
 
         let vram_bytes: f64 = parts[1].trim().parse().unwrap_or(0.0);
-        let vram_gb = if vram_bytes > 0.0 { (vram_bytes / 1_073_741_824.0) as f32 } else { 0.0 };
+        let vram_gb = if vram_bytes > 0.0 {
+            (vram_bytes / 1_073_741_824.0) as f32
+        } else {
+            0.0
+        };
         let driver = parts[2].trim().to_string();
         let pnp_id = parts.get(3).map(|s| s.trim().to_string());
         let compute_cap = super::host::infer_compute_capability_from_name(&name);
@@ -883,14 +988,21 @@ fn probe_windows_wmi_gpu() -> Option<Vec<GpuInfo>> {
         // Determine backend from PNP ID or name
         let backend = if let Some(ref id) = pnp_id {
             let id_lower = id.to_ascii_lowercase();
-            if id_lower.contains("ven_10de") { super::host::GpuBackend::Cuda }
-            else if id_lower.contains("ven_1002") || id_lower.contains("ven_1022") {
-                if cfg!(feature = "rocm") { super::host::GpuBackend::Rocm }
-                else { super::host::GpuBackend::Directml }
+            if id_lower.contains("ven_10de") {
+                super::host::GpuBackend::Cuda
+            } else if id_lower.contains("ven_1002") || id_lower.contains("ven_1022") {
+                if cfg!(feature = "rocm") {
+                    super::host::GpuBackend::Rocm
+                } else {
+                    super::host::GpuBackend::Directml
+                }
+            } else if id_lower.contains("ven_8086") {
+                super::host::GpuBackend::Directml
+            } else if id_lower.contains("ven_14e4") {
+                super::host::GpuBackend::Vulkan
+            } else {
+                super::host::GpuBackend::Directml
             }
-            else if id_lower.contains("ven_8086") { super::host::GpuBackend::Directml }
-            else if id_lower.contains("ven_14e4") { super::host::GpuBackend::Vulkan }
-            else { super::host::GpuBackend::Directml }
         } else {
             super::host::GpuBackend::Directml
         };
@@ -912,7 +1024,11 @@ fn probe_windows_wmi_gpu() -> Option<Vec<GpuInfo>> {
         });
     }
 
-    if gpus.is_empty() { None } else { Some(gpus) }
+    if gpus.is_empty() {
+        None
+    } else {
+        Some(gpus)
+    }
 }
 
 /// Secondary DXGI-based VRAM probe via PowerShell `Add-Type` with C# DXGI wrapper.
@@ -963,7 +1079,9 @@ public class DXGIVram {
         .args(["-NoProfile", "-NonInteractive", "-Command", script])
         .output()
         .ok()?;
-    if !output.status.success() { return None; }
+    if !output.status.success() {
+        return None;
+    }
     let stdout = String::from_utf8_lossy(&output.stdout);
     stdout.trim().parse::<f32>().ok().filter(|&v| v > 0.0)
 }
@@ -971,16 +1089,33 @@ public class DXGIVram {
 #[cfg(target_os = "linux")]
 fn probe_lspci_gpu() -> Option<GpuInfo> {
     let output = Command::new("lspci").args(["-mm"]).output().ok()?;
-    if !output.status.success() { return None; }
+    if !output.status.success() {
+        return None;
+    }
     let stdout = String::from_utf8_lossy(&output.stdout);
 
-    let line = stdout.lines()
+    let line = stdout
+        .lines()
         .find(|l| l.contains("VGA compatible controller") || l.contains("3D controller"))?;
-    let quoted: Vec<String> = line.split('"')
+    let quoted: Vec<String> = line
+        .split('"')
         .enumerate()
-        .filter_map(|(i, s)| if i % 2 == 1 { let t = s.trim(); if t.is_empty() { None } else { Some(t.to_string()) } } else { None })
+        .filter_map(|(i, s)| {
+            if i % 2 == 1 {
+                let t = s.trim();
+                if t.is_empty() {
+                    None
+                } else {
+                    Some(t.to_string())
+                }
+            } else {
+                None
+            }
+        })
         .collect();
-    let description = quoted.get(2).cloned()
+    let description = quoted
+        .get(2)
+        .cloned()
         .or_else(|| quoted.last().cloned())
         .unwrap_or_else(|| line.trim().to_string());
 
@@ -1003,15 +1138,21 @@ fn probe_sysfs_gpu() -> Option<GpuInfo> {
     for entry in entries.flatten() {
         let path = entry.path();
         let fname = path.file_name()?.to_string_lossy().to_string();
-        if !fname.starts_with("card") { continue; }
+        if !fname.starts_with("card") {
+            continue;
+        }
 
         let dev = path.join("device");
-        if !dev.exists() { continue; }
+        if !dev.exists() {
+            continue;
+        }
 
-        let gpu_name = fs::read_to_string(dev.join("product_name")).ok()
+        let gpu_name = fs::read_to_string(dev.join("product_name"))
+            .ok()
             .map(|v| v.trim().to_string())
             .filter(|v| !v.is_empty());
-        let vram_bytes = fs::read_to_string(dev.join("mem_info_vram_total")).ok()
+        let vram_bytes = fs::read_to_string(dev.join("mem_info_vram_total"))
+            .ok()
             .and_then(|v| v.trim().parse::<f32>().ok());
         let vram_gb = vram_bytes.map(|b| b / 1024.0 / 1024.0 / 1024.0);
 
@@ -1037,7 +1178,9 @@ fn probe_macos_gpu() -> Option<GpuInfo> {
         .args(["SPDisplaysDataType", "-detailLevel", "mini"])
         .output()
         .ok()?;
-    if !output.status.success() { return None; }
+    if !output.status.success() {
+        return None;
+    }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let mut name = String::from("Apple GPU");
@@ -1084,7 +1227,9 @@ fn probe_macos_gpu() -> Option<GpuInfo> {
                 // "gpu-core-count" or "performanceState" indicate Apple GPU
                 if line.contains("\"gpu-core-count\"") {
                     // Try "memory-available" which reports shared GPU memory
-                    if let Some(mem_line) = iotext.lines().find(|l| l.contains("\"memory-available\"")) {
+                    if let Some(mem_line) =
+                        iotext.lines().find(|l| l.contains("\"memory-available\""))
+                    {
                         if let Some(val) = mem_line.split('=').nth(1) {
                             if let Ok(bytes) = val.trim().trim_matches('"').parse::<f64>() {
                                 vram_gb = (bytes / 1_073_741_824.0) as f32;
@@ -1122,15 +1267,14 @@ fn probe_macos_gpu() -> Option<GpuInfo> {
 
 fn probe_vulkan_gpu() -> Option<GpuInfo> {
     // Try `vulkaninfo` (cross-platform, part of Vulkan SDK)
-    if let Ok(output) = Command::new("vulkaninfo")
-        .args(["--summary"])
-        .output()
-    {
+    if let Ok(output) = Command::new("vulkaninfo").args(["--summary"]).output() {
         if output.status.success() {
             let stdout = String::from_utf8_lossy(&output.stdout);
             for line in stdout.lines() {
                 if line.contains("GPU id") || line.contains("deviceName") {
-                    let name = line.split(':').nth(1)
+                    let name = line
+                        .split(':')
+                        .nth(1)
                         .map(|s| s.trim().to_string())
                         .unwrap_or_else(|| String::from("Vulkan GPU"));
                     let compute_cap = super::host::infer_compute_capability_from_name(&name);
@@ -1186,10 +1330,7 @@ fn detect_npus() -> Vec<NpuInfo> {
     // Linux sysfs
     #[cfg(target_os = "linux")]
     {
-        let npu_paths = [
-            "/sys/devices/virtual/npu",
-            "/sys/bus/auxiliary/devices",
-        ];
+        let npu_paths = ["/sys/devices/virtual/npu", "/sys/bus/auxiliary/devices"];
         for base in &npu_paths {
             if let Ok(entries) = fs::read_dir(base) {
                 for entry in entries.flatten() {
@@ -1230,14 +1371,12 @@ fn detect_npus() -> Vec<NpuInfo> {
     }
 
     // Env override
-    if env::var("NPU_DEVICE").is_ok() || env::var("QUALCOMM_NPU").is_ok() {
-        if npus.is_empty() {
-            npus.push(NpuInfo {
-                name: String::from("npu-env"),
-                memory_gb: 2.0,
-                driver: String::from("env"),
-            });
-        }
+    if (env::var("NPU_DEVICE").is_ok() || env::var("QUALCOMM_NPU").is_ok()) && npus.is_empty() {
+        npus.push(NpuInfo {
+            name: String::from("npu-env"),
+            memory_gb: 2.0,
+            driver: String::from("env"),
+        });
     }
 
     npus
@@ -1250,7 +1389,10 @@ fn detect_npus() -> Vec<NpuInfo> {
 fn detect_network_info() -> NetworkInfo {
     let xdp_supported = cfg!(target_os = "linux");
     let interfaces = detect_network_interfaces();
-    NetworkInfo { xdp_supported, interfaces }
+    NetworkInfo {
+        xdp_supported,
+        interfaces,
+    }
 }
 
 fn detect_network_interfaces() -> Vec<String> {
@@ -1317,7 +1459,10 @@ fn infer_backend(name: &str, compute_capability: &str) -> super::host::GpuBacken
         || lowered.contains("h100")
         || lowered.contains("b100")
         || lowered.contains("b200")
-        || lowered_cc.chars().next().is_some_and(|c| c.is_ascii_digit())
+        || lowered_cc
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_digit())
     {
         return GpuBackend::Cuda;
     }
@@ -1333,19 +1478,31 @@ fn pick_acceleration_mode(gpus: &[GpuInfo], cpu: &CpuInfo) -> super::host::Accel
     use super::host::AccelerationMode;
 
     // Any real GPU detected → GPU mode
-    if gpus.iter().any(|g| g.vram_gb > 0.0 || (g.backend != super::host::GpuBackend::Cpu && g.backend != super::host::GpuBackend::Vulkan)) {
+    if gpus.iter().any(|g| {
+        g.vram_gb > 0.0
+            || (g.backend != super::host::GpuBackend::Cpu
+                && g.backend != super::host::GpuBackend::Vulkan)
+    }) {
         return AccelerationMode::Gpu;
     }
 
     // Vulkan-only with pending VRAM (lspci/sysfs probe, no driver)
-    if gpus.iter().any(|g| g.backend == super::host::GpuBackend::Vulkan && !g.name.is_empty() && g.name != "cpu") {
+    if gpus.iter().any(|g| {
+        g.backend == super::host::GpuBackend::Vulkan && !g.name.is_empty() && g.name != "cpu"
+    }) {
         return AccelerationMode::Gpu;
     }
 
     // CPU features
-    if cpu.features.avx_512 { return AccelerationMode::Avx512; }
-    if cpu.features.avx2 { return AccelerationMode::Avx2; }
-    if cpu.features.neon || cpu.features.sve { return AccelerationMode::Neon; }
+    if cpu.features.avx_512 {
+        return AccelerationMode::Avx512;
+    }
+    if cpu.features.avx2 {
+        return AccelerationMode::Avx2;
+    }
+    if cpu.features.neon || cpu.features.sve {
+        return AccelerationMode::Neon;
+    }
 
     AccelerationMode::Generic
 }
@@ -1365,7 +1522,8 @@ fn compute_recommended_workers(
         (memory.total_gb / 4.0).floor() as usize
     } else {
         1
-    }.max(1);
+    }
+    .max(1);
 
     let reserved_core = cores.saturating_sub(1).max(1);
 
@@ -1373,14 +1531,20 @@ fn compute_recommended_workers(
     let gpu_count = gpus.iter().filter(|g| g.vram_gb > 0.0).count();
     let accelerator_bonus = match accel {
         super::host::AccelerationMode::Gpu => {
-            let vram_bonus = if gpus.iter().any(|g| g.vram_gb >= 16.0) { 2 } else { 1 };
+            let vram_bonus = if gpus.iter().any(|g| g.vram_gb >= 16.0) {
+                2
+            } else {
+                1
+            };
             vram_bonus + gpu_count.saturating_sub(1) // +1 per extra GPU
         }
         super::host::AccelerationMode::Avx512 => 1,
         _ => 0,
     };
 
-    reserved_core.min(memory_bound).saturating_add(accelerator_bonus)
+    reserved_core
+        .min(memory_bound)
+        .saturating_add(accelerator_bonus)
 }
 
 // ---------------------------------------------------------------------------
@@ -1390,7 +1554,11 @@ fn compute_recommended_workers(
 /// Re-exported for host.rs backward compatibility.
 pub fn infer_compute_capability_from_name(name: &str) -> String {
     let lowered = name.to_ascii_lowercase();
-    if lowered.contains("rtx 50") || lowered.contains("rtx50") || lowered.contains("b100") || lowered.contains("b200") {
+    if lowered.contains("rtx 50")
+        || lowered.contains("rtx50")
+        || lowered.contains("b100")
+        || lowered.contains("b200")
+    {
         String::from("9.0")
     } else if lowered.contains("rtx 40") || lowered.contains("rtx40") {
         String::from("8.9")
@@ -1398,16 +1566,29 @@ pub fn infer_compute_capability_from_name(name: &str) -> String {
         String::from("8.6")
     } else if lowered.contains("arc") {
         String::from("xe")
-    } else if lowered.contains("radeon") || lowered.contains("amd") || lowered.contains("advanced micro")
-        || lowered.contains("rx ") || lowered.contains("w7900") || lowered.contains("w6800")
-        || lowered.contains("mi250") || lowered.contains("mi300") || lowered.contains("mi350")
+    } else if lowered.contains("radeon")
+        || lowered.contains("amd")
+        || lowered.contains("advanced micro")
+        || lowered.contains("rx ")
+        || lowered.contains("w7900")
+        || lowered.contains("w6800")
+        || lowered.contains("mi250")
+        || lowered.contains("mi300")
+        || lowered.contains("mi350")
         || lowered.contains("instinct")
     {
-        if cfg!(feature = "rocm") { String::from("rocm") } else { String::from("gpu") }
+        if cfg!(feature = "rocm") {
+            String::from("rocm")
+        } else {
+            String::from("gpu")
+        }
     } else if lowered.contains("intel") || lowered.contains("iris") || lowered.contains("uhd") {
         String::from("xe")
-    } else if lowered.contains("apple") || lowered.contains("m1") || lowered.contains("m2")
-        || lowered.contains("m3") || lowered.contains("m4")
+    } else if lowered.contains("apple")
+        || lowered.contains("m1")
+        || lowered.contains("m2")
+        || lowered.contains("m3")
+        || lowered.contains("m4")
     {
         String::from("apple_metal")
     } else {
@@ -1441,7 +1622,10 @@ mod tests {
     #[test]
     fn system_profile_always_has_at_least_one_gpu_entry() {
         let sp = SystemProfile::detect_fast();
-        assert!(!sp.gpus.is_empty(), "Should have at least 'cpu' fallback GPU entry");
+        assert!(
+            !sp.gpus.is_empty(),
+            "Should have at least 'cpu' fallback GPU entry"
+        );
     }
 
     #[test]
@@ -1494,7 +1678,10 @@ mod tests {
             arch: "x86_64".into(),
             ..Default::default()
         };
-        let mem = MemoryInfo { total_gb: 64.0, available_gb: 32.0 };
+        let mem = MemoryInfo {
+            total_gb: 64.0,
+            available_gb: 32.0,
+        };
         let gpus = vec![
             GpuInfo {
                 name: "RTX 4090".into(),

@@ -105,14 +105,21 @@ impl RuntimeDetector {
                 ghostlink_core::host::GpuBackend::Metal => Runtime::Metal,
                 ghostlink_core::host::GpuBackend::Directml => Runtime::DirectML,
                 ghostlink_core::host::GpuBackend::Npu => Runtime::NPU,
-                ghostlink_core::host::GpuBackend::Vulkan | ghostlink_core::host::GpuBackend::Cpu => continue,
+                ghostlink_core::host::GpuBackend::Vulkan
+                | ghostlink_core::host::GpuBackend::Cpu => continue,
             };
             runtimes.push(RuntimeInfo {
                 detected_runtime: runtime,
                 is_available: true,
                 compute_capability: Some(gpu.compute_capability.clone()),
                 memory_gb: Some(gpu.vram_gb),
-                device_count: Some(profile.gpus.iter().filter(|g| g.backend == gpu.backend).count()),
+                device_count: Some(
+                    profile
+                        .gpus
+                        .iter()
+                        .filter(|g| g.backend == gpu.backend)
+                        .count(),
+                ),
             });
         }
 

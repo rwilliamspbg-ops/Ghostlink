@@ -63,10 +63,7 @@ impl SystemProfileWatcher {
 
     /// Get the most recently detected profile (blocking, fast).
     pub fn current_profile(&self) -> Option<Arc<SystemProfile>> {
-        self.last_profile
-            .lock()
-            .ok()
-            .and_then(|g| g.clone())
+        self.last_profile.lock().ok().and_then(|g| g.clone())
     }
 
     /// Perform a single poll cycle: re-detect and publish if changed.
@@ -106,10 +103,7 @@ fn profiles_differ(a: &SystemProfile, b: &SystemProfile) -> bool {
         return true;
     }
     for (ga, gb) in a.gpus.iter().zip(b.gpus.iter()) {
-        if ga.name != gb.name
-            || (ga.vram_gb - gb.vram_gb).abs() > 0.1
-            || ga.backend != gb.backend
-        {
+        if ga.name != gb.name || (ga.vram_gb - gb.vram_gb).abs() > 0.1 || ga.backend != gb.backend {
             return true;
         }
     }
@@ -162,7 +156,11 @@ mod tests {
         let mut rx = watcher.subscribe();
         // Should have the initial profile via try_recv
         let event = rx.try_recv();
-        assert!(event.is_ok(), "should have initial event: {:?}", event.err());
+        assert!(
+            event.is_ok(),
+            "should have initial event: {:?}",
+            event.err()
+        );
         match event.unwrap() {
             ProfileChange::Updated(_) => {} // expected
             _ => panic!("expected Updated event"),
