@@ -934,10 +934,10 @@ pub fn execute_pipeline_distributed(
 
         // Bind the listener immediately to reserve the port.
         let listener = TcpListener::bind(SocketAddr::new(bind_ip, 0))
-            .map_err(|e| format!("Failed to bind listener on {}: {}", bind_ip, e))?;
+            .map_err(|e| format!("Failed to bind listener on {bind_ip}: {e}"))?;
         let actual_addr = listener
             .local_addr()
-            .map_err(|e| format!("failed to get local addr: {}", e))?;
+            .map_err(|e| format!("failed to get local addr: {e}"))?;
 
         // For connection, if it's the same node, we can just use loopback.
         let connect_ip = if source_stage_p.node_id == target_stage_p.node_id {
@@ -1193,10 +1193,10 @@ pub fn execute_pipeline_tcp_loopback_with_config(
 
         // Bind the listener immediately to reserve the port.
         let listener = TcpListener::bind(bind_addr)
-            .map_err(|e| format!("failed to bind loopback listener: {}", e))?;
+            .map_err(|e| format!("failed to bind loopback listener: {e}"))?;
         let actual_addr = listener
             .local_addr()
-            .map_err(|e| format!("failed to get loopback local addr: {}", e))?;
+            .map_err(|e| format!("failed to get loopback local addr: {e}"))?;
 
         bridge_handles.push(spawn_tcp_bridge(
             source_stage,

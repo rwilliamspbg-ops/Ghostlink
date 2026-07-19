@@ -383,11 +383,10 @@ impl NetworkHealthMonitor {
         format!(
             "Network Health Summary\n\
              =================\n\
-             Total nodes: {}\n\
-             Healthy: {}\n\
-             Degraded: {}\n\
-             Failed: {}\n",
-            total_nodes, healthy_count, degraded_count, failed_count
+             Total nodes: {total_nodes}\n\
+             Healthy: {healthy_count}\n\
+             Degraded: {degraded_count}\n\
+             Failed: {failed_count}\n"
         )
     }
 

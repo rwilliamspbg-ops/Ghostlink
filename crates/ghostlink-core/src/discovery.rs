@@ -49,7 +49,7 @@ impl std::fmt::Display for DatagramDecodeError {
             }
             Self::InvalidAuthTrailerLength => write!(f, "invalid auth trailer length"),
             Self::UnsupportedAuthProtocolVersion(version) => {
-                write!(f, "unsupported discovery auth protocol version {}", version)
+                write!(f, "unsupported discovery auth protocol version {version}")
             }
             Self::AuthTimestampOutsideWindow => {
                 write!(

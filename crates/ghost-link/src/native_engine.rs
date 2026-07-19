@@ -173,8 +173,7 @@ impl NativeEngineClient {
         }
 
         Err(format!(
-            "llama-server did not become ready within {} seconds",
-            timeout_secs
+            "llama-server did not become ready within {timeout_secs} seconds"
         ))
     }
 
@@ -183,11 +182,11 @@ impl NativeEngineClient {
     /// so we must restart it with the new model path.
     pub fn load_model_into_slot(&self, model_path: &str) -> Result<(), String> {
         let normalized_path = model_path.replace('\\', "/");
-        eprintln!("[model-load] Preparing to load model: {}", normalized_path);
+        eprintln!("[model-load] Preparing to load model: {normalized_path}");
 
         // Validate the model file exists before spawning
         if !Path::new(model_path).exists() {
-            return Err(format!("model file not found: {}", normalized_path));
+            return Err(format!("model file not found: {normalized_path}"));
         }
 
         // Kill existing llama-server process
@@ -231,8 +230,7 @@ impl NativeEngineClient {
             .stdin(Stdio::null());
 
         eprintln!(
-            "[model-load] Starting llama-server with model: {}",
-            normalized_path
+            "[model-load] Starting llama-server with model: {normalized_path}"
         );
         eprintln!(
             "[model-load] Command: {} {}",
@@ -246,10 +244,10 @@ impl NativeEngineClient {
         // Spawn the process
         let child = cmd
             .spawn()
-            .map_err(|err| format!("failed to start llama-server: {}", err))?;
+            .map_err(|err| format!("failed to start llama-server: {err}"))?;
 
         let pid = child.id();
-        eprintln!("[model-load] Started llama-server with PID: {}", pid);
+        eprintln!("[model-load] Started llama-server with PID: {pid}");
 
         // Store the process handle
         let handle = Self::get_process_handle();
@@ -262,7 +260,7 @@ impl NativeEngineClient {
 
         // Wait for server to be ready (using tokio runtime)
         let rt = tokio::runtime::Runtime::new()
-            .map_err(|e| format!("failed to create async runtime: {}", e))?;
+            .map_err(|e| format!("failed to create async runtime: {e}"))?;
 
         let ready = rt.block_on(Self::wait_for_llama_server_ready(&url, 60));
         if let Err(ref _e) = ready {
@@ -278,8 +276,7 @@ impl NativeEngineClient {
         ready?;
 
         eprintln!(
-            "[model-load] Successfully loaded model: {}",
-            normalized_path
+            "[model-load] Successfully loaded model: {normalized_path}"
         );
         Ok(())
     }
@@ -295,10 +292,10 @@ impl NativeEngineClient {
                 );
                 child
                     .kill()
-                    .map_err(|e| format!("failed to kill llama-server: {}", e))?;
+                    .map_err(|e| format!("failed to kill llama-server: {e}"))?;
                 child
                     .wait()
-                    .map_err(|e| format!("failed to wait for llama-server: {}", e))?;
+                    .map_err(|e| format!("failed to wait for llama-server: {e}"))?;
                 eprintln!("[model-unload] llama-server stopped");
             }
         }
@@ -336,8 +333,7 @@ impl NativeEngineClient {
         if cleaned_prompt.is_empty() {
             return Ok(NativeGeneration {
                 text: format!(
-                    "Native backend is ready for model '{}'. Provide a non-empty prompt for generation.",
-                    model
+                    "Native backend is ready for model '{model}'. Provide a non-empty prompt for generation."
                 ),
                 real_inference: false,
             });
@@ -386,8 +382,7 @@ impl NativeEngineClient {
 
         Ok(NativeGeneration {
             text: format!(
-                "[native:{}] generated response with token budget {}. Prompt preview: {}",
-                model, max_tokens, preview
+                "[native:{model}] generated response with token budget {max_tokens}. Prompt preview: {preview}"
             ),
             real_inference: false,
         })
@@ -416,7 +411,7 @@ impl NativeEngineClient {
             .arg("-st")
             .arg("--no-display-prompt")
             .output()
-            .map_err(|err| format!("failed to execute '{}': {}", bin, err))?;
+            .map_err(|err| format!("failed to execute '{bin}': {err}"))?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -471,7 +466,7 @@ impl NativeEngineClient {
 
         // Try chat completion endpoint first (for models with chat templates)
         let chat_url = if let Some(base) = url.strip_suffix("/completion") {
-            format!("{}/v1/chat/completions", base)
+            format!("{base}/v1/chat/completions")
         } else {
             format!("{}/v1/chat/completions", url.trim_end_matches('/'))
         };
@@ -493,7 +488,7 @@ impl NativeEngineClient {
         let client = reqwest::blocking::Client::builder()
             .timeout(Duration::from_secs(timeout_secs))
             .build()
-            .map_err(|e| format!("failed to create HTTP client: {}", e))?;
+            .map_err(|e| format!("failed to create HTTP client: {e}"))?;
 
         // Try chat endpoint first
         let chat_response = client
@@ -506,7 +501,7 @@ impl NativeEngineClient {
             if response.status().is_success() {
                 let parsed: serde_json::Value = response
                     .json()
-                    .map_err(|e| format!("invalid llama_server JSON response: {}", e))?;
+                    .map_err(|e| format!("invalid llama_server JSON response: {e}"))?;
 
                 if let Some(content) = parsed.get("content").and_then(|v| v.as_str()) {
                     let text = content.trim();
@@ -536,15 +531,14 @@ impl NativeEngineClient {
 
         // Fall back to completion endpoint for models without chat template
         let completion_url = if let Some(base) = url.strip_suffix("/completion") {
-            format!("{}/completion", base)
+            format!("{base}/completion")
         } else {
             url
         };
 
         // Format prompt for completion endpoint: system + user
         let completion_prompt = format!(
-            "{}\n\nUser: {}\n\nAssistant:",
-            system_prompt, cleaned_prompt
+            "{system_prompt}\n\nUser: {cleaned_prompt}\n\nAssistant:"
         );
 
         let completion_payload = serde_json::json!({
@@ -563,20 +557,19 @@ impl NativeEngineClient {
             .header("Content-Type", "application/json")
             .json(&completion_payload)
             .send()
-            .map_err(|e| format!("llama_server request failed: {}", e))?;
+            .map_err(|e| format!("llama_server request failed: {e}"))?;
 
         if !response.status().is_success() {
             let status = response.status();
             let error_text = response.text().unwrap_or_default();
             return Err(format!(
-                "llama_server request failed with status {}: {}",
-                status, error_text
+                "llama_server request failed with status {status}: {error_text}"
             ));
         }
 
         let parsed: serde_json::Value = response
             .json()
-            .map_err(|e| format!("invalid llama_server JSON response: {}", e))?;
+            .map_err(|e| format!("invalid llama_server JSON response: {e}"))?;
 
         if let Some(content) = parsed.get("content").and_then(|v| v.as_str()) {
             let text = content.trim();

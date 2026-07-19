@@ -717,7 +717,7 @@ where
                 }
                 network_target = value.to_string();
             }
-            _ => anyhow::bail!("unknown doctor option: {}", arg),
+            _ => anyhow::bail!("unknown doctor option: {arg}"),
         }
     }
 
@@ -801,9 +801,9 @@ fn maybe_write_flow_metrics_json(
     );
 
     fs::write(&path, payload)
-        .map_err(|err| anyhow::anyhow!("failed to write flow metrics json to {}: {}", path, err))?;
+        .map_err(|err| anyhow::anyhow!("failed to write flow metrics json to {path}: {err}"))?;
 
-    println!("Flow metrics JSON written to: {}", path);
+    println!("Flow metrics JSON written to: {path}");
     Ok(())
 }
 
@@ -977,7 +977,7 @@ fn store_cached_autotune_inflight(cache_key: &str, inflight: usize) -> Result<()
             lines.push(line.to_string());
         }
     }
-    lines.push(format!("{}\t{}", cache_key, inflight));
+    lines.push(format!("{cache_key}\t{inflight}"));
     fs::write(
         &cache_path,
         lines.join(
@@ -1026,8 +1026,7 @@ fn autotune_tcp_transport_config(
             let mut cached_cfg = base.clone();
             cached_cfg.max_inflight_batches = cached_inflight;
             println!(
-                "TCP autotune reused cached max_inflight={} (key={})",
-                cached_inflight, cache_key
+                "TCP autotune reused cached max_inflight={cached_inflight} (key={cache_key})"
             );
             return Ok(cached_cfg);
         }
@@ -1271,8 +1270,7 @@ fn print_flow(opts: FlowOptions) -> Result<()> {
             match probe_xdp_support(&interface) {
                 Ok(()) => {
                     println!(
-                        "AF_XDP probe succeeded on interface '{}'; using xdp-optimized runtime settings.",
-                        interface
+                        "AF_XDP probe succeeded on interface '{interface}'; using xdp-optimized runtime settings."
                     );
                     let base_tcp_cfg = xdp_optimized_tcp_config();
                     let tcp_cfg = if xdp_autotune_enabled() {
@@ -1295,8 +1293,7 @@ fn print_flow(opts: FlowOptions) -> Result<()> {
                 }
                 Err(reason) => {
                     println!(
-                        "AF_XDP unavailable on '{}': {}. Falling back to TCP transport.",
-                        interface, reason
+                        "AF_XDP unavailable on '{interface}': {reason}. Falling back to TCP transport."
                     );
                     effective_transport_mode = FlowTransportMode::TcpLoopback;
                     let base_tcp_cfg = tcp_transport_config_from_env();
@@ -1555,7 +1552,7 @@ impl ToolDispatcher {
             },
             _ => ToolResult {
                 tool: tool_name.to_string(),
-                result: format!("Tool '{}' executed successfully.", tool_name),
+                result: format!("Tool '{tool_name}' executed successfully."),
                 success: true,
             },
         }
@@ -1826,8 +1823,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         env_default_usize("GHOSTLINK_CHAT_EXEC_TOKENS", default_tokens).clamp(16, 4096)
     }
 
-    async fn run_native_generation(
-        native_engine_client: native_engine::NativeEngineClient,
+    struct NativeGenerationRequest {
         model: String,
         prompt: String,
         max_tokens: usize,
@@ -1836,7 +1832,23 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         top_k: usize,
         repeat_penalty: f32,
         native_engine: String,
+    }
+
+    async fn run_native_generation(
+        native_engine_client: native_engine::NativeEngineClient,
+        request: NativeGenerationRequest,
     ) -> Result<native_engine::NativeGeneration, String> {
+        let NativeGenerationRequest {
+            model,
+            prompt,
+            max_tokens,
+            temperature,
+            top_p,
+            top_k,
+            repeat_penalty,
+            native_engine,
+        } = request;
+
         tokio::task::spawn_blocking(move || {
             native_engine_client.generate(
                 &model,
@@ -1850,7 +1862,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             )
         })
         .await
-        .map_err(|err| format!("native generation task failed: {}", err))?
+        .map_err(|err| format!("native generation task failed: {err}"))?
     }
 
     async fn handle_chat_completions(
@@ -1871,19 +1883,12 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         let request_tracker = active_runtime_switcher().request_tracker().clone();
         request_tracker.increment().await;
 
-        let temp = req.temperature.unwrap_or(0.7);
-        let top_p = req.top_p.unwrap_or(0.9);
-        let top_k = req.top_k.unwrap_or(40);
-        let penalty = req.penalty.unwrap_or(1.1);
-        let max_tokens = req.max_tokens.unwrap_or(1024).clamp(16, 4096);
-
         let (
             model,
             cluster,
             chat_req_id,
             inference_backend,
             native_engine_client,
-            ollama_client,
             settings,
         ) = {
             let mut backend = lock_state(&state);
@@ -1899,7 +1904,6 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                 backend.chat_requests,
                 backend.inference_backend,
                 backend.native_engine_client.clone(),
-                backend.ollama_client.clone(),
                 backend.settings.clone(),
             )
         };
@@ -1981,14 +1985,16 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             ),
             InferenceBackend::Native => match run_native_generation(
                 native_engine_client,
-                model.clone(),
-                prompt.clone(),
-                exec_tokens,
-                0.7,
-                0.9,
-                40,
-                1.1,
-                settings.native_engine.clone(),
+                NativeGenerationRequest {
+                    model: model.clone(),
+                    prompt: prompt.clone(),
+                    max_tokens: exec_tokens,
+                    temperature: 0.7,
+                    top_p: 0.9,
+                    top_k: 40,
+                    repeat_penalty: 1.1,
+                    native_engine: settings.native_engine.clone(),
+                },
             )
             .await
             {
@@ -2088,23 +2094,23 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         let client = reqwest::Client::builder()
             .user_agent("ghostlink/1.0")
             .build()
-            .map_err(|e| format!("HTTP client error: {}", e))?;
+            .map_err(|e| format!("HTTP client error: {e}"))?;
 
-        let api_url = format!("https://huggingface.co/api/models/{}", model_id);
+        let api_url = format!("https://huggingface.co/api/models/{model_id}");
         let resp = client
             .get(&api_url)
             .send()
             .await
-            .map_err(|e| format!("API error: {}", e))?;
+            .map_err(|e| format!("API error: {e}"))?;
 
         if !resp.status().is_success() {
-            return Err(format!("Model '{}' not found on HuggingFace", model_id));
+            return Err(format!("Model '{model_id}' not found on HuggingFace"));
         }
 
         let data: serde_json::Value = resp
             .json()
             .await
-            .map_err(|e| format!("Parse error: {}", e))?;
+            .map_err(|e| format!("Parse error: {e}"))?;
 
         let gguf_files: Vec<String> = data
             .get("siblings")
@@ -2124,8 +2130,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
 
         let filename = &gguf_files[0];
         let file_url = format!(
-            "https://huggingface.co/{}/resolve/main/{}",
-            model_id, filename
+            "https://huggingface.co/{model_id}/resolve/main/{filename}"
         );
         let dest_path = models_dir.join(filename);
 
@@ -2137,27 +2142,27 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             .get(&file_url)
             .send()
             .await
-            .map_err(|e| format!("Download error: {}", e))?;
+            .map_err(|e| format!("Download error: {e}"))?;
 
         if !resp.status().is_success() {
             return Err(format!("Failed to download file (HTTP {})", resp.status()));
         }
 
         if let Some(parent) = dest_path.parent() {
-            fs::create_dir_all(parent).map_err(|e| format!("Dir error: {}", e))?;
+            fs::create_dir_all(parent).map_err(|e| format!("Dir error: {e}"))?;
         }
         let mut file = tokio::fs::File::create(&dest_path)
             .await
-            .map_err(|e| format!("File error: {}", e))?;
+            .map_err(|e| format!("File error: {e}"))?;
         let mut stream = resp;
         while let Some(chunk) = stream
             .chunk()
             .await
-            .map_err(|e| format!("Stream error: {}", e))?
+            .map_err(|e| format!("Stream error: {e}"))?
         {
             file.write_all(&chunk)
                 .await
-                .map_err(|e| format!("Write error: {}", e))?;
+                .map_err(|e| format!("Write error: {e}"))?;
         }
         file.flush().await.ok();
 
@@ -2382,7 +2387,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                     native_engine_client.load_model_into_slot(&path)
                 })
                 .await
-                .map_err(|e| format!("task join error: {}", e))
+                .map_err(|e| format!("task join error: {e}"))
                 .and_then(|r| r);
 
                 if let Err(e) = result {
@@ -3201,8 +3206,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                 _ => InferenceBackend::Ollama,
             };
             eprintln!(
-                "[DEBUG] Selected inference_backend = {:?}",
-                inference_backend
+                "[DEBUG] Selected inference_backend = {inference_backend:?}"
             );
             (
                 backend.current_model.clone(),
@@ -3289,8 +3293,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                                 }
                                 Err(err) => {
                                     let fallback = format!(
-                                        "Ollama generate failed for model '{}': {}",
-                                        model_name, err
+                                        "Ollama generate failed for model '{model_name}': {err}"
                                     );
                                     (fallback, false, InferenceBackend::Ollama.as_str())
                                 }
@@ -3305,8 +3308,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                             };
                             (
                                 format!(
-                                    "Configured model '{}' is not installed in Ollama. Available: {}. Pull/select an exact tag and retry.",
-                                    current_model, available_hint
+                                    "Configured model '{current_model}' is not installed in Ollama. Available: {available_hint}. Pull/select an exact tag and retry."
                                 ),
                                 false,
                                 InferenceBackend::Ollama.as_str(),
@@ -3326,14 +3328,16 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             InferenceBackend::Native => {
                 match run_native_generation(
                     native_engine_client,
-                    current_model.clone(),
-                    req.message.clone(),
-                    exec_tokens,
-                    temp,
-                    top_p,
-                    top_k,
-                    penalty,
-                    settings.native_engine.clone(),
+                    NativeGenerationRequest {
+                        model: current_model.clone(),
+                        prompt: req.message.clone(),
+                        max_tokens: exec_tokens,
+                        temperature: temp,
+                        top_p,
+                        top_k,
+                        repeat_penalty: penalty,
+                        native_engine: settings.native_engine.clone(),
+                    },
                 )
                 .await
                 {
@@ -3344,8 +3348,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                     ),
                     Err(err) => (
                         format!(
-                            "Ghostlink native fabric backend processed model '{}' with {} estimated tokens. Native error: {}",
-                            current_model, exec_tokens, err
+                            "Ghostlink native fabric backend processed model '{current_model}' with {exec_tokens} estimated tokens. Native error: {err}"
                         ),
                         false,
                         InferenceBackend::Native.as_str(),
@@ -3444,7 +3447,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         if req.stream.unwrap_or(false) {
             let tokens: Vec<String> = final_response
                 .split_whitespace()
-                .map(|s| format!("{} ", s))
+                .map(|s| format!("{s} "))
                 .collect();
 
             let stream = stream::iter(tokens).map(move |token| {
@@ -3769,7 +3772,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
     }
 
     println!("Ghostlink Studio API - Starting OpenAI-compatible server...");
-    println!("Listening on http://{}:{}", host, port);
+    println!("Listening on http://{host}:{port}");
     println!("Routes:");
     println!("  - POST /v1/chat/completions");
     println!("  - GET  /v1/models");
@@ -3806,7 +3809,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
     println!("  - POST /api/inference/chat");
 
     let profile = detect_runtime_profile("studio-api");
-    let backend_url = format!("http://{}:{}", host, port);
+    let backend_url = format!("http://{host}:{port}");
     println!(
         "Inference Core: {} workers, {} acceleration",
         profile.recommended_workers,
@@ -3818,18 +3821,18 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
     }
 
     let addr_string = if host == "localhost" || host == "localhost." {
-        format!("127.0.0.1:{}", port)
+        format!("127.0.0.1:{port}")
     } else {
-        format!("{}:{}", host, port)
+        format!("{host}:{port}")
     };
     let addr: SocketAddr = addr_string.parse().map_err(|e: std::net::AddrParseError| {
-        anyhow::anyhow!("Invalid socket address {}: {}", addr_string, e)
+        anyhow::anyhow!("Invalid socket address {addr_string}: {e}")
     })?;
 
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
-        .map_err(|err| anyhow::anyhow!("failed to initialize runtime: {}", err))?;
+        .map_err(|err| anyhow::anyhow!("failed to initialize runtime: {err}"))?;
 
     let cluster = Arc::new(ClusterState::new());
     let mut local_node = profile.node_resources.clone();
@@ -3925,7 +3928,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         settings.threads = threads;
         // Also set the env var so NativeEngineClient::get_threads() picks it up
         std::env::set_var("GHOSTLINK_LLAMA_THREADS", threads.to_string());
-        eprintln!("[startup] Auto-configured threads={}", threads);
+        eprintln!("[startup] Auto-configured threads={threads}");
     }
 
     save_settings(&settings);
@@ -3935,8 +3938,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         if !models_dir.is_empty() {
             fs::create_dir_all(models_dir).unwrap_or_else(|e| {
                 eprintln!(
-                    "Warning: could not create models directory '{}': {}",
-                    models_dir, e
+                    "Warning: could not create models directory '{models_dir}': {e}"
                 );
             });
         }
@@ -4104,7 +4106,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         // addr already parsed above
         let listener = tokio::net::TcpListener::bind(addr)
             .await
-            .map_err(|err| anyhow::anyhow!("failed to bind API server on {}: {}", addr, err))?;
+            .map_err(|err| anyhow::anyhow!("failed to bind API server on {addr}: {err}"))?;
         println!(
             "
 API Server Online. Ready for connections."
@@ -4112,7 +4114,7 @@ API Server Online. Ready for connections."
 
         axum::serve(listener, app)
             .await
-            .map_err(|err| anyhow::anyhow!("API server terminated with error: {}", err))
+            .map_err(|err| anyhow::anyhow!("API server terminated with error: {err}"))
     })?;
 
     Ok(())
@@ -4287,7 +4289,7 @@ fn print_join(node_id: &str) -> Result<()> {
     println!("  Recommended Workers: {}", profile.recommended_workers);
     println!("  Acceleration: {}", profile.acceleration_mode.as_str());
     println!("  UDP Broadcast Target: {}", discovery_cfg.broadcast_addr);
-    println!("  Discovery Timeout: {} ms", timeout_ms);
+    println!("  Discovery Timeout: {timeout_ms} ms");
     println!(
         "  Discovery Auth: {}",
         if discovery_cfg.auth_token.is_some() {
@@ -4319,7 +4321,7 @@ Encoded Frame Preview (hex):
 "
         );
         for byte in preview.iter() {
-            print!("{:02x} ", byte);
+            print!("{byte:02x} ");
         }
         println!();
     }
@@ -4364,7 +4366,7 @@ fn print_discovery_listener(node_id: &str, once: bool) -> Result<()> {
     );
     println!("Node ID: {}", profile.node_resources.id);
     println!("Listen Address: {}", config.bind_addr);
-    println!("Timeout: {} ms", timeout_ms);
+    println!("Timeout: {timeout_ms} ms");
     println!(
         "Auth Token: {}",
         if config.auth_token.is_some() {
@@ -4382,7 +4384,7 @@ fn print_discovery_listener(node_id: &str, once: bool) -> Result<()> {
         match respond_once(&profile.node_resources, &config)
             .map_err(|e| anyhow::anyhow!("UDP discovery listener failed: {e}"))?
         {
-            Some(peer) => println!("Replied to discovery request from {}", peer),
+            Some(peer) => println!("Replied to discovery request from {peer}"),
             None => println!("No discovery request received before timeout"),
         }
         return Ok(());
@@ -4393,7 +4395,7 @@ fn print_discovery_listener(node_id: &str, once: bool) -> Result<()> {
 "
     );
     if let Some(limit) = max_replies {
-        println!("Max Replies: {}", limit);
+        println!("Max Replies: {limit}");
         let stats = serve_discovery_with_stats(&profile.node_resources, &config, Some(limit))
             .map_err(|e| anyhow::anyhow!("UDP discovery listener failed: {e}"))?;
         println!("Listener stopped after {} replies", stats.replies_sent);
@@ -4484,7 +4486,7 @@ Auto-tuned local runtime: {} workers, {} acceleration",
 fn print_cluster_start(node_count: usize, base_port: u16) -> Result<()> {
     let mut listeners = Vec::new();
     let self_exe = std::env::current_exe()
-        .map_err(|err| anyhow::anyhow!("failed to locate current executable: {}", err))?;
+        .map_err(|err| anyhow::anyhow!("failed to locate current executable: {err}"))?;
 
     println!(
         "Ghost-Link Local Cluster Start
@@ -4494,13 +4496,14 @@ fn print_cluster_start(node_count: usize, base_port: u16) -> Result<()> {
         "===============================
 "
     );
-    println!("Node count: {}", node_count);
-    println!("Base port: {}", base_port);
+    println!("Node count: {node_count}");
+    println!("Base port: {base_port}");
 
     for i in 0..node_count {
-        let node_id = format!("local-node-{}", i + 1);
+        let ordinal = i + 1;
+        let node_id = format!("local-node-{ordinal}");
         let port = base_port.saturating_add(i as u16);
-        let listen_addr = format!("127.0.0.1:{}", port);
+        let listen_addr = format!("127.0.0.1:{port}");
 
         let child = Command::new(&self_exe)
             .arg("listen")
@@ -4511,10 +4514,7 @@ fn print_cluster_start(node_count: usize, base_port: u16) -> Result<()> {
             .spawn()
             .map_err(|err| {
                 anyhow::anyhow!(
-                    "failed to spawn listener {} at {}: {}",
-                    node_id,
-                    listen_addr,
-                    err
+                    "failed to spawn listener {node_id} at {listen_addr}: {err}"
                 )
             })?;
         listeners.push((node_id, listen_addr, child));
@@ -4532,7 +4532,7 @@ fn print_cluster_start(node_count: usize, base_port: u16) -> Result<()> {
     for (node_id, listen_addr, _child) in &listeners {
         let target = listen_addr
             .parse::<SocketAddr>()
-            .map_err(|err| anyhow::anyhow!("invalid listen addr {}: {}", listen_addr, err))?;
+            .map_err(|err| anyhow::anyhow!("invalid listen addr {listen_addr}: {err}"))?;
 
         let cfg = UdpDiscoveryConfig {
             bind_addr: SocketAddr::from(([127, 0, 0, 1], 0)),
@@ -4543,7 +4543,7 @@ fn print_cluster_start(node_count: usize, base_port: u16) -> Result<()> {
         };
 
         let replies = broadcast_and_collect(&join, &cfg)
-            .map_err(|err| anyhow::anyhow!("join probe failed for {}: {}", node_id, err))?;
+            .map_err(|err| anyhow::anyhow!("join probe failed for {node_id}: {err}"))?;
         println!(
             "{} at {} replied {} time(s)",
             node_id,
@@ -4556,34 +4556,25 @@ fn print_cluster_start(node_count: usize, base_port: u16) -> Result<()> {
     for (node_id, listen_addr, mut child) in listeners {
         let status = child.wait().map_err(|err| {
             anyhow::anyhow!(
-                "failed waiting for listener {} ({}) to exit: {}",
-                node_id,
-                listen_addr,
-                err
+                "failed waiting for listener {node_id} ({listen_addr}) to exit: {err}"
             )
         })?;
         if !status.success() {
             anyhow::bail!(
-                "listener {} ({}) exited with status {}",
-                node_id,
-                listen_addr,
-                status
+                "listener {node_id} ({listen_addr}) exited with status {status}"
             );
         }
     }
 
     if total_replies < node_count {
         anyhow::bail!(
-            "cluster-start validation incomplete: expected at least {} replies, got {}",
-            node_count,
-            total_replies
+            "cluster-start validation incomplete: expected at least {node_count} replies, got {total_replies}"
         );
     }
 
     println!(
         "
-Cluster-start validation passed: {} replies across {} local nodes",
-        total_replies, node_count
+Cluster-start validation passed: {total_replies} replies across {node_count} local nodes"
     );
     Ok(())
 }
@@ -4658,7 +4649,7 @@ fn run_command_capture(program: &str, args: &[&str]) -> Result<String> {
     let output = Command::new(program)
         .args(args)
         .output()
-        .map_err(|err| anyhow::anyhow!("failed to execute {}: {}", program, err))?;
+        .map_err(|err| anyhow::anyhow!("failed to execute {program}: {err}"))?;
 
     if !output.status.success() {
         anyhow::bail!(
@@ -4765,7 +4756,7 @@ fn run_planner_accuracy_check() -> Result<String> {
             if let Some(entry) = coverage.get_mut(layer) {
                 *entry += 1;
             } else {
-                anyhow::bail!("assignment references out-of-range layer index {}", layer);
+                anyhow::bail!("assignment references out-of-range layer index {layer}");
             }
         }
     }
@@ -4774,9 +4765,7 @@ fn run_planner_accuracy_check() -> Result<String> {
     let overlaps = coverage.iter().filter(|count| **count > 1).count();
     if missing > 0 || overlaps > 0 {
         anyhow::bail!(
-            "planner coverage mismatch (missing_layers={}, overlapped_layers={})",
-            missing,
-            overlaps
+            "planner coverage mismatch (missing_layers={missing}, overlapped_layers={overlaps})"
         );
     }
 
@@ -4842,11 +4831,10 @@ fn write_doctor_report_json(
 
     let payload = format!(
         "{{
-  \"summary\": {{\"pass\": {}, \"warn\": {}, \"fail\": {}}},
-  \"checks\": [{}]
+  \"summary\": {{\"pass\": {pass_count}, \"warn\": {warn_count}, \"fail\": {fail_count}}},
+  \"checks\": [{checks_json}]
 }}
-",
-        pass_count, warn_count, fail_count, checks_json
+"
     );
 
     fs::write(path, payload).map_err(|err| {
@@ -4877,37 +4865,32 @@ enum NetworkProbeOutcome {
 fn probe_network_target(target: &str, timeout: Duration) -> NetworkProbeOutcome {
     let Some((host, port_str)) = target.rsplit_once(':') else {
         return NetworkProbeOutcome::InvalidTarget(format!(
-            "invalid network target '{}', expected host:port",
-            target
+            "invalid network target '{target}', expected host:port"
         ));
     };
 
     if host.is_empty() || port_str.is_empty() {
         return NetworkProbeOutcome::InvalidTarget(format!(
-            "invalid network target '{}', expected host:port",
-            target
+            "invalid network target '{target}', expected host:port"
         ));
     }
 
     let Ok(port) = port_str.parse::<u16>() else {
         return NetworkProbeOutcome::InvalidTarget(format!(
-            "invalid network target '{}', expected numeric port",
-            target
+            "invalid network target '{target}', expected numeric port"
         ));
     };
 
     let Ok(resolved_addrs) = (host, port).to_socket_addrs() else {
         return NetworkProbeOutcome::InvalidTarget(format!(
-            "invalid network target '{}', hostname resolution failed",
-            target
+            "invalid network target '{target}', hostname resolution failed"
         ));
     };
 
     let resolved_addrs = resolved_addrs.collect::<Vec<_>>();
     if resolved_addrs.is_empty() {
         return NetworkProbeOutcome::InvalidTarget(format!(
-            "invalid network target '{}', no socket addresses resolved",
-            target
+            "invalid network target '{target}', no socket addresses resolved"
         ));
     }
 
@@ -4930,8 +4913,7 @@ fn probe_network_target(target: &str, timeout: Duration) -> NetworkProbeOutcome 
         NetworkProbeOutcome::Unreachable { resolved, error }
     } else {
         NetworkProbeOutcome::InvalidTarget(format!(
-            "invalid network target '{}', no connection attempts were made",
-            target
+            "invalid network target '{target}', no connection attempts were made"
         ))
     }
 }
@@ -4953,8 +4935,7 @@ fn run_optional_network_probe(target: &str, checks: &mut Vec<DoctorCheck>) {
                     DoctorStatus::Pass
                 },
                 format!(
-                    "target {} reachable via {} ({:.2} ms)",
-                    target, resolved, latency_ms
+                    "target {target} reachable via {resolved} ({latency_ms:.2} ms)"
                 ),
                 if degraded {
                     Some(
@@ -4978,7 +4959,7 @@ fn run_optional_network_probe(target: &str, checks: &mut Vec<DoctorCheck>) {
             "accessibility",
             "network-probe",
             DoctorStatus::Warn,
-            format!("target {} resolved to {} but is not reachable ({})", target, resolved, error),
+            format!("target {target} resolved to {resolved} but is not reachable ({error})"),
             Some(
                 "Start a listener on the target and retry with --network-probe --network-target <host:port>"
                     .to_string(),
@@ -5157,8 +5138,7 @@ fn print_doctor_report(options: &DoctorOptions) -> Result<()> {
                 DoctorStatus::Warn,
                 format!("missing: {}", missing.join(", ")),
                 Some(format!(
-                    "Install with: {} -m pip install -r third_party/mohawk_gui/requirements-runtime.txt",
-                    python
+                    "Install with: {python} -m pip install -r third_party/mohawk_gui/requirements-runtime.txt"
                 )),
                 Some(format!(
                     "{{\"missing\":[{}],\"python_ok\":true}}",
@@ -5235,8 +5215,7 @@ fn print_doctor_report(options: &DoctorOptions) -> Result<()> {
                 Some("Install xvfb and rerun GUI diagnostics for headless hosts".to_string())
             },
             Some(format!(
-                "{{\"has_display\":false,\"xvfb_available\":{}}}",
-                xvfb_ok
+                "{{\"has_display\":false,\"xvfb_available\":{xvfb_ok}}}"
             )),
         );
     }
@@ -5355,7 +5334,7 @@ fn print_doctor_report(options: &DoctorOptions) -> Result<()> {
                 "accuracy",
                 "gui-api-contract",
                 DoctorStatus::Fail,
-                format!("script exited with status {}", status),
+                format!("script exited with status {status}"),
                 Some(
                     "Run python3 scripts/validate_gui_api_contract.py and review missing APIs"
                         .to_string(),
@@ -5366,7 +5345,7 @@ fn print_doctor_report(options: &DoctorOptions) -> Result<()> {
                 "accuracy",
                 "gui-api-contract",
                 DoctorStatus::Warn,
-                format!("failed to execute: {}", err),
+                format!("failed to execute: {err}"),
                 Some("Verify Python executable and script path".to_string()),
             ),
         }
@@ -5382,7 +5361,7 @@ fn print_doctor_report(options: &DoctorOptions) -> Result<()> {
     );
 
     for area in ["environment", "readiness", "accessibility", "accuracy"] {
-        println!("{}:", area);
+        println!("{area}:");
         for check in checks.iter().filter(|check| check.area == area) {
             println!(
                 "- [{}] {}: {}",
@@ -5391,7 +5370,7 @@ fn print_doctor_report(options: &DoctorOptions) -> Result<()> {
                 check.detail
             );
             if let Some(fix) = &check.fix {
-                println!("  FIX: {}", fix);
+                println!("  FIX: {fix}");
             }
         }
         println!();
@@ -5411,8 +5390,7 @@ fn print_doctor_report(options: &DoctorOptions) -> Result<()> {
         .count();
 
     println!(
-        "Summary: {} pass, {} warn, {} fail",
-        pass_count, warn_count, fail_count
+        "Summary: {pass_count} pass, {warn_count} warn, {fail_count} fail"
     );
 
     if let Some(path) = options.json_out.as_deref() {
@@ -5438,8 +5416,7 @@ Review areas for accuracy:"
 
     if options.strict && fail_count > 0 {
         anyhow::bail!(
-            "doctor strict mode failed with {} failing checks",
-            fail_count
+            "doctor strict mode failed with {fail_count} failing checks"
         );
     }
 
@@ -5477,12 +5454,12 @@ fn launch_mohawk_gui(args: &[String]) -> Result<()> {
     }
 
     let (backend_host, backend_port) = parse_gui_backend_target(args);
-    let backend_url = format!("http://{}:{}", backend_host, backend_port);
+    let backend_url = format!("http://{backend_host}:{backend_port}");
     let mut managed_backend = maybe_spawn_managed_gui_backend(args, &backend_host, backend_port)?;
 
     println!("Launching Ghostlink GUI from {}", gui_entry.display());
-    println!("Python executable: {}", python);
-    println!("GUI backend target: {}", backend_url);
+    println!("Python executable: {python}");
+    println!("GUI backend target: {backend_url}");
 
     let status = Command::new(&python)
         .arg(&gui_entry)
@@ -5490,7 +5467,7 @@ fn launch_mohawk_gui(args: &[String]) -> Result<()> {
         .args(&forwarded_args)
         .status()
         .map_err(|err| {
-            anyhow::anyhow!("failed to launch Ghostlink GUI with {}: {}", python, err)
+            anyhow::anyhow!("failed to launch Ghostlink GUI with {python}: {err}")
         })?;
 
     if let Some(child) = managed_backend.as_mut() {
@@ -5500,8 +5477,7 @@ fn launch_mohawk_gui(args: &[String]) -> Result<()> {
 
     if !status.success() {
         anyhow::bail!(
-            "Ghostlink GUI exited with status {}. Install dependencies from third_party/mohawk_gui and retry.",
-            status
+            "Ghostlink GUI exited with status {status}. Install dependencies from third_party/mohawk_gui and retry."
         );
     }
 
@@ -5611,8 +5587,7 @@ fn maybe_spawn_managed_gui_backend(
     }
 
     println!(
-        "No backend detected at {}:{}; starting managed Ghostlink API backend...",
-        host, port
+        "No backend detected at {host}:{port}; starting managed Ghostlink API backend..."
     );
 
     let executable = std::env::current_exe().map_err(|err| {
@@ -5637,7 +5612,7 @@ fn maybe_spawn_managed_gui_backend(
     let start = Instant::now();
     while start.elapsed() < Duration::from_secs(5) {
         if is_gui_backend_reachable(host, port, Duration::from_millis(200)) {
-            println!("Managed backend online at http://{}:{}", host, port);
+            println!("Managed backend online at http://{host}:{port}");
             return Ok(Some(child));
         }
         std::thread::sleep(Duration::from_millis(125));
@@ -5646,14 +5621,12 @@ fn maybe_spawn_managed_gui_backend(
     let _ = child.kill();
     let _ = child.wait();
     anyhow::bail!(
-        "managed backend did not become reachable at http://{}:{} within startup timeout",
-        host,
-        port
+        "managed backend did not become reachable at http://{host}:{port} within startup timeout"
     );
 }
 
 fn is_gui_backend_reachable(host: &str, port: u16, timeout: Duration) -> bool {
-    let addr = format!("{}:{}", host, port);
+    let addr = format!("{host}:{port}");
     if let Ok(mut addrs) = addr.to_socket_addrs() {
         if let Some(sock_addr) = addrs.next() {
             return TcpStream::connect_timeout(&sock_addr, timeout).is_ok();
@@ -5707,7 +5680,7 @@ fn print_gui_diagnostics(strict: bool) -> Result<()> {
     if Command::new(&python).arg("--version").output().is_err() {
         categories.push((
             "python_runtime".to_string(),
-            format!("Python executable is not runnable: {}", python),
+            format!("Python executable is not runnable: {python}"),
         ));
     }
 
@@ -5725,7 +5698,7 @@ fn print_gui_diagnostics(strict: bool) -> Result<()> {
             python_module_probe_error = Some(err.to_string());
             categories.push((
                 "python_modules".to_string(),
-                format!("Python module probe failed: {}", err),
+                format!("Python module probe failed: {err}"),
             ));
         }
         _ => {}
@@ -5777,7 +5750,7 @@ fn print_gui_diagnostics(strict: bool) -> Result<()> {
     );
     println!("GUI entry: {}", gui_entry.display());
     println!("Requirements: {}", requirements.display());
-    println!("Python executable: {}", python);
+    println!("Python executable: {python}");
     println!("Python source: {}", python_resolution.source.as_str());
     println!(
         "Display session: {}",
@@ -5795,7 +5768,7 @@ Diagnostics: PASS"
 Diagnostics: FAIL"
         );
         for (kind, message) in &categories {
-            println!("- [{}] {}", kind, message);
+            println!("- [{kind}] {message}");
         }
     }
 
@@ -5850,9 +5823,9 @@ Diagnostics: FAIL"
             escaped
         );
         fs::write(&path, payload).map_err(|err| {
-            anyhow::anyhow!("failed to write GUI diagnostics JSON to {}: {}", path, err)
+            anyhow::anyhow!("failed to write GUI diagnostics JSON to {path}: {err}")
         })?;
-        println!("Diagnostics JSON written to: {}", path);
+        println!("Diagnostics JSON written to: {path}");
     }
 
     if strict && !categories.is_empty() {
@@ -5889,7 +5862,7 @@ fn print_gui_readiness(strict: bool) -> Result<()> {
     );
     println!("GUI entry: {}", gui_entry.display());
     println!("Requirements: {}", requirements.display());
-    println!("Python executable: {}", python);
+    println!("Python executable: {python}");
 
     if !gui_entry.exists() {
         issues.push(format!("Missing GUI entrypoint: {}", gui_entry.display()));
@@ -5912,7 +5885,7 @@ fn print_gui_readiness(strict: bool) -> Result<()> {
             println!("Python version: {}", version.trim());
         }
         Err(err) => {
-            issues.push(format!("Python executable is not runnable: {}", err));
+            issues.push(format!("Python executable is not runnable: {err}"));
         }
     }
 
@@ -5924,7 +5897,7 @@ fn print_gui_readiness(strict: bool) -> Result<()> {
             issues.push(format!("Missing Python modules: {}", missing.join(", ")));
         }
         Err(err) => {
-            issues.push(format!("Unable to validate Python modules: {}", err));
+            issues.push(format!("Unable to validate Python modules: {err}"));
         }
     }
 
@@ -5994,7 +5967,7 @@ Readiness: FAIL"
     );
     println!("Issues:");
     for issue in &issues {
-        println!("- {}", issue);
+        println!("- {issue}");
     }
 
     println!(
@@ -6025,17 +5998,16 @@ fn detect_missing_optional_gui_python_modules(python: &str) -> Result<Vec<String
 fn detect_missing_python_modules(python: &str, modules: &[&str]) -> Result<Vec<String>> {
     let module_list = modules
         .iter()
-        .map(|m| format!("'{}'", m))
+        .map(|m| format!("'{m}'"))
         .collect::<Vec<_>>()
         .join(",");
     let script = format!(
-        "import importlib.util as u;mods=[{}];missing=[m for m in mods if u.find_spec(m) is None];print(','.join(missing))",
-        module_list
+        "import importlib.util as u;mods=[{module_list}];missing=[m for m in mods if u.find_spec(m) is None];print(','.join(missing))"
     );
     let output = Command::new(python)
         .args(["-c", &script])
         .output()
-        .map_err(|err| anyhow::anyhow!("unable to execute Python '{}': {}", python, err))?;
+        .map_err(|err| anyhow::anyhow!("unable to execute Python '{python}': {err}"))?;
 
     if !output.status.success() {
         return Err(anyhow::anyhow!(

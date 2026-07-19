@@ -27,7 +27,7 @@ fn bench(name: &str, iters: u64, mut f: impl FnMut()) -> f64 {
     let elapsed = start.elapsed();
     let ns = elapsed.as_nanos() as f64 / iters as f64;
     let ops = 1_000_000_000.0 / ns;
-    println!("{:<52} {:>10.2} ns/op  {:>14.0} ops/sec", name, ns, ops);
+    println!("{name:<52} {ns:>10.2} ns/op  {ops:>14.0} ops/sec");
     ns
 }
 
@@ -93,8 +93,8 @@ fn main() {
         let ns = elapsed.as_nanos() as f64 / iters as f64;
         let ops = 1_000_000_000.0 / ns;
         println!(
-            "{:<52} {:>10.2} ns/op  {:>14.0} ops/sec",
-            "ring_buffer: SPSC cross-thread (10k items)", ns, ops
+            "{:<52} {ns:>10.2} ns/op  {ops:>14.0} ops/sec",
+            "ring_buffer: SPSC cross-thread (10k items)"
         );
     }
 
@@ -121,7 +121,7 @@ fn main() {
 
     // ─── Layer Assignment Planning ───────────────────────────────────────────
     let nodes_2: Vec<_> = (0..2)
-        .map(|i| NodeResources::new(format!("node-{}", i), 24.0, 64.0, "8.9", None))
+        .map(|i| NodeResources::new(format!("node-{i}"), 24.0, 64.0, "8.9", None))
         .collect();
     let layers_33: Vec<LayerSpec> = (0..33)
         .map(|i| LayerSpec {
@@ -135,7 +135,7 @@ fn main() {
     });
 
     let nodes_8: Vec<_> = (0..8)
-        .map(|i| NodeResources::new(format!("node-{}", i), 48.0, 128.0, "9.0", None))
+        .map(|i| NodeResources::new(format!("node-{i}"), 48.0, 128.0, "9.0", None))
         .collect();
     let layers_80: Vec<LayerSpec> = (0..80)
         .map(|i| LayerSpec {
@@ -179,7 +179,7 @@ fn main() {
     let cluster2 = ClusterState::new();
     for i in 0..10 {
         cluster2.register(NodeResources::new(
-            format!("node-{}", i),
+            format!("node-{i}"),
             24.0,
             64.0,
             "8.9",
@@ -196,7 +196,7 @@ fn main() {
     let cluster3 = Arc::new(ClusterState::new());
     for i in 0..8 {
         cluster3.register(NodeResources::new(
-            format!("node-{}", i),
+            format!("node-{i}"),
             24.0 + (i as f32 * 4.0),
             64.0,
             "8.9",

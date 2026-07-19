@@ -161,7 +161,7 @@ fn test_cluster_state_concurrent_access() {
             let cluster = Arc::clone(&cluster_clone);
             thread::spawn(move || {
                 cluster.register(NodeResources::new(
-                    format!("node-{}", i),
+                    format!("node-{i}"),
                     24.0,
                     64.0,
                     "8.9",
@@ -459,7 +459,7 @@ fn cluster_handles_two_concurrent_failures() {
 
     for i in 0..5 {
         cluster.register(NodeResources::new(
-            format!("node-{}", i),
+            format!("node-{i}"),
             24.0,
             64.0,
             "8.9",
@@ -501,7 +501,7 @@ fn cluster_scales_to_multiple_nodes() {
 
     for i in 0..50 {
         cluster.register(NodeResources::new(
-            format!("node-{:03}", i),
+            format!("node-{i:03}"),
             24.0 + (i as f32),
             64.0,
             "8.9",

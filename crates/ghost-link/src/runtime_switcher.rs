@@ -98,8 +98,7 @@ impl RequestTracker {
 
             if start.elapsed() > timeout {
                 return Err(format!(
-                    "Request drain timeout: {} requests still in-flight",
-                    count
+                    "Request drain timeout: {count} requests still in-flight"
                 ));
             }
 
@@ -127,7 +126,7 @@ impl EnvironmentManager {
             .config
             .backend_env_vars
             .get(backend_name)
-            .ok_or_else(|| format!("No environment configuration for backend: {}", backend_name))?;
+            .ok_or_else(|| format!("No environment configuration for backend: {backend_name}"))?;
 
         for (key, value) in env_vars {
             std::env::set_var(key, value);
@@ -149,7 +148,7 @@ impl EnvironmentManager {
             .config
             .backend_env_vars
             .get(backend_name)
-            .ok_or_else(|| format!("No environment configuration for backend: {}", backend_name))?;
+            .ok_or_else(|| format!("No environment configuration for backend: {backend_name}"))?;
 
         for key in env_vars.keys() {
             std::env::remove_var(key);
