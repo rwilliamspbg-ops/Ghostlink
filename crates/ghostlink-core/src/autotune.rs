@@ -144,7 +144,40 @@ fn cache_path() -> Option<PathBuf> {
 }
 
 fn now_iso8601() -> String {
-    "1970-01-01T00:00:00Z".to_string()
+    let dur = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    let secs = dur.as_secs();
+    // Days since epoch
+    let days = secs / 86400;
+    let remaining = secs % 86400;
+    let hours = remaining / 3600;
+    let minutes = (remaining % 3600) / 60;
+    let seconds = remaining % 60;
+
+    // Compute year/month/day from days since 1970-01-01 (civil calendar)
+    let (year, month, day) = civil_from_days(days as i64);
+
+    format!(
+        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
+        year, month, day, hours, minutes, seconds
+    )
+}
+
+/// Convert days since 1970-01-01 to (year, month, day) in the Gregorian civil calendar.
+fn civil_from_days(days: i64) -> (i64, u32, u32) {
+    // Algorithm from Howard Hinnant
+    let z = days + 719468;
+    let era = if z >= 0 { z } else { z - 146096 } / 146097;
+    let doe = z - era * 146097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    (y, m as u32, d as u32)
 }
 
 fn tune_tcp(profile: &SystemProfile, _rp: &RuntimeProfile) -> TcpAutoConfig {
