@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::process::Command;
 use std::sync::{Arc, Mutex};
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub enum ComputeBackend {
     Rocm,
     Cuda,
@@ -62,69 +62,53 @@ pub struct BackendRegistry {
     current: Arc<Mutex<ComputeBackend>>,
 }
 
+#[allow(dead_code)]
 impl BackendRegistry {
-    /// Create a new backend registry and discover available backends
+    /// Create a new backend registry and discover available backends using SystemProfile.
     pub fn discover() -> Self {
+        // Use the unified SystemProfile for detection
+        let profile = ghostlink_core::system_profile::SystemProfile::detect_fast();
         let mut backends = Vec::new();
         let mut current = ComputeBackend::Cpu;
 
-        // Detect NVIDIA CUDA
-        if let Some(info) = Self::detect_cuda() {
-            current = ComputeBackend::Cuda;
-            backends.push(info);
-        }
+        for gpu in &profile.gpus {
+            let backend = match gpu.backend {
+                ghostlink_core::host::GpuBackend::Cuda => Some(ComputeBackend::Cuda),
+                ghostlink_core::host::GpuBackend::Rocm => Some(ComputeBackend::Rocm),
+                ghostlink_core::host::GpuBackend::Metal => Some(ComputeBackend::Metal),
+                ghostlink_core::host::GpuBackend::Directml => Some(ComputeBackend::OneAPI),
+                ghostlink_core::host::GpuBackend::Vulkan => Some(ComputeBackend::OneAPI),
+                ghostlink_core::host::GpuBackend::Npu | ghostlink_core::host::GpuBackend::Cpu => None,
+            };
 
-        // Detect AMD ROCm
-        if let Some(info) = Self::detect_rocm() {
-            if backends.is_empty() {
-                current = ComputeBackend::Rocm;
+            if let Some(b) = backend {
+                if backends.is_empty() {
+                    current = b;
+                }
+                if !backends.iter().any(|bi: &BackendInfo| bi.backend == current) {
+                    backends.push(BackendInfo {
+                        backend: b,
+                        device_name: gpu.name.clone(),
+                        vram_gb: Some(gpu.vram_gb),
+                        compute_capability: gpu.compute_capability.clone(),
+                        driver_version: gpu.driver_version.clone(),
+                        available: true,
+                    });
+                }
             }
-            backends.push(info);
-        } else if std::env::var("HSA_OVERRIDE_GFX_VERSION").is_ok()
-            || std::env::var("HIP_VISIBLE_DEVICES").is_ok()
-        {
-            // Fallback: ROCm environment detected but rocm-smi not available (Windows/WSL)
-            let gfx_version =
-                std::env::var("HSA_OVERRIDE_GFX_VERSION").unwrap_or_else(|_| "gfx906".to_string());
-            backends.push(BackendInfo {
-                backend: ComputeBackend::Rocm,
-                device_name: "AMD Radeon 860M".to_string(),
-                vram_gb: Some(14.2),
-                compute_capability: gfx_version,
-                driver_version: "ROCm 6.1+".to_string(),
-                available: true,
-            });
-            if backends.is_empty() {
-                current = ComputeBackend::Rocm;
-            }
-        }
-
-        // Detect Intel oneAPI
-        if let Some(info) = Self::detect_oneapi() {
-            if backends.is_empty() {
-                current = ComputeBackend::OneAPI;
-            }
-            backends.push(info);
-        }
-
-        // Detect macOS Metal
-        #[cfg(target_os = "macos")]
-        if let Some(info) = Self::detect_metal() {
-            if backends.is_empty() {
-                current = ComputeBackend::Metal;
-            }
-            backends.push(info);
         }
 
         // CPU is always available as fallback
-        backends.push(BackendInfo {
-            backend: ComputeBackend::Cpu,
-            device_name: Self::detect_cpu_name(),
-            vram_gb: None,
-            compute_capability: "generic".to_string(),
-            driver_version: "native".to_string(),
-            available: true,
-        });
+        if !backends.iter().any(|b| b.backend == ComputeBackend::Cpu) {
+            backends.push(BackendInfo {
+                backend: ComputeBackend::Cpu,
+                device_name: profile.cpu.brand.clone(),
+                vram_gb: None,
+                compute_capability: "generic".to_string(),
+                driver_version: "native".to_string(),
+                available: true,
+            });
+        }
 
         Self {
             backends: Arc::new(Mutex::new(backends)),
