@@ -4,7 +4,7 @@ bandit==1.7.10
 black==24.8.0
 certifi==2024.8.30
 cryptography==49.0.0
-fastapi==0.139.0
+fastapi==0.139.2
 flake8==7.3.0
 mypy==2.3.0
 psutil==6.1.0
