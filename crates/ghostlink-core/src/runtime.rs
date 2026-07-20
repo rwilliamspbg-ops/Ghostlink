@@ -289,6 +289,29 @@ pub enum BridgeAddr {
     Unix(PathBuf),
 }
 
+/// Build a collision-free Unix socket path for an inter-stage bridge.
+///
+/// Paths must be unique per process AND per pipeline: a fixed name like
+/// `ghostlink-bridge-0.sock` lets two concurrent pipelines delete each
+/// other's live sockets and cross-connect their streams, which surfaces
+/// as garbled frames (auth failures / bogus payload lengths) far from
+/// the cause. PID plus a process-wide counter guarantees uniqueness;
+/// callers still remove stale files defensively before binding.
+#[cfg(unix)]
+fn unique_bridge_socket_path(source_stage: usize) -> std::path::PathBuf {
+    use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
+    static BRIDGE_SOCKET_SEQ: AtomicU64 = AtomicU64::new(0);
+    let seq = BRIDGE_SOCKET_SEQ.fetch_add(1, AtomicOrdering::Relaxed);
+    let mut p = std::env::temp_dir();
+    p.push(format!(
+        "ghostlink-bridge-{}-{}-{}.sock",
+        std::process::id(),
+        seq,
+        source_stage
+    ));
+    p
+}
+
 impl BridgeAddr {
     /// Connect to the address (with a timeout for TCP, instant for Unix).
     fn connect(&self, timeout: Duration) -> io::Result<BridgeStream> {
@@ -841,6 +864,21 @@ fn _read_transport_batch_inner(
     reader.read_exact(&mut payload_len_bytes)?;
     let payload_len = u32::from_le_bytes(payload_len_bytes) as usize;
 
+    // Bound the wire-declared payload length BEFORE allocating. A corrupted or
+    // cross-wired frame can otherwise declare up to u32::MAX elements (~17 GB
+    // of f32), and the resulting failed allocation aborts the process (or gets
+    // the backend OOM-killed on Linux) instead of surfacing an error.
+    const MAX_WIRE_PAYLOAD_ELEMS: usize = 64 * 1024 * 1024; // 256 MB of f32
+    if payload_len > MAX_WIRE_PAYLOAD_ELEMS {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "wire payload length {} exceeds maximum {} (corrupted or cross-wired frame?)",
+                payload_len, MAX_WIRE_PAYLOAD_ELEMS
+            ),
+        ));
+    }
+
     let mut tag_type_byte = [0u8; 1];
     reader.read_exact(&mut tag_type_byte)?;
     let tag_type = tag_type_byte[0];
@@ -1027,8 +1065,21 @@ pub fn spawn_tcp_bridge(
         }
 
         let server_stream = match listener.accept() {
-            Ok(stream) => stream,
+            Ok(stream) => {
+                // Once the peer is connected the Unix socket file is no longer
+                // needed; unlink immediately so unique per-pipeline socket
+                // paths do not accumulate in the temp directory.
+                #[cfg(unix)]
+                if let BridgeAddr::Unix(path) = &addr {
+                    let _ = std::fs::remove_file(path);
+                }
+                stream
+            }
             Err(_) => {
+                #[cfg(unix)]
+                if let BridgeAddr::Unix(path) = &addr {
+                    let _ = std::fs::remove_file(path);
+                }
                 for batch in input_rx {
                     if output_tx.send(batch).is_err() {
                         break;
@@ -1267,12 +1318,8 @@ pub fn execute_pipeline_distributed(
             #[cfg(unix)]
             {
                 // Same-node with Unix transport: use Unix domain socket.
-                let sock_path = {
-                    let mut p = std::env::temp_dir();
-                    p.push(format!("ghostlink-bridge-{}.sock", source_stage_idx));
-                    let _ = std::fs::remove_file(&p);
-                    p
-                };
+                let sock_path = unique_bridge_socket_path(source_stage_idx);
+                let _ = std::fs::remove_file(&sock_path);
                 let ulistener = UnixListener::bind(&sock_path).map_err(|e| {
                     format!("Failed to bind Unix socket at {}: {e}", sock_path.display())
                 })?;
@@ -1563,12 +1610,8 @@ pub fn execute_pipeline_tcp_loopback_with_config(
             }
             #[cfg(unix)]
             TransportKind::Unix => {
-                let sock_path = {
-                    let mut p = std::env::temp_dir();
-                    p.push(format!("ghostlink-bridge-{}.sock", source_stage));
-                    let _ = std::fs::remove_file(&p);
-                    p
-                };
+                let sock_path = unique_bridge_socket_path(source_stage);
+                let _ = std::fs::remove_file(&sock_path);
                 let listener = UnixListener::bind(&sock_path).map_err(|e| {
                     format!("failed to bind Unix socket at {}: {e}", sock_path.display())
                 })?;
