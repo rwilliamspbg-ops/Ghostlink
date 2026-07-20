@@ -56,7 +56,8 @@ log() { printf '[launch-complete] %s\n' "$*"; }
 warn() { printf '[launch-complete] WARN: %s\n' "$*" >&2; }
 
 # Download official prebuilt llama.cpp binaries when building locally is not
-# possible (no cmake, missing submodule, or a failed build). Linux x86_64 only.
+# possible (no cmake, missing submodule, or a failed build). Supports Linux
+# x86_64 and macOS (arm64 and x86_64).
 # Without this, machines with no build toolchain silently drop to simulated
 # mode and every chat fails with "could not connect to 127.0.0.1:8080".
 download_prebuilt_llama() {
