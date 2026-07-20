@@ -1,6 +1,6 @@
 PyJWT==2.13.0
 PyQt6==6.7.1
-bandit==1.7.10
+bandit==1.9.4
 black==24.8.0
 certifi==2026.6.17
 cryptography==49.0.0
