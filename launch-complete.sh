@@ -60,16 +60,28 @@ warn() { printf '[launch-complete] WARN: %s\n' "$*" >&2; }
 # Without this, machines with no build toolchain silently drop to simulated
 # mode and every chat fails with "could not connect to 127.0.0.1:8080".
 download_prebuilt_llama() {
-    if [[ "$(uname -s)" != "Linux" || "$(uname -m)" != "x86_64" ]]; then
-        warn "prebuilt llama.cpp fallback supports Linux x86_64 only"
-        return 1
-    fi
-    # The Vulkan build drives NVIDIA/AMD/Intel GPUs through the system Vulkan
-    # loader without needing a CUDA/ROCm toolchain installed.
-    local variant="ubuntu-x64"
-    if ldconfig -p 2>/dev/null | grep -q "libvulkan.so.1"; then
-        variant="ubuntu-vulkan-x64"
-    fi
+    local variant
+    case "$(uname -s)/$(uname -m)" in
+        Linux/x86_64)
+            # The Vulkan build drives NVIDIA/AMD/Intel GPUs through the system
+            # Vulkan loader without needing a CUDA/ROCm toolchain installed.
+            variant="ubuntu-x64"
+            if ldconfig -p 2>/dev/null | grep -q "libvulkan.so.1"; then
+                variant="ubuntu-vulkan-x64"
+            fi
+            ;;
+        Darwin/arm64)
+            # Apple Silicon: official build ships with Metal GPU support.
+            variant="macos-arm64"
+            ;;
+        Darwin/x86_64)
+            variant="macos-x64"
+            ;;
+        *)
+            warn "prebuilt llama.cpp fallback supports Linux x86_64 and macOS only"
+            return 1
+            ;;
+    esac
     log "llama-server: resolving official prebuilt binaries ($variant)..."
     # Releases are listed newest-first; not every release publishes all
     # assets, so scan a few and take the newest matching one.
