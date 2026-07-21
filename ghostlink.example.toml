@@ -87,3 +87,17 @@ gpu_memory_allocation = 0.80
 
 # Timeout in seconds for draining in-flight requests during backend switch
 request_drain_timeout_secs = 30
+
+# ─── Local llama-server throughput tuning ───
+# Applied when Ghostlink spawns llama-server (native engine).
+# Override at runtime with GHOSTLINK_LLAMA_SERVER_ARGS (space-separated).
+#
+# Prompt processing: raise -b / -ub when VRAM allows (e.g. -b 2048 -ub 512)
+# Flash Attention:   always enable -fa for long-context decode bandwidth
+# Quantization:      prefer Q4_K_M or IQ4_XS over FP16/Q8_0 for local loops
+#
+# Env defaults used by launch scripts / native_engine:
+#   GHOSTLINK_LLAMA_SERVER_ARGS="-fa on -b 2048 -ub 512"   # >=12GB VRAM profile
+#   GHOSTLINK_LLAMA_SERVER_ARGS="-fa on -b 1024 -ub 512"   # ~8GB VRAM profile
+#   GHOSTLINK_VRAM_GB=8
+#   GHOSTLINK_LLAMA_NGL=40

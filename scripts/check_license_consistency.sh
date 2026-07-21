@@ -10,7 +10,11 @@ if [[ -z "$WORKSPACE_LICENSE" ]]; then
 fi
 
 EXIT_CODE=0
+# Use a temp file instead of process substitution for broader shell/CRLF portability.
+TMP_LIST="$(mktemp)"
+find "$ROOT_DIR/crates" -name Cargo.toml | sort >"$TMP_LIST"
 while IFS= read -r cargo_file; do
+  [[ -z "$cargo_file" ]] && continue
   crate_license="$(grep -E '^license\s*=\s*"' "$cargo_file" | head -n1 | sed -E 's/.*"([^"]+)".*/\1/')"
   if [[ -z "$crate_license" ]]; then
     echo "missing license field: $cargo_file" >&2
@@ -21,6 +25,7 @@ while IFS= read -r cargo_file; do
     echo "license mismatch in $cargo_file: expected '$WORKSPACE_LICENSE' got '$crate_license'" >&2
     EXIT_CODE=1
   fi
-done < <(find "$ROOT_DIR/crates" -name Cargo.toml | sort)
+done <"$TMP_LIST"
+rm -f "$TMP_LIST"
 
 exit "$EXIT_CODE"

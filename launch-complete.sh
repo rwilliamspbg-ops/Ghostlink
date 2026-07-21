@@ -17,6 +17,9 @@ LLAMA_PID=""
 API_PID=""
 GUI_PID=""
 
+log() { printf '[launch-complete] %s\n' "$*"; }
+warn() { printf '[launch-complete] WARN: %s\n' "$*" >&2; }
+
 # Pre-flight validation
 validate_config() {
     log "Running pre-flight validation..."
@@ -51,9 +54,6 @@ validate_config() {
     log "Pre-flight validation passed"
     return 0
 }
-
-log() { printf '[launch-complete] %s\n' "$*"; }
-warn() { printf '[launch-complete] WARN: %s\n' "$*" >&2; }
 
 # Download official prebuilt llama.cpp binaries when building locally is not
 # possible (no cmake, missing submodule, or a failed build). Supports Linux
@@ -307,16 +307,18 @@ plan_resources() {
         fi
     fi
 
-    # Backend flags
+    # Backend flags (llama-server auto-detects GPU backend from build)
+    BACKEND_FLAGS=""
     case "$BACKEND" in
-        cuda)     BACKEND_FLAGS="" ;;
-        vulkan)   BACKEND_FLAGS="--vulkan" ;;
-        rocm)     BACKEND_FLAGS="" ;;
-        metal)    BACKEND_FLAGS="--metal" ;;
-        directml) BACKEND_FLAGS="--directml" ;;
-        cpu)      BACKEND_FLAGS="" ;;
+        cuda|rocm|vulkan|metal|cpu) BACKEND_FLAGS="" ;;
         *)        BACKEND_FLAGS="" ;;
     esac
+
+    # Export GPU environment for ROCm before llama-server starts
+    if [[ "$BACKEND" == "rocm" ]]; then
+        export HIP_PLATFORM=amd
+        export HSA_OVERRIDE_GFX_VERSION=gfx906
+    fi
     echo "  Backend: $(echo $BACKEND | tr '[:lower:]' '[:upper:]')"
 
     # Memory lock
@@ -413,13 +415,31 @@ main() {
     local NATIVE_ENGINE="simulated"
 
     if [[ -n "$LLAMA_SERVER_BIN" ]]; then
-        log "starting llama-server on port $LLAMA_PORT (ngl=$LLAMA_NGL, backend=$BACKEND)"
+        # Perf defaults: Flash Attention + VRAM-scaled batch (override via GHOSTLINK_LLAMA_SERVER_ARGS)
+        if [[ -n "${GHOSTLINK_LLAMA_SERVER_ARGS:-}" ]]; then
+            # shellcheck disable=SC2206
+            LLAMA_PERF_ARGS=($GHOSTLINK_LLAMA_SERVER_ARGS)
+        elif (( VRAM_GB >= 12 )); then
+            LLAMA_PERF_ARGS=(-fa on -b 2048 -ub 512)
+        elif (( VRAM_GB >= 8 )); then
+            LLAMA_PERF_ARGS=(-fa on -b 1024 -ub 512)
+        elif (( VRAM_GB >= 4 )); then
+            LLAMA_PERF_ARGS=(-fa on -b 512 -ub 256)
+        else
+            LLAMA_PERF_ARGS=(-fa on -b 512 -ub 128)
+        fi
+        export GHOSTLINK_LLAMA_SERVER_ARGS="${GHOSTLINK_LLAMA_SERVER_ARGS:-${LLAMA_PERF_ARGS[*]}}"
+        export GHOSTLINK_VRAM_GB="${VRAM_GB:-0}"
+        export GHOSTLINK_LLAMA_NGL="${LLAMA_NGL}"
+
+        log "starting llama-server on port $LLAMA_PORT (ngl=$LLAMA_NGL, backend=$BACKEND, perf=${LLAMA_PERF_ARGS[*]})"
         "$LLAMA_SERVER_BIN" \
             -m "$MODEL_FILE" \
             --host 127.0.0.1 --port "$LLAMA_PORT" \
             -ngl "$LLAMA_NGL" \
             -np 1 \
             -t "$THREADS" \
+            "${LLAMA_PERF_ARGS[@]}" \
             $MLOCK_FLAG \
             $BACKEND_FLAGS \
             >/tmp/ghostlink_llama_server.log 2>&1 &
@@ -466,7 +486,7 @@ main() {
     echo "  Inference: http://127.0.0.1:${LLAMA_PORT} (llama-server)"
     echo ""
     echo "  Hardware: ${GPU_NAME:-CPU} (${BACKEND}, ${LLAMA_NGL} GPU layers)"
-    echo "  Threads: ${THREADS}"
+    echo "  RAM: ${RAM_GB} GB | Threads: ${THREADS}"
     [[ -n "$NPU_DETECTED" ]] && echo "  NPU: $NPU_DETECTED"
     echo ""
     log "logs: /tmp/ghostlink_*.log"

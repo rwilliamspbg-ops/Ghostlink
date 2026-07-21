@@ -8,16 +8,12 @@ GPU_VENDOR=""
 BACKEND="cpu"
 VRAM_GB=0
 NPU_DETECTED=""
+GPU_NAME=""
+RAM_GB=0
+CPU_CORES=0
 
-# GPU Environment Variables (for AMD ROCm - ROCm.txt gfx906 mapping)
-export OLLAMA_HOST=${OLLAMA_HOST:-127.0.0.1:11434}
-export OLLAMA_NUM_THREAD=${OLLAMA_NUM_THREAD:-16}
-export OLLAMA_GPU_MEMORY=${OLLAMA_GPU_MEMORY:-3276}
 export HIP_PLATFORM=${HIP_PLATFORM:-amd}
 export HSA_OVERRIDE_GFX_VERSION=${HSA_OVERRIDE_GFX_VERSION:-gfx906}
-export OLLAMA_IGPU_ENABLE=${OLLAMA_IGPU_ENABLE:-1}
-export OLLAMA_BATCH_SIZE=${OLLAMA_BATCH_SIZE:-512}
-export OLLAMA_CACHE_SIZE=${OLLAMA_CACHE_SIZE:-2048}
 
 # Color palette
 RED='\033[0;31m'
@@ -147,12 +143,32 @@ echo -e "${BLUE}│${NC}  ${WHITE}Rust:${NC}          $(rustc --version 2>/dev/n
 echo -e "${BLUE}│${NC}  ${WHITE}Cargo:${NC}         $(cargo --version 2>/dev/null | cut -d' ' -f2 || echo 'not installed')"
 echo -e "${BLUE}│${NC}  ${WHITE}Node.js:${NC}       $(node -v 2>/dev/null || echo 'not installed')"
 echo -e "${BLUE}│${NC}  ${WHITE}npm:${NC}           $(npm -v 2>/dev/null || echo 'not installed')"
-echo -e "${BLUE}│${NC}  ${WHITE}GPU:${NC}           $(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1 || echo 'CPU only / not detected')"
+if [[ "$(uname -s)" == "Darwin" ]]; then
+    local _ram=$(sysctl -n hw.memsize 2>/dev/null | awk '{printf "%.0f", $1/1073741824}' || echo '?')
+    echo -e "${BLUE}│${NC}  ${WHITE}RAM:${NC}          ${_ram} GB"
+else
+    local _ram=$(awk '/MemTotal/ {printf "%.0f", $2/1048576}' /proc/meminfo 2>/dev/null || echo '?')
+    echo -e "${BLUE}│${NC}  ${WHITE}RAM:${NC}          ${_ram} GB"
+fi
+echo -e "${BLUE}│${NC}  ${WHITE}GPU:${NC}           $(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1 || echo 'detecting...')"
 if [[ -n "$NPU_DETECTED" ]]; then
     echo -e "${BLUE}│${NC}  ${WHITE}NPU:${NC}           $NPU_DETECTED"
 fi
 echo -e "${BLUE}└────────────────────────────────────────────────────────────────────────────────────┘${NC}"
 echo ""
+}
+
+# CPU & RAM detection
+detect_cpu_ram() {
+    if [[ "$(uname -s)" == "Darwin" ]]; then
+        CPU_CORES=$(sysctl -n hw.logicalcpu 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
+        RAM_GB=$(sysctl -n hw.memsize 2>/dev/null | awk '{printf "%.0f", $1/1073741824}' || echo 4)
+    else
+        CPU_CORES=$(nproc 2>/dev/null || grep -c ^processor /proc/cpuinfo 2>/dev/null || echo 4)
+        RAM_GB=$(awk '/MemTotal/ {printf "%.0f", $2/1048576}' /proc/meminfo 2>/dev/null || echo 4)
+    fi
+    echo -e "  ${GREEN}╡${NC} ${WHITE}CPU${NC}          ${CPU_CORES} cores"
+    echo -e "  ${GREEN}╡${NC} ${WHITE}RAM${NC}          ${RAM_GB} GB"
 }
 
 # GPU detection
@@ -168,6 +184,7 @@ detect_gpu() {
             vram_mib=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null | head -1)
             local vram_gb=$(( vram_mib / 1024 ))
             echo -e "  ${GREEN}╡${NC} ${WHITE}GPU${NC}          ${GREEN}NVIDIA: $gpu_name (${vram_gb} GB)${NC}"
+            GPU_NAME="$gpu_name"
             gpu_vendor="nvidia"
             GPU_VENDOR="nvidia"
             BACKEND="cuda"
@@ -180,15 +197,14 @@ detect_gpu() {
         gpu_name=$(rocm-smi --showproductname 2>/dev/null | grep "Card model:" | head -1 | awk -F': ' '{print $3}')
         if [ -n "$gpu_name" ]; then
             echo -e "  ${GREEN}╡${NC} ${WHITE}GPU${NC}          ${GREEN}AMD ROCm: $gpu_name (gfx906 mapping)${NC}"
-            gpu_vendor="amd"
-            GPU_VENDOR="amd"
-            BACKEND="rocm"
+            GPU_NAME="$gpu_name"
         else
             echo -e "  ${GREEN}╡${NC} ${WHITE}GPU${NC}          ${GREEN}AMD ROCm detected (gfx906 mapping)${NC}"
-            gpu_vendor="amd"
-            GPU_VENDOR="amd"
-            BACKEND="rocm"
+            GPU_NAME="AMD ROCm"
         fi
+        gpu_vendor="amd"
+        GPU_VENDOR="amd"
+        BACKEND="rocm"
     fi
     
     # AMD/Intel via lspci (Linux)
@@ -199,16 +215,19 @@ detect_gpu() {
             gpu_name=$(echo "$gpu_line" | grep -iEo '"([^"]*)"' | tail -1 | tr -d '"')
             if echo "$gpu_name" | grep -qiE "amd|radeon|advanced micro"; then
                 echo -e "  ${GREEN}╡${NC} ${WHITE}GPU${NC}          ${GREEN}AMD: ${gpu_name:-AMD GPU}${NC}"
+                GPU_NAME="${gpu_name:-AMD GPU}"
                 gpu_vendor="amd"
                 GPU_VENDOR="amd"
                 BACKEND="rocm"
             elif echo "$gpu_name" | grep -qiE "intel|arc|iris|uhd"; then
                 echo -e "  ${GREEN}╡${NC} ${WHITE}GPU${NC}          ${GREEN}Intel: ${gpu_name}${NC}"
+                GPU_NAME="$gpu_name"
                 gpu_vendor="intel"
                 GPU_VENDOR="intel"
                 BACKEND="vulkan"
             else
                 echo -e "  ${GREEN}╡${NC} ${WHITE}GPU${NC}          ${GREEN}GPU: ${gpu_name}${NC}"
+                GPU_NAME="$gpu_name"
                 gpu_vendor="other"
                 GPU_VENDOR="other"
                 BACKEND="vulkan"
@@ -221,6 +240,7 @@ detect_gpu() {
         gpu_name=$(system_profiler SPDisplaysDataType 2>/dev/null | grep "Chipset Model:" | head -1 | awk -F': ' '{print $2}')
         if [ -n "$gpu_name" ]; then
             echo -e "  ${GREEN}╡${NC} ${WHITE}GPU${NC}          ${GREEN}Apple: $gpu_name${NC}"
+            GPU_NAME="$gpu_name"
             gpu_vendor="apple"
             GPU_VENDOR="apple"
             BACKEND="metal"
@@ -243,6 +263,7 @@ detect_gpu() {
     
     if [ -z "$gpu_vendor" ]; then
         echo -e "  ${YELLOW}╡${NC} ${WHITE}GPU${NC}          ${YELLOW}No GPU detected - using CPU mode${NC}"
+        GPU_NAME="CPU"
         GPU_VENDOR=""
         BACKEND="cpu"
     fi
@@ -390,174 +411,350 @@ build_llama_cpp() {
     echo ""
 }
 
+# Free a TCP port (best-effort) so stale llama-server / API processes do not cause 404/bind errors
+free_port() {
+    local port="$1"
+    if command -v fuser >/dev/null 2>&1; then
+        fuser -k "${port}/tcp" >/dev/null 2>&1 || true
+    elif command -v lsof >/dev/null 2>&1; then
+        local pids
+        pids=$(lsof -ti "tcp:${port}" 2>/dev/null || true)
+        if [ -n "$pids" ]; then
+            # shellcheck disable=SC2086
+            kill -9 $pids >/dev/null 2>&1 || true
+        fi
+    fi
+}
+
+# Resolve llama-server binary (absolute path)
+resolve_llama_server_bin() {
+    local candidate
+    for candidate in \
+        "${GHOSTLINK_LLAMA_SERVER_BIN:-}" \
+        "$PROJECT_ROOT/bin/llama-server" \
+        "$PROJECT_ROOT/third_party/llama.cpp/build/bin/llama-server" \
+        "$PROJECT_ROOT/third_party/llama.cpp/build/bin/Release/llama-server.exe" \
+        "$PROJECT_ROOT/third_party/llama.cpp/build/bin/llama-server.exe" \
+        "$PROJECT_ROOT/target/release/llama-server" \
+        "$PROJECT_ROOT/target/debug/llama-server"
+    do
+        if [ -n "$candidate" ] && [ -f "$candidate" ]; then
+            echo "$candidate"
+            return 0
+        fi
+    done
+    if command -v llama-server >/dev/null 2>&1; then
+        command -v llama-server
+        return 0
+    fi
+    return 1
+}
+
+# Pick best available GGUF model (prefer production models used on Windows, fall back to tiny)
+resolve_model_file() {
+    local candidate
+    if [ -n "${GHOSTLINK_MODEL_FILE:-}" ] && [ -f "$GHOSTLINK_MODEL_FILE" ]; then
+        echo "$GHOSTLINK_MODEL_FILE"
+        return 0
+    fi
+    for candidate in \
+        "$PROJECT_ROOT/models/gemma-4-E4B-it-Q4_K_M.gguf" \
+        "$PROJECT_ROOT/models/Llama-3.2-3B-Instruct-IQ3_M.gguf" \
+        "$PROJECT_ROOT/models/Llama-3.2-1B-Instruct-IQ3_M.gguf" \
+        "$PROJECT_ROOT/models/tinyllama-1.1b-chat-v1.0.Q2_K.gguf" \
+        "$PROJECT_ROOT/models/stories15M-q4_0.gguf"
+    do
+        if [ -f "$candidate" ]; then
+            echo "$candidate"
+            return 0
+        fi
+    done
+    return 1
+}
+
+# Official prebuilt llama.cpp (Linux x86_64) when local build is unavailable
+download_prebuilt_llama() {
+    if [ "$(uname -s)" != "Linux" ] || [ "$(uname -m)" != "x86_64" ]; then
+        return 1
+    fi
+    local variant="ubuntu-x64"
+    if ldconfig -p 2>/dev/null | grep -q "libvulkan.so.1"; then
+        variant="ubuntu-vulkan-x64"
+    fi
+    local url
+    url=$(curl -fsSL "https://api.github.com/repos/ggml-org/llama.cpp/releases?per_page=10" 2>/dev/null \
+        | grep -o "https://github.com/ggml-org/llama.cpp/releases/download/[^\"]*-bin-${variant}\\.tar\\.gz" \
+        | head -1)
+    [ -n "$url" ] || return 1
+    local dest="$PROJECT_ROOT/third_party/llama.cpp/build/bin"
+    local tmp_tar
+    tmp_tar=$(mktemp) || return 1
+    mkdir -p "$dest"
+    if ! curl -fsSL --retry 3 -o "$tmp_tar" "$url"; then
+        rm -f "$tmp_tar"
+        return 1
+    fi
+    if ! tar xzf "$tmp_tar" -C "$dest" --strip-components=1; then
+        rm -f "$tmp_tar"
+        return 1
+    fi
+    rm -f "$tmp_tar"
+    [ -f "$dest/llama-server" ] || return 1
+    chmod +x "$dest/llama-server" 2>/dev/null || true
+    echo "$dest/llama-server"
+}
+
 # Animated service startup
 start_services() {
-    # Pre-check for build dependencies
-    if ! command -v cmake >/dev/null 2>&1; then
-        echo -e "${RED}✗${NC} ${BOLD}cmake not found${NC} - required to build llama.cpp"
-        echo -e "  Install: ${CYAN}sudo apt-get install cmake${NC} (Linux) or ${CYAN}brew install cmake${NC} (macOS)"
-        return 1
-    fi
-    if ! command -v git >/dev/null 2>&1; then
-        echo -e "${RED}✗${NC} ${BOLD}git not found${NC} - required to fetch llama.cpp"
-        return 1
-    fi
-    
+    cd "$PROJECT_ROOT" || return 1
+
+    local BACKEND_HOST="${GHOSTLINK_API_HOST:-127.0.0.1}"
+    local BACKEND_PORT="${GHOSTLINK_API_PORT:-8003}"
+    local GUI_PORT="${GUI_PORT:-5173}"
+    local LLAMA_PORT="${GHOSTLINK_LLAMA_SERVER_PORT:-8080}"
+    # native (default, matches Windows launch-ollama.bat) or ollama
+    local INFERENCE_BACKEND="${GHOSTLINK_INFERENCE_BACKEND:-native}"
+    INFERENCE_BACKEND=$(echo "$INFERENCE_BACKEND" | tr '[:upper:]' '[:lower:]')
+
     echo -e "${BLUE}┌─ Starting Services ──────────────────────────────────────────────────────────────┐${NC}"
     echo ""
-    
-    # Detect platform
-    local IS_WINDOWS=0
-    if [[ "$(uname -s)" =~ MINGW|MSYS|CYGWIN ]]; then
-        IS_WINDOWS=1
+    echo -e "  ${DIM}Inference backend: ${INFERENCE_BACKEND}${NC}"
+
+    # Clear stale listeners that cause 404/405 and bind failures
+    free_port "$BACKEND_PORT"
+    free_port "$GUI_PORT"
+    if [ "$INFERENCE_BACKEND" = "native" ]; then
+        free_port "$LLAMA_PORT"
+        pkill -f "llama-server" >/dev/null 2>&1 || true
     fi
-    
-    # Platform-specific llama-server binary path
-    local LLAMA_SERVER_BIN="third_party/llama.cpp/build/bin/llama-server"
-    if [ $IS_WINDOWS -eq 1 ]; then
-        LLAMA_SERVER_BIN="third_party/llama.cpp/build/bin/Release/llama-server.exe"
-        if [ ! -f "$LLAMA_SERVER_BIN" ]; then
-            LLAMA_SERVER_BIN="third_party/llama.cpp/build/bin/llama-server.exe"
-        fi
-    fi
-    
-    # 1. Native Inference Stack (llama-server)
-    echo -e "  ${WHITE}▶${NC} ${BOLD}Native Inference Stack${NC} ${DIM}(llama.cpp + Ghostlink API)${NC}"
-    progress_bar 0 3
-    echo " ${DIM}Preparing llama.cpp...${NC}"
+    pkill -f "ghost-link.*serve" >/dev/null 2>&1 || true
     sleep 0.5
-    
-    if [ ! -x "$LLAMA_SERVER_BIN" ] && [ ! -f "$LLAMA_SERVER_BIN" ]; then
-        progress_bar 1 3
-        echo " ${YELLOW}Building llama-server...${NC}      "
-        build_llama_cpp >/tmp/ghostlink-bootstrap.log 2>&1 &
-        BOOTSTRAP_PID=$!
-        spinner $BOOTSTRAP_PID "Building llama.cpp (this may take 2-5 minutes)..."
-        if [ $? -ne 0 ]; then
-            echo -e "\r${CLEAR_LINE}  ${RED}✗${NC} Build failed. Check /tmp/ghostlink-bootstrap.log"
+
+    GPU_VENDOR="${GPU_VENDOR:-}"
+    BACKEND="${BACKEND:-cpu}"
+    VRAM_GB="${VRAM_GB:-0}"
+    if [ -n "${GHOSTLINK_LLAMA_BACKEND:-}" ]; then
+        BACKEND="$GHOSTLINK_LLAMA_BACKEND"
+    fi
+
+    local LOGICAL_CORES
+    if [[ "$(uname -s)" == "Darwin" ]]; then
+        LOGICAL_CORES=$(sysctl -n hw.logicalcpu 2>/dev/null || echo 4)
+    else
+        LOGICAL_CORES=$(nproc 2>/dev/null || echo 4)
+    fi
+    if [ -n "${GHOSTLINK_LLAMA_THREADS:-}" ]; then
+        THREADS=$GHOSTLINK_LLAMA_THREADS
+    else
+        THREADS=$(( LOGICAL_CORES > 1 ? LOGICAL_CORES - 1 : 1 ))
+    fi
+
+    if [ -n "${GHOSTLINK_LLAMA_NGL:-}" ]; then
+        LLAMA_NGL=$GHOSTLINK_LLAMA_NGL
+    elif [ "$BACKEND" = "cpu" ]; then
+        LLAMA_NGL=0
+    elif [ "$VRAM_GB" -ge 12 ] 2>/dev/null; then
+        LLAMA_NGL=40
+    elif [ "$VRAM_GB" -ge 8 ] 2>/dev/null; then
+        LLAMA_NGL=24
+    elif [ "$VRAM_GB" -ge 4 ] 2>/dev/null; then
+        LLAMA_NGL=99
+    else
+        LLAMA_NGL=99
+    fi
+
+    if [ "$BACKEND" = "rocm" ]; then
+        export HIP_PLATFORM="${HIP_PLATFORM:-amd}"
+        export HSA_OVERRIDE_GFX_VERSION="${HSA_OVERRIDE_GFX_VERSION:-gfx906}"
+    fi
+
+    local MLOCK_FLAG=""
+    local TOTAL_RAM_GB
+    if [[ "$(uname -s)" == "Darwin" ]]; then
+        TOTAL_RAM_GB=$(sysctl -n hw.memsize 2>/dev/null | awk '{printf "%.0f", $1/1073741824}' || echo 4)
+    else
+        TOTAL_RAM_GB=$(awk '/MemTotal/ {printf "%.0f", $2/1048576}' /proc/meminfo 2>/dev/null || echo 4)
+    fi
+    if [ "$TOTAL_RAM_GB" -ge 8 ] 2>/dev/null; then
+        MLOCK_FLAG="--mlock"
+    fi
+
+    mkdir -p "$PROJECT_ROOT/models"
+    export GHOSTLINK_VRAM_GB="${VRAM_GB:-0}"
+    export GHOSTLINK_LLAMA_NGL="${LLAMA_NGL:-0}"
+    export GHOSTLINK_LLAMA_THREADS="${THREADS}"
+
+    local NATIVE_ENGINE="simulated"
+    LLAMA_PID=""
+    MODEL_FILE=""
+    MODEL_ALIAS=""
+    LLAMA_SERVER_BIN=""
+
+    if [ "$INFERENCE_BACKEND" = "ollama" ]; then
+        echo -e "  ${WHITE}▶${NC} ${BOLD}Ollama Inference${NC} ${DIM}(external runtime)${NC}"
+        if ! command -v ollama >/dev/null 2>&1; then
+            echo -e "  ${RED}✗${NC} ollama not found on PATH"
+            echo -e "  ${DIM}Install Ollama or set GHOSTLINK_INFERENCE_BACKEND=native${NC}"
             return 1
         fi
+        if ! curl -sf "http://127.0.0.1:11434/api/tags" >/dev/null 2>&1; then
+            echo -e "  ${DIM}Starting ollama serve...${NC}"
+            ollama serve >/tmp/ghostlink_ollama.log 2>&1 &
+            sleep 2
+        fi
+        if ! wait_for_http "http://127.0.0.1:11434/" "Ollama" 30; then
+            echo -e "  ${YELLOW}⚠${NC} Ollama health check failed — API will still start"
+        else
+            echo -e "  ${GREEN}✓${NC} Ollama ready"
+        fi
+        NATIVE_ENGINE="ollama"
+        echo ""
     else
-        progress_bar 2 3
-        echo " ${GREEN}llama.cpp ready${NC}               "
-        sleep 0.3
+        # 1. Native Inference Stack (llama-server) — matches Windows launch-ollama.bat
+        INFERENCE_BACKEND="native"
+        echo -e "  ${WHITE}▶${NC} ${BOLD}Native Inference Stack${NC} ${DIM}(llama.cpp + Ghostlink API)${NC}"
+        progress_bar 0 3
+        echo " ${DIM}Preparing llama.cpp...${NC}"
+
+        if LLAMA_SERVER_BIN=$(resolve_llama_server_bin); then
+            progress_bar 2 3
+            echo " ${GREEN}llama.cpp ready${NC}               "
+        else
+            progress_bar 1 3
+            echo " ${YELLOW}Building / downloading llama-server...${NC}"
+            if command -v cmake >/dev/null 2>&1; then
+                build_llama_cpp >/tmp/ghostlink-bootstrap.log 2>&1 || true
+            fi
+            if ! LLAMA_SERVER_BIN=$(resolve_llama_server_bin); then
+                LLAMA_SERVER_BIN=$(download_prebuilt_llama 2>/tmp/ghostlink-prebuilt.log) || true
+            fi
+            if [ -z "${LLAMA_SERVER_BIN:-}" ] || [ ! -f "$LLAMA_SERVER_BIN" ]; then
+                echo -e "\r${CLEAR_LINE}  ${RED}✗${NC} llama-server not found. Build third_party/llama.cpp or set GHOSTLINK_LLAMA_SERVER_BIN"
+                return 1
+            fi
+        fi
+        chmod +x "$LLAMA_SERVER_BIN" 2>/dev/null || true
+        export GHOSTLINK_LLAMA_SERVER_BIN="$LLAMA_SERVER_BIN"
+
+        if ! MODEL_FILE=$(resolve_model_file); then
+            echo -e "  ${DIM}Downloading default tiny model...${NC}"
+            curl -L --fail -o "$PROJECT_ROOT/models/stories15M-q4_0.gguf" \
+                "https://huggingface.co/ggml-org/models/resolve/main/tinyllamas/stories15M-q4_0.gguf" \
+                2>/dev/null || true
+            MODEL_FILE=$(resolve_model_file || true)
+        fi
+        if [ -z "${MODEL_FILE:-}" ] || [ ! -f "$MODEL_FILE" ]; then
+            echo -e "  ${RED}✗${NC} No GGUF model found in $PROJECT_ROOT/models"
+            return 1
+        fi
+        MODEL_ALIAS=$(basename "$MODEL_FILE" .gguf)
+
+        progress_bar 3 3
+        echo " ${GREEN}Native stack ready${NC}            "
+        echo ""
+        # Perf defaults: Flash Attention + VRAM-scaled batch (override via GHOSTLINK_LLAMA_SERVER_ARGS)
+        if [ -n "${GHOSTLINK_LLAMA_SERVER_ARGS:-}" ]; then
+            LLAMA_PERF_ARGS=($GHOSTLINK_LLAMA_SERVER_ARGS)
+        elif [ "${VRAM_GB:-0}" -ge 12 ] 2>/dev/null; then
+            LLAMA_PERF_ARGS=(-fa on -b 2048 -ub 512)
+        elif [ "${VRAM_GB:-0}" -ge 8 ] 2>/dev/null; then
+            LLAMA_PERF_ARGS=(-fa on -b 1024 -ub 512)
+        elif [ "${VRAM_GB:-0}" -ge 4 ] 2>/dev/null; then
+            LLAMA_PERF_ARGS=(-fa on -b 512 -ub 256)
+        else
+            LLAMA_PERF_ARGS=(-fa on -b 512 -ub 128)
+        fi
+        export GHOSTLINK_LLAMA_SERVER_ARGS="${GHOSTLINK_LLAMA_SERVER_ARGS:-${LLAMA_PERF_ARGS[*]}}"
+
+        echo -e "  ${DIM}Model: ${MODEL_ALIAS}${NC}"
+        echo -e "  ${DIM}llama-server: ${LLAMA_SERVER_BIN}${NC}"
+        echo -e "  ${DIM}Starting llama-server: -ngl ${LLAMA_NGL} -t ${THREADS} ${LLAMA_PERF_ARGS[*]}${NC}"
+
+        "$LLAMA_SERVER_BIN" \
+            -m "$MODEL_FILE" \
+            --alias "$MODEL_ALIAS" \
+            --host 127.0.0.1 --port "$LLAMA_PORT" \
+            -ngl "$LLAMA_NGL" \
+            -np 1 \
+            -t "$THREADS" \
+            "${LLAMA_PERF_ARGS[@]}" \
+            $MLOCK_FLAG \
+            >/tmp/ghostlink_llama_server.log 2>&1 &
+        LLAMA_PID=$!
+
+        if ! wait_for_http "http://127.0.0.1:${LLAMA_PORT}/health" "llama-server" 90; then
+            echo -e "  ${RED}✗${NC} llama-server failed — see /tmp/ghostlink_llama_server.log"
+            return 1
+        fi
+        NATIVE_ENGINE="llama_server"
+        echo ""
     fi
-    
-    progress_bar 3 3
-    echo " ${GREEN}Native stack ready${NC}            "
-    echo ""
-    
-    # 2. Ghostlink API
-    echo -e "  ${WHITE}▶${NC} ${BOLD}Ghostlink API Server${NC} ${DIM}(port 8003)${NC}"
+
+    # 2. Ghostlink API — always the single GUI API surface (prevents 404/405 from wrong backends)
+    echo -e "  ${WHITE}▶${NC} ${BOLD}Ghostlink API Server${NC} ${DIM}(port ${BACKEND_PORT})${NC}"
     progress_bar 0 2
     echo " ${DIM}Starting...${NC}"
-    
-     # Resource planning based on detected hardware
-     GPU_VENDOR="${GPU_VENDOR:-}"
-     BACKEND="${BACKEND:-cpu}"
-     VRAM_GB="${VRAM_GB:-0}"
-     
-     if [ -n "${GHOSTLINK_LLAMA_BACKEND:-}" ]; then
-         BACKEND="$GHOSTLINK_LLAMA_BACKEND"
-     fi
-     
-     # Plan threads
-     local LOGICAL_CORES
-     if [[ "$(uname -s)" == "Darwin" ]]; then
-         LOGICAL_CORES=$(sysctl -n hw.logicalcpu 2>/dev/null || echo 4)
-     else
-         LOGICAL_CORES=$(nproc 2>/dev/null || echo 4)
-     fi
-     if [ -n "${GHOSTLINK_LLAMA_THREADS:-}" ]; then
-         THREADS=$GHOSTLINK_LLAMA_THREADS
-     else
-         THREADS=$(( LOGICAL_CORES > 1 ? LOGICAL_CORES - 1 : 1 ))
-     fi
-     
-# Plan GPU layers
-      if [ -n "${GHOSTLINK_LLAMA_NGL:-}" ]; then
-          LLAMA_NGL=$GHOSTLINK_LLAMA_NGL
-      elif [ "$BACKEND" = "cpu" ]; then
-          LLAMA_NGL=0
-      else
-          LLAMA_NGL=99  # full offload
-      fi
-     
-     # Backend flags
-     local BACKEND_FLAGS=""
-     case "$BACKEND" in
-         cuda)     BACKEND_FLAGS="" ;;
-        vulkan)   BACKEND_FLAGS="--vulkan" ;;
-         rocm)     BACKEND_FLAGS="" ;;
-        metal)    BACKEND_FLAGS="--metal" ;;
-        cpu)      BACKEND_FLAGS="" ;;
-        *)        BACKEND_FLAGS="" ;;
-     esac
-     
-     # Memory lock
-     local MLOCK_FLAG=""
-     local TOTAL_RAM_GB
-     if [[ "$(uname -s)" == "Darwin" ]]; then
-         TOTAL_RAM_GB=$(sysctl -n hw.memsize 2>/dev/null | awk '{printf "%.0f", $1/1073741824}' || echo 4)
-     else
-         TOTAL_RAM_GB=$(awk '/MemTotal/ {printf "%.0f", $2/1048576}' /proc/meminfo 2>/dev/null || echo 4)
-     fi
-     if [ "$TOTAL_RAM_GB" -ge 8 ] 2>/dev/null; then
-         MLOCK_FLAG="--mlock"
-     fi
-     
-     mkdir -p "$PROJECT_ROOT/models"
-     if [ ! -f "$PROJECT_ROOT/models/stories15M-q4_0.gguf" ]; then
-         echo -e "  ${DIM}Downloading model...${NC}"
-         curl -L --fail -o "$PROJECT_ROOT/models/stories15M-q4_0.gguf" \
-             "https://huggingface.co/ggml-org/models/resolve/main/tinyllamas/stories15M-q4_0.gguf" \
-             2>/dev/null || echo "  ${YELLOW}⚠ Model download failed, will use existing if any${NC}"
-     fi
-     
-     echo -e "  ${DIM}Starting llama-server: -ngl ${LLAMA_NGL} -t ${THREADS} ${BACKEND_FLAGS}${NC}"
-     
-      "$LLAMA_SERVER_BIN" \
-          -m "$PROJECT_ROOT/models/stories15M-q4_0.gguf" \
-          --host 127.0.0.1 --port 8080 \
-          -ngl "$LLAMA_NGL" \
-          -np 1 \
-          -t "$THREADS" \
-          $MLOCK_FLAG \
-          $BACKEND_FLAGS \
-          >/tmp/ghostlink_llama_server.log 2>&1 &
-    LLAMA_PID=$!
-    
-    progress_bar 1 2
-    echo " ${DIM}Waiting for llama-server...${NC}"
-    if ! wait_for_http "http://127.0.0.1:8080/health" "llama-server" 60; then
+
+    export GHOSTLINK_INFERENCE_BACKEND="$INFERENCE_BACKEND"
+    export GHOSTLINK_NATIVE_ENGINE="$NATIVE_ENGINE"
+    export GHOSTLINK_LLAMA_SERVER_URL="http://127.0.0.1:${LLAMA_PORT}/completion"
+    export GHOSTLINK_LLAMA_NGL="${LLAMA_NGL:-0}"
+    export GHOSTLINK_LLAMA_THREADS="${THREADS}"
+    export VITE_GHOSTLINK_API_BASE="http://${BACKEND_HOST}:${BACKEND_PORT}"
+    if [ -n "${MODEL_FILE:-}" ]; then
+        export GHOSTLINK_MODEL_PATH="$MODEL_FILE"
+    fi
+    if [ -n "${LLAMA_SERVER_BIN:-}" ]; then
+        export GHOSTLINK_LLAMA_SERVER_BIN="$LLAMA_SERVER_BIN"
+    fi
+
+    local API_BIN=""
+    if [ -x "$PROJECT_ROOT/target/release/ghost-link" ]; then
+        API_BIN="$PROJECT_ROOT/target/release/ghost-link"
+    elif [ -x "$PROJECT_ROOT/target/debug/ghost-link" ]; then
+        API_BIN="$PROJECT_ROOT/target/debug/ghost-link"
+    fi
+
+    if [ -n "$API_BIN" ]; then
+        (
+            cd "$PROJECT_ROOT"
+            "$API_BIN" serve "$BACKEND_HOST" "$BACKEND_PORT"
+        ) >/tmp/ghostlink_api.log 2>&1 &
+        API_PID=$!
+    else
+        (
+            cd "$PROJECT_ROOT"
+            cargo run -p ghost-link -- serve "$BACKEND_HOST" "$BACKEND_PORT"
+        ) >/tmp/ghostlink_api.log 2>&1 &
+        API_PID=$!
+    fi
+
+    if ! wait_for_http "http://${BACKEND_HOST}:${BACKEND_PORT}/health" "Ghostlink API" 90; then
+        echo -e "  ${RED}✗${NC} API failed — see /tmp/ghostlink_api.log"
         return 1
     fi
-    
-    # Start Ghostlink API
-    GHOSTLINK_INFERENCE_BACKEND=native \
-    GHOSTLINK_NATIVE_ENGINE=llama_server \
-    GHOSTLINK_LLAMA_SERVER_URL="http://127.0.0.1:8080/completion" \
-    GHOSTLINK_LLAMA_NGL="${LLAMA_NGL:-0}" \
-    cargo run -p ghost-link -- serve 127.0.0.1 8003 \
-        >/tmp/ghostlink_api.log 2>&1 &
-    API_PID=$!
-    
-    if ! wait_for_http "http://127.0.0.1:8003/health" "Ghostlink API" 60; then
+    if ! wait_for_http "http://${BACKEND_HOST}:${BACKEND_PORT}/api/health" "API /api/health" 30; then
+        echo -e "  ${RED}✗${NC} /api/health failed — wrong binary or routes missing"
         return 1
     fi
-    
-    # Wait for API endpoint to be fully ready
-    if ! wait_for_http "http://127.0.0.1:8003/api/health" "API endpoint" 30; then
+    # Smoke critical GUI routes (settings 404/405 was a common Linux failure mode)
+    if ! curl -sf -o /dev/null -w '' "http://${BACKEND_HOST}:${BACKEND_PORT}/api/settings"; then
+        echo -e "  ${RED}✗${NC} GET /api/settings failed"
         return 1
     fi
+    if ! curl -sf -o /dev/null -w '' "http://${BACKEND_HOST}:${BACKEND_PORT}/api/models"; then
+        echo -e "  ${RED}✗${NC} GET /api/models failed"
+        return 1
+    fi
+    echo -e "  ${GREEN}✓${NC} API routes verified (health, settings, models)"
     echo ""
-    
+
     # 3. React Frontend
-    echo -e "  ${WHITE}▶${NC} ${BOLD}React Frontend (Vite)${NC} ${DIM}(port 5173)${NC}"
+    echo -e "  ${WHITE}▶${NC} ${BOLD}React Frontend (Vite)${NC} ${DIM}(port ${GUI_PORT})${NC}"
     progress_bar 0 3
     echo " ${DIM}Checking dependencies...${NC}"
-    
-    cd ghostlink_gui_modern
+
+    cd "$PROJECT_ROOT/ghostlink_gui_modern" || return 1
     if [ ! -d "node_modules" ]; then
         progress_bar 1 3
         echo " ${YELLOW}Installing npm packages...${NC}"
@@ -566,21 +763,23 @@ start_services() {
         progress_bar 1 3
         echo " ${GREEN}Dependencies cached${NC}         "
     fi
-    
+
     progress_bar 2 3
     echo " ${DIM}Starting Vite dev server...${NC}"
-    export VITE_GHOSTLINK_API_BASE="http://127.0.0.1:8003"
-    npm run dev -- --host 127.0.0.1 --port 5173 >/tmp/ghostlink_frontend.log 2>&1 &
+    # Prefer direct API base (same as Windows). Vite proxy remains as fallback.
+    export VITE_GHOSTLINK_API_BASE="http://${BACKEND_HOST}:${BACKEND_PORT}"
+    export VITE_PROXY_TARGET="http://${BACKEND_HOST}:${BACKEND_PORT}"
+    npm run dev -- --host 127.0.0.1 --port "$GUI_PORT" >/tmp/ghostlink_frontend.log 2>&1 &
     GUI_PID=$!
-    cd ..
-    
-    if ! wait_for_http "http://127.0.0.1:5173" "React Frontend" 60; then
+    cd "$PROJECT_ROOT" || true
+
+    if ! wait_for_http "http://127.0.0.1:${GUI_PORT}" "React Frontend" 60; then
         return 1
     fi
     progress_bar 3 3
     echo " ${GREEN}Frontend ready${NC}              "
     echo ""
-    
+
     echo -e "${BLUE}└────────────────────────────────────────────────────────────────────────────────────┘${NC}"
     echo ""
 }
@@ -601,32 +800,43 @@ show_success() {
     echo -e "${GREEN}└────────────────────────────────────────────────────────────────────────────────────┘${NC}"
     echo ""
     
+    local gui_port="${GUI_PORT:-5173}"
+    local api_port="${GHOSTLINK_API_PORT:-8003}"
+    local llama_port="${GHOSTLINK_LLAMA_SERVER_PORT:-8080}"
+    local inference="${GHOSTLINK_INFERENCE_BACKEND:-native}"
+
     echo -e "${BLUE}┌─ Service Endpoints ──────────────────────────────────────────────────────────────┐${NC}"
-    echo -e "${BLUE}│${NC}  ${WHITE}▶${NC} ${BOLD}Web Interface${NC}      → ${CYAN}http://127.0.0.1:5173${NC}"
-    echo -e "${BLUE}│${NC}  ${WHITE}▶${NC} ${BOLD}API Server${NC}         → ${CYAN}http://127.0.0.1:8003${NC}"
-    echo -e "${BLUE}│${NC}  ${WHITE}▶${NC} ${BOLD}Native Inference${NC}   → ${CYAN}http://127.0.0.1:8080${NC} ${DIM}(llama-server)${NC}"
-    echo -e "${BLUE}│${NC}  ${WHITE}▶${NC} ${BOLD}MCP Gateway${NC}        → ${CYAN}http://127.0.0.1:8811${NC} ${DIM}(100+ MCP servers)${NC}"
+    echo -e "${BLUE}│${NC}  ${WHITE}▶${NC} ${BOLD}Web Interface${NC}      → ${CYAN}http://127.0.0.1:${gui_port}${NC}"
+    echo -e "${BLUE}│${NC}  ${WHITE}▶${NC} ${BOLD}API Server${NC}         → ${CYAN}http://127.0.0.1:${api_port}${NC}"
+    if [ "$inference" = "ollama" ]; then
+        echo -e "${BLUE}│${NC}  ${WHITE}▶${NC} ${BOLD}Ollama${NC}             → ${CYAN}http://127.0.0.1:11434${NC}"
+    else
+        echo -e "${BLUE}│${NC}  ${WHITE}▶${NC} ${BOLD}Native Inference${NC}   → ${CYAN}http://127.0.0.1:${llama_port}${NC} ${DIM}(llama-server)${NC}"
+    fi
     echo -e "${BLUE}└────────────────────────────────────────────────────────────────────────────────────┘${NC}"
     echo ""
     
     echo -e "${YELLOW}┌─ Quick Start ────────────────────────────────────────────────────────────────────┐${NC}"
-    echo -e "${YELLOW}│${NC}  ${WHITE}1.${NC} Open ${CYAN}http://127.0.0.1:5173${NC} in your browser"
-    echo -e "${YELLOW}│${NC}  ${WHITE}2.${NC} Go to ${BOLD}Models${NC} tab → Select a model"
-    echo -e "${YELLOW}│${NC}  ${WHITE}3.${NC} Switch to ${BOLD}Chat${NC} tab → Start talking!"
-    echo -e "${YELLOW}│${NC}  ${WHITE}4.${NC} Watch real-time inference with native GPU acceleration"
-    echo -e "${YELLOW}│${NC}  ${WHITE}5.${NC} Use ${BOLD}MCP${NC} tab → Access 100+ tool servers (filesystem, git, web, etc.)"
+    echo -e "${YELLOW}│${NC}  ${WHITE}1.${NC} Open ${CYAN}http://127.0.0.1:${gui_port}${NC} in your browser"
+    echo -e "${YELLOW}│${NC}  ${WHITE}2.${NC} Go to ${BOLD}Models${NC} tab → Load a model (dynamic load/unload supported)"
+    echo -e "${YELLOW}│${NC}  ${WHITE}3.${NC} Settings → switch inference_backend between ${BOLD}native${NC} and ${BOLD}ollama${NC}"
+    echo -e "${YELLOW}│${NC}  ${WHITE}4.${NC} Switch to ${BOLD}Chat${NC} tab → Start talking"
+    echo -e "${YELLOW}│${NC}  ${WHITE}5.${NC} Runtime: ${BOLD}GHOSTLINK_INFERENCE_BACKEND=ollama|native${NC} ./launch.sh"
     echo -e "${YELLOW}└────────────────────────────────────────────────────────────────────────────────────┘${NC}"
     echo ""
     
 echo -e "  ${DIM}Hardware: ${GPU_NAME:-CPU} (${BACKEND})${NC}"
-echo -e "  ${DIM}GPU Layers: ${LLAMA_NGL:-0} | Threads: ${THREADS:-auto}${NC}"
+echo -e "  ${DIM}RAM: ${RAM_GB} GB | GPU Layers: ${LLAMA_NGL:-0} | Threads: ${THREADS:-auto}${NC}"
 [[ -n "$NPU_DETECTED" ]] && echo -e "  ${DIM}NPU: $NPU_DETECTED${NC}"
 echo ""
-echo -e "${DIM}GPU Configuration:${NC}"
-echo -e "  ${DIM}• OLLAMA_NUM_THREAD: $OLLAMA_NUM_THREAD (all cores)${NC}"
-echo -e "  ${DIM}• OLLAMA_GPU_MEMORY: $OLLAMA_GPU_MEMORY (safe 80%%)${NC}"
-echo -e "  ${DIM}• HSA_OVERRIDE_GFX_VERSION: $HSA_OVERRIDE_GFX_VERSION${NC}"
-echo -e "  ${DIM}• HIP_PLATFORM: $HIP_PLATFORM${NC}"
+echo -e "${DIM}Runtime Configuration:${NC}"
+echo -e "  ${DIM}• Inference backend: ${inference}${NC}"
+echo -e "  ${DIM}• Native engine: ${GHOSTLINK_NATIVE_ENGINE:-llama_server}${NC}"
+echo -e "  ${DIM}• GPU backend: ${BACKEND}${NC}"
+[ -n "${MODEL_ALIAS:-}" ] && echo -e "  ${DIM}• Model: ${MODEL_ALIAS}${NC}"
+[ -n "${GHOSTLINK_LLAMA_SERVER_BIN:-}" ] && echo -e "  ${DIM}• llama-server bin: ${GHOSTLINK_LLAMA_SERVER_BIN}${NC}"
+[ "$BACKEND" = "rocm" ] && echo -e "  ${DIM}• HSA_OVERRIDE_GFX_VERSION: $HSA_OVERRIDE_GFX_VERSION${NC}"
+[ "$BACKEND" = "rocm" ] && echo -e "  ${DIM}• HIP_PLATFORM: $HIP_PLATFORM${NC}"
 echo ""
 echo -e "${DIM}Press ${BOLD}Ctrl+C${NC} ${DIM}to stop all services${NC}"
 echo -e "${DIM}Logs: /tmp/ghostlink_*.log${NC}"
@@ -636,9 +846,13 @@ echo ""
 # Cleanup on exit
 cleanup() {
     echo -e "\n${YELLOW}Shutting down services...${NC}"
-    [ -n "${GUI_PID:-}" ] && kill $GUI_PID 2>/dev/null && wait $GUI_PID 2>/dev/null
-    [ -n "${API_PID:-}" ] && kill $API_PID 2>/dev/null && wait $API_PID 2>/dev/null
-    [ -n "${LLAMA_PID:-}" ] && kill $LLAMA_PID 2>/dev/null && wait $LLAMA_PID 2>/dev/null
+    [ -n "${GUI_PID:-}" ] && kill $GUI_PID 2>/dev/null && wait $GUI_PID 2>/dev/null || true
+    [ -n "${API_PID:-}" ] && kill $API_PID 2>/dev/null && wait $API_PID 2>/dev/null || true
+    [ -n "${LLAMA_PID:-}" ] && kill $LLAMA_PID 2>/dev/null && wait $LLAMA_PID 2>/dev/null || true
+    pkill -f "llama-server" >/dev/null 2>&1 || true
+    free_port "${GHOSTLINK_API_PORT:-8003}" 2>/dev/null || true
+    free_port "${GHOSTLINK_LLAMA_SERVER_PORT:-8080}" 2>/dev/null || true
+    free_port "${GUI_PORT:-5173}" 2>/dev/null || true
     echo -e "${GREEN}✓${NC} All services stopped."
     echo -e "${SHOW_CURSOR}"
     tput cnorm 2>/dev/null
@@ -669,7 +883,11 @@ main() {
     echo ""
     
     show_system_info
+    echo -e "${BLUE}┌─ Hardware Detection ─────────────────────────────────────────────────────────────┐${NC}"
+    detect_cpu_ram
     detect_gpu
+    echo -e "${BLUE}└────────────────────────────────────────────────────────────────────────────────────┘${NC}"
+    echo ""
     check_components
     start_services || { cleanup; exit 1; }
     show_success

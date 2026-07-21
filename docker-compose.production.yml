@@ -11,6 +11,9 @@ services:
       - LLAMA_ARG_PORT=8080
       - LLAMA_ARG_NGL=${LLAMA_ARG_NGL:- -1}
       - LLAMA_ARG_MODEL=/models/model.gguf
+      - LLAMA_ARG_FLASH_ATTN=${LLAMA_ARG_FLASH_ATTN:-on}
+      - LLAMA_ARG_BATCH=${LLAMA_ARG_BATCH:-2048}
+      - LLAMA_ARG_UBATCH=${LLAMA_ARG_UBATCH:-512}
     volumes:
       - ${GHOSTLINK_MODEL_PATH:-/tmp/ghostlink-models/stories15M-q4_0.gguf}:/models/model.gguf:ro
     healthcheck:
