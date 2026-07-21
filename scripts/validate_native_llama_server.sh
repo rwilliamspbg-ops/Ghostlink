@@ -13,6 +13,7 @@ LLAMA_PORT="${GHOSTLINK_LLAMA_SERVER_PORT:-8080}"
 API_HOST="${GHOSTLINK_API_HOST:-127.0.0.1}"
 API_PORT="${GHOSTLINK_API_PORT:-8003}"
 LLAMA_NGL="${LLAMA_NGL:--1}"
+LLAMA_PERF_ARGS="${GHOSTLINK_LLAMA_SERVER_ARGS:--fa on -b 2048 -ub 512}"
 
 log() {
   printf '[native-validate] %s\n' "$*"
@@ -61,8 +62,9 @@ fi
 
 LLAMA_SERVER_BIN="$LLAMA_CPP_DIR/build/bin/llama-server"
 
-log "starting llama-server (ngl=$LLAMA_NGL)"
-"$LLAMA_SERVER_BIN" -m "$MODEL_PATH" --host "$LLAMA_HOST" --port "$LLAMA_PORT" -ngl "$LLAMA_NGL" >/tmp/ghostlink_llama_server.log 2>&1 &
+log "starting llama-server (ngl=$LLAMA_NGL, perf=$LLAMA_PERF_ARGS)"
+# shellcheck disable=SC2086
+"$LLAMA_SERVER_BIN" -m "$MODEL_PATH" --host "$LLAMA_HOST" --port "$LLAMA_PORT" -ngl "$LLAMA_NGL" $LLAMA_PERF_ARGS >/tmp/ghostlink_llama_server.log 2>&1 &
 LLAMA_PID=$!
 wait_http "http://${LLAMA_HOST}:${LLAMA_PORT}/health" "llama-server"
 

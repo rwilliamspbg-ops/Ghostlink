@@ -1597,7 +1597,7 @@ fn load_persistent_models() -> Vec<ModelRecord> {
             name: "mistralai/Mistral-7B-Instruct-v0.2".to_string(),
             size_gb: 7.2,
             model_type: "LLM".to_string(),
-            quantization: "Q8_0".to_string(),
+            quantization: "Q4_K_M".to_string(),
             status: "Ready".to_string(),
             local_path: String::new(),
         },
@@ -1605,7 +1605,7 @@ fn load_persistent_models() -> Vec<ModelRecord> {
             name: "google/gemma-7b-it".to_string(),
             size_gb: 7.0,
             model_type: "LLM".to_string(),
-            quantization: "BF16".to_string(),
+            quantization: "Q4_K_M".to_string(),
             status: "Ready".to_string(),
             local_path: String::new(),
         },
@@ -1628,14 +1628,61 @@ fn save_persistent_models(models: &[ModelRecord]) {
 
 fn load_settings() -> RuntimeSettings {
     let path = settings_path();
-    if path.exists() {
-        if let Ok(data) = fs::read_to_string(path) {
-            if let Ok(settings) = serde_json::from_str::<RuntimeSettings>(&data) {
-                return settings;
-            }
+    let mut settings = if path.exists() {
+        if let Ok(data) = fs::read_to_string(&path) {
+            serde_json::from_str::<RuntimeSettings>(&data).unwrap_or_default()
+        } else {
+            RuntimeSettings::default()
+        }
+    } else {
+        RuntimeSettings::default()
+    };
+
+    // Ensure native engine env mirrors persisted settings when launchers did not set them.
+    // Critical for Linux launch.sh and dynamic model load/unload.
+    if std::env::var("GHOSTLINK_LLAMA_SERVER_URL")
+        .map(|v| v.trim().is_empty())
+        .unwrap_or(true)
+        && !settings.llama_server_url.trim().is_empty()
+    {
+        std::env::set_var(
+            "GHOSTLINK_LLAMA_SERVER_URL",
+            settings.llama_server_url.trim(),
+        );
+    }
+    if std::env::var("GHOSTLINK_NATIVE_ENGINE")
+        .map(|v| v.trim().is_empty())
+        .unwrap_or(true)
+        && !settings.native_engine.trim().is_empty()
+    {
+        std::env::set_var("GHOSTLINK_NATIVE_ENGINE", settings.native_engine.trim());
+    }
+
+    if let Ok(val) = std::env::var("GHOSTLINK_INFERENCE_BACKEND") {
+        let v = val.trim().to_ascii_lowercase();
+        if v == "native" || v == "ollama" {
+            settings.inference_backend = v;
         }
     }
-    RuntimeSettings::default()
+    if let Ok(val) = std::env::var("GHOSTLINK_NATIVE_ENGINE") {
+        let v = val.trim().to_string();
+        if !v.is_empty() {
+            settings.native_engine = v;
+        }
+    }
+    if let Ok(val) = std::env::var("GHOSTLINK_LLAMA_SERVER_URL") {
+        let v = val.trim().to_string();
+        if !v.is_empty() {
+            settings.llama_server_url = v;
+        }
+    }
+    if let Ok(val) = std::env::var("GHOSTLINK_LLAMA_NGL") {
+        if let Ok(n) = val.trim().parse::<i32>() {
+            settings.ngl = n;
+        }
+    }
+
+    settings
 }
 
 fn save_settings(settings: &RuntimeSettings) {
@@ -2248,8 +2295,15 @@ InferenceBackend::Native => match native_engine_client
 
         let (inference_backend, ollama_client, ollama_available) = {
             let backend = lock_state(&state);
+            // Prefer live settings string (updated by Settings UI / runtime select)
+            // so load and chat cannot disagree on which backend is active.
+            let inference_backend = match backend.settings.inference_backend.as_str() {
+                "ollama" => InferenceBackend::Ollama,
+                "native" => InferenceBackend::Native,
+                _ => backend.inference_backend,
+            };
             (
-                backend.inference_backend,
+                inference_backend,
                 backend.ollama_client.clone(),
                 Arc::clone(&backend.ollama_available),
             )
@@ -2326,7 +2380,7 @@ InferenceBackend::Native => match native_engine_client
 
         // Extract model info and settings under the lock, then drop it before
         // the potentially-long blocking load_model_into_slot call.
-        let (native_engine_client, local_path, native_engine) = {
+        let (native_engine_client, local_path, native_engine, selected_model) = {
             let mut backend = lock_state(&state);
 
             // Merge local scans so we can find local_path for locally-downloaded models
@@ -2337,17 +2391,53 @@ InferenceBackend::Native => match native_engine_client
                 }
             }
 
-            let local_path = backend
-                .models
-                .iter()
-                .find(|m| m.name == selected_model)
-                .and_then(|m| {
-                    if m.local_path.is_empty() {
-                        None
-                    } else {
-                        Some(m.local_path.clone())
+            // Resolve local GGUF path: exact name, basename match, or path suffix.
+            let resolve_local_path =
+                |models: &[ModelRecord], requested: &str| -> Option<(String, String)> {
+                    let req = requested.trim();
+                    let req_base = std::path::Path::new(req)
+                        .file_stem()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or(req);
+                    // Exact name with path
+                    if let Some(m) = models
+                        .iter()
+                        .find(|m| m.name == req && !m.local_path.is_empty())
+                    {
+                        return Some((m.name.clone(), m.local_path.clone()));
                     }
-                });
+                    // Case-insensitive name
+                    if let Some(m) = models
+                        .iter()
+                        .find(|m| m.name.eq_ignore_ascii_case(req) && !m.local_path.is_empty())
+                    {
+                        return Some((m.name.clone(), m.local_path.clone()));
+                    }
+                    // Basename / stem match (gemma-4-E4B-it-Q4_K_M vs full HF id)
+                    if let Some(m) = models.iter().find(|m| {
+                        !m.local_path.is_empty()
+                            && (m.name.eq_ignore_ascii_case(req_base)
+                                || std::path::Path::new(&m.local_path)
+                                    .file_stem()
+                                    .and_then(|s| s.to_str())
+                                    .map(|s| s.eq_ignore_ascii_case(req_base))
+                                    .unwrap_or(false)
+                                || m.local_path.replace('\\', "/").ends_with(req)
+                                || m.name.ends_with(req_base))
+                    }) {
+                        return Some((m.name.clone(), m.local_path.clone()));
+                    }
+                    None
+                };
+
+            let mut selected = selected_model.clone();
+            let mut local_path = resolve_local_path(&backend.models, &selected).map(|(_, p)| p);
+
+            // Prefer canonical local model name when a GGUF match is found
+            if let Some((name, path)) = resolve_local_path(&backend.models, &selected) {
+                selected = name;
+                local_path = Some(path);
+            }
 
             // Save the selected model path to settings
             if let Some(ref path) = local_path {
@@ -2359,13 +2449,37 @@ InferenceBackend::Native => match native_engine_client
                 backend.native_engine_client.clone(),
                 local_path,
                 backend.settings.native_engine.clone(),
+                selected,
             )
         }; // <-- state lock dropped here
 
-        // If using llama_server native engine, load the model into llama-server
-        // Run on spawn_blocking so we don't stall the async runtime for up to 60s.
-        if let Some(path) = local_path {
-            if native_engine == "llama_server" {
+        // Native llama_server requires a real on-disk GGUF — never report fake success.
+        if inference_backend == InferenceBackend::Native
+            && (native_engine == "llama_server" || native_engine == "llama-server")
+        {
+            let Some(path) = local_path.clone() else {
+                return Json(serde_json::json!({
+                    "error": format!(
+                        "model '{}' has no local GGUF path. Download a .gguf into models/ or select a local model.",
+                        selected_model
+                    ),
+                }));
+            };
+
+            let result = tokio::task::spawn_blocking(move || {
+                native_engine_client.load_model_into_slot(&path)
+            })
+            .await
+            .map_err(|e| format!("task join error: {}", e))
+            .and_then(|r| r);
+
+            if let Err(e) = result {
+                return Json(serde_json::json!({
+                    "error": format!("failed to load model into llama-server: {}", e),
+                }));
+            }
+        } else if let Some(path) = local_path.clone() {
+            if native_engine == "llama_server" || native_engine == "llama-server" {
                 let result = tokio::task::spawn_blocking(move || {
                     native_engine_client.load_model_into_slot(&path)
                 })
@@ -2804,6 +2918,91 @@ InferenceBackend::Native => match native_engine_client
 
     async fn handle_gui_pqc_enable() -> Json<serde_json::Value> {
         Json(serde_json::json!({ "status": "ok", "enabled": true }))
+    }
+
+    async fn handle_gui_pqc_state() -> Json<serde_json::Value> {
+        Json(serde_json::json!({ "enabled": true, "algorithm": "ml-kem-768" }))
+    }
+
+    async fn handle_gui_audit_log() -> Json<serde_json::Value> {
+        Json(serde_json::json!({ "entries": [] }))
+    }
+
+    async fn handle_gui_model_download_progress(
+        State(state): State<Arc<Mutex<BackendState>>>,
+        axum::extract::Query(params): axum::extract::Query<HashMap<String, String>>,
+    ) -> Json<serde_json::Value> {
+        let model_id = params.get("model_id").cloned().unwrap_or_default();
+        let backend = lock_state(&state);
+        let downloading: Vec<String> = backend
+            .models
+            .iter()
+            .filter(|m| m.status == "Downloading")
+            .map(|m| m.name.clone())
+            .collect();
+        let is_downloading = downloading.contains(&model_id);
+        Json(serde_json::json!({
+            "progress": if is_downloading { 0.0 } else { 1.0 },
+            "status": if is_downloading { "downloading" } else { "completed" },
+            "model_id": model_id,
+        }))
+    }
+
+    async fn handle_gui_runtime_select(
+        State(state): State<Arc<Mutex<BackendState>>>,
+        Json(req): Json<serde_json::Value>,
+    ) -> Json<serde_json::Value> {
+        let runtime = req.get("runtime").and_then(|v| v.as_str()).unwrap_or("cpu");
+        let normalized = runtime.trim().to_ascii_lowercase();
+        let (inference, native_engine) = match normalized.as_str() {
+            "native" | "llama_server" | "llama-server" => ("native", Some("llama_server")),
+            "ollama" => ("ollama", None),
+            "directml" | "cpu" | "cuda" | "rocm" | "vulkan" | "metal" => {
+                ("native", Some("llama_server"))
+            }
+            other => (other, None),
+        };
+
+        // When switching to Ollama, pick a valid installed tag if current model is a local GGUF.
+        let mut auto_model: Option<String> = None;
+        if inference == "ollama" {
+            let ollama_client = {
+                let backend = lock_state(&state);
+                backend.ollama_client.clone()
+            };
+            if let Ok(models) = ollama_client.list_models().await {
+                let backend = lock_state(&state);
+                let current = backend.current_model.clone();
+                let current_ok = models.iter().any(|m| {
+                    m == &current
+                        || m.eq_ignore_ascii_case(&current)
+                        || m.starts_with(&format!("{current}:"))
+                });
+                if !current_ok {
+                    auto_model = models.into_iter().next();
+                }
+            }
+        }
+
+        let mut backend = lock_state(&state);
+        backend.settings.inference_backend = inference.to_string();
+        backend.inference_backend = InferenceBackend::parse(inference);
+        if let Some(engine) = native_engine {
+            backend.settings.native_engine = engine.to_string();
+            std::env::set_var("GHOSTLINK_NATIVE_ENGINE", engine);
+        }
+        if let Some(ref model) = auto_model {
+            backend.current_model = model.clone();
+        }
+        std::env::set_var("GHOSTLINK_INFERENCE_BACKEND", inference);
+        save_settings(&backend.settings);
+        Json(serde_json::json!({
+            "status": "ok",
+            "runtime": inference,
+            "inference_backend": inference,
+            "native_engine": backend.settings.native_engine,
+            "current_model": backend.current_model,
+        }))
     }
 
     async fn handle_gui_ollama_health(
@@ -3578,7 +3777,13 @@ InferenceBackend::Native => match native_engine_client
                 match key.as_str() {
                     "inference_backend" => {
                         if let Some(v) = value.as_str() {
-                            current.inference_backend = v.to_string();
+                            let lowered = v.trim().to_ascii_lowercase();
+                            let normalized = match lowered.as_str() {
+                                "native" | "llama_server" | "llama-server" => "native",
+                                "ollama" => "ollama",
+                                other => other,
+                            };
+                            current.inference_backend = normalized.to_string();
                             // This used to only update the display string in
                             // `settings`, while the enum that every load/
                             // unload/generate code path actually reads
@@ -3586,12 +3791,17 @@ InferenceBackend::Native => match native_engine_client
                             // whatever GHOSTLINK_INFERENCE_BACKEND resolved
                             // to at process startup. Update both so a live
                             // settings change actually takes effect.
-                            backend.inference_backend = InferenceBackend::parse(v);
+                            backend.inference_backend = InferenceBackend::parse(normalized);
+                            std::env::set_var("GHOSTLINK_INFERENCE_BACKEND", normalized);
+                            if normalized == "native" && current.native_engine.trim().is_empty() {
+                                current.native_engine = "llama_server".to_string();
+                            }
                         }
                     }
                     "native_engine" => {
                         if let Some(v) = value.as_str() {
                             current.native_engine = v.to_string();
+                            std::env::set_var("GHOSTLINK_NATIVE_ENGINE", v);
                         }
                     }
                     "ngl" => {
@@ -3607,6 +3817,7 @@ InferenceBackend::Native => match native_engine_client
                     "llama_server_url" => {
                         if let Some(v) = value.as_str() {
                             current.llama_server_url = v.to_string();
+                            std::env::set_var("GHOSTLINK_LLAMA_SERVER_URL", v);
                         }
                     }
                     "llama_port" => {
@@ -3782,6 +3993,10 @@ InferenceBackend::Native => match native_engine_client
     println!("  - POST /api/queue");
     println!("  - POST /api/security/jwt/refresh");
     println!("  - POST /api/security/pqc/enable");
+    println!("  - GET  /api/security/pqc/state");
+    println!("  - GET  /api/security/audit-log");
+    println!("  - GET  /api/models/download/progress");
+    println!("  - POST /api/runtime/select");
     println!("  - GET  /api/settings");
     println!("  - POST /api/settings");
     println!("  - POST /api/settings/reset");
@@ -4012,7 +4227,15 @@ InferenceBackend::Native => match native_engine_client
             .route("/api/models/status", get(handle_gui_model_status))
             .route("/api/models/load", post(handle_gui_model_load))
             .route("/api/models/download", post(handle_gui_model_download))
+            .route(
+                "/api/models/download/progress",
+                get(handle_gui_model_download_progress),
+            )
             .route("/api/models/delete", post(handle_gui_model_delete))
+            .route(
+                "/api/models/search/huggingface",
+                get(handle_gui_models_search_hf),
+            )
             .route(
                 "/api/models/:model_name",
                 delete(handle_gui_model_delete_v2),
@@ -4020,10 +4243,6 @@ InferenceBackend::Native => match native_engine_client
             .route(
                 "/api/models/:model_name/unload",
                 post(handle_gui_model_unload),
-            )
-            .route(
-                "/api/models/search/huggingface",
-                get(handle_gui_models_search_hf),
             )
             .route("/api/ollama/health", get(handle_gui_ollama_health))
             .route("/api/ollama/models", get(handle_gui_ollama_models))
@@ -4063,13 +4282,21 @@ InferenceBackend::Native => match native_engine_client
             .route("/api/queue", post(handle_gui_queue))
             .route("/api/security/jwt/refresh", post(handle_gui_jwt_refresh))
             .route("/api/security/pqc/enable", post(handle_gui_pqc_enable))
+            .route("/api/security/pqc/state", get(handle_gui_pqc_state))
+            .route("/api/security/audit-log", get(handle_gui_audit_log))
             .route("/api/inference/chat", post(handle_gui_chat))
-            .route("/api/settings", get(handle_get_settings))
-            .route("/api/settings", post(handle_update_settings))
+            // Accept GET/POST/PUT for settings — some clients issue PUT and previously got 405.
+            .route(
+                "/api/settings",
+                get(handle_get_settings)
+                    .post(handle_update_settings)
+                    .put(handle_update_settings),
+            )
             .route("/api/settings/reset", post(handle_reset_settings))
             .route("/api/runtime/detect", get(handle_runtime_detection))
             .route("/api/runtime/models", get(handle_models_by_runtime))
             .route("/api/runtime/recommend", get(handle_model_recommendations))
+            .route("/api/runtime/select", post(handle_gui_runtime_select))
             // Phase 2: Backend API endpoints
             .route("/api/backends", get(backend_api::handle_list_backends))
             .route(

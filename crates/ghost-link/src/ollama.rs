@@ -102,9 +102,14 @@ pub struct PullProgressResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelInfoResponse {
+    #[serde(default)]
     pub license: String,
+    #[serde(default)]
     pub modelfile: String,
+    /// Older Ollama versions returned a string; newer builds often omit it.
+    #[serde(default)]
     pub parameters: String,
+    #[serde(default)]
     pub template: String,
     #[serde(default)]
     pub details: Option<ModelDetails>,
@@ -517,8 +522,28 @@ impl OllamaClient {
             ))));
         }
 
-        let data: ModelInfoResponse = resp.json().await?;
-        Ok(data)
+        // Tolerate schema drift across Ollama versions (missing parameters/template, etc.).
+        let body = resp.text().await?;
+        match serde_json::from_str::<ModelInfoResponse>(&body) {
+            Ok(data) => Ok(data),
+            Err(primary) => {
+                // Minimal success: model exists if /api/show returned JSON object.
+                if serde_json::from_str::<Value>(&body).is_ok() {
+                    Ok(ModelInfoResponse {
+                        license: String::new(),
+                        modelfile: String::new(),
+                        parameters: String::new(),
+                        template: String::new(),
+                        details: None,
+                    })
+                } else {
+                    Err(Box::new(io::Error::other(format!(
+                        "Ollama show decode failed: {primary}; body={}",
+                        body.chars().take(200).collect::<String>()
+                    ))))
+                }
+            }
+        }
     }
 
     /// Unload a model by setting keep_alive to zero.

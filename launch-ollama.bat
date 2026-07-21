@@ -64,9 +64,15 @@ REM Safe offload: leave ~2GB headroom for OS/KV-cache -> ~6GB usable -> ~40 laye
 set "LLAMA_NGL=40"
 set "LLAMA_THREADS=15"
 
-REM Start llama-server with SINGLE primary model, -ngl 40 (safe for 8GB VRAM)
+REM Perf: Flash Attention + batch sizes (8GB VRAM profile). Override with GHOSTLINK_LLAMA_SERVER_ARGS.
+if not defined GHOSTLINK_LLAMA_SERVER_ARGS set "GHOSTLINK_LLAMA_SERVER_ARGS=-fa on -b 1024 -ub 512"
+set "GHOSTLINK_VRAM_GB=8"
+set "GHOSTLINK_LLAMA_NGL=!LLAMA_NGL!"
+set "GHOSTLINK_LLAMA_THREADS=!LLAMA_THREADS!"
+
+REM Start llama-server with SINGLE primary Q4_K_M model, -ngl 40 (safe for 8GB VRAM)
 REM Multi-model support via llama-server's /slot/load API at runtime
-start "llama-server" cmd /c "set HIP_PLATFORM=!HIP_PLATFORM!& set HSA_OVERRIDE_GFX_VERSION=!HSA_OVERRIDE_GFX_VERSION!& "!LLAMA_SERVER_BIN!" -m "!MODEL_PRIMARY!" --alias !MODEL_ALIAS! --host 127.0.0.1 --port !LLAMA_PORT! -ngl !LLAMA_NGL! -t !LLAMA_THREADS! --mlock"
+start "llama-server" cmd /c "set HIP_PLATFORM=!HIP_PLATFORM!& set HSA_OVERRIDE_GFX_VERSION=!HSA_OVERRIDE_GFX_VERSION!& "!LLAMA_SERVER_BIN!" -m "!MODEL_PRIMARY!" --alias !MODEL_ALIAS! --host 127.0.0.1 --port !LLAMA_PORT! -ngl !LLAMA_NGL! -t !LLAMA_THREADS! !GHOSTLINK_LLAMA_SERVER_ARGS! --mlock"
 timeout /t 5 /nobreak >nul
 
 echo [2/4] Waiting for llama-server...

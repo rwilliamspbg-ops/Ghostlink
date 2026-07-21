@@ -124,6 +124,10 @@ $env:GHOSTLINK_COMPUTE_CAPABILITY="gpu"
 
 ## Performance
 
+### Local llama-server tuning
+
+Native nodes enable Flash Attention and VRAM-scaled batch sizes by default (`-fa on`, `-b`, `-ub`). Prefer **Q4_K_M** / **IQ4_XS** over FP16/Q8_0 for ~1.5–2× decode speed. Override with `GHOSTLINK_LLAMA_SERVER_ARGS`. See [docs/LOCAL_INFERENCE_TUNING.md](docs/LOCAL_INFERENCE_TUNING.md).
+
 Ghostlink's SPSC ring buffer uses exponential-backoff spin-wait for sub-microsecond producer-consumer handoff. Pipeline benchmarks at 1024 tokens:
 
 | Transport | Throughput | Latency |
