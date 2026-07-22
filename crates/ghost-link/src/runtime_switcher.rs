@@ -119,14 +119,21 @@ impl EnvironmentManager {
         Self { config }
     }
 
-    /// Update environment variables for a backend
+    /// Update environment variables for a backend.
+    ///
+    /// A backend with no entry in `backend_env_vars` (metal, oneapi,
+    /// directml, vulkan, npu — none of which need ghost-link to set special
+    /// env vars the way ROCm/CUDA do) is not an error: it just means there's
+    /// nothing to set. Previously this returned Err for any such backend,
+    /// which meant `/api/backends/switch` always failed for GPUs discovered
+    /// via any of those paths even though the registry correctly reported
+    /// them as available — the backend was listed but never actually
+    /// selectable.
     pub fn set_backend_env(&self, backend: &ComputeBackend) -> Result<(), String> {
         let backend_name = backend.as_str();
-        let env_vars = self
-            .config
-            .backend_env_vars
-            .get(backend_name)
-            .ok_or_else(|| format!("No environment configuration for backend: {backend_name}"))?;
+        let Some(env_vars) = self.config.backend_env_vars.get(backend_name) else {
+            return Ok(());
+        };
 
         for (key, value) in env_vars {
             std::env::set_var(key, value);
@@ -141,14 +148,13 @@ impl EnvironmentManager {
         self.config.backend_env_vars.get(backend_name).cloned()
     }
 
-    /// Restore previous environment variables (for rollback)
+    /// Restore previous environment variables (for rollback). Same "missing
+    /// entry means nothing to do" reasoning as set_backend_env.
     pub fn restore_env(&self, backend: &ComputeBackend) -> Result<(), String> {
         let backend_name = backend.as_str();
-        let env_vars = self
-            .config
-            .backend_env_vars
-            .get(backend_name)
-            .ok_or_else(|| format!("No environment configuration for backend: {backend_name}"))?;
+        let Some(env_vars) = self.config.backend_env_vars.get(backend_name) else {
+            return Ok(());
+        };
 
         for key in env_vars.keys() {
             std::env::remove_var(key);
@@ -385,6 +391,26 @@ mod tests {
         // Should drain after waiting
         let result = tracker.drain(Duration::from_secs(5)).await;
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_backend_without_env_config_is_not_an_error() {
+        // Regression: metal/oneapi/directml/vulkan/npu have no entry in
+        // SwitchingConfig::default()'s backend_env_vars (none of them need
+        // ghost-link to set special env vars the way ROCm/CUDA do). This used
+        // to make set_backend_env/restore_env return Err for any of them,
+        // which meant switching to a GPU discovered via those paths always
+        // failed even though the registry correctly listed it as available.
+        // Uses Metal specifically (never touches real env vars) so this
+        // doesn't add to the process-global env var surface other tests
+        // in this file race on.
+        let config = SwitchingConfig::default();
+        assert!(!config.backend_env_vars.contains_key("metal"));
+        let manager = EnvironmentManager::new(config);
+
+        assert!(manager.set_backend_env(&ComputeBackend::Metal).is_ok());
+        assert!(manager.restore_env(&ComputeBackend::Metal).is_ok());
+        assert!(manager.get_backend_env(&ComputeBackend::Metal).is_none());
     }
 
     #[test]

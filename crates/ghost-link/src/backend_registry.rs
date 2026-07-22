@@ -9,6 +9,9 @@ pub enum ComputeBackend {
     Cuda,
     OneAPI,
     Metal,
+    Directml,
+    Vulkan,
+    Npu,
     Cpu,
 }
 
@@ -19,6 +22,9 @@ impl ComputeBackend {
             Self::Cuda => "cuda",
             Self::OneAPI => "oneapi",
             Self::Metal => "metal",
+            Self::Directml => "directml",
+            Self::Vulkan => "vulkan",
+            Self::Npu => "npu",
             Self::Cpu => "cpu",
         }
     }
@@ -29,6 +35,9 @@ impl ComputeBackend {
             "cuda" => Some(Self::Cuda),
             "oneapi" => Some(Self::OneAPI),
             "metal" => Some(Self::Metal),
+            "directml" | "dml" => Some(Self::Directml),
+            "vulkan" => Some(Self::Vulkan),
+            "npu" => Some(Self::Npu),
             "cpu" => Some(Self::Cpu),
             _ => None,
         }
@@ -72,25 +81,29 @@ impl BackendRegistry {
         let mut current = ComputeBackend::Cpu;
 
         for gpu in &profile.gpus {
+            // Mirrors GpuBackend one-to-one — previously Directml and Vulkan
+            // were both collapsed onto OneAPI (a real, distinct technology,
+            // unrelated to either) and Npu was dropped entirely, so an
+            // NPU-equipped host (e.g. AMD Ryzen AI / Intel Core Ultra) never
+            // saw its NPU listed as a selectable backend at all, and a
+            // DirectML-only GPU (the common case on Windows without
+            // CUDA/ROCm) was mislabeled as "oneapi".
             let backend = match gpu.backend {
                 ghostlink_core::host::GpuBackend::Cuda => Some(ComputeBackend::Cuda),
                 ghostlink_core::host::GpuBackend::Rocm => Some(ComputeBackend::Rocm),
                 ghostlink_core::host::GpuBackend::Metal => Some(ComputeBackend::Metal),
-                ghostlink_core::host::GpuBackend::Directml => Some(ComputeBackend::OneAPI),
-                ghostlink_core::host::GpuBackend::Vulkan => Some(ComputeBackend::OneAPI),
-                ghostlink_core::host::GpuBackend::Npu | ghostlink_core::host::GpuBackend::Cpu => {
-                    None
-                }
+                ghostlink_core::host::GpuBackend::Directml => Some(ComputeBackend::Directml),
+                ghostlink_core::host::GpuBackend::Vulkan => Some(ComputeBackend::Vulkan),
+                ghostlink_core::host::GpuBackend::Npu => Some(ComputeBackend::Npu),
+                ghostlink_core::host::GpuBackend::Cpu => None,
             };
 
+            // Dedup against `b` (this GPU's backend), not `current` (which
+            // only ever reflected the first backend seen) — the old check
+            // silently dropped every subsequent distinct backend type on any
+            // host with more than one kind of accelerator.
             if let Some(b) = backend {
-                if backends.is_empty() {
-                    current = b;
-                }
-                if !backends
-                    .iter()
-                    .any(|bi: &BackendInfo| bi.backend == current)
-                {
+                if !backends.iter().any(|bi: &BackendInfo| bi.backend == b) {
                     backends.push(BackendInfo {
                         backend: b,
                         device_name: gpu.name.clone(),
@@ -101,6 +114,9 @@ impl BackendRegistry {
                     });
                 }
             }
+        }
+        if let Some(first) = backends.first() {
+            current = first.backend;
         }
 
         // CPU is always available as fallback
@@ -436,6 +452,26 @@ mod tests {
         assert_eq!(ComputeBackend::Rocm.as_str(), "rocm");
         assert_eq!(ComputeBackend::Cuda.as_str(), "cuda");
         assert_eq!(ComputeBackend::from_str("rocm"), Some(ComputeBackend::Rocm));
+    }
+
+    #[test]
+    fn test_backend_enum_covers_directml_vulkan_npu() {
+        // Regression: these three used to have no ComputeBackend representation
+        // at all (Directml/Vulkan were both mapped onto the unrelated OneAPI
+        // variant in discover(), Npu was silently dropped), so a DirectML GPU
+        // or an NPU could never actually be selected via the API.
+        for (variant, s) in [
+            (ComputeBackend::Directml, "directml"),
+            (ComputeBackend::Vulkan, "vulkan"),
+            (ComputeBackend::Npu, "npu"),
+        ] {
+            assert_eq!(variant.as_str(), s);
+            assert_eq!(ComputeBackend::from_str(s), Some(variant));
+        }
+        assert_eq!(
+            ComputeBackend::from_str("dml"),
+            Some(ComputeBackend::Directml)
+        );
     }
 
     #[test]

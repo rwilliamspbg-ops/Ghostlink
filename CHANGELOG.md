@@ -4,6 +4,23 @@ All notable changes to Ghostlink Studio are documented here.
 
 ---
 
+## [1.3.6] - 2026-07-22 (GPU Backend Selection: DirectML/NPU/Vulkan)
+
+### 🐛 GPU Backend Selection
+
+- `ComputeBackend` (the enum backing `/api/backends` and `/api/backends/switch`) had no representation at all for DirectML, Vulkan, or NPU. `BackendRegistry::discover()`'s mapping from the shared `GpuBackend` detection collapsed both `Directml` and `Vulkan` onto `OneAPI` (a real, distinct technology — genuine Intel oneAPI/SYCL — unrelated to either), and silently dropped `Npu` entirely. Confirmed this directly affects real Windows hardware: `probe_windows_wmi_gpu()` tags AMD GPUs as `GpuBackend::Directml` via PCI vendor ID whenever the `rocm` feature isn't compiled in, and NPU-equipped hosts (e.g. AMD Ryzen AI, Intel Core Ultra) never saw their NPU listed as selectable at all. Added proper `Directml`, `Vulkan`, and `Npu` variants mirroring `GpuBackend` one-to-one.
+- `discover()`'s backend-list dedup compared each new GPU's backend against `current` (which only ever held the *first* backend seen) instead of the GPU's own backend — silently dropping every subsequent distinct backend type on any host with more than one kind of accelerator. Now dedups correctly per-backend, with `current` set from the resulting list afterward.
+- Even when correctly listed, `POST /api/backends/switch` unconditionally failed for `metal`/`oneapi`/`directml`/`vulkan`/`npu` with "No environment configuration for backend: X" — `SwitchingConfig::default()`'s env-var table only ever had entries for `rocm`/`cuda`/`cpu`, and `EnvironmentManager::set_backend_env`/`restore_env` treated a missing entry as a hard error rather than "this backend needs no special env vars" (true for all five — none of them need ghost-link to set anything the way ROCm/CUDA do). A backend could be discovered and listed as available, but never actually selected.
+
+### ✅ Validation
+
+- `cargo fmt --all --check` / `cargo clippy --workspace --all-targets -- -D warnings` — clean
+- `cargo test -p ghost-link -p ghostlink-core` — 67 (+2 new) / 229 total passing, run 3x to confirm no new flakiness (the one observed failure was the pre-existing, already-tracked `test_environment_manager_set_env` race, untouched by this change — the new test here deliberately uses `Metal`, which touches no real env vars, to avoid adding to that surface)
+- Live end-to-end: simulated a DirectML GPU and an NPU via env override on a running instance — `GET /api/backends` now correctly reports `"directml"`/`"npu"` (previously `"oneapi"`/absent), and `POST /api/backends/switch` now succeeds for both (previously failed for both)
+- Confirmed VRAM flows correctly through the full pipeline once a GPU is properly detected: `/api/health`, `/api/metrics`, and `cargo run -- probe --full` all report the same VRAM figure consistently, and the auto-tuner responds to it correctly (256 max-inflight for a 12GB GPU vs. 128 for CPU-only, observed directly)
+
+---
+
 ## [1.3.4] - 2026-07-22 (Launch: Port-Conflict Detection)
 
 ### 🐛 Launch Reliability
