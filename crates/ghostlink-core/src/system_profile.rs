@@ -786,13 +786,22 @@ fn detect_gpus(mode: ProbeMode) -> Vec<GpuInfo> {
 }
 
 fn detect_gpu_from_env() -> Option<GpuInfo> {
-    let name = env::var("GHOSTLINK_GPU_NAME").ok();
+    let name = env::var("GHOSTLINK_GPU_NAME")
+        .ok()
+        .filter(|s| !s.trim().is_empty());
     let vram_gb = env::var("GHOSTLINK_VRAM_GB")
         .ok()
         .and_then(|v| v.parse::<f32>().ok());
-    let cc = env::var("GHOSTLINK_COMPUTE_CAPABILITY").ok();
-    let has_any = name.is_some() || vram_gb.is_some() || cc.is_some();
-    if !has_any {
+    let cc = env::var("GHOSTLINK_COMPUTE_CAPABILITY")
+        .ok()
+        .filter(|s| !s.trim().is_empty());
+    // A VRAM value of 0 (or absent) is not a meaningful GPU signal on its own —
+    // launch scripts unconditionally export GHOSTLINK_VRAM_GB=0 in CPU-only mode,
+    // and treating that as an override used to short-circuit the real hardware
+    // probes below, permanently masking true auto-discovery and falsely reporting
+    // GPU acceleration as available on CPU-only hosts.
+    let has_gpu_signal = name.is_some() || cc.is_some() || vram_gb.is_some_and(|v| v > 0.0);
+    if !has_gpu_signal {
         return None;
     }
 
@@ -1654,6 +1663,20 @@ mod tests {
         std::env::remove_var("GHOSTLINK_GPU_NAME");
         std::env::remove_var("GHOSTLINK_VRAM_GB");
         std::env::remove_var("GHOSTLINK_COMPUTE_CAPABILITY");
+    }
+
+    #[test]
+    fn detect_gpu_from_env_ignores_zero_vram_default() {
+        // launch.sh always exports GHOSTLINK_VRAM_GB (defaulting to "0" on CPU-only
+        // hosts). That alone must not be treated as a GPU override, or CPU-only
+        // hosts would falsely report GPU acceleration as available.
+        std::env::remove_var("GHOSTLINK_GPU_NAME");
+        std::env::set_var("GHOSTLINK_VRAM_GB", "0");
+        std::env::remove_var("GHOSTLINK_COMPUTE_CAPABILITY");
+
+        assert!(detect_gpu_from_env().is_none());
+
+        std::env::remove_var("GHOSTLINK_VRAM_GB");
     }
 
     #[test]

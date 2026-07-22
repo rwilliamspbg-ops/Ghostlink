@@ -5,6 +5,7 @@ REM Ghostlink unified launcher for Windows hosts.
 REM This wrapper runs the Linux launcher inside WSL to keep one source of truth.
 
 set "ROOT_DIR=%~dp0"
+if "%ROOT_DIR:~-1%"=="\" set "ROOT_DIR=%ROOT_DIR:~0,-1%"
 cd /d "%ROOT_DIR%"
 
 where wsl >nul 2>nul
