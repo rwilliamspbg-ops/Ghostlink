@@ -35,6 +35,27 @@ SHOW_CURSOR='\033[?25h'
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# Ensure Rust toolchain is available even when shell PATH has not sourced ~/.cargo/env.
+ensure_rust_toolchain() {
+    if command -v cargo >/dev/null 2>&1 && command -v rustc >/dev/null 2>&1; then
+        return 0
+    fi
+
+    if [ -f "$HOME/.cargo/env" ]; then
+        # shellcheck source=/dev/null
+        . "$HOME/.cargo/env"
+    fi
+
+    if command -v cargo >/dev/null 2>&1 && command -v rustc >/dev/null 2>&1; then
+        return 0
+    fi
+
+    echo -e "${RED}✗${NC} ${BOLD}Rust toolchain not found${NC} - cargo/rustc are required"
+    echo -e "  Install with: ${CYAN}curl https://sh.rustup.rs -sSf | sh -s -- -y${NC}"
+    echo -e "  Then restart shell or run: ${CYAN}source \"\$HOME/.cargo/env\"${NC}"
+    return 1
+}
+
 # Cursor will be hidden in main() and shown by cleanup() trap below
 
 # Progress bar with smooth animation
@@ -510,6 +531,8 @@ download_prebuilt_llama() {
 start_services() {
     cd "$PROJECT_ROOT" || return 1
 
+    ensure_rust_toolchain || return 1
+
     local BACKEND_HOST="${GHOSTLINK_API_HOST:-127.0.0.1}"
     local BACKEND_PORT="${GHOSTLINK_API_PORT:-8003}"
     local GUI_PORT="${GUI_PORT:-5173}"
@@ -732,7 +755,7 @@ start_services() {
     export GHOSTLINK_INFERENCE_BACKEND="$INFERENCE_BACKEND"
     export GHOSTLINK_NATIVE_ENGINE="$NATIVE_ENGINE"
     if [ "$INFERENCE_BACKEND" = "native" ]; then
-        export GHOSTLINK_LLAMA_SERVER_URL="http://127.0.0.1:${LLAMA_PORT}/completion"
+        export GHOSTLINK_LLAMA_SERVER_URL="http://127.0.0.1:${LLAMA_PORT}"
     fi
     export GHOSTLINK_LLAMA_NGL="${LLAMA_NGL:-0}"
     export GHOSTLINK_LLAMA_THREADS="${THREADS}"
