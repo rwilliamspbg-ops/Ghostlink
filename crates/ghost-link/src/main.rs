@@ -1689,6 +1689,10 @@ struct ModelDownloadRequest {
     model_id: String,
 }
 #[derive(Debug, Deserialize)]
+struct ModelDownloadProgressQuery {
+    model_id: String,
+}
+#[derive(Debug, Deserialize)]
 struct ModelDeleteRequest {
     model: String,
 }
@@ -2472,7 +2476,62 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                     "message": format!("model downloaded ({:.2} GB)", size_gb),
                 }))
             }
-            Err(err) => Json(serde_json::json!({ "error": err })),
+            Err(err) => {
+                let mut backend = lock_state(&state);
+                if let Some(model) = backend.models.iter_mut().find(|m| m.name == model_id) {
+                    model.status = "Failed".to_string();
+                }
+                save_persistent_models(&backend.models);
+
+                Json(serde_json::json!({ "error": err }))
+            }
+        }
+    }
+
+    async fn handle_gui_model_download_progress(
+        State(state): State<Arc<Mutex<BackendState>>>,
+        Query(params): Query<ModelDownloadProgressQuery>,
+    ) -> Json<serde_json::Value> {
+        let model_id = params.model_id.trim().to_string();
+        if model_id.is_empty() {
+            return Json(serde_json::json!({
+                "progress": 0.0,
+                "status": "unknown",
+                "error": "model_id cannot be empty",
+            }));
+        }
+
+        let backend = lock_state(&state);
+        if let Some(model) = backend.models.iter().find(|m| m.name == model_id) {
+            let (progress, status) = match model.status.as_str() {
+                "Downloading" => (0.0, "downloading"),
+                "Failed" => (0.0, "failed"),
+                "Ready" | "Loaded" => (1.0, "completed"),
+                _ => (0.0, "unknown"),
+            };
+            return Json(serde_json::json!({
+                "progress": progress,
+                "status": status,
+            }));
+        }
+
+        // Downloads currently transform a HuggingFace repo id into a local GGUF model name.
+        // If the original id entry no longer exists and isn't downloading, treat it as done.
+        let still_downloading = backend
+            .models
+            .iter()
+            .any(|m| m.name == model_id && m.status == "Downloading");
+
+        if still_downloading {
+            Json(serde_json::json!({
+                "progress": 0.0,
+                "status": "downloading",
+            }))
+        } else {
+            Json(serde_json::json!({
+                "progress": 1.0,
+                "status": "completed",
+            }))
         }
     }
 
@@ -3763,6 +3822,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
     println!("  - GET  /health");
     println!("  - GET  /api/models");
     println!("  - GET  /api/models/status");
+    println!("  - GET  /api/models/download/progress");
     println!("  - POST /api/models/load");
     println!("  - POST /api/models/download");
     println!("  - POST /api/models/delete");
@@ -4012,6 +4072,10 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             .route("/api/health", get(handle_health))
             .route("/api/models", get(handle_gui_models))
             .route("/api/models/status", get(handle_gui_model_status))
+            .route(
+                "/api/models/download/progress",
+                get(handle_gui_model_download_progress),
+            )
             .route("/api/models/load", post(handle_gui_model_load))
             .route("/api/models/download", post(handle_gui_model_download))
             .route("/api/models/delete", post(handle_gui_model_delete))

@@ -39,6 +39,27 @@ SHOW_CURSOR='\033[?25h'
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# Ensure Rust toolchain is available even when shell PATH hasn't loaded ~/.cargo/env.
+ensure_rust_toolchain() {
+    if command -v cargo >/dev/null 2>&1 && command -v rustc >/dev/null 2>&1; then
+        return 0
+    fi
+
+    if [ -f "$HOME/.cargo/env" ]; then
+        # shellcheck source=/dev/null
+        . "$HOME/.cargo/env"
+    fi
+
+    if command -v cargo >/dev/null 2>&1 && command -v rustc >/dev/null 2>&1; then
+        return 0
+    fi
+
+    echo -e "${RED}✗${NC} ${BOLD}Rust toolchain not found${NC} - cargo/rustc are required"
+    echo -e "  Install with: ${CYAN}curl https://sh.rustup.rs -sSf | sh -s -- -y${NC}"
+    echo -e "  Then restart shell or run: ${CYAN}source \"\$HOME/.cargo/env\"${NC}"
+    return 1
+}
+
 # Trap to ensure cursor is shown on exit
 trap 'echo -e "${SHOW_CURSOR}"; tput cnorm 2>/dev/null; exit' EXIT INT TERM
 
@@ -392,6 +413,11 @@ build_llama_cpp() {
 
 # Animated service startup
 start_services() {
+    local API_HOST="${GHOSTLINK_API_HOST:-127.0.0.1}"
+    local API_PORT="${GHOSTLINK_API_PORT:-8003}"
+    local LLAMA_HOST="${GHOSTLINK_LLAMA_HOST:-127.0.0.1}"
+    local LLAMA_PORT="${GHOSTLINK_LLAMA_SERVER_PORT:-8080}"
+
     # Pre-check for build dependencies
     if ! command -v cmake >/dev/null 2>&1; then
         echo -e "${RED}✗${NC} ${BOLD}cmake not found${NC} - required to build llama.cpp"
@@ -400,6 +426,11 @@ start_services() {
     fi
     if ! command -v git >/dev/null 2>&1; then
         echo -e "${RED}✗${NC} ${BOLD}git not found${NC} - required to fetch llama.cpp"
+        return 1
+    fi
+    if ! command -v cargo >/dev/null 2>&1 || ! command -v rustc >/dev/null 2>&1; then
+        echo -e "${RED}✗${NC} ${BOLD}cargo/rustc not found${NC} - required to run Ghostlink API"
+        echo -e "  Try: ${CYAN}source \"\$HOME/.cargo/env\"${NC}"
         return 1
     fi
     
@@ -448,7 +479,7 @@ start_services() {
     echo ""
     
     # 2. Ghostlink API
-    echo -e "  ${WHITE}▶${NC} ${BOLD}Ghostlink API Server${NC} ${DIM}(port 8003)${NC}"
+    echo -e "  ${WHITE}▶${NC} ${BOLD}Ghostlink API Server${NC} ${DIM}(port ${API_PORT})${NC}"
     progress_bar 0 2
     echo " ${DIM}Starting...${NC}"
     
@@ -518,7 +549,7 @@ start_services() {
      
       "$LLAMA_SERVER_BIN" \
           -m "$PROJECT_ROOT/models/stories15M-q4_0.gguf" \
-          --host 127.0.0.1 --port 8080 \
+          --host "$LLAMA_HOST" --port "$LLAMA_PORT" \
           -ngl "$LLAMA_NGL" \
           -np 1 \
           -t "$THREADS" \
@@ -529,25 +560,26 @@ start_services() {
     
     progress_bar 1 2
     echo " ${DIM}Waiting for llama-server...${NC}"
-    if ! wait_for_http "http://127.0.0.1:8080/health" "llama-server" 60; then
+    if ! wait_for_http "http://${LLAMA_HOST}:${LLAMA_PORT}/health" "llama-server" 60; then
         return 1
     fi
     
-    # Start Ghostlink API
+    # Start Ghostlink API.
+    # Use llama-server base URL; native_engine health/model-load code appends endpoint paths.
     GHOSTLINK_INFERENCE_BACKEND=native \
     GHOSTLINK_NATIVE_ENGINE=llama_server \
-    GHOSTLINK_LLAMA_SERVER_URL="http://127.0.0.1:8080/completion" \
+    GHOSTLINK_LLAMA_SERVER_URL="http://${LLAMA_HOST}:${LLAMA_PORT}" \
     GHOSTLINK_LLAMA_NGL="${LLAMA_NGL:-0}" \
-    cargo run -p ghost-link -- serve 127.0.0.1 8003 \
+    cargo run -p ghost-link -- serve "$API_HOST" "$API_PORT" \
         >/tmp/ghostlink_api.log 2>&1 &
     API_PID=$!
     
-    if ! wait_for_http "http://127.0.0.1:8003/health" "Ghostlink API" 60; then
+    if ! wait_for_http "http://${API_HOST}:${API_PORT}/health" "Ghostlink API" 60; then
         return 1
     fi
     
     # Wait for API endpoint to be fully ready
-    if ! wait_for_http "http://127.0.0.1:8003/api/health" "API endpoint" 30; then
+    if ! wait_for_http "http://${API_HOST}:${API_PORT}/api/health" "API endpoint" 30; then
         return 1
     fi
     echo ""
@@ -569,7 +601,7 @@ start_services() {
     
     progress_bar 2 3
     echo " ${DIM}Starting Vite dev server...${NC}"
-    export VITE_GHOSTLINK_API_BASE="http://127.0.0.1:8003"
+    export VITE_GHOSTLINK_API_BASE="http://${API_HOST}:${API_PORT}"
     npm run dev -- --host 127.0.0.1 --port 5173 >/tmp/ghostlink_frontend.log 2>&1 &
     GUI_PID=$!
     cd ..
@@ -655,6 +687,8 @@ main() {
         echo -e "Run: ${CYAN}.\\launch.bat${NC}"
         exit 1
     fi
+
+    ensure_rust_toolchain || exit 1
     
     show_banner
     sleep 0.5

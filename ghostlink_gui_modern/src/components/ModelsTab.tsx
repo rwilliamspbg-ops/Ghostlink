@@ -175,6 +175,29 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
     }
   };
 
+  const handleUnloadModel = async (name: string) => {
+    setPendingActions(prev => ({ ...prev, [name]: 'unloading' }));
+    setMessage(`Unloading ${name}...`);
+    try {
+      const result = await api.unloadModel(name);
+      if (result.success) {
+        if (name === currentModel) {
+          setCurrentModel('none');
+        }
+        setMessage(`Unloaded ${name}`);
+        refreshModels();
+      } else {
+        setMessage(`Error: ${result.error}`);
+      }
+    } finally {
+      setPendingActions(prev => {
+        const newState = { ...prev };
+        delete newState[name];
+        return newState;
+      });
+    }
+  };
+
   const handlePullModel = async (id: string) => {
     setPendingActions(prev => ({ ...prev, [id]: 'downloading' }));
     setMessage(`Pulling ${id}...`);
@@ -381,6 +404,18 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                             <span className="px-3 py-1 bg-blue-600 text-white text-xs font-medium rounded-full">
                               Active
                             </span>
+                            <button
+                              onClick={() => handleUnloadModel(model.name)}
+                              disabled={pendingActions[model.name] === 'unloading' || loading}
+                              className="flex items-center gap-2 px-3 py-1 bg-slate-800 hover:bg-slate-700 text-xs font-medium rounded-full transition"
+                            >
+                              {pendingActions[model.name] === 'unloading' ? (
+                                <Loader size={16} className="mr-1" />
+                              ) : (
+                                <X size={16} />
+                              )}
+                              Unload
+                            </button>
                           </div>
                         ) : (
                           <button
