@@ -4,6 +4,23 @@ All notable changes to Ghostlink Studio are documented here.
 
 ---
 
+## [1.3.5] - 2026-07-22 (Launch: llama-server Port-Conflict Detection)
+
+### 🐛 Launch Reliability
+
+- Extended the port-conflict detection added in [1.3.4] to llama-server's own readiness check. A user hit a live chat failure — `Native error: llama_server request failed with status 405 Method Not Allowed: {"detail":"Method Not Allowed"}` — traced to `open-webui` (also FastAPI/uvicorn-based) already bound to `127.0.0.1:8080`, the same host:port llama-server wants. The old check (`GET /health` → `{"status":"ok"}`) was too generic to catch this: `open-webui` answers its own `/health` too, so `launch.sh` reported "llama-server ready" while the real llama.cpp process had actually failed to bind, and every native chat request silently went to `open-webui` instead.
+- The readiness check now targets `GET /v1/models` and requires `"llamacpp"` (from llama.cpp's own `"owned_by":"llamacpp"` field) to appear in the response — nothing else plausibly returns that. On mismatch, prints a diagnostic naming the real cause and pointing at `GHOSTLINK_LLAMA_SERVER_PORT=<port>` as the override.
+- Also fixed the diagnostic message itself to be accurate for whichever check failed: it previously always said "isn't Ghostlink" and suggested `GHOSTLINK_API_PORT`, which was wrong advice for the llama-server case (the correct override there is `GHOSTLINK_LLAMA_SERVER_PORT`, a different variable entirely). `wait_for_http()` now takes the expected-service label and the correct override variable as explicit arguments instead of hardcoding Ghostlink's own.
+
+### ✅ Validation
+
+- `bash -n launch.sh` — syntax OK
+- Confirmed real llama-server's actual `/v1/models` response includes `"owned_by":"llamacpp"` (checked directly against a running instance)
+- Reproduced the reported failure mode locally: a throwaway HTTP server on the llama-server port returning `{"status":"ok"}` to everything is now correctly rejected instead of accepted; a genuine llama-server on the same port is correctly recognized and accepted
+- Confirmed the positive case (no conflict) is unaffected — full `launch.sh` run reaches healthy state, real chat inference succeeds end to end
+
+---
+
 ## [1.3.4] - 2026-07-22 (Launch: Port-Conflict Detection)
 
 ### 🐛 Launch Reliability
