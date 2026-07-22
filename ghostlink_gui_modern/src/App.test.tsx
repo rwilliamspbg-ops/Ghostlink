@@ -9,6 +9,7 @@ vi.mock('./api', () => ({
     getHealth: vi.fn().mockResolvedValue({ success: true, data: {} }),
     getMetrics: vi.fn().mockResolvedValue({ metrics: { throughput: 0, cpu: 0, memory: 0, gpu: 0, latency_p50: 0, latency_p95: 0 } }),
     getSessions: vi.fn().mockResolvedValue({ sessions: [] }),
+    listSessions: vi.fn().mockResolvedValue({ sessions: [] }),
     getWorkers: vi.fn().mockResolvedValue({ workers: [] }),
   })),
 }));

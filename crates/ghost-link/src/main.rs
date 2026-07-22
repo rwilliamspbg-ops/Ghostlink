@@ -2313,11 +2313,7 @@ InferenceBackend::Native => match native_engine_client
             let backend = lock_state(&state);
             // Prefer live settings string (updated by Settings UI / runtime select)
             // so load and chat cannot disagree on which backend is active.
-            let inference_backend = match backend.settings.inference_backend.as_str() {
-                "ollama" => InferenceBackend::Ollama,
-                "native" => InferenceBackend::Native,
-                _ => backend.inference_backend,
-            };
+            let inference_backend = InferenceBackend::parse(&backend.settings.inference_backend);
             (
                 inference_backend,
                 backend.ollama_client.clone(),
@@ -3443,11 +3439,7 @@ InferenceBackend::Native => match native_engine_client
             settings,
         ) = {
             let backend = lock_state(&state);
-            let inference_backend = match backend.settings.inference_backend.as_str() {
-                "ollama" => InferenceBackend::Ollama,
-                "native" => InferenceBackend::Native,
-                _ => InferenceBackend::Native,
-            };
+            let inference_backend = InferenceBackend::parse(&backend.settings.inference_backend);
             (
                 backend.current_model.clone(),
                 Arc::clone(&backend.cluster),
@@ -4205,7 +4197,7 @@ InferenceBackend::Native => match native_engine_client
         } else if profile.node_resources.vram_gb >= 8.0 {
             24
         } else if profile.node_resources.vram_gb >= 4.0 {
-            99
+            12
         } else {
             -1
         };
@@ -4251,11 +4243,7 @@ InferenceBackend::Native => match native_engine_client
 
     // Load settings to get initial inference backend
     let settings = load_settings();
-    let inference_backend = match settings.inference_backend.as_str() {
-        "ollama" => InferenceBackend::Ollama,
-        "native" => InferenceBackend::Native,
-        _ => InferenceBackend::Ollama,
-    };
+    let inference_backend = InferenceBackend::parse(&settings.inference_backend);
     let native_engine_client = native_engine::NativeEngineClient::new();
     let ollama_client = ollama::OllamaClient::new(ollama_url);
     let ollama_available = Arc::new(tokio::sync::Mutex::new(false));

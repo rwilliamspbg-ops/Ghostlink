@@ -30,8 +30,8 @@ Use Ghostlink when you need:
 ## Public launch assets
 A polished landing page and launch collateral are now available for the project:
 - Live site: https://rwilliamspbg-ops.github.io/Ghostlink/
-- Comparison sheet: [docs/comparison_sheet.md](docs/comparison_sheet.md)
-- Demo flow: [docs/launch_demo.md](docs/launch_demo.md)
+- Comparison sheet: [docs/archive/comparison_sheet.md](docs/archive/comparison_sheet.md)
+- Demo flow: [docs/archive/launch_demo.md](docs/archive/launch_demo.md)
 
 ## Project status
 Ghostlink is positioned as a launch-ready open-source foundation with a strong demo story and public-facing collateral.
