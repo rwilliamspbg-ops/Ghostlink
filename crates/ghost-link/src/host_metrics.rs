@@ -88,7 +88,13 @@ impl Default for InferenceMetrics {
 }
 
 impl InferenceMetrics {
-    pub fn record(&mut self, latency_ms: f32, tokens: u32, tokens_per_sec: Option<f32>, real: bool) {
+    pub fn record(
+        &mut self,
+        latency_ms: f32,
+        tokens: u32,
+        tokens_per_sec: Option<f32>,
+        real: bool,
+    ) {
         let latency_ms = latency_ms.max(0.1);
         self.last_latency_ms = latency_ms;
         self.last_tokens = tokens;
@@ -120,11 +126,7 @@ impl InferenceMetrics {
         let (p50, p95) = percentiles_ms(&self.latency_ms);
         InferenceSnapshot {
             tokens_per_sec: self.tokens_per_sec_ema,
-            latency_p50_ms: if p50 > 0.0 {
-                p50
-            } else {
-                self.last_latency_ms
-            },
+            latency_p50_ms: if p50 > 0.0 { p50 } else { self.last_latency_ms },
             latency_p95_ms: if p95 > 0.0 {
                 p95
             } else if self.last_latency_ms > 0.0 {

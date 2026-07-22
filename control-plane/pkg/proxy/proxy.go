@@ -4,15 +4,18 @@ import (
 	"bytes"
 	"io"
 	"net/http"
+	"strings"
 )
 
 type ChatProxy struct {
 	BackendURL string
+	Client     *http.Client
 }
 
 func NewChatProxy(backendURL string) *ChatProxy {
 	return &ChatProxy{
-		BackendURL: backendURL,
+		BackendURL: strings.TrimRight(backendURL, "/"),
+		Client:     &http.Client{},
 	}
 }
 
@@ -21,6 +24,20 @@ func (p *ChatProxy) HandleChatCompletions(w http.ResponseWriter, r *http.Request
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	p.forward(w, r, "/v1/chat/completions")
+}
+
+// HandleBackendProxy reverse-proxies GUI/API paths to ghost-link.
+// Prevents 404/405 when clients accidentally target the control-plane port
+// for /api/models, /api/settings, /api/inference/chat, etc.
+func (p *ChatProxy) HandleBackendProxy(w http.ResponseWriter, r *http.Request) {
+	p.forward(w, r, r.URL.RequestURI())
+}
+
+func (p *ChatProxy) forward(w http.ResponseWriter, r *http.Request, path string) {
+	if !strings.HasPrefix(path, "/") {
+		path = "/" + path
+	}
 
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
@@ -28,14 +45,18 @@ func (p *ChatProxy) HandleChatCompletions(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	req, err := http.NewRequest(http.MethodPost, p.BackendURL+"/v1/chat/completions", bytes.NewBuffer(body))
+	url := p.BackendURL + path
+	req, err := http.NewRequest(r.Method, url, bytes.NewReader(body))
 	if err != nil {
 		http.Error(w, "Failed to create backend request", http.StatusInternalServerError)
 		return
 	}
-	req.Header = r.Header
+	req.Header = r.Header.Clone()
 
-	client := &http.Client{}
+	client := p.Client
+	if client == nil {
+		client = http.DefaultClient
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		http.Error(w, "Backend unreachable", http.StatusServiceUnavailable)
@@ -49,5 +70,5 @@ func (p *ChatProxy) HandleChatCompletions(w http.ResponseWriter, r *http.Request
 		}
 	}
 	w.WriteHeader(resp.StatusCode)
-	io.Copy(w, resp.Body)
+	_, _ = io.Copy(w, resp.Body)
 }

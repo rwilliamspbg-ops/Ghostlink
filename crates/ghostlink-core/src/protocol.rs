@@ -73,7 +73,12 @@ impl FrameHeader {
         let kind = buf[2];
         let version = buf[3];
         let crc = u32::from_le_bytes([buf[4], buf[5], buf[6], buf[7]]);
-        Some(Self { ether_type, kind, version, crc })
+        Some(Self {
+            ether_type,
+            kind,
+            version,
+            crc,
+        })
     }
 }
 
@@ -392,11 +397,7 @@ impl DiscoveryFrame {
         buf.clear();
         buf.extend_from_slice(&[0u8; 8]);
 
-        if self
-            .node
-            .encode_payload_into(buf, MAX_PAYLOAD_SIZE)
-            .is_ok()
-        {
+        if self.node.encode_payload_into(buf, MAX_PAYLOAD_SIZE).is_ok() {
             let payload = &buf[8..];
             let crc = crc32(payload);
 

@@ -24,24 +24,34 @@ func main() {
 	}
 
 	reg := registry.NewRegistry()
-
 	chatProxy := proxy.NewChatProxy(backendURL)
 
-	http.HandleFunc("/v1/chat/completions", chatProxy.HandleChatCompletions)
-	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+	mux := http.NewServeMux()
+
+	mux.HandleFunc("/v1/chat/completions", chatProxy.HandleChatCompletions)
+	// OpenAI model list + any other /v1/* path
+	mux.HandleFunc("/v1/", chatProxy.HandleBackendProxy)
+
+	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]any{
+		_ = json.NewEncoder(w).Encode(map[string]any{
 			"status":  "ok",
+			"backend": backendURL,
 			"workers": reg.Summary(),
 		})
 	})
 
-	http.HandleFunc("/api/workers", func(w http.ResponseWriter, r *http.Request) {
+	// Worker registry (local to control-plane)
+	mux.HandleFunc("/api/workers", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
 			workers := reg.List()
 			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(map[string]any{"workers": workers})
+			_ = json.NewEncoder(w).Encode(map[string]any{"workers": workers})
 		case http.MethodPost:
 			var worker registry.Worker
 			if err := json.NewDecoder(r.Body).Decode(&worker); err != nil {
@@ -50,56 +60,69 @@ func main() {
 			}
 			reg.Register(&worker)
 			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(map[string]string{"status": "ok", "id": worker.ID})
+			_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok", "id": worker.ID})
 		default:
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		}
 	})
 
-	http.HandleFunc("/api/workers/", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/workers/", func(w http.ResponseWriter, r *http.Request) {
+		path := r.URL.Path
+		if strings.HasSuffix(path, "/heartbeat") || path == "/api/workers/heartbeat" {
+			if r.Method != http.MethodPost {
+				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+				return
+			}
+			var req struct {
+				ID  string  `json:"id"`
+				CPU float32 `json:"cpu_usage"`
+				Mem float32 `json:"memory_usage"`
+				GPU float32 `json:"gpu_usage"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				http.Error(w, "invalid request body", http.StatusBadRequest)
+				return
+			}
+			ok := reg.Heartbeat(req.ID, req.CPU, req.Mem, req.GPU)
+			w.Header().Set("Content-Type", "application/json")
+			if ok {
+				_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+			} else {
+				w.WriteHeader(http.StatusNotFound)
+				_ = json.NewEncoder(w).Encode(map[string]string{"error": "worker not found"})
+			}
+			return
+		}
+
 		if r.Method != http.MethodDelete {
+			// Fall through: proxy model/load/etc. style paths under /api/workers/* that
+			// belong to the backend (e.g. disconnect) — only pure DELETE is local deregister
+			// when the path is exactly /api/workers/{id}
+			id := strings.TrimPrefix(path, "/api/workers/")
+			if id == "" || strings.Contains(id, "/") {
+				chatProxy.HandleBackendProxy(w, r)
+				return
+			}
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
-		id := strings.TrimPrefix(r.URL.Path, "/api/workers/")
-		if id == "" {
+		id := strings.TrimPrefix(path, "/api/workers/")
+		if id == "" || strings.Contains(id, "/") {
 			http.Error(w, "worker id required", http.StatusBadRequest)
 			return
 		}
 		ok := reg.Deregister(id)
 		w.Header().Set("Content-Type", "application/json")
 		if ok {
-			json.NewEncoder(w).Encode(map[string]string{"status": "ok", "id": id})
+			_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok", "id": id})
 		} else {
 			w.WriteHeader(http.StatusNotFound)
-			json.NewEncoder(w).Encode(map[string]string{"error": "worker not found"})
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "worker not found"})
 		}
 	})
 
-	http.HandleFunc("/api/workers/heartbeat", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		var req struct {
-			ID  string  `json:"id"`
-			CPU float32 `json:"cpu_usage"`
-			Mem float32 `json:"memory_usage"`
-			GPU float32 `json:"gpu_usage"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, "invalid request body", http.StatusBadRequest)
-			return
-		}
-		ok := reg.Heartbeat(req.ID, req.CPU, req.Mem, req.GPU)
-		w.Header().Set("Content-Type", "application/json")
-		if ok {
-			json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
-		} else {
-			w.WriteHeader(http.StatusNotFound)
-			json.NewEncoder(w).Encode(map[string]string{"error": "worker not found"})
-		}
-	})
+	// Proxy all other /api/* GUI routes to ghost-link (models, settings, chat, ...)
+	mux.HandleFunc("/api/", chatProxy.HandleBackendProxy)
 
 	go func() {
 		ticker := time.NewTicker(30 * time.Second)
@@ -110,8 +133,8 @@ func main() {
 	}()
 
 	log.Printf("Ghostlink Control Plane starting on :%s", port)
-	log.Printf("Proxying to backend: %s", backendURL)
-	if err := http.ListenAndServe(":"+port, nil); err != nil {
+	log.Printf("Proxying GUI/API routes to backend: %s", backendURL)
+	if err := http.ListenAndServe(":"+port, mux); err != nil {
 		log.Fatalf("Server failed: %v", err)
 	}
 }

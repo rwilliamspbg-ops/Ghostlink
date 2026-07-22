@@ -60,46 +60,40 @@ Current focus areas:
 ### Launch
 
 ```powershell
-# 1. Clone or open the Ghostlink directory
 cd C:\Users\rwill\Ghostlink
 
-# 2. Build the backend (one time)
+# One-time backend build (if target\release\ghost-link.exe is missing, launch.bat builds it)
 cargo build --release -p ghost-link
 
-# 3. Launch (cinematic splash + services)
+# Single launcher for the full stack
 .\launch.bat
-
-# Or launch the complete stack directly
-.\launch-complete.bat
-
-# Or fast launch (skips build, uses existing binary)
-.\launch-fast.bat
 ```
 
-This starts three services:
-- **llama-server** (inference engine, port 8080)
-- **Ghostlink API** backend (port 8003)
+This starts:
+- **llama-server** (inference, port **8080**)
+- **Ghostlink API** (chat / models / settings, port **8003**) — GUI must use this port
 - **React frontend** at http://127.0.0.1:5173
 
-### What to Expect
+Optional:
+```powershell
+# Ollama instead of llama-server
+$env:GHOSTLINK_INFERENCE_BACKEND="ollama"; .\launch.bat
 
-The splash screen shows:
-- GPU/CPU/NPU hardware detected
-- Component status (backend binary, llama-server, model)
-- Service URLs once ready
+# Also start OpenAI-compatible control-plane proxy on :8000 (GUI still uses :8003)
+$env:GHOSTLINK_WITH_CONTROL_PLANE="1"; .\launch.bat
+```
 
-Open http://127.0.0.1:5173 → **Models tab** → pick a model → **Chat tab** → start chatting.
+Open http://127.0.0.1:5173 → **Models** → load a model → **Chat**.
+
+> **405 on chat/models?** The GUI was pointed at the wrong port (e.g. control-plane `:8000` or llama-server `:8080`). Always use API base `http://127.0.0.1:8003`.
 
 ## Quick Start (Linux / macOS)
 
 ```bash
-# Prerequisites: Rust, Node.js, CMake, make
-# Install Rust: curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-
+# Prerequisites: Rust, Node.js, curl; cmake optional (prebuilt llama-server fallback)
 cargo build --release -p ghost-link
-
-# Preferred launcher for the full stack
-./launch-complete.sh
+./launch.sh
+# launch-complete.sh is a thin wrapper around launch.sh
 ```
 
 ## Hardware Detection
@@ -124,17 +118,37 @@ $env:GHOSTLINK_COMPUTE_CAPABILITY="gpu"
 
 ## Performance
 
+Sub-microsecond core primitives drive Ghostlink's distributed inference fabric. Benchmarks
+run on an **Intel i7-14700K (Linux/WSL2)** with `RUSTFLAGS="-C target-cpu=native"`.
+
+### Microbenchmarks
+
+| Benchmark | Latency | Throughput |
+|-----------|---------|-----------|
+| Ring buffer push+pop (single-thread) | 1.94 ns | 516 M ops/s |
+| Ring buffer SPSC cross-thread (100k) | 10.67 ns | 93.7 M ops/s |
+| Protocol: DiscoveryFrame encode | 75.80 ns | 13.2 M ops/s |
+| Protocol: DiscoveryFrame decode | 126.82 ns | 7.9 M ops/s |
+| Protocol: encode + decode round-trip | 196.46 ns | 5.1 M ops/s |
+| Planning: 33 layers / 2 nodes | 115.46 ns | 8.7 M ops/s |
+| Planning: 80 layers / 8 nodes | 245.31 ns | 4.1 M ops/s |
+| Planning: autotuned (80 layers, 8 nodes) | 360.99 ns | 2.8 M ops/s |
+| Cluster: register node | 193.04 ns | 5.2 M ops/s |
+| Cluster: snapshot (10 nodes) | 533.40 ns | 1.9 M ops/s |
+| Autotune: detect runtime profile | 166.58 ns | 6.0 M ops/s |
+
+### Pipeline Throughput
+
+| Transport | Tokens / batch | Throughput | Latency |
+|-----------|---------------|-----------|---------|
+| In-process (spin-wait) | 1024 / 128 | 900 K tok/s | 1.14 ms |
+| TCP loopback | 1024 / 128 | 340 K tok/s | 3.01 ms |
+| In-process (spin-wait) | 256 / 32 | 639 K tok/s | 0.40 ms |
+| TCP loopback | 256 / 32 | 236 K tok/s | 1.08 ms |
+
 ### Local llama-server tuning
 
-Native nodes enable Flash Attention and VRAM-scaled batch sizes by default (`-fa on`, `-b`, `-ub`). Prefer **Q4_K_M** / **IQ4_XS** over FP16/Q8_0 for ~1.5–2× decode speed. Override with `GHOSTLINK_LLAMA_SERVER_ARGS`. See [docs/LOCAL_INFERENCE_TUNING.md](docs/LOCAL_INFERENCE_TUNING.md).
-
-Ghostlink's SPSC ring buffer uses exponential-backoff spin-wait for sub-microsecond producer-consumer handoff. Pipeline benchmarks at 1024 tokens:
-
-| Transport | Throughput | Latency |
-|-----------|-----------|---------|
-| In-process (spin-wait) | 866K tok/s | 1.18 ms |
-| TCP loopback | 497K tok/s | 2.06 ms |
-| Unix domain socket | Comparable to TCP | — |
+Native nodes enable Flash Attention, VRAM-scaled batch sizes, and Q8_0 KV cache by default. Prefer **Q4_K_M** / **IQ4_XS** over FP16/Q8_0 for ~1.5–2× decode speed. Override with `GHOSTLINK_LLAMA_SERVER_ARGS`. See [docs/LOCAL_INFERENCE_TUNING.md](docs/LOCAL_INFERENCE_TUNING.md).
 
 Compiling with `RUSTFLAGS="-C target-cpu=native"` further improves performance by enabling CPU-specific instruction sets (opt-in; not set by default).
 
@@ -142,11 +156,11 @@ Compiling with `RUSTFLAGS="-C target-cpu=native"` further improves performance b
 
 | Script | Description |
 |--------|-------------|
-| `launch.bat` | Full cinematic launcher — builds llama.cpp, downloads model, starts all services |
-| `launch-fast.bat` | Fast launcher — uses pre-built binary, skips cargo build |
-| `launch-splash.bat` | Hardware detection splash + delegates to `launch-complete.bat` |
-| `launch-complete.bat` | Starts backend, llama-server, and React GUI |
-| `check_hardware.ps1` | Diagnostic — shows detected GPU, NPU, and component status |
+| `launch.bat` | **Windows** — unified launcher (llama-server + API :8003 + GUI :5173) |
+| `launch.sh` | **Linux/macOS** — same stack with hardware detection |
+| `launch-complete.bat` / `launch-complete.sh` | Compatibility wrappers → `launch.bat` / `launch.sh` |
+| `launch-with-control-plane.bat` | Same as `launch.bat` + optional control-plane on :8000 |
+| `launch-ollama.bat` / `launch-native.bat` | Thin wrappers setting `GHOSTLINK_INFERENCE_BACKEND` |
 
 ## Usage (Developer)
 
@@ -279,53 +293,6 @@ cargo test --workspace
 ```
 
 CI enforces the same checks across Ubuntu, Windows, and macOS.
-
-## Comparison Snapshot
-## 📊 Commercial Market Benchmarks
-
-Ghost-Link undergoes continuous full-spectrum stress, throughput, and chaos evaluation. Below is a structural performance comparison mapping Ghost-Link's latest automated run averages against standard commercial enterprise-grade software tiers.
-
-### Executive Summary
-Ghost-Link demonstrates elite-tier throughput scaling, particularly under heavy network constraints. In pure in-memory (`inmem`) environments, Ghost-Link performs **1.3x to 1.4x faster** than top-tier multi-threaded architectures. When scaling across the network stack (`tcp`), Ghost-Link extends its lead to over **2.6x the performance** of industry-standard enterprise proxies, driven by zero-copy serialization and highly optimized asynchronous request pipelining.
-
----
-
-### Performance Comparison Matrix
-
-| Environment & Configuration | Ghost-Link (Averages) | Tier A (Enterprise Optimized)* | Tier B (Industry Average)† | Ghost-Link Advantage |
-| :--- | :--- | :--- | :--- | :--- |
-| **In-Memory (64 tokens, batch 8)** | **210,200 t/s** | 150,000 t/s | 90,000 t/s | **+133.5% vs Avg** |
-| **In-Memory (256 tokens, batch 32)** | **449,244 t/s** | 320,000 t/s | 180,000 t/s | **+149.5% vs Avg** |
-| **In-Memory (1024 tokens, batch 128)** | **558,546 t/s** | 410,000 t/s | 240,000 t/s | **+132.7% vs Avg** |
-| **In-Memory Stress (2048 tokens, batch 256)** | **673,396 t/s** | 490,000 t/s | 280,000 t/s | **+140.5% vs Avg** |
-| **TCP Network (256 tokens, batch 32)** | **166,447 t/s** | 95,000 t/s | 45,000 t/s | **+269.8% vs Avg** |
-| **TCP Network (1024 tokens, batch 128)** | **244,431 t/s** | 140,000 t/s | 75,000 t/s | **+225.9% vs Avg** |
-| **TCP Network Stress (2048 tokens, batch 256)** | **353,255 t/s** | 185,000 t/s | 98,000 t/s | **+260.4% vs Avg** |
-
-> `*` **Tier A** represents high-throughput, multi-threaded custom engines (e.g., Dragonfly, NATS JetStream in-memory, optimized C++ proxies).  
-> `†` **Tier B** represents standard enterprise-grade distribution layers and cloud-native gateways.
-
----
-
-### Architectural Deep Dive: Why Ghost-Link Wins
-
-#### 1. Superior TCP Stack Efficiency
-In standard commercial software architectures, network serialization overhead frequently drops TCP throughput down to 20–30% of raw in-memory performance. Ghost-Link retains roughly **44% to 52%** of its raw `inmem` speed over the network. This efficiency highlights the impact of:
-- **Zero-copy memory mapping** that minimizes user-space to kernel-space context switching.
-- **Minimized frame serialization tax**, avoiding heavy telemetry layers that plague typical enterprise engines.
-
-#### 2. High-Load Parallel Scaling
-Rather than hitting a resource wall or experiencing lock contention under intense workloads, Ghost-Link accelerates as data density increases. During the max-stress runs (`2048 tokens`, `batch 256`), throughput reached its absolute peaks:
-- **In-Memory Peak:** `673,396 t/s`
-- **TCP Network Peak:** `353,255 t/s`
-
-#### 3. Jitter Elimination Under Chaos Conditions
-During the injection of simulated chaos routines, the performance delta between baseline trends and chaos runs stayed negligible:
-- **Baseline Trends vs. Chaos `inmem-512`:** Maintained a stable `551,313 t/s` average across 4 consecutive disruptive intervals.
-- This proves Ghost-Link's async scheduler handles packet bursts and thread preemption without incurring micro-stuttering or cascading tail-latency spikes.
-
----
-*Generated automatically from the Full Spectrum Benchmark run on Sun Jul 19 08:43:09 AM PDT 2026.*
 
 ## Contributing
 See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, PR expectations, and release rubric.

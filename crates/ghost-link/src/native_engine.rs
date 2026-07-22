@@ -15,6 +15,24 @@ use tokio::time::sleep as tokio_sleep;
 pub struct NativeGeneration {
     pub text: String,
     pub real_inference: bool,
+    /// Tokens produced (when known from engine timings).
+    pub tokens_generated: Option<u32>,
+    /// Decode throughput tok/s when known.
+    pub tokens_per_sec: Option<f32>,
+    /// End-to-end generation latency in ms when known.
+    pub latency_ms: Option<f32>,
+}
+
+impl NativeGeneration {
+    fn text_only(text: String, real: bool) -> Self {
+        Self {
+            text,
+            real_inference: real,
+            tokens_generated: None,
+            tokens_per_sec: None,
+            latency_ms: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -181,7 +199,31 @@ impl NativeEngineClient {
         Self::default_perf_args()
     }
 
-    /// VRAM-aware batch defaults for prompt eval + Flash Attention.
+    /// Context size for llama-server (`-c`). Default 4096 — model default can be 128k+
+    /// which starves iGPU VRAM and tanks decode tok/s.
+    fn get_ctx_size() -> u32 {
+        if let Ok(val) = std::env::var("GHOSTLINK_CTX_SIZE") {
+            if let Ok(n) = val.trim().parse::<u32>() {
+                return n.clamp(512, 131072);
+            }
+        }
+        if let Ok(val) = std::env::var("GHOSTLINK_VRAM_GB") {
+            if let Ok(vram) = val.trim().parse::<f32>() {
+                return if vram >= 16.0 {
+                    16384
+                } else if vram >= 12.0 {
+                    8192
+                } else if vram >= 8.0 {
+                    4096
+                } else {
+                    2048
+                };
+            }
+        }
+        4096
+    }
+
+    /// VRAM-aware batch defaults for prompt eval + Flash Attention + compact KV.
     fn default_perf_args() -> Vec<String> {
         let vram = std::env::var("GHOSTLINK_VRAM_GB")
             .ok()
@@ -196,6 +238,7 @@ impl NativeEngineClient {
         } else {
             (512, 128)
         };
+        // q8_0 KV cuts cache memory ~2× vs f16 → more room for GPU layers / speed.
         vec![
             "-fa".to_string(),
             "on".to_string(),
@@ -203,6 +246,10 @@ impl NativeEngineClient {
             batch.to_string(),
             "-ub".to_string(),
             ubatch.to_string(),
+            "-ctk".to_string(),
+            "q8_0".to_string(),
+            "-ctv".to_string(),
+            "q8_0".to_string(),
         ]
     }
 
@@ -408,6 +455,7 @@ impl NativeEngineClient {
         }
         let ngl = Self::get_ngl();
         let threads = Self::get_threads();
+        let ctx = Self::get_ctx_size();
         let extra_args = Self::get_llama_server_args();
         let alias = resolved
             .file_stem()
@@ -416,12 +464,14 @@ impl NativeEngineClient {
             .to_string();
 
         // Build the command:
-        //   llama-server -m <model> --alias <name> --host <host> --port <port> [-ngl <n>] [-t <n>]
+        //   llama-server -m <model> --alias <name> --host <host> --port <port> -c <ctx> [-ngl <n>] [-t <n>]
         let mut cmd = Command::new(&bin);
         cmd.arg("-m").arg(&normalized_path);
         cmd.arg("--alias").arg(&alias);
         cmd.arg("--host").arg(&host);
         cmd.arg("--port").arg(port.to_string());
+        cmd.arg("-c").arg(ctx.to_string());
+        cmd.arg("-np").arg("1");
         if ngl >= 0 {
             cmd.arg("-ngl").arg(ngl.to_string());
         }
@@ -517,20 +567,21 @@ impl NativeEngineClient {
 
         let cleaned_prompt = prompt.trim();
         if cleaned_prompt.is_empty() {
-            return Ok(NativeGeneration {
-                text: format!(
+            return Ok(NativeGeneration::text_only(
+                format!(
                     "Native backend is ready for model '{}'. Provide a non-empty prompt for generation.",
                     model
                 ),
-                real_inference: false,
-            });
+                false,
+            ));
         }
 
         let max_tokens = max_tokens.clamp(16, 4096);
+        let started = std::time::Instant::now();
 
         match native_engine.trim().to_ascii_lowercase().as_str() {
             "llama_server" | "llama-server" => {
-                let text = self
+                let mut gen = self
                     .generate_with_llama_server(
                         model,
                         cleaned_prompt,
@@ -541,16 +592,28 @@ impl NativeEngineClient {
                         repeat_penalty,
                     )
                     .await?;
-                Ok(NativeGeneration {
-                    text,
-                    real_inference: true,
-                })
+                if gen.latency_ms.is_none() {
+                    gen.latency_ms = Some((started.elapsed().as_secs_f32() * 1000.0).max(0.1));
+                }
+                if gen.tokens_per_sec.is_none() {
+                    if let (Some(lat), Some(toks)) = (gen.latency_ms, gen.tokens_generated) {
+                        if lat > 0.0 && toks > 0 {
+                            gen.tokens_per_sec = Some(toks as f32 / (lat / 1000.0));
+                        }
+                    }
+                }
+                Ok(gen)
             }
             "llama_cpp" | "llama.cpp" | "llama" => {
                 let text = self.generate_with_llama_cpp(cleaned_prompt, max_tokens)?;
+                let latency_ms = (started.elapsed().as_secs_f32() * 1000.0).max(0.1);
+                let tokens_generated = (text.split_whitespace().count() as u32).max(1);
                 Ok(NativeGeneration {
                     text,
                     real_inference: true,
+                    tokens_generated: Some(tokens_generated),
+                    tokens_per_sec: Some(tokens_generated as f32 / (latency_ms / 1000.0)),
+                    latency_ms: Some(latency_ms),
                 })
             }
             _ => self.generate_simulated(model, cleaned_prompt, max_tokens),
@@ -569,13 +632,13 @@ impl NativeEngineClient {
             .collect::<Vec<_>>()
             .join(" ");
 
-        Ok(NativeGeneration {
-            text: format!(
+        Ok(NativeGeneration::text_only(
+            format!(
                 "[native:{}] generated response with token budget {}. Prompt preview: {}",
                 model, max_tokens, preview
             ),
-            real_inference: false,
-        })
+            false,
+        ))
     }
 
     fn generate_with_llama_cpp(
@@ -638,7 +701,7 @@ impl NativeEngineClient {
         top_p: f32,
         top_k: usize,
         repeat_penalty: f32,
-    ) -> Result<String, String> {
+    ) -> Result<NativeGeneration, String> {
         let base_url = Self::get_llama_base_url();
 
         let timeout_secs = std::env::var("GHOSTLINK_LLAMA_SERVER_TIMEOUT_SECS")
@@ -692,26 +755,8 @@ impl NativeEngineClient {
                     .await
                     .map_err(|e| format!("invalid llama_server JSON response: {}", e))?;
 
-                if let Some(content) = parsed.get("content").and_then(|v| v.as_str()) {
-                    let text = content.trim();
-                    if !text.is_empty() {
-                        return Ok(text.to_string());
-                    }
-                }
-
-                if let Some(text) = parsed
-                    .get("choices")
-                    .and_then(|choices| choices.get(0))
-                    .and_then(|c| {
-                        c.get("text")
-                            .or_else(|| c.get("message").and_then(|m| m.get("content")))
-                    })
-                    .and_then(|v| v.as_str())
-                {
-                    let text = text.trim();
-                    if !text.is_empty() {
-                        return Ok(text.to_string());
-                    }
+                if let Some(gen) = generation_from_llama_json(&parsed) {
+                    return Ok(gen);
                 }
             } else if response.status().as_u16() == 400 {
                 // Fall through to completion endpoint if chat fails with 400
@@ -760,15 +805,98 @@ impl NativeEngineClient {
             .await
             .map_err(|e| format!("invalid llama_server JSON response: {}", e))?;
 
-        if let Some(content) = parsed.get("content").and_then(|v| v.as_str()) {
-            let text = content.trim();
-            if !text.is_empty() {
-                return Ok(text.to_string());
-            }
+        if let Some(gen) = generation_from_llama_json(&parsed) {
+            return Ok(gen);
         }
 
         Err("llama_server returned empty content".to_string())
     }
+}
+
+fn generation_from_llama_json(parsed: &serde_json::Value) -> Option<NativeGeneration> {
+    let mut text = parsed
+        .get("content")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    if text.is_none() {
+        text = parsed
+            .get("choices")
+            .and_then(|choices| choices.get(0))
+            .and_then(|c| {
+                c.get("text")
+                    .or_else(|| c.get("message").and_then(|m| m.get("content")))
+            })
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+    }
+
+    let text = text?;
+    let (tokens_generated, tokens_per_sec, latency_ms) = parse_llama_timings(parsed, &text);
+    Some(NativeGeneration {
+        text,
+        real_inference: true,
+        tokens_generated,
+        tokens_per_sec,
+        latency_ms,
+    })
+}
+
+fn parse_llama_timings(
+    parsed: &serde_json::Value,
+    text: &str,
+) -> (Option<u32>, Option<f32>, Option<f32>) {
+    let timings = parsed.get("timings");
+    let predicted_n = timings
+        .and_then(|t| t.get("predicted_n"))
+        .and_then(|v| v.as_u64())
+        .or_else(|| {
+            parsed
+                .get("tokens_predicted")
+                .and_then(|v| v.as_u64())
+                .or_else(|| parsed.get("tokens_evaluated").and_then(|v| v.as_u64()))
+        })
+        .map(|n| n as u32)
+        .or_else(|| {
+            let words = text.split_whitespace().count() as u32;
+            if words > 0 {
+                Some(words)
+            } else {
+                None
+            }
+        });
+
+    let predicted_ms = timings
+        .and_then(|t| t.get("predicted_ms"))
+        .and_then(|v| v.as_f64())
+        .map(|ms| ms as f32)
+        .or_else(|| {
+            timings
+                .and_then(|t| t.get("predicted_per_second"))
+                .and_then(|v| v.as_f64())
+                .and_then(|tps| {
+                    predicted_n.map(|n| {
+                        if tps > 0.0 {
+                            (n as f32) / (tps as f32) * 1000.0
+                        } else {
+                            0.0
+                        }
+                    })
+                })
+        });
+
+    let tokens_per_sec = timings
+        .and_then(|t| t.get("predicted_per_second"))
+        .and_then(|v| v.as_f64())
+        .map(|v| v as f32)
+        .or_else(|| match (predicted_n, predicted_ms) {
+            (Some(n), Some(ms)) if ms > 0.0 && n > 0 => Some(n as f32 / (ms / 1000.0)),
+            _ => None,
+        });
+
+    (predicted_n, tokens_per_sec, predicted_ms)
 }
 
 fn extract_generation_text(stdout: &str, stderr: &str, prompt: &str) -> String {
