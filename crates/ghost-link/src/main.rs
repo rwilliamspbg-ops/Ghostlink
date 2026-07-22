@@ -7,6 +7,7 @@
 
 use crate::runtime::Runtime;
 use anyhow::Result;
+use ghostlink_core::autotune::AutoTuner;
 use ghostlink_core::cluster::{ClusterState, NodeMetrics};
 use ghostlink_core::dashboard::Dashboard;
 use ghostlink_core::discovery::{
@@ -717,7 +718,7 @@ where
                 }
                 network_target = value.to_string();
             }
-            _ => anyhow::bail!("unknown doctor option: {arg}"),
+            _ => anyhow::bail!("unknown doctor option: {}", arg),
         }
     }
 
@@ -801,9 +802,9 @@ fn maybe_write_flow_metrics_json(
     );
 
     fs::write(&path, payload)
-        .map_err(|err| anyhow::anyhow!("failed to write flow metrics json to {path}: {err}"))?;
+        .map_err(|err| anyhow::anyhow!("failed to write flow metrics json to {}: {}", path, err))?;
 
-    println!("Flow metrics JSON written to: {path}");
+    println!("Flow metrics JSON written to: {}", path);
     Ok(())
 }
 
@@ -977,7 +978,7 @@ fn store_cached_autotune_inflight(cache_key: &str, inflight: usize) -> Result<()
             lines.push(line.to_string());
         }
     }
-    lines.push(format!("{cache_key}\t{inflight}"));
+    lines.push(format!("{}\t{}", cache_key, inflight));
     fs::write(
         &cache_path,
         lines.join(
@@ -1025,7 +1026,10 @@ fn autotune_tcp_transport_config(
         if let Some(cached_inflight) = load_cached_autotune_inflight(&cache_key, &candidates) {
             let mut cached_cfg = base.clone();
             cached_cfg.max_inflight_batches = cached_inflight;
-            println!("TCP autotune reused cached max_inflight={cached_inflight} (key={cache_key})");
+            println!(
+                "TCP autotune reused cached max_inflight={} (key={})",
+                cached_inflight, cache_key
+            );
             return Ok(cached_cfg);
         }
     }
@@ -1268,7 +1272,8 @@ fn print_flow(opts: FlowOptions) -> Result<()> {
             match probe_xdp_support(&interface) {
                 Ok(()) => {
                     println!(
-                        "AF_XDP probe succeeded on interface '{interface}'; using xdp-optimized runtime settings."
+                        "AF_XDP probe succeeded on interface '{}'; using xdp-optimized runtime settings.",
+                        interface
                     );
                     let base_tcp_cfg = xdp_optimized_tcp_config();
                     let tcp_cfg = if xdp_autotune_enabled() {
@@ -1291,7 +1296,8 @@ fn print_flow(opts: FlowOptions) -> Result<()> {
                 }
                 Err(reason) => {
                     println!(
-                        "AF_XDP unavailable on '{interface}': {reason}. Falling back to TCP transport."
+                        "AF_XDP unavailable on '{}': {}. Falling back to TCP transport.",
+                        interface, reason
                     );
                     effective_transport_mode = FlowTransportMode::TcpLoopback;
                     let base_tcp_cfg = tcp_transport_config_from_env();
@@ -1451,6 +1457,8 @@ struct BackendState {
     queue_depth: usize,
     chat_requests: u64,
     last_latency_ms: f32,
+    last_tokens_per_sec: f32,
+    inference_metrics: host_metrics::InferenceMetrics,
     started_at: Instant,
     backend_url: String,
     cluster: Arc<ClusterState>,
@@ -1550,7 +1558,7 @@ impl ToolDispatcher {
             },
             _ => ToolResult {
                 tool: tool_name.to_string(),
-                result: format!("Tool '{tool_name}' executed successfully."),
+                result: format!("Tool '{}' executed successfully.", tool_name),
                 success: true,
             },
         }
@@ -1591,7 +1599,7 @@ fn load_persistent_models() -> Vec<ModelRecord> {
             name: "mistralai/Mistral-7B-Instruct-v0.2".to_string(),
             size_gb: 7.2,
             model_type: "LLM".to_string(),
-            quantization: "Q8_0".to_string(),
+            quantization: "Q4_K_M".to_string(),
             status: "Ready".to_string(),
             local_path: String::new(),
         },
@@ -1599,7 +1607,7 @@ fn load_persistent_models() -> Vec<ModelRecord> {
             name: "google/gemma-7b-it".to_string(),
             size_gb: 7.0,
             model_type: "LLM".to_string(),
-            quantization: "BF16".to_string(),
+            quantization: "Q4_K_M".to_string(),
             status: "Ready".to_string(),
             local_path: String::new(),
         },
@@ -1622,14 +1630,61 @@ fn save_persistent_models(models: &[ModelRecord]) {
 
 fn load_settings() -> RuntimeSettings {
     let path = settings_path();
-    if path.exists() {
-        if let Ok(data) = fs::read_to_string(path) {
-            if let Ok(settings) = serde_json::from_str::<RuntimeSettings>(&data) {
-                return settings;
-            }
+    let mut settings = if path.exists() {
+        if let Ok(data) = fs::read_to_string(&path) {
+            serde_json::from_str::<RuntimeSettings>(&data).unwrap_or_default()
+        } else {
+            RuntimeSettings::default()
+        }
+    } else {
+        RuntimeSettings::default()
+    };
+
+    // Ensure native engine env mirrors persisted settings when launchers did not set them.
+    // Critical for Linux launch.sh and dynamic model load/unload.
+    if std::env::var("GHOSTLINK_LLAMA_SERVER_URL")
+        .map(|v| v.trim().is_empty())
+        .unwrap_or(true)
+        && !settings.llama_server_url.trim().is_empty()
+    {
+        std::env::set_var(
+            "GHOSTLINK_LLAMA_SERVER_URL",
+            settings.llama_server_url.trim(),
+        );
+    }
+    if std::env::var("GHOSTLINK_NATIVE_ENGINE")
+        .map(|v| v.trim().is_empty())
+        .unwrap_or(true)
+        && !settings.native_engine.trim().is_empty()
+    {
+        std::env::set_var("GHOSTLINK_NATIVE_ENGINE", settings.native_engine.trim());
+    }
+
+    if let Ok(val) = std::env::var("GHOSTLINK_INFERENCE_BACKEND") {
+        let v = val.trim().to_ascii_lowercase();
+        if v == "native" || v == "ollama" {
+            settings.inference_backend = v;
         }
     }
-    RuntimeSettings::default()
+    if let Ok(val) = std::env::var("GHOSTLINK_NATIVE_ENGINE") {
+        let v = val.trim().to_string();
+        if !v.is_empty() {
+            settings.native_engine = v;
+        }
+    }
+    if let Ok(val) = std::env::var("GHOSTLINK_LLAMA_SERVER_URL") {
+        let v = val.trim().to_string();
+        if !v.is_empty() {
+            settings.llama_server_url = v;
+        }
+    }
+    if let Ok(val) = std::env::var("GHOSTLINK_LLAMA_NGL") {
+        if let Ok(n) = val.trim().parse::<i32>() {
+            settings.ngl = n;
+        }
+    }
+
+    settings
 }
 
 fn save_settings(settings: &RuntimeSettings) {
@@ -1825,48 +1880,6 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         env_default_usize("GHOSTLINK_CHAT_EXEC_TOKENS", default_tokens).clamp(16, 4096)
     }
 
-    struct NativeGenerationRequest {
-        model: String,
-        prompt: String,
-        max_tokens: usize,
-        temperature: f32,
-        top_p: f32,
-        top_k: usize,
-        repeat_penalty: f32,
-        native_engine: String,
-    }
-
-    async fn run_native_generation(
-        native_engine_client: native_engine::NativeEngineClient,
-        request: NativeGenerationRequest,
-    ) -> Result<native_engine::NativeGeneration, String> {
-        let NativeGenerationRequest {
-            model,
-            prompt,
-            max_tokens,
-            temperature,
-            top_p,
-            top_k,
-            repeat_penalty,
-            native_engine,
-        } = request;
-
-        tokio::task::spawn_blocking(move || {
-            native_engine_client.generate(
-                &model,
-                &prompt,
-                max_tokens,
-                temperature,
-                top_p,
-                top_k,
-                repeat_penalty,
-                &native_engine,
-            )
-        })
-        .await
-        .map_err(|err| format!("native generation task failed: {err}"))?
-    }
-
     async fn handle_chat_completions(
         State(state): State<Arc<Mutex<BackendState>>>,
         Json(req): Json<ChatCompletionRequest>,
@@ -1885,7 +1898,21 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         let request_tracker = active_runtime_switcher().request_tracker().clone();
         request_tracker.increment().await;
 
-        let (model, cluster, chat_req_id, inference_backend, native_engine_client, settings) = {
+        let temp = req.temperature.unwrap_or(0.7);
+        let top_p = req.top_p.unwrap_or(0.9);
+        let top_k = req.top_k.unwrap_or(40);
+        let penalty = req.penalty.unwrap_or(1.1);
+        let max_tokens = req.max_tokens.unwrap_or(1024).clamp(16, 4096);
+
+        let (
+            model,
+            cluster,
+            chat_req_id,
+            inference_backend,
+            native_engine_client,
+            ollama_client,
+            settings,
+        ) = {
             let mut backend = lock_state(&state);
             backend.chat_requests = backend.chat_requests.saturating_add(1);
             let model = if req.model.trim().is_empty() {
@@ -1899,6 +1926,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                 backend.chat_requests,
                 backend.inference_backend,
                 backend.native_engine_client.clone(),
+                backend.ollama_client.clone(),
                 backend.settings.clone(),
             )
         };
@@ -1944,11 +1972,21 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                     let mut backend = lock_state(&state);
                     backend.last_latency_ms = exec.avg_token_latency_ms;
                     let tokens_per_sec = exec.throughput_tokens_per_sec;
+                    backend.last_tokens_per_sec = tokens_per_sec;
+                    backend.inference_metrics.record(
+                        exec.avg_token_latency_ms,
+                        exec.token_count.min(u32::MAX as usize) as u32,
+                        Some(tokens_per_sec),
+                        true,
+                    );
                     for stage in &exec.stage_stats {
                         if let Some(stage_p) = pipeline_plan_clone.stages.get(stage.stage_idx) {
                             backend.cluster.get_metrics_mut(&stage_p.node_id, |m| {
+                                // Fabric path stores latency in microseconds EMA.
                                 m.record_latency(stage.avg_compute_ms * 1000.0);
-                                m.record_throughput(tokens_per_sec / 100.0);
+                                // Keep fabric GB/s field separate; store tok/s scaled lightly
+                                // for dashboard fabric graphs only (not GUI tokens/s).
+                                m.record_throughput(tokens_per_sec / 1000.0);
                             });
                         }
                     }
@@ -1966,31 +2004,43 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         }
 
         let (response_text, real_inference, backend_used) = match inference_backend {
-            InferenceBackend::Ollama => (
-                format!(
-                    "Ghostlink '{}' backend accepted completion request #{} for model '{}'. Prompt length: {} chars.{}",
-                    InferenceBackend::Ollama.as_str(),
-                    chat_req_id,
-                    model,
-                    prompt.len(),
-                    execution_info
-                ),
-                false,
-                InferenceBackend::Ollama.as_str(),
-            ),
-            InferenceBackend::Native => match run_native_generation(
-                native_engine_client,
-                NativeGenerationRequest {
-                    model: model.clone(),
-                    prompt: prompt.clone(),
-                    max_tokens: exec_tokens,
-                    temperature: 0.7,
-                    top_p: 0.9,
-                    top_k: 40,
-                    repeat_penalty: 1.1,
-                    native_engine: settings.native_engine.clone(),
-                },
-            )
+            InferenceBackend::Ollama => {
+                let ollama_temp = temp;
+                let ollama_top_p = top_p;
+                let ollama_top_k = top_k;
+                let ollama_penalty = penalty;
+                let ollama_max_tokens = max_tokens;
+                let ollama_model = model.clone();
+
+                match ollama_client
+                    .generate(
+                        &ollama_model,
+                        &prompt,
+                        ollama_temp,
+                        ollama_top_p,
+                        ollama_top_k,
+                        ollama_penalty,
+                        ollama_max_tokens,
+                    )
+                    .await
+                {
+                    Ok(text) => (
+                        text,
+                        true,
+                        InferenceBackend::Ollama.as_str(),
+                    ),
+                    Err(err) => (
+                        format!(
+                            "Ollama generation failed for model '{}': {}",
+                            ollama_model, err
+                        ),
+                        false,
+                        InferenceBackend::Ollama.as_str(),
+                    ),
+                }
+            }
+InferenceBackend::Native => match native_engine_client
+            .generate(&model, &prompt, exec_tokens, 0.7, 0.9, 40, 1.1, &settings.native_engine)
             .await
             {
                 Ok(gen) => (
@@ -2089,20 +2139,23 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         let client = reqwest::Client::builder()
             .user_agent("ghostlink/1.0")
             .build()
-            .map_err(|e| format!("HTTP client error: {e}"))?;
+            .map_err(|e| format!("HTTP client error: {}", e))?;
 
-        let api_url = format!("https://huggingface.co/api/models/{model_id}");
+        let api_url = format!("https://huggingface.co/api/models/{}", model_id);
         let resp = client
             .get(&api_url)
             .send()
             .await
-            .map_err(|e| format!("API error: {e}"))?;
+            .map_err(|e| format!("API error: {}", e))?;
 
         if !resp.status().is_success() {
-            return Err(format!("Model '{model_id}' not found on HuggingFace"));
+            return Err(format!("Model '{}' not found on HuggingFace", model_id));
         }
 
-        let data: serde_json::Value = resp.json().await.map_err(|e| format!("Parse error: {e}"))?;
+        let data: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| format!("Parse error: {}", e))?;
 
         let gguf_files: Vec<String> = data
             .get("siblings")
@@ -2121,7 +2174,10 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         }
 
         let filename = &gguf_files[0];
-        let file_url = format!("https://huggingface.co/{model_id}/resolve/main/{filename}");
+        let file_url = format!(
+            "https://huggingface.co/{}/resolve/main/{}",
+            model_id, filename
+        );
         let dest_path = models_dir.join(filename);
 
         if dest_path.exists() {
@@ -2132,27 +2188,27 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             .get(&file_url)
             .send()
             .await
-            .map_err(|e| format!("Download error: {e}"))?;
+            .map_err(|e| format!("Download error: {}", e))?;
 
         if !resp.status().is_success() {
             return Err(format!("Failed to download file (HTTP {})", resp.status()));
         }
 
         if let Some(parent) = dest_path.parent() {
-            fs::create_dir_all(parent).map_err(|e| format!("Dir error: {e}"))?;
+            fs::create_dir_all(parent).map_err(|e| format!("Dir error: {}", e))?;
         }
         let mut file = tokio::fs::File::create(&dest_path)
             .await
-            .map_err(|e| format!("File error: {e}"))?;
+            .map_err(|e| format!("File error: {}", e))?;
         let mut stream = resp;
         while let Some(chunk) = stream
             .chunk()
             .await
-            .map_err(|e| format!("Stream error: {e}"))?
+            .map_err(|e| format!("Stream error: {}", e))?
         {
             file.write_all(&chunk)
                 .await
-                .map_err(|e| format!("Write error: {e}"))?;
+                .map_err(|e| format!("Write error: {}", e))?;
         }
         file.flush().await.ok();
 
@@ -2255,8 +2311,15 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
 
         let (inference_backend, ollama_client, ollama_available) = {
             let backend = lock_state(&state);
+            // Prefer live settings string (updated by Settings UI / runtime select)
+            // so load and chat cannot disagree on which backend is active.
+            let inference_backend = match backend.settings.inference_backend.as_str() {
+                "ollama" => InferenceBackend::Ollama,
+                "native" => InferenceBackend::Native,
+                _ => backend.inference_backend,
+            };
             (
-                backend.inference_backend,
+                inference_backend,
                 backend.ollama_client.clone(),
                 Arc::clone(&backend.ollama_available),
             )
@@ -2333,7 +2396,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
 
         // Extract model info and settings under the lock, then drop it before
         // the potentially-long blocking load_model_into_slot call.
-        let (native_engine_client, local_path, native_engine) = {
+        let (native_engine_client, local_path, native_engine, selected_model) = {
             let mut backend = lock_state(&state);
 
             // Merge local scans so we can find local_path for locally-downloaded models
@@ -2344,17 +2407,53 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                 }
             }
 
-            let local_path = backend
-                .models
-                .iter()
-                .find(|m| m.name == selected_model)
-                .and_then(|m| {
-                    if m.local_path.is_empty() {
-                        None
-                    } else {
-                        Some(m.local_path.clone())
+            // Resolve local GGUF path: exact name, basename match, or path suffix.
+            let resolve_local_path =
+                |models: &[ModelRecord], requested: &str| -> Option<(String, String)> {
+                    let req = requested.trim();
+                    let req_base = std::path::Path::new(req)
+                        .file_stem()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or(req);
+                    // Exact name with path
+                    if let Some(m) = models
+                        .iter()
+                        .find(|m| m.name == req && !m.local_path.is_empty())
+                    {
+                        return Some((m.name.clone(), m.local_path.clone()));
                     }
-                });
+                    // Case-insensitive name
+                    if let Some(m) = models
+                        .iter()
+                        .find(|m| m.name.eq_ignore_ascii_case(req) && !m.local_path.is_empty())
+                    {
+                        return Some((m.name.clone(), m.local_path.clone()));
+                    }
+                    // Basename / stem match (gemma-4-E4B-it-Q4_K_M vs full HF id)
+                    if let Some(m) = models.iter().find(|m| {
+                        !m.local_path.is_empty()
+                            && (m.name.eq_ignore_ascii_case(req_base)
+                                || std::path::Path::new(&m.local_path)
+                                    .file_stem()
+                                    .and_then(|s| s.to_str())
+                                    .map(|s| s.eq_ignore_ascii_case(req_base))
+                                    .unwrap_or(false)
+                                || m.local_path.replace('\\', "/").ends_with(req)
+                                || m.name.ends_with(req_base))
+                    }) {
+                        return Some((m.name.clone(), m.local_path.clone()));
+                    }
+                    None
+                };
+
+            let mut selected = selected_model.clone();
+            let mut local_path = resolve_local_path(&backend.models, &selected).map(|(_, p)| p);
+
+            // Prefer canonical local model name when a GGUF match is found
+            if let Some((name, path)) = resolve_local_path(&backend.models, &selected) {
+                selected = name;
+                local_path = Some(path);
+            }
 
             // Save the selected model path to settings
             if let Some(ref path) = local_path {
@@ -2366,18 +2465,42 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                 backend.native_engine_client.clone(),
                 local_path,
                 backend.settings.native_engine.clone(),
+                selected,
             )
         }; // <-- state lock dropped here
 
-        // If using llama_server native engine, load the model into llama-server
-        // Run on spawn_blocking so we don't stall the async runtime for up to 60s.
-        if let Some(path) = local_path {
-            if native_engine == "llama_server" {
+        // Native llama_server requires a real on-disk GGUF — never report fake success.
+        if inference_backend == InferenceBackend::Native
+            && (native_engine == "llama_server" || native_engine == "llama-server")
+        {
+            let Some(path) = local_path.clone() else {
+                return Json(serde_json::json!({
+                    "error": format!(
+                        "model '{}' has no local GGUF path. Download a .gguf into models/ or select a local model.",
+                        selected_model
+                    ),
+                }));
+            };
+
+            let result = tokio::task::spawn_blocking(move || {
+                native_engine_client.load_model_into_slot(&path)
+            })
+            .await
+            .map_err(|e| format!("task join error: {}", e))
+            .and_then(|r| r);
+
+            if let Err(e) = result {
+                return Json(serde_json::json!({
+                    "error": format!("failed to load model into llama-server: {}", e),
+                }));
+            }
+        } else if let Some(path) = local_path.clone() {
+            if native_engine == "llama_server" || native_engine == "llama-server" {
                 let result = tokio::task::spawn_blocking(move || {
                     native_engine_client.load_model_into_slot(&path)
                 })
                 .await
-                .map_err(|e| format!("task join error: {e}"))
+                .map_err(|e| format!("task join error: {}", e))
                 .and_then(|r| r);
 
                 if let Err(e) = result {
@@ -2729,40 +2852,54 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
     async fn handle_gui_metrics(
         State(state): State<Arc<Mutex<BackendState>>>,
     ) -> Json<serde_json::Value> {
-        let backend = lock_state(&state);
-        let cluster = Arc::clone(&backend.cluster);
-        let total_vram = cluster.total_vram_gb();
-        let nodes = cluster.nodes();
-        let mut total_latency = 0.0;
-        let mut total_throughput = 0.0;
-        let mut node_count = 0;
-        for node in nodes {
-            if let Some(metrics) = cluster.get_metrics(&node.id) {
-                total_latency += metrics.avg_latency_us / 1000.0; // Convert us to ms
-                total_throughput += metrics.throughput_gbps * 1000.0; // Convert GB/s to MB/s
-                node_count += 1;
-            }
-        }
-        let avg_latency = if node_count > 0 {
-            total_latency / node_count as f32
-        } else {
-            backend.last_latency_ms
+        // Host snapshot is lock-free relative to BackendState (background sampler).
+        let host = host_metrics::current_host_snapshot();
+
+        let (inf, node_count, cluster_vram, uptime_s, backend_name) = {
+            let backend = lock_state(&state);
+            let cluster = Arc::clone(&backend.cluster);
+            let nodes = cluster.nodes();
+            let node_count = nodes.len();
+            let cluster_vram = cluster.total_vram_gb();
+            let inf = backend.inference_metrics.snapshot();
+            let uptime_s = backend.started_at.elapsed().as_secs_f32();
+            let backend_name = backend.inference_backend.as_str().to_string();
+            (inf, node_count, cluster_vram, uptime_s, backend_name)
         };
-        let avg_throughput = if node_count > 0 {
-            total_throughput / node_count as f32
+
+        let total_vram = if host.total_vram_gb > 0.0 {
+            host.total_vram_gb
+        } else {
+            cluster_vram
+        };
+        let gpu = if host.gpu_available {
+            host.gpu
+        } else if total_vram > 0.0 {
+            // Accelerator present but util probe unavailable — don't fake 50%.
+            0.0
         } else {
             0.0
         };
+
         Json(serde_json::json!({
             "metrics": {
-                "throughput": avg_throughput,
-                "cpu": 0.0,
-                "memory": 0.0,
-                "gpu": if total_vram > 0.0 { 50.0 } else { 0.0 },
-                "latency_p50": avg_latency,
-                "latency_p95": avg_latency * 1.5,
+                "throughput": inf.tokens_per_sec,
+                "cpu": host.cpu,
+                "memory": host.memory,
+                "gpu": gpu,
+                "latency_p50": inf.latency_p50_ms,
+                "latency_p95": inf.latency_p95_ms,
                 "active_nodes": node_count,
                 "total_vram_gb": total_vram,
+                "total_memory_gb": host.total_memory_gb,
+                "used_memory_gb": host.used_memory_gb,
+                "gpu_available": host.gpu_available || total_vram > 0.0,
+                "real_inference": inf.real_inference,
+                "samples": inf.samples,
+                "last_latency_ms": inf.last_latency_ms,
+                "last_tokens": inf.last_tokens,
+                "uptime_s": uptime_s,
+                "inference_backend": backend_name,
             }
         }))
     }
@@ -2866,6 +3003,91 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
 
     async fn handle_gui_pqc_enable() -> Json<serde_json::Value> {
         Json(serde_json::json!({ "status": "ok", "enabled": true }))
+    }
+
+    async fn handle_gui_pqc_state() -> Json<serde_json::Value> {
+        Json(serde_json::json!({ "enabled": true, "algorithm": "ml-kem-768" }))
+    }
+
+    async fn handle_gui_audit_log() -> Json<serde_json::Value> {
+        Json(serde_json::json!({ "entries": [] }))
+    }
+
+    async fn handle_gui_model_download_progress(
+        State(state): State<Arc<Mutex<BackendState>>>,
+        axum::extract::Query(params): axum::extract::Query<HashMap<String, String>>,
+    ) -> Json<serde_json::Value> {
+        let model_id = params.get("model_id").cloned().unwrap_or_default();
+        let backend = lock_state(&state);
+        let downloading: Vec<String> = backend
+            .models
+            .iter()
+            .filter(|m| m.status == "Downloading")
+            .map(|m| m.name.clone())
+            .collect();
+        let is_downloading = downloading.contains(&model_id);
+        Json(serde_json::json!({
+            "progress": if is_downloading { 0.0 } else { 1.0 },
+            "status": if is_downloading { "downloading" } else { "completed" },
+            "model_id": model_id,
+        }))
+    }
+
+    async fn handle_gui_runtime_select(
+        State(state): State<Arc<Mutex<BackendState>>>,
+        Json(req): Json<serde_json::Value>,
+    ) -> Json<serde_json::Value> {
+        let runtime = req.get("runtime").and_then(|v| v.as_str()).unwrap_or("cpu");
+        let normalized = runtime.trim().to_ascii_lowercase();
+        let (inference, native_engine) = match normalized.as_str() {
+            "native" | "llama_server" | "llama-server" => ("native", Some("llama_server")),
+            "ollama" => ("ollama", None),
+            "directml" | "cpu" | "cuda" | "rocm" | "vulkan" | "metal" => {
+                ("native", Some("llama_server"))
+            }
+            other => (other, None),
+        };
+
+        // When switching to Ollama, pick a valid installed tag if current model is a local GGUF.
+        let mut auto_model: Option<String> = None;
+        if inference == "ollama" {
+            let ollama_client = {
+                let backend = lock_state(&state);
+                backend.ollama_client.clone()
+            };
+            if let Ok(models) = ollama_client.list_models().await {
+                let backend = lock_state(&state);
+                let current = backend.current_model.clone();
+                let current_ok = models.iter().any(|m| {
+                    m == &current
+                        || m.eq_ignore_ascii_case(&current)
+                        || m.starts_with(&format!("{current}:"))
+                });
+                if !current_ok {
+                    auto_model = models.into_iter().next();
+                }
+            }
+        }
+
+        let mut backend = lock_state(&state);
+        backend.settings.inference_backend = inference.to_string();
+        backend.inference_backend = InferenceBackend::parse(inference);
+        if let Some(engine) = native_engine {
+            backend.settings.native_engine = engine.to_string();
+            std::env::set_var("GHOSTLINK_NATIVE_ENGINE", engine);
+        }
+        if let Some(ref model) = auto_model {
+            backend.current_model = model.clone();
+        }
+        std::env::set_var("GHOSTLINK_INFERENCE_BACKEND", inference);
+        save_settings(&backend.settings);
+        Json(serde_json::json!({
+            "status": "ok",
+            "runtime": inference,
+            "inference_backend": inference,
+            "native_engine": backend.settings.native_engine,
+            "current_model": backend.current_model,
+        }))
     }
 
     async fn handle_gui_ollama_health(
@@ -3241,16 +3463,11 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             settings,
         ) = {
             let backend = lock_state(&state);
-            eprintln!(
-                "[DEBUG] settings.inference_backend = '{}'",
-                backend.settings.inference_backend
-            );
             let inference_backend = match backend.settings.inference_backend.as_str() {
                 "ollama" => InferenceBackend::Ollama,
                 "native" => InferenceBackend::Native,
-                _ => InferenceBackend::Ollama,
+                _ => InferenceBackend::Native,
             };
-            eprintln!("[DEBUG] Selected inference_backend = {inference_backend:?}");
             (
                 backend.current_model.clone(),
                 Arc::clone(&backend.cluster),
@@ -3275,6 +3492,10 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         let exec_micro_batch = chat_exec_micro_batch();
         let request_tracker = active_runtime_switcher().request_tracker().clone();
         request_tracker.increment().await;
+
+        let mut gen_tokens: Option<u32> = None;
+        let mut gen_tps: Option<f32> = None;
+        let mut gen_latency_ms: Option<f32> = None;
 
         let (response_text, real_inference, backend_used) = match inference_backend {
             InferenceBackend::Ollama => {
@@ -3328,15 +3549,15 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                                         let mut backend = lock_state(&state);
                                         backend.current_model = model_name;
                                     }
-                                    (
-                                        text.trim().to_string(),
-                                        true,
-                                        InferenceBackend::Ollama.as_str(),
-                                    )
+                                    let text = text.trim().to_string();
+                                    gen_tokens =
+                                        Some((text.split_whitespace().count() as u32).max(1));
+                                    (text, true, InferenceBackend::Ollama.as_str())
                                 }
                                 Err(err) => {
                                     let fallback = format!(
-                                        "Ollama generate failed for model '{model_name}': {err}"
+                                        "Ollama generate failed for model '{}': {}",
+                                        model_name, err
                                     );
                                     (fallback, false, InferenceBackend::Ollama.as_str())
                                 }
@@ -3351,7 +3572,8 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                             };
                             (
                                 format!(
-                                    "Configured model '{current_model}' is not installed in Ollama. Available: {available_hint}. Pull/select an exact tag and retry."
+                                    "Configured model '{}' is not installed in Ollama. Available: {}. Pull/select an exact tag and retry.",
+                                    current_model, available_hint
                                 ),
                                 false,
                                 InferenceBackend::Ollama.as_str(),
@@ -3369,29 +3591,35 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                 }
             }
             InferenceBackend::Native => {
-                match run_native_generation(
-                    native_engine_client,
-                    NativeGenerationRequest {
-                        model: current_model.clone(),
-                        prompt: req.message.clone(),
-                        max_tokens: exec_tokens,
-                        temperature: temp,
+                match native_engine_client
+                    .generate(
+                        &current_model,
+                        &req.message,
+                        exec_tokens,
+                        temp,
                         top_p,
                         top_k,
-                        repeat_penalty: penalty,
-                        native_engine: settings.native_engine.clone(),
-                    },
-                )
-                .await
+                        penalty,
+                        &settings.native_engine,
+                    )
+                    .await
                 {
-                    Ok(gen) => (
-                        gen.text,
-                        gen.real_inference,
-                        InferenceBackend::Native.as_str(),
-                    ),
+                    Ok(gen) => {
+                        gen_tokens = gen.tokens_generated.or_else(|| {
+                            Some((gen.text.split_whitespace().count() as u32).max(1))
+                        });
+                        gen_tps = gen.tokens_per_sec;
+                        gen_latency_ms = gen.latency_ms;
+                        (
+                            gen.text,
+                            gen.real_inference,
+                            InferenceBackend::Native.as_str(),
+                        )
+                    }
                     Err(err) => (
                         format!(
-                            "Ghostlink native fabric backend processed model '{current_model}' with {exec_tokens} estimated tokens. Native error: {err}"
+                            "Ghostlink native fabric backend processed model '{}' with {} estimated tokens. Native error: {}",
+                            current_model, exec_tokens, err
                         ),
                         false,
                         InferenceBackend::Native.as_str(),
@@ -3400,46 +3628,81 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             }
         };
 
-        let exec_result: Option<()> = None; // Track if we have real execution metrics
-
         {
             let mut available_flag = ollama_available.lock().await;
             *available_flag = real_inference;
         }
 
-        let (request_id, session_id) = {
+        let wall_ms = (started.elapsed().as_secs_f32() * 1000.0).max(0.1);
+        let latency_ms = gen_latency_ms.unwrap_or(wall_ms);
+        let tokens_out =
+            gen_tokens.unwrap_or_else(|| (response_text.split_whitespace().count() as u32).max(1));
+        let tokens_per_sec = gen_tps.or_else(|| {
+            if real_inference && latency_ms > 0.0 {
+                Some(tokens_out as f32 / (latency_ms / 1000.0))
+            } else {
+                None
+            }
+        });
+
+        let (request_id, session_id, metrics_json) = {
             let mut backend = lock_state(&state);
             backend.chat_requests = backend.chat_requests.saturating_add(1);
             let request_seq = backend.chat_requests;
 
-            if exec_result.is_none() {
-                backend.last_latency_ms = (started.elapsed().as_secs_f32() * 1000.0).max(1.0);
+            backend.last_latency_ms = latency_ms;
+            if let Some(tps) = tokens_per_sec {
+                backend.last_tokens_per_sec = tps;
             }
+            backend.inference_metrics.record(
+                latency_ms,
+                tokens_out,
+                tokens_per_sec,
+                real_inference,
+            );
+            let snap = backend.inference_metrics.snapshot();
 
-            let latency = backend.last_latency_ms.round() as u32;
-            let throughput = 1200;
+            let latency_u = latency_ms.round() as u32;
+            let throughput_u = tokens_per_sec.unwrap_or(0.0).round().max(0.0) as usize;
 
             let maybe_session = backend.sessions.first_mut();
-            if let Some(session) = maybe_session {
-                session.tokens = session.tokens.saturating_add(token_estimate);
-                session.throughput = throughput;
-                session.latency = latency;
+            let session_id = if let Some(session) = maybe_session {
+                session.tokens = session.tokens.saturating_add(tokens_out as usize);
+                session.throughput = throughput_u;
+                session.latency = latency_u;
                 session.model = current_model.clone();
-                session.status = "Running".to_string();
-                let session_id = session.id.clone();
-                (request_seq, session_id)
+                session.status = if real_inference {
+                    "Running".to_string()
+                } else {
+                    "Degraded".to_string()
+                };
+                session.id.clone()
             } else {
                 let session_id = "sess_local_001".to_string();
                 backend.sessions.push(SessionRecord {
                     id: session_id.clone(),
                     model: current_model.clone(),
-                    status: "Running".to_string(),
-                    throughput,
-                    latency,
-                    tokens: token_estimate,
+                    status: if real_inference {
+                        "Running".to_string()
+                    } else {
+                        "Degraded".to_string()
+                    },
+                    throughput: throughput_u,
+                    latency: latency_u,
+                    tokens: tokens_out as usize,
                 });
-                (request_seq, session_id)
-            }
+                session_id
+            };
+
+            let metrics_json = serde_json::json!({
+                "throughput": snap.tokens_per_sec,
+                "p50_ms": snap.latency_p50_ms,
+                "p95_ms": snap.latency_p95_ms,
+                "latency_ms": latency_ms,
+                "tokens": tokens_out,
+                "real_inference": real_inference,
+            });
+            (request_seq, session_id, metrics_json)
         };
 
         let mut final_response = response_text;
@@ -3461,13 +3724,11 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             "inference_backend": backend_used,
             "ollama_url": if backend_used == "ollama" { "local" } else { "disabled" },
             "tokens_estimated": token_estimate,
+            "tokens_generated": tokens_out,
             "exec_tokens": exec_tokens,
             "exec_micro_batch": exec_micro_batch,
             "real_inference": real_inference,
-            "metrics": exec_result.map(|_| serde_json::json!({
-                "throughput": 0.0,
-                "p95_ms": 0.0
-            }))
+            "metrics": metrics_json
         });
 
         if let Some(mcp) = req.mcp {
@@ -3490,7 +3751,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         if req.stream.unwrap_or(false) {
             let tokens: Vec<String> = final_response
                 .split_whitespace()
-                .map(|s| format!("{s} "))
+                .map(|s| format!("{} ", s))
                 .collect();
 
             let stream = stream::iter(tokens).map(move |token| {
@@ -3642,7 +3903,13 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                 match key.as_str() {
                     "inference_backend" => {
                         if let Some(v) = value.as_str() {
-                            current.inference_backend = v.to_string();
+                            let lowered = v.trim().to_ascii_lowercase();
+                            let normalized = match lowered.as_str() {
+                                "native" | "llama_server" | "llama-server" => "native",
+                                "ollama" => "ollama",
+                                other => other,
+                            };
+                            current.inference_backend = normalized.to_string();
                             // This used to only update the display string in
                             // `settings`, while the enum that every load/
                             // unload/generate code path actually reads
@@ -3650,12 +3917,17 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                             // whatever GHOSTLINK_INFERENCE_BACKEND resolved
                             // to at process startup. Update both so a live
                             // settings change actually takes effect.
-                            backend.inference_backend = InferenceBackend::parse(v);
+                            backend.inference_backend = InferenceBackend::parse(normalized);
+                            std::env::set_var("GHOSTLINK_INFERENCE_BACKEND", normalized);
+                            if normalized == "native" && current.native_engine.trim().is_empty() {
+                                current.native_engine = "llama_server".to_string();
+                            }
                         }
                     }
                     "native_engine" => {
                         if let Some(v) = value.as_str() {
                             current.native_engine = v.to_string();
+                            std::env::set_var("GHOSTLINK_NATIVE_ENGINE", v);
                         }
                     }
                     "ngl" => {
@@ -3671,6 +3943,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                     "llama_server_url" => {
                         if let Some(v) = value.as_str() {
                             current.llama_server_url = v.to_string();
+                            std::env::set_var("GHOSTLINK_LLAMA_SERVER_URL", v);
                         }
                     }
                     "llama_port" => {
@@ -3815,7 +4088,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
     }
 
     println!("Ghostlink Studio API - Starting OpenAI-compatible server...");
-    println!("Listening on http://{host}:{port}");
+    println!("Listening on http://{}:{}", host, port);
     println!("Routes:");
     println!("  - POST /v1/chat/completions");
     println!("  - GET  /v1/models");
@@ -3847,13 +4120,17 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
     println!("  - POST /api/queue");
     println!("  - POST /api/security/jwt/refresh");
     println!("  - POST /api/security/pqc/enable");
+    println!("  - GET  /api/security/pqc/state");
+    println!("  - GET  /api/security/audit-log");
+    println!("  - GET  /api/models/download/progress");
+    println!("  - POST /api/runtime/select");
     println!("  - GET  /api/settings");
     println!("  - POST /api/settings");
     println!("  - POST /api/settings/reset");
     println!("  - POST /api/inference/chat");
 
     let profile = detect_runtime_profile("studio-api");
-    let backend_url = format!("http://{host}:{port}");
+    let backend_url = format!("http://{}:{}", host, port);
     println!(
         "Inference Core: {} workers, {} acceleration",
         profile.recommended_workers,
@@ -3865,18 +4142,18 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
     }
 
     let addr_string = if host == "localhost" || host == "localhost." {
-        format!("127.0.0.1:{port}")
+        format!("127.0.0.1:{}", port)
     } else {
-        format!("{host}:{port}")
+        format!("{}:{}", host, port)
     };
     let addr: SocketAddr = addr_string.parse().map_err(|e: std::net::AddrParseError| {
-        anyhow::anyhow!("Invalid socket address {addr_string}: {e}")
+        anyhow::anyhow!("Invalid socket address {}: {}", addr_string, e)
     })?;
 
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
-        .map_err(|err| anyhow::anyhow!("failed to initialize runtime: {err}"))?;
+        .map_err(|err| anyhow::anyhow!("failed to initialize runtime: {}", err))?;
 
     let cluster = Arc::new(ClusterState::new());
     let mut local_node = profile.node_resources.clone();
@@ -3972,7 +4249,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         settings.threads = threads;
         // Also set the env var so NativeEngineClient::get_threads() picks it up
         std::env::set_var("GHOSTLINK_LLAMA_THREADS", threads.to_string());
-        eprintln!("[startup] Auto-configured threads={threads}");
+        eprintln!("[startup] Auto-configured threads={}", threads);
     }
 
     save_settings(&settings);
@@ -3981,7 +4258,10 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         let models_dir = &settings.models_dir;
         if !models_dir.is_empty() {
             fs::create_dir_all(models_dir).unwrap_or_else(|e| {
-                eprintln!("Warning: could not create models directory '{models_dir}': {e}");
+                eprintln!(
+                    "Warning: could not create models directory '{}': {}",
+                    models_dir, e
+                );
             });
         }
     }
@@ -4053,7 +4333,9 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         sessions: vec![],
         queue_depth: 0,
         chat_requests: 0,
-        last_latency_ms: 2.0,
+        last_latency_ms: 0.0,
+        last_tokens_per_sec: 0.0,
+        inference_metrics: host_metrics::InferenceMetrics::default(),
         started_at: Instant::now(),
         backend_url,
         cluster,
@@ -4063,6 +4345,9 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         ollama_available,
         settings,
     }));
+
+    // Background CPU/RAM/GPU sampler — keeps /api/metrics non-blocking.
+    host_metrics::ensure_host_sampler();
 
     rt.block_on(async {
         let app = Router::new()
@@ -4078,7 +4363,15 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             )
             .route("/api/models/load", post(handle_gui_model_load))
             .route("/api/models/download", post(handle_gui_model_download))
+            .route(
+                "/api/models/download/progress",
+                get(handle_gui_model_download_progress),
+            )
             .route("/api/models/delete", post(handle_gui_model_delete))
+            .route(
+                "/api/models/search/huggingface",
+                get(handle_gui_models_search_hf),
+            )
             .route(
                 "/api/models/:model_name",
                 delete(handle_gui_model_delete_v2),
@@ -4086,10 +4379,6 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             .route(
                 "/api/models/:model_name/unload",
                 post(handle_gui_model_unload),
-            )
-            .route(
-                "/api/models/search/huggingface",
-                get(handle_gui_models_search_hf),
             )
             .route("/api/ollama/health", get(handle_gui_ollama_health))
             .route("/api/ollama/models", get(handle_gui_ollama_models))
@@ -4129,13 +4418,21 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             .route("/api/queue", post(handle_gui_queue))
             .route("/api/security/jwt/refresh", post(handle_gui_jwt_refresh))
             .route("/api/security/pqc/enable", post(handle_gui_pqc_enable))
+            .route("/api/security/pqc/state", get(handle_gui_pqc_state))
+            .route("/api/security/audit-log", get(handle_gui_audit_log))
             .route("/api/inference/chat", post(handle_gui_chat))
-            .route("/api/settings", get(handle_get_settings))
-            .route("/api/settings", post(handle_update_settings))
+            // Accept GET/POST/PUT for settings — some clients issue PUT and previously got 405.
+            .route(
+                "/api/settings",
+                get(handle_get_settings)
+                    .post(handle_update_settings)
+                    .put(handle_update_settings),
+            )
             .route("/api/settings/reset", post(handle_reset_settings))
             .route("/api/runtime/detect", get(handle_runtime_detection))
             .route("/api/runtime/models", get(handle_models_by_runtime))
             .route("/api/runtime/recommend", get(handle_model_recommendations))
+            .route("/api/runtime/select", post(handle_gui_runtime_select))
             // Phase 2: Backend API endpoints
             .route("/api/backends", get(backend_api::handle_list_backends))
             .route(
@@ -4152,7 +4449,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         // addr already parsed above
         let listener = tokio::net::TcpListener::bind(addr)
             .await
-            .map_err(|err| anyhow::anyhow!("failed to bind API server on {addr}: {err}"))?;
+            .map_err(|err| anyhow::anyhow!("failed to bind API server on {}: {}", addr, err))?;
         println!(
             "
 API Server Online. Ready for connections."
@@ -4160,7 +4457,7 @@ API Server Online. Ready for connections."
 
         axum::serve(listener, app)
             .await
-            .map_err(|err| anyhow::anyhow!("API server terminated with error: {err}"))
+            .map_err(|err| anyhow::anyhow!("API server terminated with error: {}", err))
     })?;
 
     Ok(())
@@ -4335,7 +4632,7 @@ fn print_join(node_id: &str) -> Result<()> {
     println!("  Recommended Workers: {}", profile.recommended_workers);
     println!("  Acceleration: {}", profile.acceleration_mode.as_str());
     println!("  UDP Broadcast Target: {}", discovery_cfg.broadcast_addr);
-    println!("  Discovery Timeout: {timeout_ms} ms");
+    println!("  Discovery Timeout: {} ms", timeout_ms);
     println!(
         "  Discovery Auth: {}",
         if discovery_cfg.auth_token.is_some() {
@@ -4367,7 +4664,7 @@ Encoded Frame Preview (hex):
 "
         );
         for byte in preview.iter() {
-            print!("{byte:02x} ");
+            print!("{:02x} ", byte);
         }
         println!();
     }
@@ -4412,7 +4709,7 @@ fn print_discovery_listener(node_id: &str, once: bool) -> Result<()> {
     );
     println!("Node ID: {}", profile.node_resources.id);
     println!("Listen Address: {}", config.bind_addr);
-    println!("Timeout: {timeout_ms} ms");
+    println!("Timeout: {} ms", timeout_ms);
     println!(
         "Auth Token: {}",
         if config.auth_token.is_some() {
@@ -4430,7 +4727,7 @@ fn print_discovery_listener(node_id: &str, once: bool) -> Result<()> {
         match respond_once(&profile.node_resources, &config)
             .map_err(|e| anyhow::anyhow!("UDP discovery listener failed: {e}"))?
         {
-            Some(peer) => println!("Replied to discovery request from {peer}"),
+            Some(peer) => println!("Replied to discovery request from {}", peer),
             None => println!("No discovery request received before timeout"),
         }
         return Ok(());
@@ -4441,7 +4738,7 @@ fn print_discovery_listener(node_id: &str, once: bool) -> Result<()> {
 "
     );
     if let Some(limit) = max_replies {
-        println!("Max Replies: {limit}");
+        println!("Max Replies: {}", limit);
         let stats = serve_discovery_with_stats(&profile.node_resources, &config, Some(limit))
             .map_err(|e| anyhow::anyhow!("UDP discovery listener failed: {e}"))?;
         println!("Listener stopped after {} replies", stats.replies_sent);
@@ -4532,7 +4829,7 @@ Auto-tuned local runtime: {} workers, {} acceleration",
 fn print_cluster_start(node_count: usize, base_port: u16) -> Result<()> {
     let mut listeners = Vec::new();
     let self_exe = std::env::current_exe()
-        .map_err(|err| anyhow::anyhow!("failed to locate current executable: {err}"))?;
+        .map_err(|err| anyhow::anyhow!("failed to locate current executable: {}", err))?;
 
     println!(
         "Ghost-Link Local Cluster Start
@@ -4542,14 +4839,13 @@ fn print_cluster_start(node_count: usize, base_port: u16) -> Result<()> {
         "===============================
 "
     );
-    println!("Node count: {node_count}");
-    println!("Base port: {base_port}");
+    println!("Node count: {}", node_count);
+    println!("Base port: {}", base_port);
 
     for i in 0..node_count {
-        let ordinal = i + 1;
-        let node_id = format!("local-node-{ordinal}");
+        let node_id = format!("local-node-{}", i + 1);
         let port = base_port.saturating_add(i as u16);
-        let listen_addr = format!("127.0.0.1:{port}");
+        let listen_addr = format!("127.0.0.1:{}", port);
 
         let child = Command::new(&self_exe)
             .arg("listen")
@@ -4559,7 +4855,12 @@ fn print_cluster_start(node_count: usize, base_port: u16) -> Result<()> {
             .env("GHOSTLINK_DISCOVERY_TIMEOUT_MS", "2500")
             .spawn()
             .map_err(|err| {
-                anyhow::anyhow!("failed to spawn listener {node_id} at {listen_addr}: {err}")
+                anyhow::anyhow!(
+                    "failed to spawn listener {} at {}: {}",
+                    node_id,
+                    listen_addr,
+                    err
+                )
             })?;
         listeners.push((node_id, listen_addr, child));
     }
@@ -4576,7 +4877,7 @@ fn print_cluster_start(node_count: usize, base_port: u16) -> Result<()> {
     for (node_id, listen_addr, _child) in &listeners {
         let target = listen_addr
             .parse::<SocketAddr>()
-            .map_err(|err| anyhow::anyhow!("invalid listen addr {listen_addr}: {err}"))?;
+            .map_err(|err| anyhow::anyhow!("invalid listen addr {}: {}", listen_addr, err))?;
 
         let cfg = UdpDiscoveryConfig {
             bind_addr: SocketAddr::from(([127, 0, 0, 1], 0)),
@@ -4587,7 +4888,7 @@ fn print_cluster_start(node_count: usize, base_port: u16) -> Result<()> {
         };
 
         let replies = broadcast_and_collect(&join, &cfg)
-            .map_err(|err| anyhow::anyhow!("join probe failed for {node_id}: {err}"))?;
+            .map_err(|err| anyhow::anyhow!("join probe failed for {}: {}", node_id, err))?;
         println!(
             "{} at {} replied {} time(s)",
             node_id,
@@ -4599,22 +4900,35 @@ fn print_cluster_start(node_count: usize, base_port: u16) -> Result<()> {
 
     for (node_id, listen_addr, mut child) in listeners {
         let status = child.wait().map_err(|err| {
-            anyhow::anyhow!("failed waiting for listener {node_id} ({listen_addr}) to exit: {err}")
+            anyhow::anyhow!(
+                "failed waiting for listener {} ({}) to exit: {}",
+                node_id,
+                listen_addr,
+                err
+            )
         })?;
         if !status.success() {
-            anyhow::bail!("listener {node_id} ({listen_addr}) exited with status {status}");
+            anyhow::bail!(
+                "listener {} ({}) exited with status {}",
+                node_id,
+                listen_addr,
+                status
+            );
         }
     }
 
     if total_replies < node_count {
         anyhow::bail!(
-            "cluster-start validation incomplete: expected at least {node_count} replies, got {total_replies}"
+            "cluster-start validation incomplete: expected at least {} replies, got {}",
+            node_count,
+            total_replies
         );
     }
 
     println!(
         "
-Cluster-start validation passed: {total_replies} replies across {node_count} local nodes"
+Cluster-start validation passed: {} replies across {} local nodes",
+        total_replies, node_count
     );
     Ok(())
 }
@@ -4625,6 +4939,17 @@ fn print_probe(node_id: &str, probe_mode: ProbeMode) -> Result<()> {
         ProbeMode::Full => detect_runtime_profile_full(node_id),
     };
     println!("{}", profile.summary());
+
+    // Auto-tune all subsystems from the detected profile and persist the cache
+    let sp = ghostlink_core::system_profile::SystemProfile::detect_fast();
+    let tuner = AutoTuner::from_system_profile(&sp);
+    tuner.save_cache();
+    println!(
+        "Auto-tuned: {} compute workers, {} max inflight, {:.0}µs healthy latency",
+        tuner.worker_pool.compute_workers,
+        tuner.tcp_config.max_inflight_batches,
+        tuner.health_config.healthy_latency_us,
+    );
     Ok(())
 }
 
@@ -4689,7 +5014,7 @@ fn run_command_capture(program: &str, args: &[&str]) -> Result<String> {
     let output = Command::new(program)
         .args(args)
         .output()
-        .map_err(|err| anyhow::anyhow!("failed to execute {program}: {err}"))?;
+        .map_err(|err| anyhow::anyhow!("failed to execute {}: {}", program, err))?;
 
     if !output.status.success() {
         anyhow::bail!(
@@ -4796,7 +5121,7 @@ fn run_planner_accuracy_check() -> Result<String> {
             if let Some(entry) = coverage.get_mut(layer) {
                 *entry += 1;
             } else {
-                anyhow::bail!("assignment references out-of-range layer index {layer}");
+                anyhow::bail!("assignment references out-of-range layer index {}", layer);
             }
         }
     }
@@ -4805,7 +5130,9 @@ fn run_planner_accuracy_check() -> Result<String> {
     let overlaps = coverage.iter().filter(|count| **count > 1).count();
     if missing > 0 || overlaps > 0 {
         anyhow::bail!(
-            "planner coverage mismatch (missing_layers={missing}, overlapped_layers={overlaps})"
+            "planner coverage mismatch (missing_layers={}, overlapped_layers={})",
+            missing,
+            overlaps
         );
     }
 
@@ -4871,10 +5198,11 @@ fn write_doctor_report_json(
 
     let payload = format!(
         "{{
-  \"summary\": {{\"pass\": {pass_count}, \"warn\": {warn_count}, \"fail\": {fail_count}}},
-  \"checks\": [{checks_json}]
+  \"summary\": {{\"pass\": {}, \"warn\": {}, \"fail\": {}}},
+  \"checks\": [{}]
 }}
-"
+",
+        pass_count, warn_count, fail_count, checks_json
     );
 
     fs::write(path, payload).map_err(|err| {
@@ -4905,32 +5233,37 @@ enum NetworkProbeOutcome {
 fn probe_network_target(target: &str, timeout: Duration) -> NetworkProbeOutcome {
     let Some((host, port_str)) = target.rsplit_once(':') else {
         return NetworkProbeOutcome::InvalidTarget(format!(
-            "invalid network target '{target}', expected host:port"
+            "invalid network target '{}', expected host:port",
+            target
         ));
     };
 
     if host.is_empty() || port_str.is_empty() {
         return NetworkProbeOutcome::InvalidTarget(format!(
-            "invalid network target '{target}', expected host:port"
+            "invalid network target '{}', expected host:port",
+            target
         ));
     }
 
     let Ok(port) = port_str.parse::<u16>() else {
         return NetworkProbeOutcome::InvalidTarget(format!(
-            "invalid network target '{target}', expected numeric port"
+            "invalid network target '{}', expected numeric port",
+            target
         ));
     };
 
     let Ok(resolved_addrs) = (host, port).to_socket_addrs() else {
         return NetworkProbeOutcome::InvalidTarget(format!(
-            "invalid network target '{target}', hostname resolution failed"
+            "invalid network target '{}', hostname resolution failed",
+            target
         ));
     };
 
     let resolved_addrs = resolved_addrs.collect::<Vec<_>>();
     if resolved_addrs.is_empty() {
         return NetworkProbeOutcome::InvalidTarget(format!(
-            "invalid network target '{target}', no socket addresses resolved"
+            "invalid network target '{}', no socket addresses resolved",
+            target
         ));
     }
 
@@ -4953,7 +5286,8 @@ fn probe_network_target(target: &str, timeout: Duration) -> NetworkProbeOutcome 
         NetworkProbeOutcome::Unreachable { resolved, error }
     } else {
         NetworkProbeOutcome::InvalidTarget(format!(
-            "invalid network target '{target}', no connection attempts were made"
+            "invalid network target '{}', no connection attempts were made",
+            target
         ))
     }
 }
@@ -4975,7 +5309,8 @@ fn run_optional_network_probe(target: &str, checks: &mut Vec<DoctorCheck>) {
                     DoctorStatus::Pass
                 },
                 format!(
-                    "target {target} reachable via {resolved} ({latency_ms:.2} ms)"
+                    "target {} reachable via {} ({:.2} ms)",
+                    target, resolved, latency_ms
                 ),
                 if degraded {
                     Some(
@@ -4999,7 +5334,7 @@ fn run_optional_network_probe(target: &str, checks: &mut Vec<DoctorCheck>) {
             "accessibility",
             "network-probe",
             DoctorStatus::Warn,
-            format!("target {target} resolved to {resolved} but is not reachable ({error})"),
+            format!("target {} resolved to {} but is not reachable ({})", target, resolved, error),
             Some(
                 "Start a listener on the target and retry with --network-probe --network-target <host:port>"
                     .to_string(),
@@ -5178,7 +5513,8 @@ fn print_doctor_report(options: &DoctorOptions) -> Result<()> {
                 DoctorStatus::Warn,
                 format!("missing: {}", missing.join(", ")),
                 Some(format!(
-                    "Install with: {python} -m pip install -r third_party/mohawk_gui/requirements-runtime.txt"
+                    "Install with: {} -m pip install -r third_party/mohawk_gui/requirements-runtime.txt",
+                    python
                 )),
                 Some(format!(
                     "{{\"missing\":[{}],\"python_ok\":true}}",
@@ -5255,7 +5591,8 @@ fn print_doctor_report(options: &DoctorOptions) -> Result<()> {
                 Some("Install xvfb and rerun GUI diagnostics for headless hosts".to_string())
             },
             Some(format!(
-                "{{\"has_display\":false,\"xvfb_available\":{xvfb_ok}}}"
+                "{{\"has_display\":false,\"xvfb_available\":{}}}",
+                xvfb_ok
             )),
         );
     }
@@ -5374,7 +5711,7 @@ fn print_doctor_report(options: &DoctorOptions) -> Result<()> {
                 "accuracy",
                 "gui-api-contract",
                 DoctorStatus::Fail,
-                format!("script exited with status {status}"),
+                format!("script exited with status {}", status),
                 Some(
                     "Run python3 scripts/validate_gui_api_contract.py and review missing APIs"
                         .to_string(),
@@ -5385,7 +5722,7 @@ fn print_doctor_report(options: &DoctorOptions) -> Result<()> {
                 "accuracy",
                 "gui-api-contract",
                 DoctorStatus::Warn,
-                format!("failed to execute: {err}"),
+                format!("failed to execute: {}", err),
                 Some("Verify Python executable and script path".to_string()),
             ),
         }
@@ -5401,7 +5738,7 @@ fn print_doctor_report(options: &DoctorOptions) -> Result<()> {
     );
 
     for area in ["environment", "readiness", "accessibility", "accuracy"] {
-        println!("{area}:");
+        println!("{}:", area);
         for check in checks.iter().filter(|check| check.area == area) {
             println!(
                 "- [{}] {}: {}",
@@ -5410,7 +5747,7 @@ fn print_doctor_report(options: &DoctorOptions) -> Result<()> {
                 check.detail
             );
             if let Some(fix) = &check.fix {
-                println!("  FIX: {fix}");
+                println!("  FIX: {}", fix);
             }
         }
         println!();
@@ -5429,7 +5766,10 @@ fn print_doctor_report(options: &DoctorOptions) -> Result<()> {
         .filter(|check| check.status == DoctorStatus::Fail)
         .count();
 
-    println!("Summary: {pass_count} pass, {warn_count} warn, {fail_count} fail");
+    println!(
+        "Summary: {} pass, {} warn, {} fail",
+        pass_count, warn_count, fail_count
+    );
 
     if let Some(path) = options.json_out.as_deref() {
         write_doctor_report_json(path, &checks, pass_count, warn_count, fail_count)?;
@@ -5453,7 +5793,10 @@ Review areas for accuracy:"
     println!("- Runtime SLO/canary/perf-drift validators and baseline presence");
 
     if options.strict && fail_count > 0 {
-        anyhow::bail!("doctor strict mode failed with {fail_count} failing checks");
+        anyhow::bail!(
+            "doctor strict mode failed with {} failing checks",
+            fail_count
+        );
     }
 
     Ok(())
@@ -5490,19 +5833,21 @@ fn launch_mohawk_gui(args: &[String]) -> Result<()> {
     }
 
     let (backend_host, backend_port) = parse_gui_backend_target(args);
-    let backend_url = format!("http://{backend_host}:{backend_port}");
+    let backend_url = format!("http://{}:{}", backend_host, backend_port);
     let mut managed_backend = maybe_spawn_managed_gui_backend(args, &backend_host, backend_port)?;
 
     println!("Launching Ghostlink GUI from {}", gui_entry.display());
-    println!("Python executable: {python}");
-    println!("GUI backend target: {backend_url}");
+    println!("Python executable: {}", python);
+    println!("GUI backend target: {}", backend_url);
 
     let status = Command::new(&python)
         .arg(&gui_entry)
         .env("GHOSTLINK_GUI_BASE_URL", &backend_url)
         .args(&forwarded_args)
         .status()
-        .map_err(|err| anyhow::anyhow!("failed to launch Ghostlink GUI with {python}: {err}"))?;
+        .map_err(|err| {
+            anyhow::anyhow!("failed to launch Ghostlink GUI with {}: {}", python, err)
+        })?;
 
     if let Some(child) = managed_backend.as_mut() {
         let _ = child.kill();
@@ -5511,7 +5856,8 @@ fn launch_mohawk_gui(args: &[String]) -> Result<()> {
 
     if !status.success() {
         anyhow::bail!(
-            "Ghostlink GUI exited with status {status}. Install dependencies from third_party/mohawk_gui and retry."
+            "Ghostlink GUI exited with status {}. Install dependencies from third_party/mohawk_gui and retry.",
+            status
         );
     }
 
@@ -5620,7 +5966,10 @@ fn maybe_spawn_managed_gui_backend(
         return Ok(None);
     }
 
-    println!("No backend detected at {host}:{port}; starting managed Ghostlink API backend...");
+    println!(
+        "No backend detected at {}:{}; starting managed Ghostlink API backend...",
+        host, port
+    );
 
     let executable = std::env::current_exe().map_err(|err| {
         anyhow::anyhow!("failed to resolve current executable for auto-backend launch: {err}")
@@ -5644,7 +5993,7 @@ fn maybe_spawn_managed_gui_backend(
     let start = Instant::now();
     while start.elapsed() < Duration::from_secs(5) {
         if is_gui_backend_reachable(host, port, Duration::from_millis(200)) {
-            println!("Managed backend online at http://{host}:{port}");
+            println!("Managed backend online at http://{}:{}", host, port);
             return Ok(Some(child));
         }
         std::thread::sleep(Duration::from_millis(125));
@@ -5653,12 +6002,14 @@ fn maybe_spawn_managed_gui_backend(
     let _ = child.kill();
     let _ = child.wait();
     anyhow::bail!(
-        "managed backend did not become reachable at http://{host}:{port} within startup timeout"
+        "managed backend did not become reachable at http://{}:{} within startup timeout",
+        host,
+        port
     );
 }
 
 fn is_gui_backend_reachable(host: &str, port: u16, timeout: Duration) -> bool {
-    let addr = format!("{host}:{port}");
+    let addr = format!("{}:{}", host, port);
     if let Ok(mut addrs) = addr.to_socket_addrs() {
         if let Some(sock_addr) = addrs.next() {
             return TcpStream::connect_timeout(&sock_addr, timeout).is_ok();
@@ -5712,7 +6063,7 @@ fn print_gui_diagnostics(strict: bool) -> Result<()> {
     if Command::new(&python).arg("--version").output().is_err() {
         categories.push((
             "python_runtime".to_string(),
-            format!("Python executable is not runnable: {python}"),
+            format!("Python executable is not runnable: {}", python),
         ));
     }
 
@@ -5730,7 +6081,7 @@ fn print_gui_diagnostics(strict: bool) -> Result<()> {
             python_module_probe_error = Some(err.to_string());
             categories.push((
                 "python_modules".to_string(),
-                format!("Python module probe failed: {err}"),
+                format!("Python module probe failed: {}", err),
             ));
         }
         _ => {}
@@ -5782,7 +6133,7 @@ fn print_gui_diagnostics(strict: bool) -> Result<()> {
     );
     println!("GUI entry: {}", gui_entry.display());
     println!("Requirements: {}", requirements.display());
-    println!("Python executable: {python}");
+    println!("Python executable: {}", python);
     println!("Python source: {}", python_resolution.source.as_str());
     println!(
         "Display session: {}",
@@ -5800,7 +6151,7 @@ Diagnostics: PASS"
 Diagnostics: FAIL"
         );
         for (kind, message) in &categories {
-            println!("- [{kind}] {message}");
+            println!("- [{}] {}", kind, message);
         }
     }
 
@@ -5855,9 +6206,9 @@ Diagnostics: FAIL"
             escaped
         );
         fs::write(&path, payload).map_err(|err| {
-            anyhow::anyhow!("failed to write GUI diagnostics JSON to {path}: {err}")
+            anyhow::anyhow!("failed to write GUI diagnostics JSON to {}: {}", path, err)
         })?;
-        println!("Diagnostics JSON written to: {path}");
+        println!("Diagnostics JSON written to: {}", path);
     }
 
     if strict && !categories.is_empty() {
@@ -5894,7 +6245,7 @@ fn print_gui_readiness(strict: bool) -> Result<()> {
     );
     println!("GUI entry: {}", gui_entry.display());
     println!("Requirements: {}", requirements.display());
-    println!("Python executable: {python}");
+    println!("Python executable: {}", python);
 
     if !gui_entry.exists() {
         issues.push(format!("Missing GUI entrypoint: {}", gui_entry.display()));
@@ -5917,7 +6268,7 @@ fn print_gui_readiness(strict: bool) -> Result<()> {
             println!("Python version: {}", version.trim());
         }
         Err(err) => {
-            issues.push(format!("Python executable is not runnable: {err}"));
+            issues.push(format!("Python executable is not runnable: {}", err));
         }
     }
 
@@ -5929,7 +6280,7 @@ fn print_gui_readiness(strict: bool) -> Result<()> {
             issues.push(format!("Missing Python modules: {}", missing.join(", ")));
         }
         Err(err) => {
-            issues.push(format!("Unable to validate Python modules: {err}"));
+            issues.push(format!("Unable to validate Python modules: {}", err));
         }
     }
 
@@ -5999,7 +6350,7 @@ Readiness: FAIL"
     );
     println!("Issues:");
     for issue in &issues {
-        println!("- {issue}");
+        println!("- {}", issue);
     }
 
     println!(
@@ -6030,16 +6381,17 @@ fn detect_missing_optional_gui_python_modules(python: &str) -> Result<Vec<String
 fn detect_missing_python_modules(python: &str, modules: &[&str]) -> Result<Vec<String>> {
     let module_list = modules
         .iter()
-        .map(|m| format!("'{m}'"))
+        .map(|m| format!("'{}'", m))
         .collect::<Vec<_>>()
         .join(",");
     let script = format!(
-        "import importlib.util as u;mods=[{module_list}];missing=[m for m in mods if u.find_spec(m) is None];print(','.join(missing))"
+        "import importlib.util as u;mods=[{}];missing=[m for m in mods if u.find_spec(m) is None];print(','.join(missing))",
+        module_list
     );
     let output = Command::new(python)
         .args(["-c", &script])
         .output()
-        .map_err(|err| anyhow::anyhow!("unable to execute Python '{python}': {err}"))?;
+        .map_err(|err| anyhow::anyhow!("unable to execute Python '{}': {}", python, err))?;
 
     if !output.status.success() {
         return Err(anyhow::anyhow!(
@@ -6104,6 +6456,7 @@ fn run_gui_preflight_checks() -> Result<()> {
 mod backend_api;
 mod backend_config;
 mod backend_registry;
+mod host_metrics;
 mod native_engine;
 mod ollama;
 mod runtime;

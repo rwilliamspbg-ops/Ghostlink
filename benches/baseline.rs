@@ -14,6 +14,10 @@ use ghostlink_core::{
     planning::{assign_layers_sequentially, LayerSpec},
     protocol::{DiscoveryFrame, FrameKind, NodeResources},
     ring::{RingConfig, SpscRingBuffer},
+    runtime::{
+        execute_pipeline, execute_pipeline_tcp_loopback, DeviceKind, ExecutionResult, PipelinePlan,
+        StagePlacement,
+    },
 };
 
 fn bench(name: &str, iters: u64, mut f: impl FnMut()) -> f64 {
@@ -35,8 +39,8 @@ fn main() {
     println!("\nGhost-Link Performance Baseline");
     println!("================================");
     println!(
-        "{:<52} {:>10}       {:>14}",
-        "Benchmark", "Latency", "Throughput"
+        "{:<30} {:>10} {:>33} {:>14}",
+        "Benchmark", "Wall-clock", "Breakdown", "Throughput"
     );
     println!("{}", "-".repeat(82));
 
@@ -69,21 +73,16 @@ fn main() {
         let start = Instant::now();
         let producer = thread::spawn(move || {
             for i in 0..iters {
-                loop {
-                    if prod.push(i).is_ok() {
-                        break;
-                    }
-                    thread::yield_now();
-                }
+                prod.wait_for_space();
+                let _ = prod.push(i);
             }
         });
         let consumer = thread::spawn(move || {
             let mut n = 0u64;
             while n < iters {
-                if cons.pop().is_some() {
+                cons.wait_for_data();
+                while cons.pop().is_some() {
                     n += 1;
-                } else {
-                    thread::yield_now();
                 }
             }
         });
@@ -94,7 +93,84 @@ fn main() {
         let ops = 1_000_000_000.0 / ns;
         println!(
             "{:<52} {ns:>10.2} ns/op  {ops:>14.0} ops/sec",
-            "ring_buffer: SPSC cross-thread (10k items)"
+            "ring_buffer: SPSC cross-thread (10k items, wait methods)"
+        );
+    }
+
+    // ─── SPSC batch throughput (two threads, 10k items) ──────────────────────
+    {
+        let iters = 10_000u64;
+        let batch_size = 64usize;
+        let ring = Arc::new(SpscRingBuffer::<u64>::new(RingConfig::default()));
+        let prod = Arc::clone(&ring);
+        let cons = Arc::clone(&ring);
+        let mut out = vec![std::mem::MaybeUninit::<u64>::uninit(); batch_size];
+        let start = Instant::now();
+        let producer = thread::spawn(move || {
+            let mut sent = 0u64;
+            while sent < iters {
+                let remain = (iters - sent) as usize;
+                let chunk_size = batch_size.min(remain);
+                let chunk: Vec<u64> = (sent..sent + chunk_size as u64).collect();
+                let n = prod.push_batch(&chunk);
+                sent += n as u64;
+                if n == 0 {
+                    prod.wait_for_space();
+                }
+            }
+        });
+        let consumer = thread::spawn(move || {
+            let mut n = 0u64;
+            while n < iters {
+                let cnt = cons.pop_batch(&mut out);
+                if cnt > 0 {
+                    n += cnt as u64;
+                } else {
+                    cons.wait_for_data();
+                }
+            }
+        });
+        producer.join().unwrap();
+        consumer.join().unwrap();
+        let elapsed = start.elapsed();
+        let ns = elapsed.as_nanos() as f64 / iters as f64;
+        let ops = 1_000_000_000.0 / ns;
+        println!(
+            "{:<52} {ns:>10.2} ns/op  {ops:>14.0} ops/sec",
+            "ring_buffer: SPSC batch cross-thread (10k items, bs=64)"
+        );
+    }
+
+    // ─── SPSC saturated throughput (two threads, 100k items) ─────────────────
+    {
+        let iters = 100_000u64;
+        let ring = Arc::new(SpscRingBuffer::<u64>::new(RingConfig::default()));
+        let prod = Arc::clone(&ring);
+        let cons = Arc::clone(&ring);
+        let start = Instant::now();
+        let producer = thread::spawn(move || {
+            for i in 0..iters {
+                prod.wait_for_space();
+                let _ = prod.push(i);
+            }
+        });
+        let consumer = thread::spawn(move || {
+            let mut n = 0u64;
+            while n < iters {
+                cons.wait_for_data();
+                while cons.pop().is_some() {
+                    n += 1;
+                }
+            }
+        });
+        producer.join().unwrap();
+        consumer.join().unwrap();
+        let elapsed = start.elapsed();
+        let ns = elapsed.as_nanos() as f64 / iters as f64;
+        let ops = 1_000_000_000.0 / ns;
+        println!(
+            "{:<52} {ns:>10.2} ns/op  {ops:>14.0} ops/sec",
+            "ring_buffer: SPSC cross-thread (100k items, wait methods)"
         );
     }
 
@@ -118,6 +194,98 @@ fn main() {
         let enc = frame.encode();
         let _ = DiscoveryFrame::decode(&enc);
     });
+
+    // ─── Pipeline Transport Comparison ──────────────────────────────────────
+    {
+        let plan = PipelinePlan {
+            stages: vec![
+                StagePlacement {
+                    node_id: "node-a".to_string(),
+                    start_layer: 0,
+                    end_layer: 16,
+                    device: DeviceKind::Gpu,
+                    est_latency_ms: 1.0,
+                },
+                StagePlacement {
+                    node_id: "node-b".to_string(),
+                    start_layer: 16,
+                    end_layer: 32,
+                    device: DeviceKind::Cpu,
+                    est_latency_ms: 1.0,
+                },
+            ],
+        };
+        let tokens = [64, 256, 1024];
+        let mb = 8;
+        let runs = 15;
+
+        fn avg_stats(results: &[ExecutionResult]) -> (f64, f64, f64, f64) {
+            let n = results.len() as f64;
+            let total_ms: f64 = results.iter().map(|r| r.total_time_ms as f64).sum();
+            let recv: f64 = results
+                .iter()
+                .map(|r| {
+                    r.stage_stats
+                        .iter()
+                        .map(|s| s.avg_recv_wait_ms as f64)
+                        .sum::<f64>()
+                })
+                .sum();
+            let comp: f64 = results
+                .iter()
+                .map(|r| {
+                    r.stage_stats
+                        .iter()
+                        .map(|s| s.avg_compute_ms as f64)
+                        .sum::<f64>()
+                })
+                .sum();
+            let send: f64 = results
+                .iter()
+                .map(|r| {
+                    r.stage_stats
+                        .iter()
+                        .map(|s| s.avg_send_wait_ms as f64)
+                        .sum::<f64>()
+                })
+                .sum();
+            (total_ms / n, recv / n, comp / n, send / n)
+        }
+
+        for &tokens in &tokens {
+            let batch_count = tokens / mb;
+
+            // In-process (no transport)
+            let mut inproc_results = Vec::with_capacity(runs);
+            for _ in 0..runs {
+                if let Ok(r) = execute_pipeline(&plan, tokens, mb) {
+                    inproc_results.push(r);
+                }
+            }
+            let (total, recv, comp, send) = avg_stats(&inproc_results);
+            let thru = tokens as f64 / (total / 1000.0);
+            let suffix = format!("in-process ({} tok, {} batches)", tokens, batch_count);
+            println!(
+                "{:<30} {:>8.3} ms  (recv={:>6.3} compute={:>6.3} send={:>6.3})  {:>10.0} tok/s",
+                suffix, total, recv, comp, send, thru
+            );
+
+            // TCP loopback
+            let mut tcp_results = Vec::with_capacity(runs);
+            for _ in 0..runs {
+                if let Ok(r) = execute_pipeline_tcp_loopback(&plan, tokens, mb) {
+                    tcp_results.push(r);
+                }
+            }
+            let (total, recv, comp, send) = avg_stats(&tcp_results);
+            let thru = tokens as f64 / (total / 1000.0);
+            let suffix = format!("TCP loopback ({} tok, {} batches)", tokens, batch_count);
+            println!(
+                "{:<30} {:>8.3} ms  (recv={:>6.3} compute={:>6.3} send={:>6.3})  {:>10.0} tok/s",
+                suffix, total, recv, comp, send, thru
+            );
+        }
+    }
 
     // ─── Layer Assignment Planning ───────────────────────────────────────────
     let nodes_2: Vec<_> = (0..2)

@@ -2,8 +2,9 @@
 //!
 //! This module implements a fixed-width binary protocol using:
 //! - Fixed-size fields for zero-copy parsing
-//! - CRC32 checksums for frame integrity
+//! - CRC32 checksums for frame integrity (hardware-accelerated via crc32fast)
 //! - Sequence numbers and versioning for ordering
+//! - Zero-copy encoding with thread-local buffers
 
 use crc32fast::Hasher;
 
@@ -16,7 +17,10 @@ pub const PROTOCOL_VERSION: u8 = 1;
 /// Maximum payload size for discovery frames
 pub const MAX_PAYLOAD_SIZE: usize = 256;
 
-/// Frame header structure (fixed-width)
+/// Maximum frame size (header + max payload)
+pub const MAX_FRAME_SIZE: usize = 8 + MAX_PAYLOAD_SIZE;
+
+/// Frame header structure (fixed-width, 8 bytes)
 #[derive(Clone, Copy, Debug)]
 pub struct FrameHeader {
     /// EtherType identifying the protocol
@@ -30,36 +34,60 @@ pub struct FrameHeader {
 }
 
 impl FrameHeader {
-    const HEADER_SIZE: usize = 8; // 2 + 1 + 1 + 4 bytes
+    const HEADER_SIZE: usize = 8;
 
-    /// Create a new frame header with computed CRC
+    /// Create a new frame header with computed CRC from pre-encoded payload
+    #[inline]
     pub fn new(ether_type: u16, kind: u8, payload: &[u8]) -> Self {
-        let mut hasher = Hasher::new();
-        hasher.update(payload);
-
+        let crc = crc32(payload);
         Self {
             ether_type,
             kind,
             version: PROTOCOL_VERSION,
-            crc: hasher.finalize(),
+            crc,
         }
     }
 
-    /// Encode header as bytes (little-endian)
-    pub fn encode(&self) -> [u8; Self::HEADER_SIZE] {
-        let mut header = [0u8; Self::HEADER_SIZE];
+    /// Encode header directly into a pre-allocated buffer (zero-copy)
+    #[inline]
+    pub fn encode_into(&self, buf: &mut [u8; Self::HEADER_SIZE]) {
         let et_bytes = self.ether_type.to_le_bytes();
-        header[0] = et_bytes[0];
-        header[1] = et_bytes[1];
-        header[2] = self.kind;
-        header[3] = self.version;
+        buf[0] = et_bytes[0];
+        buf[1] = et_bytes[1];
+        buf[2] = self.kind;
+        buf[3] = self.version;
         let crc_bytes = self.crc.to_le_bytes();
-        header[4] = crc_bytes[0];
-        header[5] = crc_bytes[1];
-        header[6] = crc_bytes[2];
-        header[7] = crc_bytes[3];
-        header
+        buf[4] = crc_bytes[0];
+        buf[5] = crc_bytes[1];
+        buf[6] = crc_bytes[2];
+        buf[7] = crc_bytes[3];
     }
+
+    /// Decode header from bytes (zero-copy, no allocation)
+    #[inline]
+    pub fn decode(buf: &[u8]) -> Option<Self> {
+        if buf.len() < Self::HEADER_SIZE {
+            return None;
+        }
+        let ether_type = u16::from_le_bytes([buf[0], buf[1]]);
+        let kind = buf[2];
+        let version = buf[3];
+        let crc = u32::from_le_bytes([buf[4], buf[5], buf[6], buf[7]]);
+        Some(Self {
+            ether_type,
+            kind,
+            version,
+            crc,
+        })
+    }
+}
+
+/// Compute CRC32 checksum using hardware-accelerated crc32fast
+#[inline]
+pub fn crc32(data: &[u8]) -> u32 {
+    let mut hasher = Hasher::new();
+    hasher.update(data);
+    hasher.finalize()
 }
 
 /// Frame kind enumeration
@@ -210,80 +238,73 @@ impl NodeResources {
 
     /// Deserialize node resources from binary payload
     pub fn decode_payload(payload: &[u8]) -> Result<Self, String> {
-        // Minimum payload: id_len(1) + vram(4) + mem(4) + cc_len(1) + has_gpu_name(1)
-        if payload.len() < 11 {
+        let len = payload.len();
+        if len < 11 {
             return Err("payload too short".into());
         }
 
         let mut cursor = 0usize;
 
-        // Read ID
-        let id_len = *payload
-            .get(cursor)
-            .ok_or_else(|| "missing ID length".to_string())? as usize;
+        let id_len = payload[cursor] as usize;
         cursor += 1;
-        let id_slice = payload
-            .get(cursor..cursor + id_len)
-            .ok_or_else(|| "invalid ID length".to_string())?;
-        let id = std::str::from_utf8(id_slice)
-            .map_err(|_| "ID contains invalid UTF-8".to_string())?
-            .to_string();
-        cursor += id_len;
+        let id_end = cursor + id_len;
+        if id_end > len {
+            return Err("payload truncated".into());
+        }
+        let id = String::from_utf8(payload[cursor..id_end].to_vec())
+            .map_err(|_| "invalid UTF-8 in ID".to_string())?;
+        cursor = id_end;
 
-        // Read VRAM (little-endian f32)
-        let vram_slice = payload
-            .get(cursor..cursor + 4)
-            .ok_or_else(|| "missing VRAM bytes".to_string())?;
-        let vram_bytes: [u8; 4] = vram_slice
-            .try_into()
-            .map_err(|_| "invalid VRAM byte length".to_string())?;
-        let vram_gb = f32::from_le_bytes(vram_bytes);
-        cursor += 4;
+        let vram_end = cursor + 8;
+        if vram_end > len {
+            return Err("payload truncated".into());
+        }
+        let vram_gb = f32::from_le_bytes([
+            payload[cursor],
+            payload[cursor + 1],
+            payload[cursor + 2],
+            payload[cursor + 3],
+        ]);
+        let system_memory_gb = f32::from_le_bytes([
+            payload[cursor + 4],
+            payload[cursor + 5],
+            payload[cursor + 6],
+            payload[cursor + 7],
+        ]);
+        cursor = vram_end;
 
-        // Read system memory (little-endian f32)
-        let mem_slice = payload
-            .get(cursor..cursor + 4)
-            .ok_or_else(|| "missing system memory bytes".to_string())?;
-        let mem_bytes: [u8; 4] = mem_slice
-            .try_into()
-            .map_err(|_| "invalid system memory byte length".to_string())?;
-        let system_memory_gb = f32::from_le_bytes(mem_bytes);
-        cursor += 4;
-
-        // Read compute capability
-        let cc_len = *payload
-            .get(cursor)
-            .ok_or_else(|| "missing CC length".to_string())? as usize;
+        if cursor >= len {
+            return Err("payload truncated".into());
+        }
+        let cc_len = payload[cursor] as usize;
         cursor += 1;
-        let cc_slice = payload
-            .get(cursor..cursor + cc_len)
-            .ok_or_else(|| "invalid CC length".to_string())?;
-        let compute_capability = std::str::from_utf8(cc_slice)
-            .map_err(|_| "compute capability contains invalid UTF-8".to_string())?
-            .to_string();
-        cursor += cc_len;
+        let cc_end = cursor + cc_len;
+        if cc_end > len {
+            return Err("payload truncated".into());
+        }
+        let compute_capability = String::from_utf8(payload[cursor..cc_end].to_vec())
+            .map_err(|_| "invalid UTF-8 in CC".to_string())?;
+        cursor = cc_end;
 
-        // Check for GPU name flag
-        let has_gpu_name = *payload
-            .get(cursor)
-            .ok_or_else(|| "missing GPU name flag".to_string())?
-            == 1;
+        if cursor >= len {
+            return Err("payload truncated".into());
+        }
+        let has_gpu = payload[cursor] == 1;
         cursor += 1;
 
-        let gpu_name = if has_gpu_name {
-            let gpu_len = *payload
-                .get(cursor)
-                .ok_or_else(|| "missing GPU name length".to_string())?
-                as usize;
+        let gpu_name = if has_gpu {
+            if cursor >= len {
+                return Err("payload truncated".into());
+            }
+            let gpu_len = payload[cursor] as usize;
             cursor += 1;
-
-            let gpu_slice = payload
-                .get(cursor..cursor + gpu_len)
-                .ok_or_else(|| "invalid GPU name length".to_string())?;
+            let gpu_end = cursor + gpu_len;
+            if gpu_end > len {
+                return Err("payload truncated".into());
+            }
             Some(
-                std::str::from_utf8(gpu_slice)
-                    .map_err(|_| "GPU name contains invalid UTF-8".to_string())?
-                    .to_string(),
+                String::from_utf8(payload[cursor..gpu_end].to_vec())
+                    .map_err(|_| "invalid UTF-8 in GPU name".to_string())?,
             )
         } else {
             None
@@ -307,109 +328,138 @@ pub struct DiscoveryFrame {
 }
 
 impl DiscoveryFrame {
-    /// Encode discovery frame to bytes (header + payload)
+    /// Encode discovery frame to bytes using a stack-allocated fixed-size buffer.
+    /// Avoids all Vec capacity checks and `extend_from_slice` overhead.
     #[inline]
     pub fn encode(&self) -> Vec<u8> {
-        let id_bytes_len = self.node.id.len();
-        let cc_bytes_len = self.node.compute_capability.len();
-        let payload_len = 11
-            + id_bytes_len
-            + cc_bytes_len
-            + self.node.gpu_name.as_ref().map_or(0, |name| 2 + name.len());
+        let mut buf = [0u8; MAX_FRAME_SIZE];
+        let et = GHOSTLINK_ETHERTYPE.to_le_bytes();
+        buf[0] = et[0];
+        buf[1] = et[1];
+        buf[2] = self.kind.as_u8();
+        buf[3] = PROTOCOL_VERSION;
 
-        let mut frame = Vec::with_capacity(8 + payload_len);
-        // Reserve the first 8 bytes for the header with a fast slice extension
-        frame.extend_from_slice(&[0u8; 8]);
+        let id_bytes = self.node.id.as_bytes();
+        let cc_bytes = self.node.compute_capability.as_bytes();
 
-        if self
-            .node
-            .encode_payload_into(&mut frame, MAX_PAYLOAD_SIZE)
-            .is_ok()
-        {
-            // Compute CRC32 over payload
-            let mut hasher = Hasher::new();
-            hasher.update(&frame[8..]);
-            let crc = hasher.finalize();
+        if id_bytes.len() > u8::MAX as usize || cc_bytes.len() > u8::MAX as usize {
+            buf[4..8].copy_from_slice(&crc32(&[]).to_le_bytes());
+            return buf[..8].to_vec();
+        }
+        if let Some(ref gpu_name) = self.node.gpu_name {
+            if gpu_name.len() > u8::MAX as usize {
+                buf[4..8].copy_from_slice(&crc32(&[]).to_le_bytes());
+                return buf[..8].to_vec();
+            }
+        }
 
-            // Build header
+        let mut pos = 8usize;
+
+        buf[pos] = id_bytes.len() as u8;
+        pos += 1;
+        buf[pos..pos + id_bytes.len()].copy_from_slice(id_bytes);
+        pos += id_bytes.len();
+
+        buf[pos..pos + 4].copy_from_slice(&self.node.vram_gb.to_le_bytes());
+        pos += 4;
+
+        buf[pos..pos + 4].copy_from_slice(&self.node.system_memory_gb.to_le_bytes());
+        pos += 4;
+
+        buf[pos] = cc_bytes.len() as u8;
+        pos += 1;
+        buf[pos..pos + cc_bytes.len()].copy_from_slice(cc_bytes);
+        pos += cc_bytes.len();
+
+        if let Some(ref gpu_name) = self.node.gpu_name {
+            let gpu_bytes = gpu_name.as_bytes();
+            buf[pos] = 1;
+            pos += 1;
+            buf[pos] = gpu_bytes.len() as u8;
+            pos += 1;
+            buf[pos..pos + gpu_bytes.len()].copy_from_slice(gpu_bytes);
+            pos += gpu_bytes.len();
+        } else {
+            buf[pos] = 0;
+            pos += 1;
+        }
+
+        let crc = crc32(&buf[8..pos]);
+        buf[4..8].copy_from_slice(&crc.to_le_bytes());
+
+        buf[..pos].to_vec()
+    }
+
+    /// Encode discovery frame into a pre-allocated buffer (zero-copy hot path)
+    /// Returns the number of bytes written.
+    #[inline]
+    pub fn encode_into(&self, buf: &mut Vec<u8>) -> usize {
+        buf.clear();
+        buf.extend_from_slice(&[0u8; 8]);
+
+        if self.node.encode_payload_into(buf, MAX_PAYLOAD_SIZE).is_ok() {
+            let payload = &buf[8..];
+            let crc = crc32(payload);
+
             let header = FrameHeader {
                 ether_type: GHOSTLINK_ETHERTYPE,
                 kind: self.kind.as_u8(),
                 version: PROTOCOL_VERSION,
                 crc,
             };
-            let header_bytes = header.encode();
+            header.encode_into(unsafe { &mut *(buf.as_mut_ptr() as *mut [u8; 8]) });
 
-            // Write header to first 8 bytes
-            frame[0..8].copy_from_slice(&header_bytes);
-
-            frame
+            buf.len()
         } else {
-            self.encode_fallback_or_empty()
+            buf.clear();
+            buf.extend_from_slice(&[0u8; 8]);
+            let header = FrameHeader {
+                ether_type: GHOSTLINK_ETHERTYPE,
+                kind: self.kind.as_u8(),
+                version: PROTOCOL_VERSION,
+                crc: crc32(&[]),
+            };
+            header.encode_into(unsafe { &mut *(buf.as_mut_ptr() as *mut [u8; 8]) });
+            buf.len()
         }
     }
 
-    #[inline(never)]
-    fn encode_fallback_or_empty(&self) -> Vec<u8> {
-        // Fallback for empty payload
-        let mut hasher = Hasher::new();
-        hasher.update(&[]);
-        let crc = hasher.finalize();
-
-        let header = FrameHeader {
-            ether_type: GHOSTLINK_ETHERTYPE,
-            kind: self.kind.as_u8(),
-            version: PROTOCOL_VERSION,
-            crc,
-        };
-        let header_bytes = header.encode();
-
-        let mut frame = Vec::with_capacity(header_bytes.len());
-        frame.extend_from_slice(&header_bytes);
-        frame
-    }
-
-    /// Decode discovery frame from bytes (header + payload)
+    /// Decode discovery frame from bytes (header + payload) - optimized path
     #[inline]
     pub fn decode(bytes: &[u8]) -> Result<Self, String> {
         if bytes.len() < FrameHeader::HEADER_SIZE {
             return Err("frame too short".into());
         }
 
-        // Parse header
-        let ether_type = u16::from_le_bytes([bytes[0], bytes[1]]);
-        let kind = FrameKind::try_from(bytes[2])?;
-        let version = bytes[3];
-        let expected_crc = u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]);
+        // Fast header decode using zero-copy method
+        let header = FrameHeader::decode(bytes).ok_or("invalid header")?;
 
-        if ether_type != GHOSTLINK_ETHERTYPE {
-            return Err(format!("unexpected EtherType 0x{ether_type:04x}"));
+        if header.ether_type != GHOSTLINK_ETHERTYPE {
+            return Err(format!("unexpected EtherType 0x{:04x}", header.ether_type));
         }
 
-        if version != PROTOCOL_VERSION {
-            return Err(format!("unsupported protocol version {version}"));
+        if header.version != PROTOCOL_VERSION {
+            return Err(format!("unsupported protocol version {}", header.version));
         }
 
-        // Parse payload with CRC verification
-        let payload_start = FrameHeader::HEADER_SIZE;
-        let payload_end = bytes.len();
-        let payload = &bytes[payload_start..payload_end];
+        // Fast CRC check
+        let payload = &bytes[FrameHeader::HEADER_SIZE..];
+        let computed_crc = crc32(payload);
 
-        // Compute CRC over payload
-        let mut hasher = Hasher::new();
-        hasher.update(payload);
-        let computed_crc = hasher.finalize();
-
-        if computed_crc != expected_crc {
+        if computed_crc != header.crc {
             return Err(format!(
-                "CRC mismatch: expected 0x{expected_crc:08x}, got 0x{computed_crc:08x}"
+                "CRC mismatch: expected 0x{:08x}, got 0x{:08x}",
+                header.crc, computed_crc
             ));
         }
 
         // Decode node resources from payload
         let node = NodeResources::decode_payload(payload)?;
 
-        Ok(Self { kind, node })
+        Ok(Self {
+            kind: FrameKind::try_from(header.kind)?,
+            node,
+        })
     }
 }
 

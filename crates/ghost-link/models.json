@@ -10,14 +10,14 @@
     "name": "mistralai/Mistral-7B-Instruct-v0.2",
     "size_gb": 7.2,
     "model_type": "LLM",
-    "quantization": "Q8_0",
+    "quantization": "Q4_K_M",
     "status": "Ready"
   },
   {
     "name": "google/gemma-7b-it",
     "size_gb": 7.0,
     "model_type": "LLM",
-    "quantization": "BF16",
+    "quantization": "Q4_K_M",
     "status": "Ready"
   },
   {

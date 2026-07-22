@@ -82,20 +82,68 @@ pub enum QualityTier {
 /// Runtime detection system
 pub struct RuntimeDetector;
 
+#[allow(dead_code)]
 impl RuntimeDetector {
     /// Auto-detect available runtimes on the system
+    ///
+    /// Delegates to `SystemProfile` when available, falls back to
+    /// individual probe methods for backward compatibility.
     pub fn detect() -> Vec<RuntimeInfo> {
-        #[allow(unused_mut)]
-        let mut runtimes = vec![
-            Self::detect_cuda(),
-            Self::detect_metal(),
-            Self::detect_directml(),
-            Self::detect_npu(),
-            Self::detect_cpu(),
-        ];
-        #[cfg(feature = "rocm")]
-        runtimes.insert(2, Self::detect_rocm());
-        runtimes.into_iter().flatten().collect()
+        Self::detect_from_profile()
+    }
+
+    /// Detect runtimes by querying the unified `SystemProfile`.
+    fn detect_from_profile() -> Vec<RuntimeInfo> {
+        let profile = ghostlink_core::system_profile::SystemProfile::detect_fast();
+        let mut runtimes = Vec::new();
+
+        // Map detected GPUs to runtime info
+        for gpu in &profile.gpus {
+            let runtime = match gpu.backend {
+                ghostlink_core::host::GpuBackend::Cuda => Runtime::CUDA,
+                ghostlink_core::host::GpuBackend::Rocm => Runtime::ROCm,
+                ghostlink_core::host::GpuBackend::Metal => Runtime::Metal,
+                ghostlink_core::host::GpuBackend::Directml => Runtime::DirectML,
+                ghostlink_core::host::GpuBackend::Npu => Runtime::NPU,
+                ghostlink_core::host::GpuBackend::Vulkan
+                | ghostlink_core::host::GpuBackend::Cpu => continue,
+            };
+            runtimes.push(RuntimeInfo {
+                detected_runtime: runtime,
+                is_available: true,
+                compute_capability: Some(gpu.compute_capability.clone()),
+                memory_gb: Some(gpu.vram_gb),
+                device_count: Some(
+                    profile
+                        .gpus
+                        .iter()
+                        .filter(|g| g.backend == gpu.backend)
+                        .count(),
+                ),
+            });
+        }
+
+        // Add NPUs
+        for npu in &profile.npus {
+            runtimes.push(RuntimeInfo {
+                detected_runtime: Runtime::NPU,
+                is_available: true,
+                compute_capability: Some(npu.name.clone()),
+                memory_gb: Some(npu.memory_gb),
+                device_count: Some(profile.npus.len()),
+            });
+        }
+
+        // CPU is always last
+        runtimes.push(RuntimeInfo {
+            detected_runtime: Runtime::CPU,
+            is_available: true,
+            compute_capability: None,
+            memory_gb: Some(profile.memory.total_gb),
+            device_count: Some(profile.cpu.logical_cores),
+        });
+
+        runtimes
     }
 
     /// Detect primary runtime (best available), honoring environment overrides.

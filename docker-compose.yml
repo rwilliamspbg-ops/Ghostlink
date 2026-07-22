@@ -13,6 +13,10 @@ services:
       # Use conservative default of 20 GPU layers to prevent OOM (can be overridden)
       LLAMA_ARG_NGL: ${LLAMA_ARG_NGL:-20}
       LLAMA_ARG_MODEL: /models/model.gguf
+      # Local inference throughput: Flash Attention + larger prompt batches
+      LLAMA_ARG_FLASH_ATTN: ${LLAMA_ARG_FLASH_ATTN:-on}
+      LLAMA_ARG_BATCH: ${LLAMA_ARG_BATCH:-2048}
+      LLAMA_ARG_UBATCH: ${LLAMA_ARG_UBATCH:-512}
     volumes:
       - ./models/stories15M-q4_0.gguf:/models/model.gguf:ro
     networks:

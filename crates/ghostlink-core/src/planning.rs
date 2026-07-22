@@ -244,15 +244,21 @@ pub fn assign_layers_sequentially(
 
 /// Split large node assignments into smaller contiguous chunks for worker-level parallelism.
 pub fn chunk_assignments_for_workers(
-    assignments: &[LayerAssignment],
+    assignments: Vec<LayerAssignment>,
     max_layers_per_assignment: usize,
 ) -> Vec<LayerAssignment> {
     let chunk_size = max_layers_per_assignment.max(1);
-    let mut chunked = Vec::new();
+
+    let needs_chunking = assignments.iter().any(|a| a.num_layers > chunk_size);
+    if !needs_chunking {
+        return assignments;
+    }
+
+    let mut chunked = Vec::with_capacity(assignments.len() * 2);
 
     for assignment in assignments {
         if assignment.num_layers <= chunk_size {
-            chunked.push(assignment.clone());
+            chunked.push(assignment);
             continue;
         }
 
@@ -275,18 +281,91 @@ pub fn chunk_assignments_for_workers(
     chunked
 }
 
+/// Assign layers sequentially across nodes, directly producing chunked assignments
+/// sized for worker-level parallelism. Avoids creating intermediate full-size
+/// `LayerAssignment` objects and their associated allocation/clone overhead.
+fn assign_layers_chunked(
+    nodes: &[NodeResources],
+    layers: &[LayerSpec],
+    max_layers_per_assignment: usize,
+) -> Result<Vec<LayerAssignment>, String> {
+    if nodes.is_empty() {
+        return Err("at least one node is required".into());
+    }
+    if layers.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let chunk_size = max_layers_per_assignment.max(1);
+    let est_assignments = (layers.len().div_ceil(chunk_size)).max(nodes.len());
+    let mut assignments = Vec::with_capacity(est_assignments);
+    let mut node_idx = 0usize;
+    let mut remaining_vram = nodes[0].vram_gb;
+    // Index of the first layer in the current chunk
+    let mut chunk_start = 0usize;
+    let mut chunk_vram = 0.0f32;
+
+    for (i, layer) in layers.iter().enumerate() {
+        // Move to next node if current node is out of capacity
+        while layer.vram_gb > remaining_vram {
+            if i > chunk_start {
+                assignments.push(LayerAssignment::new(
+                    nodes[node_idx].id.clone(),
+                    chunk_start,
+                    i,
+                    chunk_vram,
+                ));
+            }
+            node_idx += 1;
+            if node_idx >= nodes.len() {
+                return Err(format!(
+                    "insufficient cluster VRAM for layer {} (needs {:.2} GB)",
+                    layer.index, layer.vram_gb
+                ));
+            }
+            remaining_vram = nodes[node_idx].vram_gb;
+            chunk_start = i;
+            chunk_vram = 0.0;
+        }
+
+        remaining_vram -= layer.vram_gb;
+        chunk_vram += layer.vram_gb;
+
+        // Flush chunk if it reached the maximum chunk size
+        let chunk_len = i + 1 - chunk_start;
+        if chunk_len >= chunk_size {
+            assignments.push(LayerAssignment::new(
+                nodes[node_idx].id.clone(),
+                chunk_start,
+                i + 1,
+                chunk_vram,
+            ));
+            chunk_start = i + 1;
+            chunk_vram = 0.0;
+        }
+    }
+
+    // Finalize last chunk
+    if chunk_vram > 0.0 {
+        assignments.push(LayerAssignment::new(
+            nodes[node_idx].id.clone(),
+            chunk_start,
+            layers.len(),
+            chunk_vram,
+        ));
+    }
+
+    Ok(assignments)
+}
+
 /// Assign layers using runtime auto-detection to expose worker-parallel chunks.
 pub fn assign_layers_with_runtime_profile(
     nodes: &[NodeResources],
     layers: &[LayerSpec],
     profile: &RuntimeProfile,
 ) -> Result<Vec<LayerAssignment>, String> {
-    let assignments = assign_layers_sequentially(nodes, layers)?;
     let tuning = PlanningTuning::from_runtime_profile(profile, layers.len());
-    Ok(chunk_assignments_for_workers(
-        &assignments,
-        tuning.max_layers_per_assignment,
-    ))
+    assign_layers_chunked(nodes, layers, tuning.max_layers_per_assignment)
 }
 
 /// Assign layers with fault tolerance and load balancing
@@ -325,8 +404,10 @@ pub fn assign_layers_with_fault_tolerance_and_runtime(
 ) -> Result<PlacementPlan, String> {
     let mut plan = assign_layers_with_fault_tolerance(cluster, layers)?;
     let tuning = PlanningTuning::from_runtime_profile(profile, layers.len());
-    plan.assignments =
-        chunk_assignments_for_workers(&plan.assignments, tuning.max_layers_per_assignment);
+    plan.assignments = chunk_assignments_for_workers(
+        std::mem::take(&mut plan.assignments),
+        tuning.max_layers_per_assignment,
+    );
     plan.total_layers = plan
         .assignments
         .iter()
@@ -395,30 +476,39 @@ pub fn simulate_layer_streaming(
 
 /// Calculate network health across the cluster
 pub fn calculate_cluster_health(cluster: &ClusterState) -> (f32, usize, Vec<String>) {
-    let active_nodes = cluster.active_nodes();
+    // Acquire the lock on metrics map exactly ONCE to avoid redundant mutex lock/unlock and clones
+    let metrics = cluster
+        .metrics
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
 
-    if active_nodes.is_empty() {
+    if metrics.is_empty() {
         return (0.0, 0, vec![]);
     }
 
-    // Calculate average delivery ratio
-    let avg_delivery_ratio =
-        active_nodes.iter().map(|m| m.delivery_ratio).sum::<f32>() / active_nodes.len() as f32;
+    let mut sum_delivery_ratio = 0.0f32;
+    let mut active_count = 0usize;
+    let mut failed_nodes = Vec::new();
 
-    // Get failed node IDs and count them in a single pass, avoiding redundant mutex locks and clones of NodeMetrics
-    let failed_nodes: Vec<String> = cluster
-        .nodes_snapshot()
-        .iter()
-        .filter_map(|n| {
-            cluster.get_metrics(&n.id).and_then(|metrics| {
-                if metrics.status == NodeStatus::Failed {
-                    Some(n.id.clone())
-                } else {
-                    None
-                }
-            })
-        })
-        .collect();
+    // Iterate once over all live node metrics to aggregate statistics and collect failed nodes
+    for (node_id, metric) in metrics.iter() {
+        match metric.status {
+            NodeStatus::Active => {
+                sum_delivery_ratio += metric.delivery_ratio;
+                active_count += 1;
+            }
+            NodeStatus::Failed => {
+                failed_nodes.push(node_id.clone());
+            }
+            _ => {}
+        }
+    }
+
+    let avg_delivery_ratio = if active_count > 0 {
+        sum_delivery_ratio / active_count as f32
+    } else {
+        0.0
+    };
 
     let failed_count = failed_nodes.len();
 
@@ -613,7 +703,7 @@ mod tests {
     #[test]
     fn runtime_profile_chunks_large_assignments() {
         let assignments = vec![LayerAssignment::new("node-a".into(), 0, 12, 12.0)];
-        let chunked = chunk_assignments_for_workers(&assignments, 5);
+        let chunked = chunk_assignments_for_workers(assignments, 5);
 
         assert_eq!(chunked.len(), 3);
         assert_eq!(chunked[0].start_layer, 0);

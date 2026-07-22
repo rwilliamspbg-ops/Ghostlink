@@ -3,16 +3,20 @@
 [![GitHub Repo](https://img.shields.io/badge/GitHub-Ghostlink-181717?logo=github)](https://github.com/rwilliamspbg-ops/Ghostlink)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](https://github.com/rwilliamspbg-ops/Ghostlink/blob/main/LICENSE)
 [![Docs](https://img.shields.io/badge/Docs-GitHub%20Pages-0ea5e9)](https://rwilliamspbg-ops.github.io/Ghostlink/)
-[![Status](https://img.shields.io/badge/Status-Launch%20ready-22c55e)](https://rwilliamspbg-ops.github.io/Ghostlink/)
+[![CI](https://github.com/rwilliamspbg-ops/Ghostlink/actions/workflows/ci.yml/badge.svg)](https://github.com/rwilliamspbg-ops/Ghostlink/actions/workflows/ci.yml)
 
 > Distributed inference fabric for custom LLM systems.
-> Route workloads across CPU, GPU, and NPU resources with more explicit scheduling, hardware-aware placement, and a polished demo path.
+> Route workloads across CPU, GPU, and NPU resources with explicit scheduling, hardware-aware placement, and a self-hosted open-source stack.
 
 Ghostlink is a high-performance distributed inference fabric for teams building custom LLM systems. It combines hardware-aware planning, flexible routing, and model-management workflows so inference workloads can be distributed across heterogeneous devices with more explicit control than generic orchestration layers.
 
 ## What Ghostlink brings
 - Clear routing and scheduling for custom inference topologies
-- Hardware-aware placement across mixed compute environments
+- Hardware-aware placement across mixed compute environments (CPU, GPU, NPU)
+- SPSC ring-buffer transport with spin-wait for sub-microsecond handoff
+- TCP and Unix domain socket transport for multi-process pipelines
+- Session-level authentication on transport frames
+- Dynamic system profile watching with auto-tuning cache
 - A strong open-source foundation with a commercial support path
 
 ## Why Ghostlink
@@ -29,18 +33,8 @@ A polished landing page and launch collateral are now available for the project:
 - Comparison sheet: [docs/comparison_sheet.md](docs/comparison_sheet.md)
 - Demo flow: [docs/launch_demo.md](docs/launch_demo.md)
 
-The main landing page highlights concrete demo themes such as adaptive model routing, hardware-aware placement, operational visibility, and a terminal-style request flow.
-
-## Architecture at a glance
-Ghostlink is organized around a small set of core layers:
-- Runtime and planning: hardware detection, placement strategy, and inference scheduling logic.
-- Control plane: model management, routing decisions, and service orchestration.
-- Interfaces: CLI commands, an OpenAI-compatible API, and the web-based GUI experience.
-
-This makes it easier to reason about the system as a distributed inference fabric rather than a single monolithic app.
-
 ## Project status
-Ghostlink is currently positioned as a launch-ready open-source foundation with a strong demo story and public-facing collateral. The core project already supports local development workflows, model-management flows, and a browser-accessible landing experience.
+Ghostlink is positioned as a launch-ready open-source foundation with a strong demo story and public-facing collateral.
 
 Current strengths:
 - a working local launch path for experimentation and demos,
@@ -51,22 +45,6 @@ Current focus areas:
 - strengthening the end-to-end demo experience,
 - improving documentation for deployment and production use,
 - expanding real-world validation across more hardware and runtime setups.
-
-## Contributing and roadmap
-Contributions are welcome. A practical next step for contributors is to help improve the runtime experience, expand deployment guidance, and validate Ghostlink across more hardware combinations.
-
-Near-term roadmap themes:
-- improve end-to-end demo reliability and documentation,
-- strengthen deployment and production guidance,
-- expand validation for different runtimes and hardware profiles.
-
-## FAQ
-- Why use Ghostlink instead of a generic orchestrator? It focuses on latency-aware planning and custom inference topologies rather than acting as a broad-purpose scheduler.
-- Does Ghostlink require specific hardware? No. It can run on CPU, GPU, NPU, and mixed setups, with detection and routing adapting to what is available.
-- Can I use it for demos and early pilots? Yes. The project is designed to support local experiments, demos, and self-hosted evaluation before broader production rollout.
-
-## Evaluation and contact
-If you want to evaluate Ghostlink for a pilot, internal demo, or custom inference workflow, the easiest next step is to start from the public landing page and the demo flow documents. For deployment support, onboarding, or commercial discussions, use the repository as the initial point of contact and open a discussion or issue to begin the conversation.
 
 ## Quick Start (Windows)
 
@@ -82,56 +60,40 @@ If you want to evaluate Ghostlink for a pilot, internal demo, or custom inferenc
 ### Launch
 
 ```powershell
-# 1. Clone or open the Ghostlink directory
 cd C:\Users\rwill\Ghostlink
 
-# 2. Build the backend (one time)
+# One-time backend build (if target\release\ghost-link.exe is missing, launch.bat builds it)
 cargo build --release -p ghost-link
 
-# 3. Launch (cinematic splash + services)
+# Single launcher for the full stack
 .\launch.bat
-
-# Or launch the complete stack directly
-.\launch-complete.bat
-
-# Or fast launch (skips build, uses existing binary)
-.\launch-fast.bat
 ```
 
-This starts three services:
-- **llama-server** (inference engine, port 8080)
-- **Ghostlink API** backend (port 8003)
+This starts:
+- **llama-server** (inference, port **8080**)
+- **Ghostlink API** (chat / models / settings, port **8003**) — GUI must use this port
 - **React frontend** at http://127.0.0.1:5173
 
-### Demo walkthrough
-A simple product-style demo flow is:
-1. Launch the local control plane and confirm the runtime is online.
-2. Point Ghostlink at a local or remote model endpoint and review the route decision.
-3. Submit a sample request and inspect the queue, placement, and status output.
+Optional:
+```powershell
+# Ollama instead of llama-server
+$env:GHOSTLINK_INFERENCE_BACKEND="ollama"; .\launch.bat
 
-### What to Expect
+# Also start OpenAI-compatible control-plane proxy on :8000 (GUI still uses :8003)
+$env:GHOSTLINK_WITH_CONTROL_PLANE="1"; .\launch.bat
+```
 
-The splash screen shows:
-- GPU/CPU/NPU hardware detected
-- Component status (backend binary, llama-server, model)
-- Service URLs once ready
+Open http://127.0.0.1:5173 → **Models** → load a model → **Chat**.
 
-Open http://127.0.0.1:5173 → **Models tab** → pick a model → **Chat tab** → start chatting.
+> **405 on chat/models?** The GUI was pointed at the wrong port (e.g. control-plane `:8000` or llama-server `:8080`). Always use API base `http://127.0.0.1:8003`.
 
 ## Quick Start (Linux / macOS)
 
 ```bash
-# Prerequisites: Rust, Node.js, CMake, make
-# Install Rust: curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-
+# Prerequisites: Rust, Node.js, curl; cmake optional (prebuilt llama-server fallback)
 cargo build --release -p ghost-link
-
-# Preferred launcher for the full stack
-./launch-complete.sh
-
-# Legacy launcher if you only want the older minimal path
-# ./launch.sh
-
+./launch.sh
+# launch-complete.sh is a thin wrapper around launch.sh
 ```
 
 ## Hardware Detection
@@ -154,67 +116,51 @@ $env:GHOSTLINK_VRAM_GB=8
 $env:GHOSTLINK_COMPUTE_CAPABILITY="gpu"
 ```
 
+## Performance
+
+Sub-microsecond core primitives drive Ghostlink's distributed inference fabric. Benchmarks
+run on an **Intel i7-14700K (Linux/WSL2)** with `RUSTFLAGS="-C target-cpu=native"`.
+
+### Microbenchmarks
+
+| Benchmark | Latency | Throughput |
+|-----------|---------|-----------|
+| Ring buffer push+pop (single-thread) | 1.94 ns | 516 M ops/s |
+| Ring buffer SPSC cross-thread (100k) | 10.67 ns | 93.7 M ops/s |
+| Protocol: DiscoveryFrame encode | 75.80 ns | 13.2 M ops/s |
+| Protocol: DiscoveryFrame decode | 126.82 ns | 7.9 M ops/s |
+| Protocol: encode + decode round-trip | 196.46 ns | 5.1 M ops/s |
+| Planning: 33 layers / 2 nodes | 115.46 ns | 8.7 M ops/s |
+| Planning: 80 layers / 8 nodes | 245.31 ns | 4.1 M ops/s |
+| Planning: autotuned (80 layers, 8 nodes) | 360.99 ns | 2.8 M ops/s |
+| Cluster: register node | 193.04 ns | 5.2 M ops/s |
+| Cluster: snapshot (10 nodes) | 533.40 ns | 1.9 M ops/s |
+| Autotune: detect runtime profile | 166.58 ns | 6.0 M ops/s |
+
+### Pipeline Throughput
+
+| Transport | Tokens / batch | Throughput | Latency |
+|-----------|---------------|-----------|---------|
+| In-process (spin-wait) | 1024 / 128 | 900 K tok/s | 1.14 ms |
+| TCP loopback | 1024 / 128 | 340 K tok/s | 3.01 ms |
+| In-process (spin-wait) | 256 / 32 | 639 K tok/s | 0.40 ms |
+| TCP loopback | 256 / 32 | 236 K tok/s | 1.08 ms |
+
+### Local llama-server tuning
+
+Native nodes enable Flash Attention, VRAM-scaled batch sizes, and Q8_0 KV cache by default. Prefer **Q4_K_M** / **IQ4_XS** over FP16/Q8_0 for ~1.5–2× decode speed. Override with `GHOSTLINK_LLAMA_SERVER_ARGS`. See [docs/LOCAL_INFERENCE_TUNING.md](docs/LOCAL_INFERENCE_TUNING.md).
+
+Compiling with `RUSTFLAGS="-C target-cpu=native"` further improves performance by enabling CPU-specific instruction sets (opt-in; not set by default).
+
 ## Launch Scripts
 
 | Script | Description |
 |--------|-------------|
-| `launch.bat` | Full cinematic launcher — builds llama.cpp, downloads model, starts all services |
-| `launch-fast.bat` | Fast launcher — uses pre-built binary, skips cargo build |
-| `launch-splash.bat` | Hardware detection splash + delegates to `launch-complete.bat` |
-| `launch-complete.bat` | Starts backend, llama-server, and React GUI |
-| `check_hardware.ps1` | Diagnostic — shows detected GPU, NPU, and component status |
-
-## Troubleshooting: Ollama 404 on /api/generate
-
-If Ollama logs show:
-- `GET /api/tags` returns `200`, and
-- `POST /api/generate` returns `404`,
-
-then Ollama is reachable, but the model name/tag sent to generate is not resolvable.
-
-1. Check installed Ollama tags:
-
-```powershell
-ollama list
-```
-
-```bash
-ollama list
-```
-
-2. Verify tags through API:
-
-```powershell
-curl http://127.0.0.1:11434/api/tags
-```
-
-```bash
-curl http://127.0.0.1:11434/api/tags
-```
-
-3. Pull the exact tag you plan to use:
-
-```powershell
-ollama pull qwen2.5:3b
-```
-
-```bash
-ollama pull qwen2.5:3b
-```
-
-4. Select that exact tag in Ghostlink before sending chat requests.
-
-5. If logs show warnings about overridden device visibility, temporarily clear the override and restart services:
-
-```powershell
-setx HSA_OVERRIDE_GFX_VERSION ""
-```
-
-```bash
-unset HSA_OVERRIDE_GFX_VERSION
-```
-
-6. Restart Ollama and Ghostlink after model or environment changes.
+| `launch.bat` | **Windows** — unified launcher (llama-server + API :8003 + GUI :5173) |
+| `launch.sh` | **Linux/macOS** — same stack with hardware detection |
+| `launch-complete.bat` / `launch-complete.sh` | Compatibility wrappers → `launch.bat` / `launch.sh` |
+| `launch-with-control-plane.bat` | Same as `launch.bat` + optional control-plane on :8000 |
+| `launch-ollama.bat` / `launch-native.bat` | Thin wrappers setting `GHOSTLINK_INFERENCE_BACKEND` |
 
 ## Usage (Developer)
 
@@ -227,12 +173,12 @@ cargo build --release -p ghost-link
 # With AMD ROCm support
 cargo build --release -p ghost-link --features rocm
 
-# Generate a placement plan for your hardware
-cargo run -p ghost-link -- plan
-
-# Probe local hardware profile
+# Probe local hardware profile (with auto-tuning cache)
 cargo run -p ghost-link -- probe my-node
 cargo run -p ghost-link -- probe my-node --full
+
+# Generate a placement plan for your hardware
+cargo run -p ghost-link -- plan
 
 # Start the OpenAI-compatible API server
 cargo run -p ghost-link -- serve 127.0.0.1 8003
@@ -256,14 +202,29 @@ cargo run -p ghost-link -- dashboard
 | `/api/models/status` | GET | Loaded model status |
 | `/api/runtime/detect` | GET | Available runtimes (GPU, NPU, CPU) |
 | `/api/runtime/models?runtime=directml` | GET | Models filtered by runtime |
+| `/api/backend/status` | GET | Current backend + available backends |
+| `/api/backend/switch` | POST | Switch inference backend |
 | `/api/metrics` | GET | Performance metrics |
 | `/api/inference/chat` | POST | Chat completion |
 
-## Documentation
+## Troubleshooting
 
-The current operational docs live in [docs/](docs/) and the historical phase/status notes have been moved into [docs/archive/](docs/archive/).
+### Ollama 404 on /api/generate
 
-### Environment Variables
+If Ollama logs show `POST /api/generate` returning `404`:
+
+1. Check installed tags: `ollama list`
+2. Verify tags through API: `curl http://127.0.0.1:11434/api/tags`
+3. Pull the exact tag: `ollama pull qwen2.5:3b`
+4. Select that exact tag in Ghostlink before sending chat requests.
+5. If logs show device visibility overrides: `setx HSA_OVERRIDE_GFX_VERSION ""`
+6. Restart Ollama and Ghostlink after model or environment changes.
+
+### Port Conflicts
+
+Launch scripts check for port conflicts before binding. If you see "address already in use", ensure no stale processes are holding ports 8003 or 8080.
+
+## Environment Variables
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -273,30 +234,40 @@ The current operational docs live in [docs/](docs/) and the historical phase/sta
 | `GHOSTLINK_GPU_NAME` | — | Override detected GPU name |
 | `GHOSTLINK_VRAM_GB` | — | Override detected VRAM |
 | `GHOSTLINK_COMPUTE_CAPABILITY` | — | Override detected compute capability |
-| `GHOSTLINK_RUNTIME` | — | Force a runtime selection: `cuda`, `metal`, `rocm`, `directml`, `npu`, or `cpu` |
-| `GHOSTLINK_FORCE_RUNTIME` | — | When set to `true`, honor `GHOSTLINK_RUNTIME` even if the runtime is not auto-detected |
+| `GHOSTLINK_RUNTIME` | — | Force a runtime selection |
+| `GHOSTLINK_FORCE_RUNTIME` | `false` | When `true`, honor `GHOSTLINK_RUNTIME` even if not auto-detected |
+| `GHOSTLINK_SYSTEM_MEMORY_GB` | — | Override detected system memory |
+| `NPU_DEVICE` / `QUALCOMM_NPU` | — | Enable NPU detection via env |
+
 ### Config File (TOML)
 
 See `ghostlink.toml` for all settings:
 - Node identities and resource overrides
 - Discovery broadcast configuration
-- TCP transport tuning
+- TCP transport tuning (max_inflight, auth_token, reconnect)
 - GUI Python path
 
 ## Architecture
 
 ```
 crates/
-├── ghostlink-core/     # Shared runtime primitives
-│   ├── host.rs          # GPU/NPU/CPU auto-detection
-│   ├── runtime.rs       # Pipeline execution (in-memory, TCP, AF_XDP)
-│   ├── planning.rs      # Layer assignment & quantization
-│   ├── discovery.rs     # UDP broadcast cluster discovery
-│   ├── cluster.rs       # Thread-safe node state & metrics
-│   ├── health.rs        # Network health & fault detection
-│   └── load_balance.rs  # Tensor distribution across nodes
-├── ghost-link/          # CLI demo & API server
-ghostlink_gui_modern/    # React frontend (Vite + Tailwind)
+├── ghostlink-core/         # Shared runtime primitives
+│   ├── ring.rs              # SPSC lock-free ring buffer (spin-wait)
+│   ├── runtime.rs           # Pipeline execution (in-memory, TCP, Unix, AF_XDP)
+│   ├── system_profile.rs    # Cross-platform GPU/NPU/CPU auto-detection
+│   ├── autotune.rs          # Auto-tuning cache with hardware fingerprinting
+│   ├── watcher.rs           # Dynamic hot-plug system profile watcher
+│   ├── host.rs              # Compute host summary
+│   ├── planning.rs          # Layer assignment & quantization
+│   ├── protocol.rs          # Binary frame protocol with CRC32 + HMAC auth
+│   ├── discovery.rs         # UDP broadcast cluster discovery
+│   ├── cluster.rs           # Thread-safe node state & metrics
+│   ├── health.rs            # Network health & fault detection
+│   ├── load_balance.rs      # Tensor distribution across nodes
+│   ├── accelerator.rs       # NPU acceleration detection
+│   └── xdp.rs               # AF_XDP kernel bypass (fallback-safe)
+├── ghost-link/              # CLI demo & API server
+ghostlink_gui_modern/        # React frontend (Vite + Tailwind)
 ```
 
 ## Testing
@@ -307,11 +278,24 @@ cargo test --workspace
 
 # With ROCm feature
 cargo test --workspace --features rocm
+
+# Run benchmarks
+cargo bench --package ghostlink-core
 ```
 
-## Comparison Snapshot
-See [docs/comparison_sheet.md](docs/comparison_sheet.md) for a concise Ghostlink vs. vLLM / DeepSpeed / Ray / TensorRT-LLM positioning sheet.
+### Pre-Push Checklist
+
+Before pushing to CI, run:
+```bash
+cargo fmt --all --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+```
+
+CI enforces the same checks across Ubuntu, Windows, and macOS.
+
+## Contributing
+See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, PR expectations, and release rubric.
 
 ## License
-
 MIT

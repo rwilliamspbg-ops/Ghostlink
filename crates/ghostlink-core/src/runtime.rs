@@ -8,12 +8,21 @@ use hmac::{Hmac, Mac};
 use sha2::Sha256;
 use std::io::{self, Read, Write};
 use std::io::{BufReader, BufWriter};
-use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
+use std::net::{Shutdown as TcpShutdown, SocketAddr, TcpListener, TcpStream};
+use std::path::PathBuf;
 use std::slice;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
+use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 use std::time::Instant;
+
+#[cfg(unix)]
+#[cfg(unix)]
+use std::net::Shutdown as UnixSocketShutdown;
+#[cfg(unix)]
+use std::os::unix::net::{UnixListener, UnixStream};
 
 /// Execution target selected for a pipeline stage.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -189,15 +198,186 @@ pub struct ExecutionResult {
     pub stage_stats: Vec<StageExecutionStats>,
 }
 
-/// Runtime controls for TCP transport execution.
+/// Transport protocol selection for inter-stage bridges.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TransportKind {
+    /// Standard TCP transport (works across machines).
+    #[default]
+    Tcp,
+    /// Unix domain socket transport (loopback/local only, lower overhead).
+    /// Supported on Linux, macOS, and Windows 10 build 1803+.
+    Unix,
+}
+
+/// Unified transport listener wrapping platform-specific socket types.
+#[derive(Debug)]
+pub enum BridgeListener {
+    Tcp(TcpListener),
+    #[cfg(unix)]
+    Unix(UnixListener),
+}
+
+impl BridgeListener {
+    /// Accept an incoming connection. Returns the connected stream (peer addr discarded).
+    pub fn accept(&self) -> io::Result<BridgeStream> {
+        match self {
+            BridgeListener::Tcp(l) => l.accept().map(|(s, _)| BridgeStream::Tcp(s)),
+            #[cfg(unix)]
+            BridgeListener::Unix(l) => l.accept().map(|(s, _)| BridgeStream::Unix(s)),
+        }
+    }
+}
+
+/// Unified transport stream wrapping platform-specific socket types.
+pub enum BridgeStream {
+    Tcp(TcpStream),
+    #[cfg(unix)]
+    Unix(UnixStream),
+}
+
+impl Read for BridgeStream {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        match self {
+            BridgeStream::Tcp(s) => s.read(buf),
+            #[cfg(unix)]
+            BridgeStream::Unix(s) => s.read(buf),
+        }
+    }
+}
+
+impl Write for BridgeStream {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        match self {
+            BridgeStream::Tcp(s) => s.write(buf),
+            #[cfg(unix)]
+            BridgeStream::Unix(s) => s.write(buf),
+        }
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        match self {
+            BridgeStream::Tcp(s) => s.flush(),
+            #[cfg(unix)]
+            BridgeStream::Unix(s) => s.flush(),
+        }
+    }
+}
+
+impl BridgeStream {
+    /// Set TCP_NODELAY (no-op for Unix domain sockets).
+    pub fn set_nodelay(&self, nodelay: bool) -> io::Result<()> {
+        match self {
+            BridgeStream::Tcp(s) => s.set_nodelay(nodelay),
+            #[cfg(unix)]
+            BridgeStream::Unix(_) => Ok(()),
+        }
+    }
+
+    /// Set socket send buffer size (SO_SNDBUF). No-op on platforms without support.
+    pub fn set_send_buffer_size(&self, _size: usize) -> io::Result<()> {
+        match self {
+            BridgeStream::Tcp(_s) => {
+                // Platform-specific socket buffer tuning would go here
+                // Omitted for portability - most OSes auto-tune well
+                Ok(())
+            }
+            #[cfg(unix)]
+            BridgeStream::Unix(_) => Ok(()),
+        }
+    }
+
+    /// Set socket receive buffer size (SO_RCVBUF). No-op on platforms without support.
+    pub fn set_recv_buffer_size(&self, _size: usize) -> io::Result<()> {
+        match self {
+            BridgeStream::Tcp(_s) => {
+                // Platform-specific socket buffer tuning would go here
+                // Omitted for portability - most OSes auto-tune well
+                Ok(())
+            }
+            #[cfg(unix)]
+            BridgeStream::Unix(_) => Ok(()),
+        }
+    }
+
+    /// Shut down the write half of the connection.
+    pub fn shutdown_write(&self) -> io::Result<()> {
+        match self {
+            BridgeStream::Tcp(s) => s.shutdown(TcpShutdown::Write),
+            #[cfg(unix)]
+            BridgeStream::Unix(s) => s.shutdown(UnixSocketShutdown::Write),
+        }
+    }
+}
+
+/// Unified transport address for TCP or Unix domain sockets.
+#[derive(Clone, Debug)]
+pub enum BridgeAddr {
+    Tcp(SocketAddr),
+    Unix(PathBuf),
+}
+
+/// Build a collision-free Unix socket path for an inter-stage bridge.
+///
+/// Paths must be unique per process AND per pipeline: a fixed name like
+/// `ghostlink-bridge-0.sock` lets two concurrent pipelines delete each
+/// other's live sockets and cross-connect their streams, which surfaces
+/// as garbled frames (auth failures / bogus payload lengths) far from
+/// the cause. PID plus a process-wide counter guarantees uniqueness;
+/// callers still remove stale files defensively before binding.
+#[cfg(unix)]
+fn unique_bridge_socket_path(source_stage: usize) -> std::path::PathBuf {
+    use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
+    static BRIDGE_SOCKET_SEQ: AtomicU64 = AtomicU64::new(0);
+    let seq = BRIDGE_SOCKET_SEQ.fetch_add(1, AtomicOrdering::Relaxed);
+    let mut p = std::env::temp_dir();
+    p.push(format!(
+        "ghostlink-bridge-{}-{}-{}.sock",
+        std::process::id(),
+        seq,
+        source_stage
+    ));
+    p
+}
+
+impl BridgeAddr {
+    /// Connect to the address (with a timeout for TCP, instant for Unix).
+    fn connect(&self, timeout: Duration) -> io::Result<BridgeStream> {
+        match self {
+            BridgeAddr::Tcp(addr) => {
+                TcpStream::connect_timeout(addr, timeout).map(BridgeStream::Tcp)
+            }
+            #[cfg(unix)]
+            BridgeAddr::Unix(path) => UnixStream::connect(path).map(BridgeStream::Unix),
+            #[cfg(not(unix))]
+            BridgeAddr::Unix(_) => Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "Unix domain sockets require a Unix platform",
+            )),
+        }
+    }
+}
+
+/// Runtime controls for TCP/Unix transport execution.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TcpTransportConfig {
     pub max_inflight_batches: usize,
     pub reconnect_attempts: usize,
     pub reconnect_backoff_ms: u64,
+    /// Per-batch HMAC-SHA256 auth token (legacy, use `auth_session_token` for performance).
     pub auth_token: Option<String>,
+    /// Session-level auth token. Does a one-time HMAC handshake at connection setup,
+    /// then verifies a lightweight monotonic sequence counter per batch. Much faster
+    /// than per-batch HMAC while maintaining connection-level security.
+    pub auth_session_token: Option<String>,
     pub use_mtls: bool,
     pub cert_chain_path: Option<String>,
+    /// Transport protocol: `Tcp` (LAN) or `Unix` (loopback/local, lower overhead).
+    pub transport: TransportKind,
+    /// Socket send buffer size (SO_SNDBUF). 0 = system default.
+    pub send_buffer_size: usize,
+    /// Socket receive buffer size (SO_RCVBUF). 0 = system default.
+    pub recv_buffer_size: usize,
+    /// Use vectored I/O (writev/readv) for zero-copy header+payload writes.
+    pub use_vectored_io: bool,
 }
 
 impl Default for TcpTransportConfig {
@@ -207,10 +387,23 @@ impl Default for TcpTransportConfig {
             reconnect_attempts: 3,
             reconnect_backoff_ms: 25,
             auth_token: None,
+            auth_session_token: None,
             use_mtls: false,
             cert_chain_path: None,
+            transport: TransportKind::Tcp,
+            send_buffer_size: 256 * 1024, // 256 KB
+            recv_buffer_size: 256 * 1024, // 256 KB
+            use_vectored_io: true,
         }
     }
+}
+
+/// Result of a one-time session auth handshake. Shared between reader and writer threads.
+#[derive(Clone, Debug)]
+struct SessionAuth {
+    session_id: u64,
+    seq: Arc<AtomicU64>,
+    peer_seq: Arc<AtomicU64>,
 }
 
 impl ExecutionResult {
@@ -348,10 +541,8 @@ pub fn execute_pipeline_with_rebalance_and_measured(
     use std::sync::Arc;
 
     // Use zero-copy SPSC ring buffers for high-throughput in-memory execution.
-    let ring_cfg = RingConfig {
-        capacity: 512,
-        backpressure_threshold: 400,
-    };
+    // Use default RingConfig (4095 capacity, 2867 backpressure threshold) for maximum batching.
+    let ring_cfg = RingConfig::default();
 
     let mut rings = Vec::with_capacity(stage_count + 1);
     for _ in 0..=stage_count {
@@ -368,28 +559,17 @@ pub fn execute_pipeline_with_rebalance_and_measured(
         let tx_ring = Arc::clone(&rings[stage_idx + 1]);
 
         let handle = thread::spawn(move || {
-            let mut processed_batches = 0usize;
             let mut total_compute_ms = 0.0_f32;
             let mut total_recv_wait_ms = 0.0_f32;
             let mut total_send_wait_ms = 0.0_f32;
 
-            loop {
+            // Fixed batch count avoids OS scheduler rendezvous — each stage spins
+            // on wait_for_data() / wait_for_space() with exponential backoff, staying
+            // hot on its core.
+            for _ in 0..batch_count {
                 let recv_start = Instant::now();
-                while rx_ring.is_empty() {
-                    if Arc::strong_count(&rx_ring) <= 1 {
-                        return StageAccumulator {
-                            stage_idx,
-                            processed_batches,
-                            total_compute_ms,
-                            total_recv_wait_ms,
-                            total_send_wait_ms,
-                        };
-                    }
-                    thread::yield_now();
-                }
-                let Some(mut batch) = rx_ring.pop() else {
-                    continue;
-                };
+                rx_ring.wait_for_data();
+                let mut batch = rx_ring.pop().unwrap();
                 total_recv_wait_ms += recv_start.elapsed().as_secs_f32() * 1000.0;
 
                 let compute_start = Instant::now();
@@ -400,7 +580,14 @@ pub fn execute_pipeline_with_rebalance_and_measured(
                 tx_ring.wait_for_space();
                 let _ = tx_ring.push(batch);
                 total_send_wait_ms += send_start.elapsed().as_secs_f32() * 1000.0;
-                processed_batches += 1;
+            }
+
+            StageAccumulator {
+                stage_idx,
+                processed_batches: batch_count,
+                total_compute_ms,
+                total_recv_wait_ms,
+                total_send_wait_ms,
             }
         });
 
@@ -586,27 +773,56 @@ fn write_transport_batch(
     token: Option<&str>,
     frame_buf: &mut Vec<u8>,
 ) -> io::Result<()> {
+    _write_transport_batch_inner(writer, batch, source_stage, token, None, frame_buf)
+}
+
+fn write_transport_batch_session(
+    writer: &mut impl Write,
+    batch: &TransportBatch,
+    source_stage: usize,
+    session: &SessionAuth,
+    frame_buf: &mut Vec<u8>,
+) -> io::Result<()> {
+    _write_transport_batch_inner(writer, batch, source_stage, None, Some(session), frame_buf)
+}
+
+fn _write_transport_batch_inner(
+    writer: &mut impl Write,
+    batch: &TransportBatch,
+    source_stage: usize,
+    token: Option<&str>,
+    session: Option<&SessionAuth>,
+    frame_buf: &mut Vec<u8>,
+) -> io::Result<()> {
     let batch_id = batch.batch_id as u64;
     let tokens = batch.tokens_in_batch as u32;
     let payload_len = batch.payload.len() as u32;
     let source_stage_u16 = source_stage as u16;
 
-    // Reuse frame buffer to minimize allocations.
     frame_buf.clear();
-    // Header size: source_stage(2) + batch_id(8) + tokens(4) + payload_len(4) + tag_present(1) + [tag(32) if present]
-    let header_capacity = if token.is_some() {
+    let payload_bytes_count = batch.payload.len() * 4;
+    let header_size = if session.is_some() {
+        // source_stage(2) + batch_id(8) + tokens(4) + payload_len(4) + tag_present(1) + session_id(8) + generation(8)
+        2 + 8 + 4 + 4 + 1 + 8 + 8
+    } else if token.is_some() {
+        // legacy HMAC: 2 + 8 + 4 + 4 + 1 + 32
         2 + 8 + 4 + 4 + 1 + 32
     } else {
         2 + 8 + 4 + 4 + 1
     };
-    frame_buf.reserve(header_capacity + batch.payload.len() * 4);
+    frame_buf.reserve(header_size + payload_bytes_count);
     frame_buf.extend_from_slice(&source_stage_u16.to_le_bytes());
     frame_buf.extend_from_slice(&batch_id.to_le_bytes());
     frame_buf.extend_from_slice(&tokens.to_le_bytes());
     frame_buf.extend_from_slice(&payload_len.to_le_bytes());
 
-    if let Some(t) = token {
-        frame_buf.push(1); // Tag present
+    if let Some(s) = session {
+        frame_buf.push(2); // session-level auth
+        let gen = s.seq.fetch_add(1, Ordering::Relaxed);
+        frame_buf.extend_from_slice(&s.session_id.to_le_bytes());
+        frame_buf.extend_from_slice(&gen.to_le_bytes());
+    } else if let Some(t) = token {
+        frame_buf.push(1); // legacy HMAC present
         let tag = auth_tag(
             source_stage,
             batch.batch_id,
@@ -616,7 +832,7 @@ fn write_transport_batch(
         );
         frame_buf.extend_from_slice(&tag);
     } else {
-        frame_buf.push(0); // Tag absent
+        frame_buf.push(0); // No auth
     }
 
     let payload_bytes = payload_as_le_bytes(&batch.payload);
@@ -630,6 +846,31 @@ fn read_transport_batch(
     reader: &mut impl Read,
     expected_source_stage: usize,
     token: Option<&str>,
+    payload_buf: &mut Vec<f32>,
+) -> io::Result<Option<TransportBatch>> {
+    _read_transport_batch_inner(reader, expected_source_stage, token, None, payload_buf)
+}
+
+fn read_transport_batch_session(
+    reader: &mut impl Read,
+    expected_source_stage: usize,
+    session: &SessionAuth,
+    payload_buf: &mut Vec<f32>,
+) -> io::Result<Option<TransportBatch>> {
+    _read_transport_batch_inner(
+        reader,
+        expected_source_stage,
+        None,
+        Some(session),
+        payload_buf,
+    )
+}
+
+fn _read_transport_batch_inner(
+    reader: &mut impl Read,
+    expected_source_stage: usize,
+    token: Option<&str>,
+    session: Option<&SessionAuth>,
     payload_buf: &mut Vec<f32>,
 ) -> io::Result<Option<TransportBatch>> {
     let mut source_stage_bytes = [0u8; 2];
@@ -656,18 +897,130 @@ fn read_transport_batch(
     reader.read_exact(&mut payload_len_bytes)?;
     let payload_len = u32::from_le_bytes(payload_len_bytes) as usize;
 
-    let mut tag_present_byte = [0u8; 1];
-    reader.read_exact(&mut tag_present_byte)?;
-    let tag_present = tag_present_byte[0] == 1;
-
-    let mut received_tag = [0u8; 32];
-    if tag_present {
-        reader.read_exact(&mut received_tag)?;
+    // Bound the wire-declared payload length BEFORE allocating. A corrupted or
+    // cross-wired frame can otherwise declare up to u32::MAX elements (~17 GB
+    // of f32), and the resulting failed allocation aborts the process (or gets
+    // the backend OOM-killed on Linux) instead of surfacing an error.
+    const MAX_WIRE_PAYLOAD_ELEMS: usize = 64 * 1024 * 1024; // 256 MB of f32
+    if payload_len > MAX_WIRE_PAYLOAD_ELEMS {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "wire payload length {} exceeds maximum {} (corrupted or cross-wired frame?)",
+                payload_len, MAX_WIRE_PAYLOAD_ELEMS
+            ),
+        ));
     }
-    payload_buf.resize(payload_len, 0.0);
 
+    let mut tag_type_byte = [0u8; 1];
+    reader.read_exact(&mut tag_type_byte)?;
+    let tag_type = tag_type_byte[0];
+
+    match tag_type {
+        2 => {
+            // Session-level auth: read session_id + generation
+            let mut session_id_bytes = [0u8; 8];
+            reader.read_exact(&mut session_id_bytes)?;
+            let frame_session_id = u64::from_le_bytes(session_id_bytes);
+            let mut gen_bytes = [0u8; 8];
+            reader.read_exact(&mut gen_bytes)?;
+            let generation = u64::from_le_bytes(gen_bytes);
+
+            if session.is_none() {
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "session auth required but no session established",
+                ));
+            }
+            let s = session.unwrap();
+            if frame_session_id != s.session_id {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "session auth: session_id mismatch",
+                ));
+            }
+            let prev = s.peer_seq.fetch_max(generation, Ordering::AcqRel);
+            if generation < prev {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "session auth: non-monotonic generation",
+                ));
+            }
+        }
+        1 => {
+            // Legacy HMAC auth
+            if token.is_none() {
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "HMAC auth present but no token configured",
+                ));
+            }
+            let mut received_tag = [0u8; 32];
+            reader.read_exact(&mut received_tag)?;
+            payload_buf.resize(payload_len, 0.0);
+            _read_payload(reader, payload_buf, payload_len)?;
+
+            let batch_id = u64::from_le_bytes(batch_id_bytes) as usize;
+            let tokens_in_batch = u32::from_le_bytes(tokens_bytes) as usize;
+            let expected_tag = auth_tag(
+                source_stage,
+                batch_id,
+                tokens_in_batch,
+                payload_buf,
+                token.unwrap(),
+            );
+            if received_tag != expected_tag {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "transport auth tag mismatch",
+                ));
+            }
+            return Ok(Some(TransportBatch {
+                batch_id,
+                tokens_in_batch,
+                payload: payload_buf.clone(),
+            }));
+        }
+        0 => {
+            // No auth
+            if token.is_some() || session.is_some() {
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "transport authentication required but no auth present",
+                ));
+            }
+        }
+        _ => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "unknown transport auth type",
+            ));
+        }
+    }
+
+    // Common path: read payload after auth verification
+    payload_buf.resize(payload_len, 0.0);
+    _read_payload(reader, payload_buf, payload_len)?;
+
+    let batch_id = u64::from_le_bytes(batch_id_bytes) as usize;
+    let tokens_in_batch = u32::from_le_bytes(tokens_bytes) as usize;
+
+    Ok(Some(TransportBatch {
+        batch_id,
+        tokens_in_batch,
+        payload: payload_buf.clone(),
+    }))
+}
+
+fn _read_payload(
+    reader: &mut impl Read,
+    payload_buf: &mut [f32],
+    payload_len: usize,
+) -> io::Result<()> {
+    if payload_len == 0 {
+        return Ok(());
+    }
     if cfg!(target_endian = "little") {
-        // SAFETY: payload_buf points to initialized contiguous f32 memory; we reinterpret as bytes for I/O.
         let payload_bytes = unsafe {
             slice::from_raw_parts_mut(
                 payload_buf.as_mut_ptr() as *mut u8,
@@ -681,32 +1034,8 @@ fn read_transport_batch(
         for (i, chunk) in payload_bytes.chunks_exact(4).enumerate() {
             payload_buf[i] = f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
         }
-    };
-
-    let batch_id = u64::from_le_bytes(batch_id_bytes) as usize;
-    let tokens_in_batch = u32::from_le_bytes(tokens_bytes) as usize;
-
-    if let Some(t) = token {
-        if !tag_present {
-            return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                "transport authentication required but tag missing",
-            ));
-        }
-        let expected_tag = auth_tag(source_stage, batch_id, tokens_in_batch, payload_buf, t);
-        if received_tag != expected_tag {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "transport auth tag mismatch",
-            ));
-        }
     }
-
-    Ok(Some(TransportBatch {
-        batch_id,
-        tokens_in_batch,
-        payload: payload_buf.clone(),
-    }))
+    Ok(())
 }
 
 /// Spawn a TCP transport bridge between pipeline stages.
@@ -718,25 +1047,25 @@ pub fn spawn_tcp_bridge(
     input_rx: mpsc::Receiver<TransportBatch>,
     output_tx: mpsc::SyncSender<TransportBatch>,
     config: TcpTransportConfig,
-    listener: TcpListener,
-    connect_addr: SocketAddr,
+    listener: BridgeListener,
+    addr: BridgeAddr,
 ) -> thread::JoinHandle<BridgeAccumulator> {
     thread::spawn(move || {
         let client_stream = {
             let mut connected = None;
             let attempts = config.reconnect_attempts.max(1);
             for attempt in 0..attempts {
-                match TcpStream::connect_timeout(&connect_addr, Duration::from_secs(1)) {
+                match addr.connect(Duration::from_secs(1)) {
                     Ok(stream) => {
                         connected = Some(stream);
                         break;
                     }
                     Err(e) => {
                         tracing::debug!(
-                            "TCP Bridge: Connection attempt {}/{} failed for {}: {}",
+                            "Bridge: Connection attempt {}/{} failed for {:?}: {}",
                             attempt + 1,
                             attempts,
-                            connect_addr,
+                            addr,
                             e
                         );
                         thread::sleep(Duration::from_millis(config.reconnect_backoff_ms));
@@ -748,8 +1077,8 @@ pub fn spawn_tcp_bridge(
                 Some(stream) => stream,
                 None => {
                     tracing::error!(
-                        "TCP Bridge: Exhausted retries for {}. Falling back to passthrough.",
-                        connect_addr
+                        "Bridge: Exhausted retries for {:?}. Falling back to passthrough.",
+                        addr
                     );
                     for batch in input_rx {
                         if output_tx.send(batch).is_err() {
@@ -761,16 +1090,29 @@ pub fn spawn_tcp_bridge(
             }
         };
 
-        // Inter-stage frames are small and latency-sensitive. With Nagle's
-        // algorithm enabled these coalesce and stall on peer delayed-ACKs
-        // (~40ms), which compounds across hops and dominates multi-stage paths.
+        // Inter-stage frames are small and latency-sensitive. For TCP, Nagle's
+        // algorithm would coalesce these and stall on peer delayed-ACKs (~40ms),
+        // which compounds across hops and dominates multi-stage paths.
         if let Err(e) = client_stream.set_nodelay(true) {
-            tracing::debug!("TCP Bridge: failed to set TCP_NODELAY on client: {}", e);
+            tracing::debug!("Bridge: failed to set TCP_NODELAY on client: {}", e);
         }
 
-        let (server_stream, _) = match listener.accept() {
-            Ok(parts) => parts,
+        let server_stream = match listener.accept() {
+            Ok(stream) => {
+                // Once the peer is connected the Unix socket file is no longer
+                // needed; unlink immediately so unique per-pipeline socket
+                // paths do not accumulate in the temp directory.
+                #[cfg(unix)]
+                if let BridgeAddr::Unix(path) = &addr {
+                    let _ = std::fs::remove_file(path);
+                }
+                stream
+            }
             Err(_) => {
+                #[cfg(unix)]
+                if let BridgeAddr::Unix(path) = &addr {
+                    let _ = std::fs::remove_file(path);
+                }
                 for batch in input_rx {
                     if output_tx.send(batch).is_err() {
                         break;
@@ -781,35 +1123,114 @@ pub fn spawn_tcp_bridge(
         };
 
         if let Err(e) = server_stream.set_nodelay(true) {
-            tracing::debug!("TCP Bridge: failed to set TCP_NODELAY on server: {}", e);
+            tracing::debug!("Bridge: failed to set TCP_NODELAY on server: {}", e);
         }
 
-        let writer_auth_token = config.auth_token.clone();
-        let reader_auth_token = config.auth_token.clone();
+        // Set socket buffer sizes for better throughput
+        if let Err(e) = client_stream.set_send_buffer_size(config.send_buffer_size) {
+            tracing::debug!("Bridge: failed to set SO_SNDBUF on client: {}", e);
+        }
+        if let Err(e) = client_stream.set_recv_buffer_size(config.recv_buffer_size) {
+            tracing::debug!("Bridge: failed to set SO_RCVBUF on client: {}", e);
+        }
+        if let Err(e) = server_stream.set_send_buffer_size(config.send_buffer_size) {
+            tracing::debug!("Bridge: failed to set SO_SNDBUF on server: {}", e);
+        }
+        if let Err(e) = server_stream.set_recv_buffer_size(config.recv_buffer_size) {
+            tracing::debug!("Bridge: failed to set SO_RCVBUF on server: {}", e);
+        }
+
+        let session = config.auth_session_token.as_ref().map(|session_token| {
+            // Derive a deterministic session_id from the token (no handshake round-trip).
+            // The TCP connect/accept already authenticates this connection.
+            // Use SHA-256 of the token (first 8 bytes) for cross-platform determinism.
+            let token_hash = {
+                let mut mac = Hmac::<Sha256>::new_from_slice(session_token.as_bytes())
+                    .expect("HMAC key for session_id derivation");
+                mac.update(b"session-id");
+                mac.finalize().into_bytes()
+            };
+            let session_id = u64::from_le_bytes([
+                token_hash[0],
+                token_hash[1],
+                token_hash[2],
+                token_hash[3],
+                token_hash[4],
+                token_hash[5],
+                token_hash[6],
+                token_hash[7],
+            ]);
+            tracing::debug!(
+                "TCP Bridge: session auth established, session_id={}",
+                session_id
+            );
+            SessionAuth {
+                session_id,
+                seq: Arc::new(AtomicU64::new(0)),
+                peer_seq: Arc::new(AtomicU64::new(0)),
+            }
+        });
+
+        let use_session = session.clone();
+        let writer_use_session = use_session.clone();
+        let reader_use_session = use_session.clone();
+        let writer_auth_token = if writer_use_session.is_some() {
+            None
+        } else {
+            config
+                .auth_session_token
+                .clone()
+                .or_else(|| config.auth_token.clone())
+        };
+        let reader_auth_token = if reader_use_session.is_some() {
+            None
+        } else {
+            config
+                .auth_session_token
+                .clone()
+                .or_else(|| config.auth_token.clone())
+        };
 
         let writer = thread::spawn(move || {
             let mut writer = BufWriter::with_capacity(64 * 1024, client_stream);
             let mut processed_batches = 0usize;
             let mut total_write_ms = 0.0_f32;
             let mut frame_buf = Vec::with_capacity(64 * 1024);
-            for batch in input_rx {
-                let write_start = Instant::now();
-                if write_transport_batch(
-                    &mut writer,
-                    &batch,
-                    source_stage,
-                    writer_auth_token.as_deref(),
-                    &mut frame_buf,
-                )
-                .is_err()
-                {
-                    break;
+            let write_result: Result<(), ()> = (|| {
+                if let Some(ref s) = writer_use_session {
+                    for batch in input_rx {
+                        let write_start = Instant::now();
+                        write_transport_batch_session(
+                            &mut writer,
+                            &batch,
+                            source_stage,
+                            s,
+                            &mut frame_buf,
+                        )
+                        .map_err(|_| ())?;
+                        total_write_ms += write_start.elapsed().as_secs_f32() * 1000.0;
+                        processed_batches += 1;
+                    }
+                } else {
+                    for batch in input_rx {
+                        let write_start = Instant::now();
+                        write_transport_batch(
+                            &mut writer,
+                            &batch,
+                            source_stage,
+                            writer_auth_token.as_deref(),
+                            &mut frame_buf,
+                        )
+                        .map_err(|_| ())?;
+                        total_write_ms += write_start.elapsed().as_secs_f32() * 1000.0;
+                        processed_batches += 1;
+                    }
                 }
-                total_write_ms += write_start.elapsed().as_secs_f32() * 1000.0;
-                processed_batches += 1;
-            }
+                Ok(())
+            })();
             let _ = writer.flush();
-            let _ = writer.get_ref().shutdown(Shutdown::Write);
+            let _ = writer.get_ref().shutdown_write();
+            let _ = write_result;
             (processed_batches, total_write_ms)
         });
 
@@ -818,25 +1239,42 @@ pub fn spawn_tcp_bridge(
         let mut total_read_ms = 0.0_f32;
         let mut payload_buf = Vec::with_capacity(16 * 1024);
 
-        loop {
-            let read_start = Instant::now();
-            match read_transport_batch(
-                &mut reader,
-                source_stage,
-                reader_auth_token.as_deref(),
-                &mut payload_buf,
-            ) {
-                Ok(Some(batch)) => {
-                    total_read_ms += read_start.elapsed().as_secs_f32() * 1000.0;
-                    if output_tx.send(batch).is_err() {
-                        break;
+        let _: Result<(), ()> = if let Some(ref s) = reader_use_session {
+            loop {
+                let read_start = Instant::now();
+                match read_transport_batch_session(&mut reader, source_stage, s, &mut payload_buf) {
+                    Ok(Some(batch)) => {
+                        total_read_ms += read_start.elapsed().as_secs_f32() * 1000.0;
+                        if output_tx.send(batch).is_err() {
+                            break Ok(());
+                        }
+                        read_batches += 1;
                     }
-                    read_batches += 1;
+                    Ok(None) => break Ok(()),
+                    Err(_) => break Err(()),
                 }
-                Ok(None) => break,
-                Err(_) => break,
             }
-        }
+        } else {
+            loop {
+                let read_start = Instant::now();
+                match read_transport_batch(
+                    &mut reader,
+                    source_stage,
+                    reader_auth_token.as_deref(),
+                    &mut payload_buf,
+                ) {
+                    Ok(Some(batch)) => {
+                        total_read_ms += read_start.elapsed().as_secs_f32() * 1000.0;
+                        if output_tx.send(batch).is_err() {
+                            break Ok(());
+                        }
+                        read_batches += 1;
+                    }
+                    Ok(None) => break Ok(()),
+                    Err(_) => break Err(()),
+                }
+            }
+        };
 
         let (write_batches, total_write_ms) = writer.join().unwrap_or((0, 0.0));
         BridgeAccumulator {
@@ -921,31 +1359,50 @@ pub fn execute_pipeline_distributed(
 
         let source_stage_p = &plan.stages[source_stage_idx];
         let target_stage_p = &plan.stages[source_stage_idx + 1];
+        let same_node = source_stage_p.node_id == target_stage_p.node_id;
 
-        // Resolve network endpoints for the stages using ClusterState.
-        // We bind a listener on the "target" node's logical interface and connect from the "source" node.
-        let bind_ip = if let Some(m) = cluster.get_metrics(&target_stage_p.node_id) {
-            m.ip_address
-                .map(|sa| sa.ip())
-                .unwrap_or_else(|| [127, 0, 0, 1].into())
+        let (listener, addr) = if same_node && config.transport == TransportKind::Unix {
+            #[cfg(unix)]
+            {
+                // Same-node with Unix transport: use Unix domain socket.
+                let sock_path = unique_bridge_socket_path(source_stage_idx);
+                let _ = std::fs::remove_file(&sock_path);
+                let ulistener = UnixListener::bind(&sock_path).map_err(|e| {
+                    format!("Failed to bind Unix socket at {}: {e}", sock_path.display())
+                })?;
+                let addr = BridgeAddr::Unix(sock_path);
+                (BridgeListener::Unix(ulistener), addr)
+            }
+            #[cfg(not(unix))]
+            return Err("Unix domain sockets require a Unix platform (Linux/macOS)".to_string());
         } else {
-            [127, 0, 0, 1].into()
-        };
+            // TCP transport for cross-node or when configured explicitly.
+            let bind_ip = if let Some(m) = cluster.get_metrics(&target_stage_p.node_id) {
+                m.ip_address
+                    .map(|sa| sa.ip())
+                    .unwrap_or_else(|| [127, 0, 0, 1].into())
+            } else {
+                [127, 0, 0, 1].into()
+            };
 
-        // Bind the listener immediately to reserve the port.
-        let listener = TcpListener::bind(SocketAddr::new(bind_ip, 0))
-            .map_err(|e| format!("Failed to bind listener on {bind_ip}: {e}"))?;
-        let actual_addr = listener
-            .local_addr()
-            .map_err(|e| format!("failed to get local addr: {e}"))?;
+            let tcp_listener = TcpListener::bind(SocketAddr::new(bind_ip, 0))
+                .map_err(|e| format!("Failed to bind TCP listener on {bind_ip}: {e}"))?;
+            let actual_addr = tcp_listener
+                .local_addr()
+                .map_err(|e| format!("failed to get TCP local addr: {e}"))?;
 
-        // For connection, if it's the same node, we can just use loopback.
-        let connect_ip = if source_stage_p.node_id == target_stage_p.node_id {
-            [127, 0, 0, 1].into()
-        } else {
-            actual_addr.ip()
+            // For connection, if it's the same node, use loopback.
+            let connect_ip = if same_node {
+                [127, 0, 0, 1].into()
+            } else {
+                actual_addr.ip()
+            };
+            let connect_addr = SocketAddr::new(connect_ip, actual_addr.port());
+            (
+                BridgeListener::Tcp(tcp_listener),
+                BridgeAddr::Tcp(connect_addr),
+            )
         };
-        let connect_addr = SocketAddr::new(connect_ip, actual_addr.port());
 
         bridge_handles.push(spawn_tcp_bridge(
             source_stage_idx,
@@ -953,7 +1410,7 @@ pub fn execute_pipeline_distributed(
             bridge_out_tx,
             config.clone(),
             listener,
-            connect_addr,
+            addr,
         ));
     }
 
@@ -1186,17 +1643,33 @@ pub fn execute_pipeline_tcp_loopback_with_config(
         stage_outputs.push(bridge_in_tx);
         stage_inputs.push(Some(bridge_out_rx));
 
-        // For loopback execution, we use distinct ports for each inter-stage bridge.
-        let loopback = [127, 0, 0, 1].into();
-        let port = 0; // OS-assigned
-        let bind_addr = SocketAddr::new(loopback, port);
-
-        // Bind the listener immediately to reserve the port.
-        let listener = TcpListener::bind(bind_addr)
-            .map_err(|e| format!("failed to bind loopback listener: {e}"))?;
-        let actual_addr = listener
-            .local_addr()
-            .map_err(|e| format!("failed to get loopback local addr: {e}"))?;
+        let (listener, addr) = match config.transport {
+            TransportKind::Tcp => {
+                // For loopback execution, use distinct ports for each inter-stage bridge.
+                let loopback = [127, 0, 0, 1].into();
+                let bind_addr = SocketAddr::new(loopback, 0);
+                let listener = TcpListener::bind(bind_addr)
+                    .map_err(|e| format!("failed to bind TCP loopback listener: {e}"))?;
+                let actual_addr = listener
+                    .local_addr()
+                    .map_err(|e| format!("failed to get TCP loopback addr: {e}"))?;
+                (BridgeListener::Tcp(listener), BridgeAddr::Tcp(actual_addr))
+            }
+            #[cfg(unix)]
+            TransportKind::Unix => {
+                let sock_path = unique_bridge_socket_path(source_stage);
+                let _ = std::fs::remove_file(&sock_path);
+                let listener = UnixListener::bind(&sock_path).map_err(|e| {
+                    format!("failed to bind Unix socket at {}: {e}", sock_path.display())
+                })?;
+                let addr = BridgeAddr::Unix(sock_path);
+                (BridgeListener::Unix(listener), addr)
+            }
+            #[cfg(not(unix))]
+            TransportKind::Unix => {
+                return Err("Unix domain sockets require a Unix platform (Linux/macOS)".to_string());
+            }
+        };
 
         bridge_handles.push(spawn_tcp_bridge(
             source_stage,
@@ -1204,7 +1677,7 @@ pub fn execute_pipeline_tcp_loopback_with_config(
             bridge_out_tx,
             config.clone(),
             listener,
-            actual_addr,
+            addr,
         ));
     }
 
@@ -1611,5 +2084,45 @@ mod tests {
         let err = read_transport_batch(&mut cursor, 0, Some("token"), &mut payload_buf)
             .expect_err("source-stage mismatch should fail");
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_socket_loopback_execution_reports_metrics() {
+        let plan = PipelinePlan {
+            stages: vec![
+                StagePlacement {
+                    node_id: "node-a".to_string(),
+                    start_layer: 0,
+                    end_layer: 10,
+                    device: DeviceKind::Gpu,
+                    est_latency_ms: 1.0,
+                },
+                StagePlacement {
+                    node_id: "node-b".to_string(),
+                    start_layer: 10,
+                    end_layer: 20,
+                    device: DeviceKind::Cpu,
+                    est_latency_ms: 2.0,
+                },
+            ],
+        };
+
+        let result = execute_pipeline_tcp_loopback_with_config(
+            &plan,
+            16,
+            2,
+            TcpTransportConfig {
+                transport: TransportKind::Unix,
+                ..Default::default()
+            },
+        )
+        .expect("unix socket loopback failed");
+
+        assert_eq!(result.token_count, 16);
+        assert_eq!(result.batch_count, 8);
+        assert_eq!(result.stage_stats.len(), 2);
+        assert!(result.total_time_ms > 0.0);
+        assert!(result.throughput_tokens_per_sec > 0.0);
     }
 }

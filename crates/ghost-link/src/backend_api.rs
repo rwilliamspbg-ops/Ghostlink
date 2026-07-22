@@ -121,9 +121,9 @@ pub async fn handle_switch_backend(Json(payload): Json<SwitchBackendRequest>) ->
     }
 
     // Switch to the backend with request draining and env updates
-    match switcher.switch_backend(&registry, backend.clone()).await {
+    match switcher.switch_backend(&registry, backend).await {
         Ok(result) => {
-            if let Err(err) = config_manager.save_preferred_backend(backend.clone()) {
+            if let Err(err) = config_manager.save_preferred_backend(backend) {
                 let _ = switcher.rollback_backend(&registry, previous_backend).await;
                 let response = Json(serde_json::json!({
                     "status": "error",

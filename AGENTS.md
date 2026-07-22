@@ -48,7 +48,7 @@
 
 ## Known Issues
 1. `Qwen3.5-4B-BF16.gguf` is corrupt — renamed to `.bak`
-2. `/api/metrics` hangs on simulated backend — no GPU present
+2. ~~`/api/metrics` hangs~~ — fixed: background host sampler + real tok/s/p50/p95 from chat
 3. Worker networking is local-only — discovery only detects same LAN
 4. No auth enforcement — discovery token configured but not enforced
 5. Linux OOM with large models — default models now tiny (15M/1.1B); avoid loading 7B+ without sufficient RAM
@@ -57,14 +57,17 @@
 ## To Restart
 ```powershell
 cd C:\Users\rwill\Ghostlink
-launch-complete.bat
+.\launch.bat
 ```
 
 For Linux:
 ```bash
 cd ~/Ghostlink
-bash launch-complete.sh
+./launch.sh
 ```
+
+**Ports:** GUI → API `:8003` only. Inference is `:8080` (llama-server) or `:11434` (ollama).
+Pointing the GUI at `:8000`/`:8080` caused **405** on chat/models — fixed in unified launchers.
 
 ## Models on Disk
 - `models/stories15M-q4_0.gguf` (~19 MB)

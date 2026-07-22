@@ -263,8 +263,29 @@ export class GhostlinkAPI {
 
   async getMetrics(): Promise<{ metrics: Metric; error?: string }> {
     try {
-      const response = await this.http.get('/api/metrics');
-      return { metrics: response.data.metrics };
+      // Short timeout — metrics must never block the UI like long chat calls.
+      const response = await this.http.get('/api/metrics', { timeout: 4000 });
+      const raw = response.data?.metrics ?? {};
+      const metrics: Metric = {
+        throughput: Number(raw.throughput) || 0,
+        cpu: Number(raw.cpu) || 0,
+        memory: Number(raw.memory) || 0,
+        gpu: Number(raw.gpu) || 0,
+        latency_p50: Number(raw.latency_p50) || 0,
+        latency_p95: Number(raw.latency_p95) || 0,
+        active_nodes: Number(raw.active_nodes) || 0,
+        total_vram_gb: Number(raw.total_vram_gb) || 0,
+        total_memory_gb: Number(raw.total_memory_gb) || 0,
+        used_memory_gb: Number(raw.used_memory_gb) || 0,
+        gpu_available: Boolean(raw.gpu_available),
+        real_inference: Boolean(raw.real_inference),
+        samples: Number(raw.samples) || 0,
+        last_latency_ms: Number(raw.last_latency_ms) || 0,
+        last_tokens: Number(raw.last_tokens) || 0,
+        uptime_s: Number(raw.uptime_s) || 0,
+        inference_backend: raw.inference_backend ? String(raw.inference_backend) : undefined,
+      };
+      return { metrics };
     } catch (error: any) {
       return { metrics: {} as Metric, error: error.message };
     }
