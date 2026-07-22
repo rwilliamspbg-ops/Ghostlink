@@ -49,3 +49,6 @@ tokio-stream = { version = "0.1", features = ["sync"] }
 
 # UUID for chat completions
 uuid = { version = "1", features = ["v4"] }
+
+# Host CPU / memory sampling for /api/metrics
+sysinfo = "0.33"

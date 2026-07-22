@@ -8,9 +8,14 @@ use std::collections::hash_map::DefaultHasher;
 use std::fs;
 use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
+use std::sync::Mutex;
 
 use crate::host::RuntimeProfile;
 use crate::system_profile::SystemProfile;
+
+/// In-memory cache of the last-computed AutoTuner.
+/// Avoids re-tuning on repeated calls within the same process lifetime.
+static TUNE_CACHE: Mutex<Option<AutoTuner>> = Mutex::new(None);
 
 // ---------------------------------------------------------------------------
 // AutoTuner
@@ -53,42 +58,47 @@ pub struct WorkerPoolConfig {
 
 impl AutoTuner {
     /// Tune all subsystems from a `SystemProfile`.
+    /// Results are cached in-memory to avoid re-tuning on repeated calls.
     pub fn from_system_profile(profile: &SystemProfile) -> Self {
-        let fingerprint = compute_fingerprint(profile);
-        let tuned_at = now_iso8601();
-
-        // Convert to RuntimeProfile for backward-compat tuning helpers
-        let rp: RuntimeProfile = profile.into();
-
-        let health_config = super::health::HealthConfig::autotuned(&rp);
-        let load_balance_config = super::load_balance::LoadBalanceConfig::autotuned(&rp);
-        let planning_tuning = super::planning::PlanningTuning::from_runtime_profile(&rp, 40);
-
-        let tcp_config = tune_tcp(profile, &rp);
-        let worker_pool = tune_worker_pool(profile, &rp);
-
-        Self {
-            fingerprint,
-            tuned_at,
-            health_config,
-            load_balance_config,
-            planning_tuning,
-            tcp_config,
-            worker_pool,
+        let fp = compute_fingerprint(profile);
+        {
+            let cache = TUNE_CACHE.lock().unwrap();
+            if let Some(cached) = cache.as_ref() {
+                if cached.fingerprint == fp {
+                    return cached.clone();
+                }
+            }
         }
+        let tuner = tune(profile);
+        let mut cache = TUNE_CACHE.lock().unwrap();
+        *cache = Some(tuner.clone());
+        tuner
     }
 
     /// Load a previously cached `AutoTuner` if the hardware fingerprint matches.
+    /// Checks the in-memory cache first, then falls back to disk.
     pub fn load_cache() -> Option<Self> {
+        // Fast path: in-memory cache hit
+        {
+            let cache = TUNE_CACHE.lock().unwrap();
+            if let Some(cached) = cache.as_ref() {
+                return Some(cached.clone());
+            }
+        }
+
+        // Slow path: try disk
         let path = cache_path()?;
         let data = fs::read_to_string(&path).ok()?;
-        let cached: Self = serde_json::from_str(&data).ok()?;
+        let cached: AutoTuner = serde_json::from_str(&data).ok()?;
 
-        // Validate fingerprint against current hardware
         let current = SystemProfile::detect_fast();
         if cached.fingerprint != compute_fingerprint(&current) {
-            return None; // hardware changed, re-tune
+            return None;
         }
+
+        // Populate in-memory cache for next time
+        let mut cache = TUNE_CACHE.lock().unwrap();
+        *cache = Some(cached.clone());
         Some(cached)
     }
 
@@ -118,6 +128,22 @@ impl AutoTuner {
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
+
+fn tune(profile: &SystemProfile) -> AutoTuner {
+    let fingerprint = compute_fingerprint(profile);
+    let tuned_at = now_iso8601();
+    let rp: RuntimeProfile = profile.into();
+
+    AutoTuner {
+        fingerprint,
+        tuned_at,
+        health_config: super::health::HealthConfig::autotuned(&rp),
+        load_balance_config: super::load_balance::LoadBalanceConfig::autotuned(&rp),
+        planning_tuning: super::planning::PlanningTuning::from_runtime_profile(&rp, 40),
+        tcp_config: tune_tcp(profile, &rp),
+        worker_pool: tune_worker_pool(profile, &rp),
+    }
+}
 
 fn compute_fingerprint(profile: &SystemProfile) -> u64 {
     let mut hasher = DefaultHasher::new();

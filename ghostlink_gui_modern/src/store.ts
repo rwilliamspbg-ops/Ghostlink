@@ -16,6 +16,17 @@ export interface Metric {
   gpu: number;
   latency_p50: number;
   latency_p95: number;
+  active_nodes?: number;
+  total_vram_gb?: number;
+  total_memory_gb?: number;
+  used_memory_gb?: number;
+  gpu_available?: boolean;
+  real_inference?: boolean;
+  samples?: number;
+  last_latency_ms?: number;
+  last_tokens?: number;
+  uptime_s?: number;
+  inference_backend?: string;
 }
 
 export interface Session {

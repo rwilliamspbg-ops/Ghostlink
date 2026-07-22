@@ -2,6 +2,11 @@
 //!
 //! This implementation uses pinned allocations and proper memory ordering
 //! for single-producer/single-consumer DMA-style hand-off.
+//!
+//! Optimizations:
+//! - 4x larger capacity (4096) for better batching
+//! - Prefetching in hot paths for cache-friendly access
+//! - Optimal cache-line padding (128 bytes) to avoid false sharing
 
 use std::cell::UnsafeCell;
 use std::mem::MaybeUninit;
@@ -19,14 +24,42 @@ pub struct RingConfig {
 impl Default for RingConfig {
     fn default() -> Self {
         Self {
-            capacity: 1023,              // Must be < RING_CAPACITY to avoid wraparound aliasing
-            backpressure_threshold: 716, // ~70% of 1023, // 70% of 1024
+            capacity: 4095,               // 4x larger for better batching
+            backpressure_threshold: 2867, // ~70% of 4095
         }
     }
 }
 
-/// Fixed capacity used for DMA alignment
-const RING_CAPACITY: usize = 1024;
+/// Fixed capacity used for DMA alignment (power of 2 for fast modulo)
+const RING_CAPACITY: usize = 4096;
+const CACHE_LINE: usize = 128; // 128-byte cache lines on modern x86/ARM
+
+/// Prefetch hint for read access (equivalent to `prefetcht0` on x86)
+#[inline(always)]
+fn prefetch_read<T>(ptr: *const T) {
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    unsafe {
+        std::arch::x86_64::_mm_prefetch(ptr as *const i8, std::arch::x86_64::_MM_HINT_T0);
+    }
+    #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
+    {
+        // On other platforms, hint to compiler/CPU
+        std::hint::black_box(ptr);
+    }
+}
+
+/// Prefetch hint for write access (equivalent to `prefetchw` on x86)
+#[inline(always)]
+fn prefetch_write<T>(ptr: *mut T) {
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    unsafe {
+        std::arch::x86_64::_mm_prefetch(ptr as *const i8, std::arch::x86_64::_MM_HINT_ET1);
+    }
+    #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
+    {
+        std::hint::black_box(ptr);
+    }
+}
 
 /// Zero-copy SPSC ring buffer with proper memory ordering
 ///
@@ -37,25 +70,25 @@ const RING_CAPACITY: usize = 1024;
 /// - Memory is properly aligned for the element type T
 #[derive(Debug)]
 pub struct SpscRingBuffer<T> {
-    /// Buffer of uninitialized elements
+    /// Buffer of uninitialized elements (aligned to cache line)
     buffer: UnsafeCell<[MaybeUninit<T>; RING_CAPACITY]>,
 
     /// Padding to prevent false sharing between buffer and head
-    _pad1: [u8; 64],
+    _pad1: [u8; CACHE_LINE],
     /// Current head position (consumer reads here)
     head: AtomicUsize,
     /// Cached tail for consumer to avoid reading shared tail
     cached_tail: AtomicUsize,
 
     /// Padding to prevent false sharing between head and tail
-    _pad2: [u8; 64],
+    _pad2: [u8; CACHE_LINE],
     /// Current tail position (producer writes here)
     tail: AtomicUsize,
     /// Cached head for producer to avoid reading shared head
     cached_head: AtomicUsize,
 
     /// Padding to prevent false sharing between tail and other counters
-    _pad3: [u8; 64],
+    _pad3: [u8; CACHE_LINE],
     /// Overflow counter for backpressure monitoring
     overflow_count: AtomicUsize,
     /// Configuration for this ring buffer
@@ -79,13 +112,13 @@ impl<T> SpscRingBuffer<T> {
 
         Self {
             buffer,
-            _pad1: [0; 64],
+            _pad1: [0; CACHE_LINE],
             head: AtomicUsize::new(0),
             cached_tail: AtomicUsize::new(0),
-            _pad2: [0; 64],
+            _pad2: [0; CACHE_LINE],
             tail: AtomicUsize::new(0),
             cached_head: AtomicUsize::new(0),
-            _pad3: [0; 64],
+            _pad3: [0; CACHE_LINE],
             overflow_count: AtomicUsize::new(0),
             config,
         }
@@ -288,6 +321,8 @@ impl<T> SpscRingBuffer<T> {
     /// Stops early if the ring becomes full. This amortizes atomic store
     /// overhead across multiple elements: only two atomic stores (tail + cached_head)
     /// for up to `slice.len()` pushes.
+    ///
+    /// Uses prefetching to reduce cache misses on write path.
     pub fn push_batch(&self, slice: &[T]) -> usize
     where
         T: Copy,
@@ -312,10 +347,20 @@ impl<T> SpscRingBuffer<T> {
         }
 
         let buf = unsafe { &mut *self.buffer.get() };
+        let mask = Self::CAPACITY - 1;
+
+        // Prefetch the first write location
+        prefetch_write(&mut buf[tail & mask] as *mut _);
+
         for i in 0..count {
-            buf[tail.wrapping_add(i) & (Self::CAPACITY - 1)].write(slice[i]);
+            let idx = (tail + i) & mask;
+            // Prefetch next cache line (64 bytes = ~16 elements for small T)
+            if i % 16 == 14 && i + 2 < count {
+                prefetch_write(&mut buf[(tail + i + 2) & mask] as *mut _);
+            }
+            buf[idx].write(slice[i]);
         }
-        let new_tail = tail.wrapping_add(count) & (Self::CAPACITY - 1);
+        let new_tail = tail.wrapping_add(count) & mask;
         self.tail.store(new_tail, Ordering::Release);
         count
     }
@@ -324,6 +369,7 @@ impl<T> SpscRingBuffer<T> {
     /// the number of elements actually popped.
     ///
     /// Uses `MaybeUninit` to avoid zero-initialisation overhead.
+    /// Uses prefetching to reduce cache misses on read path.
     pub fn pop_batch(&self, out: &mut [std::mem::MaybeUninit<T>]) -> usize {
         let head = self.head.load(Ordering::Relaxed);
         let mut tail = self.cached_tail.load(Ordering::Relaxed);
@@ -343,11 +389,20 @@ impl<T> SpscRingBuffer<T> {
         }
 
         let buf = unsafe { &mut *self.buffer.get() };
+        let mask = Self::CAPACITY - 1;
+
+        // Prefetch the first read location
+        prefetch_read(&buf[head & mask] as *const _);
+
         for (i, slot) in out.iter_mut().enumerate().take(count) {
-            let src = head.wrapping_add(i) & (Self::CAPACITY - 1);
+            let src = (head + i) & mask;
+            // Prefetch next cache line
+            if i % 16 == 14 && i + 2 < count {
+                prefetch_read(&buf[(head + i + 2) & mask] as *const _);
+            }
             *slot = std::mem::MaybeUninit::new(unsafe { buf[src].assume_init_read() });
         }
-        let new_head = head.wrapping_add(count) & (Self::CAPACITY - 1);
+        let new_head = head.wrapping_add(count) & mask;
         self.head.store(new_head, Ordering::Release);
         count
     }

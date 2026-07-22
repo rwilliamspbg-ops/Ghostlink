@@ -35,11 +35,7 @@ SHOW_CURSOR='\033[?25h'
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Trap to ensure cursor is shown on exit
-trap 'echo -e "${SHOW_CURSOR}"; tput cnorm 2>/dev/null; exit' EXIT INT TERM
-
-# Hide cursor for cinematic effect
-echo -e "${HIDE_CURSOR}"
+# Cursor will be hidden in main() and shown by cleanup() trap below
 
 # Progress bar with smooth animation
 progress_bar() {
@@ -351,7 +347,7 @@ build_llama_cpp() {
         
         if [ ! -d "$LLAMA_DIR" ]; then
             mkdir -p third_party
-            git clone https://github.com/ggml-org/llama.cpp.git "$LLAMA_DIR" >/dev/null 2>&1
+            git clone https://github.com/ggml-org/llama.cpp.git "$LLAMA_DIR" >/dev/null 2>&1 || return 1
         fi
         
         cd "$LLAMA_DIR"
@@ -411,18 +407,24 @@ build_llama_cpp() {
     echo ""
 }
 
-# Free a TCP port (best-effort) so stale llama-server / API processes do not cause 404/bind errors
+# Free a TCP port (best-effort) so stale processes do not cause bind errors / 405 from wrong servers
 free_port() {
     local port="$1"
+    local pids=""
     if command -v fuser >/dev/null 2>&1; then
         fuser -k "${port}/tcp" >/dev/null 2>&1 || true
-    elif command -v lsof >/dev/null 2>&1; then
-        local pids
-        pids=$(lsof -ti "tcp:${port}" 2>/dev/null || true)
-        if [ -n "$pids" ]; then
-            # shellcheck disable=SC2086
-            kill -9 $pids >/dev/null 2>&1 || true
-        fi
+        return 0
+    fi
+    if command -v lsof >/dev/null 2>&1; then
+        pids=$(lsof -ti "tcp:${port}" -sTCP:LISTEN 2>/dev/null || lsof -ti ":${port}" 2>/dev/null || true)
+    elif command -v ss >/dev/null 2>&1; then
+        pids=$(ss -lptn "sport = :${port}" 2>/dev/null | grep -oE 'pid=[0-9]+' | cut -d= -f2 | sort -u || true)
+    elif command -v netstat >/dev/null 2>&1 && [[ "$(uname -s)" != "Darwin" ]]; then
+        pids=$(netstat -tlnp 2>/dev/null | awk -v p=":${port}" '$4 ~ p"$" {print $7}' | cut -d/ -f1 | grep -E '^[0-9]+$' || true)
+    fi
+    if [ -n "$pids" ]; then
+        # shellcheck disable=SC2086
+        kill -9 $pids >/dev/null 2>&1 || true
     fi
 }
 
@@ -458,9 +460,9 @@ resolve_model_file() {
         return 0
     fi
     for candidate in \
+        "$PROJECT_ROOT/models/Llama-3.2-1B-Instruct-IQ3_M.gguf" \
         "$PROJECT_ROOT/models/gemma-4-E4B-it-Q4_K_M.gguf" \
         "$PROJECT_ROOT/models/Llama-3.2-3B-Instruct-IQ3_M.gguf" \
-        "$PROJECT_ROOT/models/Llama-3.2-1B-Instruct-IQ3_M.gguf" \
         "$PROJECT_ROOT/models/tinyllama-1.1b-chat-v1.0.Q2_K.gguf" \
         "$PROJECT_ROOT/models/stories15M-q4_0.gguf"
     do
@@ -652,28 +654,52 @@ start_services() {
         progress_bar 3 3
         echo " ${GREEN}Native stack ready${NC}            "
         echo ""
-        # Perf defaults: Flash Attention + VRAM-scaled batch (override via GHOSTLINK_LLAMA_SERVER_ARGS)
+        # Context size: never leave model default (often 128k) on consumer GPUs.
+        if [ -n "${GHOSTLINK_CTX_SIZE:-}" ]; then
+            CTX_SIZE=$GHOSTLINK_CTX_SIZE
+        elif [ "${VRAM_GB:-0}" -ge 16 ] 2>/dev/null; then
+            CTX_SIZE=16384
+        elif [ "${VRAM_GB:-0}" -ge 12 ] 2>/dev/null; then
+            CTX_SIZE=8192
+        elif [ "${VRAM_GB:-0}" -ge 8 ] 2>/dev/null; then
+            CTX_SIZE=4096
+        else
+            CTX_SIZE=2048
+        fi
+        export GHOSTLINK_CTX_SIZE="$CTX_SIZE"
+
+        # Perf defaults: Flash Attention + VRAM-scaled batch + compact KV
         if [ -n "${GHOSTLINK_LLAMA_SERVER_ARGS:-}" ]; then
             LLAMA_PERF_ARGS=($GHOSTLINK_LLAMA_SERVER_ARGS)
         elif [ "${VRAM_GB:-0}" -ge 12 ] 2>/dev/null; then
-            LLAMA_PERF_ARGS=(-fa on -b 2048 -ub 512)
+            LLAMA_PERF_ARGS=(-fa on -b 2048 -ub 512 -ctk q8_0 -ctv q8_0)
         elif [ "${VRAM_GB:-0}" -ge 8 ] 2>/dev/null; then
-            LLAMA_PERF_ARGS=(-fa on -b 1024 -ub 512)
+            LLAMA_PERF_ARGS=(-fa on -b 1024 -ub 512 -ctk q8_0 -ctv q8_0)
         elif [ "${VRAM_GB:-0}" -ge 4 ] 2>/dev/null; then
-            LLAMA_PERF_ARGS=(-fa on -b 512 -ub 256)
+            LLAMA_PERF_ARGS=(-fa on -b 512 -ub 256 -ctk q8_0 -ctv q8_0)
         else
-            LLAMA_PERF_ARGS=(-fa on -b 512 -ub 128)
+            LLAMA_PERF_ARGS=(-fa on -b 512 -ub 128 -ctk q8_0 -ctv q8_0)
         fi
         export GHOSTLINK_LLAMA_SERVER_ARGS="${GHOSTLINK_LLAMA_SERVER_ARGS:-${LLAMA_PERF_ARGS[*]}}"
 
+        # mlock only when RAM is plentiful (avoids thrash on 16–32GB hosts under load)
+        if [ "${GHOSTLINK_MLOCK:-}" = "1" ]; then
+            MLOCK_FLAG="--mlock"
+        elif [ "${GHOSTLINK_MLOCK:-}" = "0" ]; then
+            MLOCK_FLAG=""
+        elif [ "$TOTAL_RAM_GB" -lt 24 ] 2>/dev/null; then
+            MLOCK_FLAG=""
+        fi
+
         echo -e "  ${DIM}Model: ${MODEL_ALIAS}${NC}"
         echo -e "  ${DIM}llama-server: ${LLAMA_SERVER_BIN}${NC}"
-        echo -e "  ${DIM}Starting llama-server: -ngl ${LLAMA_NGL} -t ${THREADS} ${LLAMA_PERF_ARGS[*]}${NC}"
+        echo -e "  ${DIM}Starting llama-server: -c ${CTX_SIZE} -ngl ${LLAMA_NGL} -t ${THREADS} ${LLAMA_PERF_ARGS[*]}${NC}"
 
         "$LLAMA_SERVER_BIN" \
             -m "$MODEL_FILE" \
             --alias "$MODEL_ALIAS" \
             --host 127.0.0.1 --port "$LLAMA_PORT" \
+            -c "$CTX_SIZE" \
             -ngl "$LLAMA_NGL" \
             -np 1 \
             -t "$THREADS" \
@@ -690,17 +716,29 @@ start_services() {
         echo ""
     fi
 
-    # 2. Ghostlink API — always the single GUI API surface (prevents 404/405 from wrong backends)
+    # 2. Ghostlink API — ONLY valid GUI API surface (port 8003 by default).
+    #    Do NOT point the GUI at llama-server (:8080) or a bare control-plane without /api proxy.
+    #    Wrong port => 404/405 on chat, models, settings.
+    if [ "$BACKEND_PORT" = "8080" ] || [ "$BACKEND_PORT" = "11434" ]; then
+        echo -e "  ${RED}✗${NC} GHOSTLINK_API_PORT=${BACKEND_PORT} is an inference port, not the Ghostlink API."
+        echo -e "  ${DIM}Use GHOSTLINK_API_PORT=8003 (default).${NC}"
+        return 1
+    fi
+
     echo -e "  ${WHITE}▶${NC} ${BOLD}Ghostlink API Server${NC} ${DIM}(port ${BACKEND_PORT})${NC}"
     progress_bar 0 2
     echo " ${DIM}Starting...${NC}"
 
     export GHOSTLINK_INFERENCE_BACKEND="$INFERENCE_BACKEND"
     export GHOSTLINK_NATIVE_ENGINE="$NATIVE_ENGINE"
-    export GHOSTLINK_LLAMA_SERVER_URL="http://127.0.0.1:${LLAMA_PORT}/completion"
+    if [ "$INFERENCE_BACKEND" = "native" ]; then
+        export GHOSTLINK_LLAMA_SERVER_URL="http://127.0.0.1:${LLAMA_PORT}/completion"
+    fi
     export GHOSTLINK_LLAMA_NGL="${LLAMA_NGL:-0}"
     export GHOSTLINK_LLAMA_THREADS="${THREADS}"
+    # Always pin GUI → ghost-link API (never llama-server / ollama ports)
     export VITE_GHOSTLINK_API_BASE="http://${BACKEND_HOST}:${BACKEND_PORT}"
+    export VITE_PROXY_TARGET="http://${BACKEND_HOST}:${BACKEND_PORT}"
     if [ -n "${MODEL_FILE:-}" ]; then
         export GHOSTLINK_MODEL_PATH="$MODEL_FILE"
     fi
@@ -731,25 +769,44 @@ start_services() {
 
     if ! wait_for_http "http://${BACKEND_HOST}:${BACKEND_PORT}/health" "Ghostlink API" 90; then
         echo -e "  ${RED}✗${NC} API failed — see /tmp/ghostlink_api.log"
+        echo -e "  ${DIM}Tip: ensure port ${BACKEND_PORT} is free and ghost-link was built recently.${NC}"
         return 1
     fi
     if ! wait_for_http "http://${BACKEND_HOST}:${BACKEND_PORT}/api/health" "API /api/health" 30; then
-        echo -e "  ${RED}✗${NC} /api/health failed — wrong binary or routes missing"
+        echo -e "  ${RED}✗${NC} /api/health failed — wrong process on :${BACKEND_PORT} or outdated binary"
+        echo -e "  ${DIM}Check: curl -i http://${BACKEND_HOST}:${BACKEND_PORT}/api/health${NC}"
         return 1
     fi
-    # Smoke critical GUI routes (settings 404/405 was a common Linux failure mode)
-    if ! curl -sf -o /dev/null -w '' "http://${BACKEND_HOST}:${BACKEND_PORT}/api/settings"; then
-        echo -e "  ${RED}✗${NC} GET /api/settings failed"
+
+    # Verify critical GUI routes (GET). 405 here means wrong server (e.g. POST-only proxy).
+    local code
+    for path in /api/settings /api/models; do
+        code=$(curl -s -o /dev/null -w "%{http_code}" "http://${BACKEND_HOST}:${BACKEND_PORT}${path}" || echo "000")
+        if [ "$code" = "405" ]; then
+            echo -e "  ${RED}✗${NC} GET ${path} returned 405 Method Not Allowed"
+            echo -e "  ${DIM}Port ${BACKEND_PORT} is not ghost-link. Free the port and relaunch.${NC}"
+            return 1
+        fi
+        if [ "$code" != "200" ]; then
+            echo -e "  ${RED}✗${NC} GET ${path} failed (HTTP ${code})"
+            return 1
+        fi
+    done
+
+    # Chat endpoint must accept POST (not 404/405). Empty body → 4xx is OK; 405 is not.
+    code=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
+        -H "Content-Type: application/json" \
+        -d '{}' \
+        "http://${BACKEND_HOST}:${BACKEND_PORT}/api/inference/chat" || echo "000")
+    if [ "$code" = "405" ] || [ "$code" = "404" ]; then
+        echo -e "  ${RED}✗${NC} POST /api/inference/chat returned HTTP ${code}"
+        echo -e "  ${DIM}Wrong API process on :${BACKEND_PORT}. Rebuild: cargo build --release -p ghost-link${NC}"
         return 1
     fi
-    if ! curl -sf -o /dev/null -w '' "http://${BACKEND_HOST}:${BACKEND_PORT}/api/models"; then
-        echo -e "  ${RED}✗${NC} GET /api/models failed"
-        return 1
-    fi
-    echo -e "  ${GREEN}✓${NC} API routes verified (health, settings, models)"
+    echo -e "  ${GREEN}✓${NC} API routes verified (health, settings, models, chat POST)"
     echo ""
 
-    # 3. React Frontend
+    # 3. React Frontend — always targets ghost-link API base above
     echo -e "  ${WHITE}▶${NC} ${BOLD}React Frontend (Vite)${NC} ${DIM}(port ${GUI_PORT})${NC}"
     progress_bar 0 3
     echo " ${DIM}Checking dependencies...${NC}"
@@ -766,9 +823,10 @@ start_services() {
 
     progress_bar 2 3
     echo " ${DIM}Starting Vite dev server...${NC}"
-    # Prefer direct API base (same as Windows). Vite proxy remains as fallback.
     export VITE_GHOSTLINK_API_BASE="http://${BACKEND_HOST}:${BACKEND_PORT}"
     export VITE_PROXY_TARGET="http://${BACKEND_HOST}:${BACKEND_PORT}"
+    # Clear any stale override that pointed at wrong ports
+    unset VITE_GHOSTLINK_BACKEND_URL 2>/dev/null || true
     npm run dev -- --host 127.0.0.1 --port "$GUI_PORT" >/tmp/ghostlink_frontend.log 2>&1 &
     GUI_PID=$!
     cd "$PROJECT_ROOT" || true
@@ -870,6 +928,7 @@ main() {
         exit 1
     fi
     
+    echo -e "${HIDE_CURSOR}"
     show_banner
     sleep 0.5
     

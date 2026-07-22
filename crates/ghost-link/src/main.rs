@@ -1457,6 +1457,8 @@ struct BackendState {
     queue_depth: usize,
     chat_requests: u64,
     last_latency_ms: f32,
+    last_tokens_per_sec: f32,
+    inference_metrics: host_metrics::InferenceMetrics,
     started_at: Instant,
     backend_url: String,
     cluster: Arc<ClusterState>,
@@ -1966,11 +1968,21 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                     let mut backend = lock_state(&state);
                     backend.last_latency_ms = exec.avg_token_latency_ms;
                     let tokens_per_sec = exec.throughput_tokens_per_sec;
+                    backend.last_tokens_per_sec = tokens_per_sec;
+                    backend.inference_metrics.record(
+                        exec.avg_token_latency_ms,
+                        exec.token_count.min(u32::MAX as usize) as u32,
+                        Some(tokens_per_sec),
+                        true,
+                    );
                     for stage in &exec.stage_stats {
                         if let Some(stage_p) = pipeline_plan_clone.stages.get(stage.stage_idx) {
                             backend.cluster.get_metrics_mut(&stage_p.node_id, |m| {
+                                // Fabric path stores latency in microseconds EMA.
                                 m.record_latency(stage.avg_compute_ms * 1000.0);
-                                m.record_throughput(tokens_per_sec / 100.0);
+                                // Keep fabric GB/s field separate; store tok/s scaled lightly
+                                // for dashboard fabric graphs only (not GUI tokens/s).
+                                m.record_throughput(tokens_per_sec / 1000.0);
                             });
                         }
                     }
@@ -2781,40 +2793,54 @@ InferenceBackend::Native => match native_engine_client
     async fn handle_gui_metrics(
         State(state): State<Arc<Mutex<BackendState>>>,
     ) -> Json<serde_json::Value> {
-        let backend = lock_state(&state);
-        let cluster = Arc::clone(&backend.cluster);
-        let total_vram = cluster.total_vram_gb();
-        let nodes = cluster.nodes();
-        let mut total_latency = 0.0;
-        let mut total_throughput = 0.0;
-        let mut node_count = 0;
-        for node in nodes {
-            if let Some(metrics) = cluster.get_metrics(&node.id) {
-                total_latency += metrics.avg_latency_us / 1000.0; // Convert us to ms
-                total_throughput += metrics.throughput_gbps * 1000.0; // Convert GB/s to MB/s
-                node_count += 1;
-            }
-        }
-        let avg_latency = if node_count > 0 {
-            total_latency / node_count as f32
-        } else {
-            backend.last_latency_ms
+        // Host snapshot is lock-free relative to BackendState (background sampler).
+        let host = host_metrics::current_host_snapshot();
+
+        let (inf, node_count, cluster_vram, uptime_s, backend_name) = {
+            let backend = lock_state(&state);
+            let cluster = Arc::clone(&backend.cluster);
+            let nodes = cluster.nodes();
+            let node_count = nodes.len();
+            let cluster_vram = cluster.total_vram_gb();
+            let inf = backend.inference_metrics.snapshot();
+            let uptime_s = backend.started_at.elapsed().as_secs_f32();
+            let backend_name = backend.inference_backend.as_str().to_string();
+            (inf, node_count, cluster_vram, uptime_s, backend_name)
         };
-        let avg_throughput = if node_count > 0 {
-            total_throughput / node_count as f32
+
+        let total_vram = if host.total_vram_gb > 0.0 {
+            host.total_vram_gb
+        } else {
+            cluster_vram
+        };
+        let gpu = if host.gpu_available {
+            host.gpu
+        } else if total_vram > 0.0 {
+            // Accelerator present but util probe unavailable — don't fake 50%.
+            0.0
         } else {
             0.0
         };
+
         Json(serde_json::json!({
             "metrics": {
-                "throughput": avg_throughput,
-                "cpu": 0.0,
-                "memory": 0.0,
-                "gpu": if total_vram > 0.0 { 50.0 } else { 0.0 },
-                "latency_p50": avg_latency,
-                "latency_p95": avg_latency * 1.5,
+                "throughput": inf.tokens_per_sec,
+                "cpu": host.cpu,
+                "memory": host.memory,
+                "gpu": gpu,
+                "latency_p50": inf.latency_p50_ms,
+                "latency_p95": inf.latency_p95_ms,
                 "active_nodes": node_count,
                 "total_vram_gb": total_vram,
+                "total_memory_gb": host.total_memory_gb,
+                "used_memory_gb": host.used_memory_gb,
+                "gpu_available": host.gpu_available || total_vram > 0.0,
+                "real_inference": inf.real_inference,
+                "samples": inf.samples,
+                "last_latency_ms": inf.last_latency_ms,
+                "last_tokens": inf.last_tokens,
+                "uptime_s": uptime_s,
+                "inference_backend": backend_name,
             }
         }))
     }
@@ -3378,19 +3404,11 @@ InferenceBackend::Native => match native_engine_client
             settings,
         ) = {
             let backend = lock_state(&state);
-            eprintln!(
-                "[DEBUG] settings.inference_backend = '{}'",
-                backend.settings.inference_backend
-            );
             let inference_backend = match backend.settings.inference_backend.as_str() {
                 "ollama" => InferenceBackend::Ollama,
                 "native" => InferenceBackend::Native,
-                _ => InferenceBackend::Ollama,
+                _ => InferenceBackend::Native,
             };
-            eprintln!(
-                "[DEBUG] Selected inference_backend = {:?}",
-                inference_backend
-            );
             (
                 backend.current_model.clone(),
                 Arc::clone(&backend.cluster),
@@ -3415,6 +3433,10 @@ InferenceBackend::Native => match native_engine_client
         let exec_micro_batch = chat_exec_micro_batch();
         let request_tracker = active_runtime_switcher().request_tracker().clone();
         request_tracker.increment().await;
+
+        let mut gen_tokens: Option<u32> = None;
+        let mut gen_tps: Option<f32> = None;
+        let mut gen_latency_ms: Option<f32> = None;
 
         let (response_text, real_inference, backend_used) = match inference_backend {
             InferenceBackend::Ollama => {
@@ -3468,11 +3490,10 @@ InferenceBackend::Native => match native_engine_client
                                         let mut backend = lock_state(&state);
                                         backend.current_model = model_name;
                                     }
-                                    (
-                                        text.trim().to_string(),
-                                        true,
-                                        InferenceBackend::Ollama.as_str(),
-                                    )
+                                    let text = text.trim().to_string();
+                                    gen_tokens =
+                                        Some((text.split_whitespace().count() as u32).max(1));
+                                    (text, true, InferenceBackend::Ollama.as_str())
                                 }
                                 Err(err) => {
                                     let fallback = format!(
@@ -3511,18 +3532,31 @@ InferenceBackend::Native => match native_engine_client
                 }
             }
             InferenceBackend::Native => {
-                match native_engine_client.generate(
-                    &current_model, &req.message, exec_tokens,
-                    temp, top_p, top_k, penalty,
-                    &settings.native_engine,
-                )
-                .await
+                match native_engine_client
+                    .generate(
+                        &current_model,
+                        &req.message,
+                        exec_tokens,
+                        temp,
+                        top_p,
+                        top_k,
+                        penalty,
+                        &settings.native_engine,
+                    )
+                    .await
                 {
-                    Ok(gen) => (
-                        gen.text,
-                        gen.real_inference,
-                        InferenceBackend::Native.as_str(),
-                    ),
+                    Ok(gen) => {
+                        gen_tokens = gen.tokens_generated.or_else(|| {
+                            Some((gen.text.split_whitespace().count() as u32).max(1))
+                        });
+                        gen_tps = gen.tokens_per_sec;
+                        gen_latency_ms = gen.latency_ms;
+                        (
+                            gen.text,
+                            gen.real_inference,
+                            InferenceBackend::Native.as_str(),
+                        )
+                    }
                     Err(err) => (
                         format!(
                             "Ghostlink native fabric backend processed model '{}' with {} estimated tokens. Native error: {}",
@@ -3535,46 +3569,81 @@ InferenceBackend::Native => match native_engine_client
             }
         };
 
-        let exec_result: Option<()> = None; // Track if we have real execution metrics
-
         {
             let mut available_flag = ollama_available.lock().await;
             *available_flag = real_inference;
         }
 
-        let (request_id, session_id) = {
+        let wall_ms = (started.elapsed().as_secs_f32() * 1000.0).max(0.1);
+        let latency_ms = gen_latency_ms.unwrap_or(wall_ms);
+        let tokens_out =
+            gen_tokens.unwrap_or_else(|| (response_text.split_whitespace().count() as u32).max(1));
+        let tokens_per_sec = gen_tps.or_else(|| {
+            if real_inference && latency_ms > 0.0 {
+                Some(tokens_out as f32 / (latency_ms / 1000.0))
+            } else {
+                None
+            }
+        });
+
+        let (request_id, session_id, metrics_json) = {
             let mut backend = lock_state(&state);
             backend.chat_requests = backend.chat_requests.saturating_add(1);
             let request_seq = backend.chat_requests;
 
-            if exec_result.is_none() {
-                backend.last_latency_ms = (started.elapsed().as_secs_f32() * 1000.0).max(1.0);
+            backend.last_latency_ms = latency_ms;
+            if let Some(tps) = tokens_per_sec {
+                backend.last_tokens_per_sec = tps;
             }
+            backend.inference_metrics.record(
+                latency_ms,
+                tokens_out,
+                tokens_per_sec,
+                real_inference,
+            );
+            let snap = backend.inference_metrics.snapshot();
 
-            let latency = backend.last_latency_ms.round() as u32;
-            let throughput = 1200;
+            let latency_u = latency_ms.round() as u32;
+            let throughput_u = tokens_per_sec.unwrap_or(0.0).round().max(0.0) as usize;
 
             let maybe_session = backend.sessions.first_mut();
-            if let Some(session) = maybe_session {
-                session.tokens = session.tokens.saturating_add(token_estimate);
-                session.throughput = throughput;
-                session.latency = latency;
+            let session_id = if let Some(session) = maybe_session {
+                session.tokens = session.tokens.saturating_add(tokens_out as usize);
+                session.throughput = throughput_u;
+                session.latency = latency_u;
                 session.model = current_model.clone();
-                session.status = "Running".to_string();
-                let session_id = session.id.clone();
-                (request_seq, session_id)
+                session.status = if real_inference {
+                    "Running".to_string()
+                } else {
+                    "Degraded".to_string()
+                };
+                session.id.clone()
             } else {
                 let session_id = "sess_local_001".to_string();
                 backend.sessions.push(SessionRecord {
                     id: session_id.clone(),
                     model: current_model.clone(),
-                    status: "Running".to_string(),
-                    throughput,
-                    latency,
-                    tokens: token_estimate,
+                    status: if real_inference {
+                        "Running".to_string()
+                    } else {
+                        "Degraded".to_string()
+                    },
+                    throughput: throughput_u,
+                    latency: latency_u,
+                    tokens: tokens_out as usize,
                 });
-                (request_seq, session_id)
-            }
+                session_id
+            };
+
+            let metrics_json = serde_json::json!({
+                "throughput": snap.tokens_per_sec,
+                "p50_ms": snap.latency_p50_ms,
+                "p95_ms": snap.latency_p95_ms,
+                "latency_ms": latency_ms,
+                "tokens": tokens_out,
+                "real_inference": real_inference,
+            });
+            (request_seq, session_id, metrics_json)
         };
 
         let mut final_response = response_text;
@@ -3596,13 +3665,11 @@ InferenceBackend::Native => match native_engine_client
             "inference_backend": backend_used,
             "ollama_url": if backend_used == "ollama" { "local" } else { "disabled" },
             "tokens_estimated": token_estimate,
+            "tokens_generated": tokens_out,
             "exec_tokens": exec_tokens,
             "exec_micro_batch": exec_micro_batch,
             "real_inference": real_inference,
-            "metrics": exec_result.map(|_| serde_json::json!({
-                "throughput": 0.0,
-                "p95_ms": 0.0
-            }))
+            "metrics": metrics_json
         });
 
         if let Some(mcp) = req.mcp {
@@ -4206,7 +4273,9 @@ InferenceBackend::Native => match native_engine_client
         sessions: vec![],
         queue_depth: 0,
         chat_requests: 0,
-        last_latency_ms: 2.0,
+        last_latency_ms: 0.0,
+        last_tokens_per_sec: 0.0,
+        inference_metrics: host_metrics::InferenceMetrics::default(),
         started_at: Instant::now(),
         backend_url,
         cluster,
@@ -4216,6 +4285,9 @@ InferenceBackend::Native => match native_engine_client
         ollama_available,
         settings,
     }));
+
+    // Background CPU/RAM/GPU sampler — keeps /api/metrics non-blocking.
+    host_metrics::ensure_host_sampler();
 
     rt.block_on(async {
         let app = Router::new()
@@ -6320,6 +6392,7 @@ fn run_gui_preflight_checks() -> Result<()> {
 mod backend_api;
 mod backend_config;
 mod backend_registry;
+mod host_metrics;
 mod native_engine;
 mod ollama;
 mod runtime;

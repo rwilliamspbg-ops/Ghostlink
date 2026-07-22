@@ -331,7 +331,7 @@ impl ClusterState {
 
     /// Get a shared snapshot of all nodes
     pub fn nodes_snapshot(&self) -> Arc<Vec<NodeResources>> {
-        if self.nodes_snapshot_dirty.load(Ordering::Acquire)
+        if self.nodes_snapshot_dirty.load(Ordering::Relaxed)
             && self.nodes_snapshot_dirty.swap(false, Ordering::AcqRel)
         {
             let nodes_map = self
@@ -340,7 +340,7 @@ impl ClusterState {
                 .unwrap_or_else(|poison| poison.into_inner());
             let mut nodes: Vec<_> = nodes_map.values().cloned().collect();
             // Sort by ID to ensure deterministic layer assignment across runs
-            nodes.sort_by(|a, b| a.id.cmp(&b.id));
+            nodes.sort_unstable_by(|a, b| a.id.cmp(&b.id));
             self.nodes_snapshot.store(Arc::new(nodes));
         }
         self.nodes_snapshot.load_full()

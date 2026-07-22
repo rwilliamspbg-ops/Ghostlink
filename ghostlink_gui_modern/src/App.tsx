@@ -188,11 +188,11 @@ function App() {
     checkHealth();
     const healthInterval = setInterval(checkHealth, 30000);
 
-    // Poll for real-time metrics every 5s
+    // Poll metrics every 3s for responsive System Performance gauges
     const metricsInterval = setInterval(() => {
       fetchMetrics();
       fetchSessions();
-    }, 5000);
+    }, 3000);
 
     // Poll for workers every 15s
     const workersInterval = setInterval(() => {
