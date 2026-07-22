@@ -4,6 +4,39 @@ All notable changes to Ghostlink Studio are documented here.
 
 ---
 
+## [1.3.2] - 2026-07-22 (GPU/CPU Auto-Discovery Fix & Worker Discovery)
+
+### 🐛 Hardware Auto-Discovery
+
+- Fixed a false-positive in `detect_gpu_from_env()` (`ghostlink-core/src/system_profile.rs`): the mere presence of `GHOSTLINK_VRAM_GB` (which `launch.sh` exports unconditionally, defaulting to `"0"` in CPU-only mode) was treated as an explicit GPU override, short-circuiting every real hardware probe (nvidia-smi/rocm-smi/WMI/lspci/Vulkan) and injecting a fake `"env-gpu"` device. `GET /api/health` reported `gpu_available: true` on pure-CPU hosts launched via the shipped launch scripts. Now requires a genuine signal (name, compute capability, or VRAM > 0).
+- Added a regression case for the zero-VRAM-default scenario, folded into the existing `detect_gpu_handles_env_overrides` test (sequentially, not as a separate `#[test]`) — Rust runs tests in parallel by default, and process-global env vars mean two independent tests setting/clearing the same vars race regardless of what either asserts. A separate test was tried first and observed to fail intermittently under `cargo test --workspace` for exactly this reason.
+
+### 🔌 Worker Discovery
+
+- `GET /api/workers/discover` was a hardcoded stub returning `{"count": 2}`, disconnected from the real HMAC-authenticated UDP discovery module (`ghostlink_core::discovery`) already running in background threads. It now performs a real `broadcast_and_collect`, registers replies into the live `ClusterState`, and returns genuine counts.
+- `GET /api/workers` now merges auto-discovered cluster peers with manually-added workers (previously showed only the latter), deduplicated by node id.
+
+### 🔧 Launch Scripts
+
+- `launch.bat`: fixed a 100%-reproducible failure where `%~dp0`'s trailing backslash broke WSL's argument parsing in `wsl wslpath -a "...\"` (bash saw an unterminated quote), causing every invocation to fail with "Failed to resolve repository path inside WSL."
+- `launch.sh`: removed two blind, system-wide `pkill -f llama-server` / `pkill -f ghost-link` calls in favor of the already-correct port-scoped `free_port` cleanup — the blind form could kill an unrelated process from a different user or session sharing the same binary name. Now also passes the real detected GPU name through (`GHOSTLINK_GPU_NAME`) when a vendor is actually found, so the env override reports accurate hardware instead of a generic placeholder when it legitimately applies.
+
+### ✅ Validation
+
+- `cargo fmt --all --check` — OK
+- `cargo clippy --workspace --all-targets -- -D warnings` — OK
+- `cargo test -p ghost-link -p ghostlink-core` — 229/229 passing
+- `cargo test --workspace` — passing; also surfaced a pre-existing, unrelated flaky test (`runtime_switcher::tests::test_environment_manager_set_env`, same process-global-env-var race pattern, not touched by this change) — flagged separately, not fixed here to keep this PR scoped
+- `cargo run -p ghost-link -- probe my-node --full` — no regression (correctly reports `GPU: cpu`, `GPU VRAM: 0.0 GB`, `Acceleration: AVX-512` on this CPU-only host)
+- Live end-to-end verification on Windows 11 + WSL2 (AMD Ryzen AI 7 350, no functioning GPU driver in-guest): both `launch.sh` and `launch.bat` reach healthy state; `/api/health` correctly reports `gpu_available: false`; native↔Ollama runtime switching verified with two models each (SmolLM2-360M-Instruct + stories15M native, smollm2:135m + qwen2.5:0.5b via Ollama), each producing distinct, correctly-attributed, real inference responses; `/api/backends/switch` succeeds for `cpu` and cleanly rejects `cuda`/`rocm` as unavailable
+
+### ⚠️ Known Caveats (host-specific)
+
+- GPU-accelerated inference was **not** verified on real GPU hardware in this change — no CUDA/ROCm/functioning-Vulkan device was available in the test environment (WSL2 exposes the GPU device node but this Ubuntu image's Mesa build lacks the D3D12/"dozen" driver needed to bridge to it, and `/dev/dri` is absent). The fixed code paths are covered by existing unit tests (`infer_backend_cuda`, `infer_backend_rocm`, etc.) but not exercised against physical GPU hardware.
+- The React frontend (GUI) was verified only through its backend API surface (curl/HTTP), not by driving the rendered UI in a browser.
+
+---
+
 ## [1.3.1] - 2026-07-22 (Launch Reliability & CI Stabilization)
 
 ### 🔧 Launch Hardening

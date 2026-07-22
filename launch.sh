@@ -754,14 +754,16 @@ start_services() {
     echo ""
     echo -e "  ${DIM}Inference backend: ${INFERENCE_BACKEND}${NC}"
 
-    # Clear stale listeners that cause 404/405 and bind failures
+    # Clear stale listeners that cause 404/405 and bind failures.
+    # Scoped to the exact ports we're about to bind (via free_port's PID lookup on
+    # that port) rather than a blind `pkill -f llama-server` / `pkill -f ghost-link`,
+    # which would kill any matching process system-wide — including one started by
+    # a different user, session, or repo that just happens to share the binary name.
     free_port "$BACKEND_PORT"
     free_port "$GUI_PORT"
     if [ "$INFERENCE_BACKEND" = "native" ]; then
         free_port "$LLAMA_PORT"
-        pkill -f "llama-server" >/dev/null 2>&1 || true
     fi
-    pkill -f "ghost-link.*serve" >/dev/null 2>&1 || true
     sleep 0.5
 
     GPU_VENDOR="${GPU_VENDOR:-}"
@@ -817,6 +819,13 @@ start_services() {
     export GHOSTLINK_VRAM_GB="${VRAM_GB:-0}"
     export GHOSTLINK_LLAMA_NGL="${LLAMA_NGL:-0}"
     export GHOSTLINK_LLAMA_THREADS="${THREADS}"
+    # Only pass the detected GPU name through when a real vendor was found — the
+    # Rust-side auto-discovery treats GHOSTLINK_GPU_NAME as an explicit override,
+    # so this must stay unset in CPU-only mode (GPU_VENDOR empty) to let it fall
+    # through to real hardware probes instead of reporting a fake GPU.
+    if [ -n "${GPU_VENDOR:-}" ]; then
+        export GHOSTLINK_GPU_NAME="${GPU_NAME}"
+    fi
 
     local NATIVE_ENGINE="simulated"
     LLAMA_PID=""
@@ -1251,7 +1260,7 @@ cleanup() {
     [ -n "${GUI_PID:-}" ] && kill $GUI_PID 2>/dev/null && wait $GUI_PID 2>/dev/null || true
     [ -n "${API_PID:-}" ] && kill $API_PID 2>/dev/null && wait $API_PID 2>/dev/null || true
     [ -n "${LLAMA_PID:-}" ] && kill $LLAMA_PID 2>/dev/null && wait $LLAMA_PID 2>/dev/null || true
-    pkill -f "llama-server" >/dev/null 2>&1 || true
+    # Port-scoped cleanup only (see start_services) — never a blind system-wide pkill.
     free_port "${GHOSTLINK_API_PORT:-8003}" 2>/dev/null || true
     free_port "${GHOSTLINK_LLAMA_SERVER_PORT:-8080}" 2>/dev/null || true
     free_port "${GUI_PORT:-5173}" 2>/dev/null || true

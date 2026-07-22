@@ -8,7 +8,7 @@
 use crate::runtime::Runtime;
 use anyhow::Result;
 use ghostlink_core::autotune::AutoTuner;
-use ghostlink_core::cluster::{ClusterState, NodeMetrics};
+use ghostlink_core::cluster::{ClusterState, NodeMetrics, NodeStatus};
 use ghostlink_core::dashboard::Dashboard;
 use ghostlink_core::discovery::{
     broadcast_and_collect, respond_once, serve_discovery, serve_discovery_with_stats,
@@ -2810,8 +2810,48 @@ InferenceBackend::Native => match native_engine_client
     async fn handle_gui_workers(
         State(state): State<Arc<Mutex<BackendState>>>,
     ) -> Json<serde_json::Value> {
-        let backend = lock_state(&state);
-        Json(serde_json::json!({ "workers": backend.workers }))
+        let (manual_workers, cluster) = {
+            let backend = lock_state(&state);
+            (backend.workers.clone(), Arc::clone(&backend.cluster))
+        };
+
+        // Merge manually-added workers with peers found via UDP auto-discovery.
+        // `cluster` is kept live by the background broadcast/listen threads
+        // started in `serve` and by explicit /api/workers/discover calls.
+        let mut seen: std::collections::HashSet<String> =
+            manual_workers.iter().map(|w| w.id.clone()).collect();
+        let mut workers = manual_workers;
+
+        for node in cluster.nodes() {
+            if !seen.insert(node.id.clone()) {
+                continue;
+            }
+            let metrics = cluster.get_metrics(&node.id);
+            let (host, port) = metrics
+                .as_ref()
+                .and_then(|m| m.ip_address)
+                .map(|addr| (addr.ip().to_string(), addr.port()))
+                .unwrap_or_else(|| ("unknown".to_string(), 0));
+            let status = match metrics.as_ref().map(|m| m.status) {
+                Some(NodeStatus::Failed) => "Disconnected",
+                Some(NodeStatus::Degraded) => "Degraded",
+                _ => "Connected",
+            };
+            workers.push(WorkerRecord {
+                id: node.id.clone(),
+                host,
+                port,
+                status: status.to_string(),
+                model: node
+                    .gpu_name
+                    .clone()
+                    .unwrap_or_else(|| "unknown".to_string()),
+                threads: 0,
+                load: 0,
+            });
+        }
+
+        Json(serde_json::json!({ "workers": workers }))
     }
 
     async fn handle_gui_workers_connect() -> Json<serde_json::Value> {
@@ -2835,8 +2875,61 @@ InferenceBackend::Native => match native_engine_client
         Json(serde_json::json!({ "status": "ok" }))
     }
 
-    async fn handle_gui_workers_discover() -> Json<serde_json::Value> {
-        Json(serde_json::json!({ "status": "ok", "count": 2 }))
+    async fn handle_gui_workers_discover(
+        State(state): State<Arc<Mutex<BackendState>>>,
+    ) -> Json<serde_json::Value> {
+        let (cluster, discovery_broadcast, discovery_auth_token) = {
+            let backend = lock_state(&state);
+            (
+                Arc::clone(&backend.cluster),
+                backend.settings.discovery_broadcast.clone(),
+                backend.settings.discovery_auth_token.clone(),
+            )
+        };
+
+        let broadcast_addr = discovery_broadcast
+            .parse::<SocketAddr>()
+            .unwrap_or_else(|_| SocketAddr::from(([255, 255, 255, 255], DEFAULT_DISCOVERY_PORT)));
+        let auth_token = if discovery_auth_token.is_empty() {
+            None
+        } else {
+            Some(discovery_auth_token)
+        };
+        let local_node = detect_runtime_profile("workers-discover").node_resources;
+
+        // broadcast_and_collect blocks on a UDP recv loop for response_timeout —
+        // run it off the async runtime so it can't stall other requests.
+        let peers = tokio::task::spawn_blocking(move || {
+            let config = UdpDiscoveryConfig {
+                broadcast_addr,
+                auth_token,
+                response_timeout: Duration::from_millis(1200),
+                allow_legacy_crc32: env_default_bool(
+                    "GHOSTLINK_DISCOVERY_ALLOW_LEGACY_CRC32",
+                    false,
+                ),
+                ..UdpDiscoveryConfig::default()
+            };
+            let frame = DiscoveryFrame {
+                kind: FrameKind::Join,
+                node: local_node,
+            };
+            broadcast_and_collect(&frame, &config)
+        })
+        .await
+        .unwrap_or_else(|_| Ok(Vec::new()))
+        .unwrap_or_default();
+
+        let discovered = peers.len();
+        for (peer_frame, peer_addr) in peers {
+            cluster.register_with_addr(peer_frame.node, Some(peer_addr));
+        }
+
+        Json(serde_json::json!({
+            "status": "ok",
+            "discovered": discovered,
+            "count": cluster.node_count(),
+        }))
     }
 
     async fn handle_gui_workers_disconnect(
