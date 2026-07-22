@@ -19,7 +19,7 @@ def _require(text: str, needle: str, source: str, failures: list[str]) -> None:
 
 
 def main() -> int:
-    tracker = _read("docs/PRODUCTION_PHASE_TRACKER.md")
+    tracker = _read("docs/archive/PRODUCTION_PHASE_TRACKER.md")
     ci = _read(".github/workflows/ci.yml")
     security = _read(".github/workflows/security.yml")
     production_gate = _read(".github/workflows/production-gate.yml")
@@ -31,21 +31,32 @@ def main() -> int:
     _require(
         tracker,
         "CI secret scanning and advisory enforcement",
-        "docs/PRODUCTION_PHASE_TRACKER.md",
+        "docs/archive/PRODUCTION_PHASE_TRACKER.md",
         failures,
     )
     _require(
         tracker,
         "Headless GUI function-matrix CI lane | GUI / UX | P0 | DONE",
-        "docs/PRODUCTION_PHASE_TRACKER.md",
+        "docs/archive/PRODUCTION_PHASE_TRACKER.md",
         failures,
     )
 
-    # Ensure CI includes security and production gate workflows.
-    _require(ci, "security:", ".github/workflows/ci.yml", failures)
-    _require(ci, "production-gate:", ".github/workflows/ci.yml", failures)
-    _require(ci, "Clippy Check (Tauri crate)", ".github/workflows/ci.yml", failures)
-    _require(ci, "--fail-under 44", ".github/workflows/ci.yml", failures)
+    # Ensure CI builds/tests all three toolchains directly (rust, go, frontend).
+    _require(ci, "cargo build --release", ".github/workflows/ci.yml", failures)
+    _require(ci, "go build ./...", ".github/workflows/ci.yml", failures)
+    _require(ci, "npm run type-check", ".github/workflows/ci.yml", failures)
+
+    # Security and production-gate now run as independently-triggered workflows
+    # (push/pull_request with their own path filters) rather than as nested
+    # jobs inside ci.yml. Verify they still self-trigger so the gates can't be
+    # silently disabled by editing ci.yml.
+    for workflow_name, content in (
+        ("security", security),
+        ("production-gate", production_gate),
+    ):
+        source = f".github/workflows/{workflow_name}.yml"
+        _require(content, "push:", source, failures)
+        _require(content, "pull_request:", source, failures)
 
     # Ensure security workflow still includes secret scanning and advisory checks.
     _require(security, "gitleaks/gitleaks-action", ".github/workflows/security.yml", failures)

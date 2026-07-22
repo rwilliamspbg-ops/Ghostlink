@@ -919,6 +919,9 @@ start_services() {
         # Perf defaults: Flash Attention + VRAM-scaled batch + compact KV
         if [ -n "${GHOSTLINK_LLAMA_SERVER_ARGS:-}" ]; then
             LLAMA_PERF_ARGS=($GHOSTLINK_LLAMA_SERVER_ARGS)
+        elif [ "$BACKEND" = "cpu" ]; then
+            # Keep CPU defaults broadly compatible across tiny and legacy GGUF models.
+            LLAMA_PERF_ARGS=(-fa on -b 512 -ub 128)
         elif [ "${VRAM_GB:-0}" -ge 12 ] 2>/dev/null; then
             LLAMA_PERF_ARGS=(-fa on -b 2048 -ub 512 -ctk q8_0 -ctv q8_0)
         elif [ "${VRAM_GB:-0}" -ge 8 ] 2>/dev/null; then
@@ -927,6 +930,11 @@ start_services() {
             LLAMA_PERF_ARGS=(-fa on -b 512 -ub 256 -ctk q8_0 -ctv q8_0)
         else
             LLAMA_PERF_ARGS=(-fa on -b 512 -ub 128 -ctk q8_0 -ctv q8_0)
+        fi
+
+        if [ -z "${GHOSTLINK_LLAMA_SERVER_ARGS:-}" ] \
+            && [[ "$MODEL_ALIAS" =~ ^(stories15M-q4_0|tinyllama-1\.1b-chat-v1\.0\.Q2_K)$ ]]; then
+            LLAMA_PERF_ARGS=(-fa on -b 512 -ub 128)
         fi
         export GHOSTLINK_LLAMA_SERVER_ARGS="${GHOSTLINK_LLAMA_SERVER_ARGS:-${LLAMA_PERF_ARGS[*]}}"
 

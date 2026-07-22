@@ -288,8 +288,13 @@ impl NativeEngineClient {
                     40
                 } else if vram >= 8.0 {
                     24
+                } else if vram >= 4.0 {
+                    12
                 } else {
-                    99
+                    // Below 4GB VRAM, partial offload is likely to OOM on
+                    // most 7B+ models — fall back to CPU-only rather than
+                    // guessing a layer count that fits.
+                    0
                 };
             }
         }
@@ -1014,5 +1019,48 @@ mod tests {
             .expect_err("llama mode without model path should fail");
         assert!(err.contains("GHOSTLINK_MODEL_PATH"));
         std::env::remove_var("GHOSTLINK_NATIVE_ENGINE");
+    }
+
+    #[test]
+    fn get_ngl_tiers_taper_down_with_less_vram() {
+        let _guard = env_lock().lock().expect("env lock poisoned");
+        std::env::remove_var("GHOSTLINK_LLAMA_NGL");
+
+        let case = |vram: &str| {
+            std::env::set_var("GHOSTLINK_VRAM_GB", vram);
+            let n = NativeEngineClient::get_ngl();
+            std::env::remove_var("GHOSTLINK_VRAM_GB");
+            n
+        };
+
+        // Regression: the <8GB tier previously returned 99 (llama.cpp's
+        // "offload every layer" sentinel) instead of a smaller value,
+        // which would OOM low-VRAM cards instead of degrading safely.
+        assert_eq!(case("16"), 40);
+        assert_eq!(case("12"), 40);
+        assert_eq!(case("10"), 24);
+        assert_eq!(case("8"), 24);
+        assert_eq!(case("6"), 12);
+        assert_eq!(case("4"), 12);
+        assert_eq!(case("2"), 0);
+
+        // Values must never increase as VRAM decreases.
+        let tiers = [16.0, 12.0, 10.0, 8.0, 6.0, 4.0, 2.0];
+        let mut last = i32::MAX;
+        for vram in tiers {
+            let n = case(&vram.to_string());
+            assert!(
+                n <= last,
+                "ngl must not increase as VRAM decreases: {vram}GB -> {n}, previous tier -> {last}"
+            );
+            last = n;
+        }
+
+        // GHOSTLINK_LLAMA_NGL takes priority over auto-detect from VRAM.
+        std::env::set_var("GHOSTLINK_LLAMA_NGL", "7");
+        std::env::set_var("GHOSTLINK_VRAM_GB", "16");
+        assert_eq!(NativeEngineClient::get_ngl(), 7);
+        std::env::remove_var("GHOSTLINK_LLAMA_NGL");
+        std::env::remove_var("GHOSTLINK_VRAM_GB");
     }
 }

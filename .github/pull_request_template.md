@@ -5,7 +5,7 @@
 ## Phase Mapping
 
 - Phase: <!-- e.g., Phase 2: Multi-Node Reliability Validation -->
-- Plan reference: docs/PRODUCTION_REMEDIATION_PLAN.md
+- Plan reference: docs/archive/PRODUCTION_REMEDIATION_PLAN.md
 
 ## Weekly Status (Required for phase work)
 
@@ -17,7 +17,7 @@
 
 - Issue(s):
 - Artifact/report links:
-- Related tracker entry: docs/PRODUCTION_PHASE_TRACKER.md
+- Related tracker entry: docs/archive/PRODUCTION_PHASE_TRACKER.md
 
 ## Validation
 

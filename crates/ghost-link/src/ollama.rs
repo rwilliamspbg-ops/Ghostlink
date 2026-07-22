@@ -58,6 +58,16 @@ pub struct ChatRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stream: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub options: Option<OllamaOptions>,
+}
+
+/// Sampling parameters accepted by Ollama's `/api/generate` and `/api/chat`
+/// endpoints. Ollama only reads these from a nested `options` object in the
+/// request body -- top-level fields with the same names are silently
+/// ignored by the server, so this must not be flattened.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct OllamaOptions {
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub temperature: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub top_p: Option<f32>,
@@ -215,11 +225,13 @@ impl OllamaClient {
             "model": model,
             "prompt": prompt,
             "stream": false,
-            "temperature": temperature.clamp(0.0, 2.0),
-            "top_p": top_p.clamp(0.0, 1.0),
-            "top_k": top_k.clamp(1, 200),
-            "repeat_penalty": repeat_penalty.clamp(0.0, 2.0),
-            "num_predict": max_tokens,
+            "options": {
+                "temperature": temperature.clamp(0.0, 2.0),
+                "top_p": top_p.clamp(0.0, 1.0),
+                "top_k": top_k.clamp(1, 200),
+                "repeat_penalty": repeat_penalty.clamp(0.0, 2.0),
+                "num_predict": max_tokens,
+            }
         });
 
         let resp = self
@@ -260,11 +272,13 @@ impl OllamaClient {
             "model": model,
             "prompt": prompt,
             "stream": true,
-            "temperature": temperature.clamp(0.0, 2.0),
-            "top_p": top_p.clamp(0.0, 1.0),
-            "top_k": top_k.clamp(1, 200),
-            "repeat_penalty": repeat_penalty.clamp(0.0, 2.0),
-            "num_predict": max_tokens,
+            "options": {
+                "temperature": temperature.clamp(0.0, 2.0),
+                "top_p": top_p.clamp(0.0, 1.0),
+                "top_k": top_k.clamp(1, 200),
+                "repeat_penalty": repeat_penalty.clamp(0.0, 2.0),
+                "num_predict": max_tokens,
+            }
         });
 
         let resp = self
@@ -330,11 +344,13 @@ impl OllamaClient {
             model: model.to_string(),
             messages: messages.to_vec(),
             stream: Some(false),
-            temperature,
-            top_p,
-            top_k,
-            repeat_penalty,
-            num_predict: max_tokens,
+            options: Some(OllamaOptions {
+                temperature,
+                top_p,
+                top_k,
+                repeat_penalty,
+                num_predict: max_tokens,
+            }),
         };
 
         let resp = self
@@ -367,11 +383,13 @@ impl OllamaClient {
             model: model.to_string(),
             messages: messages.to_vec(),
             stream: Some(true),
-            temperature,
-            top_p,
-            top_k,
-            repeat_penalty,
-            num_predict: max_tokens,
+            options: Some(OllamaOptions {
+                temperature,
+                top_p,
+                top_k,
+                repeat_penalty,
+                num_predict: max_tokens,
+            }),
         };
 
         let resp = self
@@ -706,5 +724,51 @@ mod tests {
     async fn test_ollama_client_creation() {
         let client = OllamaClient::new("http://localhost:11434".to_string());
         assert_eq!(client.base_url, "http://localhost:11434");
+    }
+
+    #[test]
+    fn chat_request_nests_sampling_params_under_options() {
+        fn assert_json_number_close(value: &Value, expected: f64, label: &str) {
+            let actual = value
+                .as_f64()
+                .unwrap_or_else(|| panic!("{label} must be a JSON number"));
+            let delta = (actual - expected).abs();
+            assert!(
+                delta <= 1e-6,
+                "{label} expected {expected} but was {actual} (|delta|={delta})"
+            );
+        }
+
+        // Regression: Ollama's /api/chat and /api/generate silently ignore
+        // temperature/top_p/top_k/repeat_penalty/num_predict at the top
+        // level of the request body -- they're only honored inside a
+        // nested "options" object. If these ever end up top-level again,
+        // every sampling setting from the GUI/API is silently dropped.
+        let request = ChatRequest {
+            model: "llama3".to_string(),
+            messages: vec![],
+            stream: Some(false),
+            options: Some(OllamaOptions {
+                temperature: Some(0.5),
+                top_p: Some(0.8),
+                top_k: Some(30),
+                repeat_penalty: Some(1.2),
+                num_predict: Some(256),
+            }),
+        };
+        let value = serde_json::to_value(&request).expect("serialize ChatRequest");
+        assert!(
+            value.get("temperature").is_none(),
+            "temperature must not be top-level"
+        );
+        assert!(value.get("top_p").is_none(), "top_p must not be top-level");
+        let options = value
+            .get("options")
+            .expect("options object must be present");
+        assert_json_number_close(&options["temperature"], 0.5, "temperature");
+        assert_json_number_close(&options["top_p"], 0.8, "top_p");
+        assert_eq!(options["top_k"], 30);
+        assert_json_number_close(&options["repeat_penalty"], 1.2, "repeat_penalty");
+        assert_eq!(options["num_predict"], 256);
     }
 }
