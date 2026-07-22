@@ -1003,7 +1003,7 @@ start_services() {
     fi
 
     local API_BIN=""
-<<<<<<< HEAD
+    local API_LAUNCH_MODE="bin"
     if ! API_BIN=$(ensure_api_bin); then
         return 1
     fi
@@ -1012,28 +1012,6 @@ start_services() {
         echo -e "  ${RED}✗${NC} Refusing non-native API binary: $API_BIN"
         echo -e "  ${DIM}Under WSL, build Linux binary: cargo build --release -p ghost-link${NC}"
         return 1
-=======
-    local API_LAUNCH_MODE="cargo"
-    if [ -x "$PROJECT_ROOT/target/release/ghost-link" ]; then
-        API_BIN="$PROJECT_ROOT/target/release/ghost-link"
-    elif [ -x "$PROJECT_ROOT/target/debug/ghost-link" ]; then
-        API_BIN="$PROJECT_ROOT/target/debug/ghost-link"
-    fi
-
-    if [ -n "$API_BIN" ]; then
-        API_LAUNCH_MODE="bin"
-        (
-            cd "$PROJECT_ROOT"
-            "$API_BIN" serve "$BACKEND_HOST" "$BACKEND_PORT"
-        ) >/tmp/ghostlink_api.log 2>&1 &
-        API_PID=$!
-    else
-        (
-            cd "$PROJECT_ROOT"
-            cargo run -p ghost-link -- serve "$BACKEND_HOST" "$BACKEND_PORT"
-        ) >/tmp/ghostlink_api.log 2>&1 &
-        API_PID=$!
->>>>>>> origin/main
     fi
     echo -e "  ${DIM}API binary: ${API_BIN}${NC}"
 
