@@ -3013,26 +3013,6 @@ InferenceBackend::Native => match native_engine_client
         Json(serde_json::json!({ "entries": [] }))
     }
 
-    async fn handle_gui_model_download_progress(
-        State(state): State<Arc<Mutex<BackendState>>>,
-        axum::extract::Query(params): axum::extract::Query<HashMap<String, String>>,
-    ) -> Json<serde_json::Value> {
-        let model_id = params.get("model_id").cloned().unwrap_or_default();
-        let backend = lock_state(&state);
-        let downloading: Vec<String> = backend
-            .models
-            .iter()
-            .filter(|m| m.status == "Downloading")
-            .map(|m| m.name.clone())
-            .collect();
-        let is_downloading = downloading.contains(&model_id);
-        Json(serde_json::json!({
-            "progress": if is_downloading { 0.0 } else { 1.0 },
-            "status": if is_downloading { "downloading" } else { "completed" },
-            "model_id": model_id,
-        }))
-    }
-
     async fn handle_gui_runtime_select(
         State(state): State<Arc<Mutex<BackendState>>>,
         Json(req): Json<serde_json::Value>,
@@ -4122,7 +4102,6 @@ InferenceBackend::Native => match native_engine_client
     println!("  - POST /api/security/pqc/enable");
     println!("  - GET  /api/security/pqc/state");
     println!("  - GET  /api/security/audit-log");
-    println!("  - GET  /api/models/download/progress");
     println!("  - POST /api/runtime/select");
     println!("  - GET  /api/settings");
     println!("  - POST /api/settings");
@@ -4363,10 +4342,6 @@ InferenceBackend::Native => match native_engine_client
             )
             .route("/api/models/load", post(handle_gui_model_load))
             .route("/api/models/download", post(handle_gui_model_download))
-            .route(
-                "/api/models/download/progress",
-                get(handle_gui_model_download_progress),
-            )
             .route("/api/models/delete", post(handle_gui_model_delete))
             .route(
                 "/api/models/search/huggingface",
