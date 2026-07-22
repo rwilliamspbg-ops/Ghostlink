@@ -88,19 +88,24 @@ spinner() {
 
 # Wait for HTTP endpoint with animated spinner.
 # Optional 4th arg: a substring that must appear in the response BODY, not
-# just a 2xx status. A bare "curl -sf succeeded" is not proof that GHOSTLINK
-# is what answered — any unrelated service already bound to the same port
-# (a leftover dev server, a different project's process, anything) will
-# also return 200 and fool a status-only check, especially since free_port
-# can't do anything about a process that immediately respawns (a supervised
-# service, `--reload`, a cron job). Content-checking a marker unique to
-# Ghostlink's own response body closes that gap regardless of what's
-# supervising the conflicting process or how fast it respawns.
+# just a 2xx status. A bare "curl -sf succeeded" is not proof that the
+# service we WANT is what answered — any unrelated service already bound to
+# the same port (a leftover dev server, a different project's process,
+# anything) will also return 200 and fool a status-only check, especially
+# since free_port can't do anything about a process that immediately
+# respawns (a supervised service, `--reload`, a cron job). Content-checking
+# a marker unique to the expected service's response body closes that gap
+# regardless of what's supervising the conflicting process or how fast it
+# respawns.
+# Optional 5th arg: the env var to suggest as a port override in the
+# on-timeout diagnostic (e.g. "GHOSTLINK_API_PORT"). Omit for checks where
+# no such override applies.
 wait_for_http() {
     local url="$1"
     local label="$2"
     local timeout_s="${3:-120}"
     local body_marker="${4:-}"
+    local override_var="${5:-}"
     local start
     start=$(date +%s)
     local body
@@ -119,8 +124,12 @@ wait_for_http() {
         if (( $(date +%s) - start >= timeout_s )); then
             printf "\r${CLEAR_LINE}  ${RED}✗${NC} ${WHITE}%s${NC} ${RED}timeout${NC} after %ds: %s\n" "$label" "$timeout_s" "$url"
             if [ -n "$body_marker" ] && [ -n "${body:-}" ]; then
-                echo -e "  ${YELLOW}⚠${NC} ${DIM}Something answered ${url} but it isn't Ghostlink (missing '${body_marker}' in response).${NC}"
-                echo -e "  ${DIM}A different service is likely already bound to this port. Pick another with GHOSTLINK_API_PORT=<port> ./launch.sh${NC}"
+                echo -e "  ${YELLOW}⚠${NC} ${DIM}Something answered ${url} but it isn't ${label} (missing '${body_marker}' in response).${NC}"
+                if [ -n "$override_var" ]; then
+                    echo -e "  ${DIM}A different service is likely already bound to this port. Pick another with ${override_var}=<port> ./launch.sh${NC}"
+                else
+                    echo -e "  ${DIM}A different service is likely already bound to this port. Free it, or override the port for this service and retry.${NC}"
+                fi
             fi
             return 1
         fi
@@ -1042,8 +1051,15 @@ start_services() {
             >/tmp/ghostlink_llama_server.log 2>&1 &
         LLAMA_PID=$!
 
-        if ! wait_for_http "http://127.0.0.1:${LLAMA_PORT}/health" "llama-server" 90; then
+        # llama-server's own /health body is just {"status":"ok"} — too generic
+        # to prove it's actually llama.cpp (the exact same false-positive class
+        # fixed for the Ghostlink API's own health checks applies here too, e.g.
+        # any web app already bound to this port that happens to have its own
+        # /health route). /v1/models includes "owned_by":"llamacpp", which is
+        # distinctive enough that nothing else plausibly returns it.
+        if ! wait_for_http "http://127.0.0.1:${LLAMA_PORT}/v1/models" "llama-server" 90 "llamacpp" "GHOSTLINK_LLAMA_SERVER_PORT"; then
             echo -e "  ${RED}✗${NC} llama-server failed — see /tmp/ghostlink_llama_server.log"
+            echo -e "  ${DIM}Tip: ensure port ${LLAMA_PORT} is free (another web app there will fool a bare health check).${NC}"
             return 1
         fi
         NATIVE_ENGINE="llama_server"
@@ -1104,13 +1120,13 @@ start_services() {
     if is_wsl; then
         api_wait=180
     fi
-    if ! wait_for_http "http://${BACKEND_HOST}:${BACKEND_PORT}/health" "Ghostlink API" "$api_wait" "inference_backend"; then
+    if ! wait_for_http "http://${BACKEND_HOST}:${BACKEND_PORT}/health" "Ghostlink API" "$api_wait" "inference_backend" "GHOSTLINK_API_PORT"; then
         echo -e "  ${RED}✗${NC} API failed — see /tmp/ghostlink_api.log"
         echo -e "  ${DIM}Tip: ensure port ${BACKEND_PORT} is free and ghost-link is a Linux binary under WSL.${NC}"
         tail -40 /tmp/ghostlink_api.log 2>/dev/null || true
         return 1
     fi
-    if ! wait_for_http "http://${BACKEND_HOST}:${BACKEND_PORT}/api/health" "API /api/health" 30 "inference_backend"; then
+    if ! wait_for_http "http://${BACKEND_HOST}:${BACKEND_PORT}/api/health" "API /api/health" 30 "inference_backend" "GHOSTLINK_API_PORT"; then
         echo -e "  ${RED}✗${NC} /api/health failed — wrong process on :${BACKEND_PORT} or outdated binary"
         echo -e "  ${DIM}Check: curl -i http://${BACKEND_HOST}:${BACKEND_PORT}/api/health${NC}"
         tail -40 /tmp/ghostlink_api.log 2>/dev/null || true
@@ -1135,11 +1151,11 @@ start_services() {
             API_PID=$!
             API_LAUNCH_MODE="cargo"
 
-            if ! wait_for_http "http://${BACKEND_HOST}:${BACKEND_PORT}/health" "Ghostlink API (cargo fallback)" 90 "inference_backend"; then
+            if ! wait_for_http "http://${BACKEND_HOST}:${BACKEND_PORT}/health" "Ghostlink API (cargo fallback)" 90 "inference_backend" "GHOSTLINK_API_PORT"; then
                 echo -e "  ${RED}✗${NC} API failed after cargo fallback — see /tmp/ghostlink_api.log"
                 return 1
             fi
-            if ! wait_for_http "http://${BACKEND_HOST}:${BACKEND_PORT}/api/health" "API /api/health (cargo fallback)" 30 "inference_backend"; then
+            if ! wait_for_http "http://${BACKEND_HOST}:${BACKEND_PORT}/api/health" "API /api/health (cargo fallback)" 30 "inference_backend" "GHOSTLINK_API_PORT"; then
                 echo -e "  ${RED}✗${NC} /api/health failed after cargo fallback"
                 return 1
             fi
