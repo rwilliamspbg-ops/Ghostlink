@@ -4,6 +4,22 @@ All notable changes to Ghostlink Studio are documented here.
 
 ---
 
+## [1.3.3] - 2026-07-22 (Launch Script: Stale-Process Detection Hardening)
+
+### 🐛 Launch Reliability
+
+- `free_port()` previously relied entirely on `fuser`/`lsof`/`ss`/`netstat` being installed to find and kill a stale listener on a port before (re)starting a service. On a host with none of those tools, it silently did nothing. Added a tool-independent fallback (`proc_net_pids_for_port`) that parses `/proc/net/tcp{,6}` directly, so a stale process can be found and killed on any Linux host regardless of what's installed.
+- The `cargo run` fallback path (used when the prebuilt API binary 404s on a route it predates) now verifies the replacement process is actually still alive (`kill -0`) after its health checks pass, before trusting them. Previously, if the old process was never actually killed (exactly the scenario above), the new process would fail to bind the already-occupied port and exit — but the health checks would keep silently succeeding against the still-running old process the whole time, only failing later with a confusing 404 on whatever route the stale binary happened to predate. This now fails fast with a diagnostic that names the real cause.
+
+### ✅ Validation
+
+- `bash -n launch.sh` — syntax OK
+- `proc_net_pids_for_port` verified against a real listening process — correctly identifies its PID, matching `pgrep` ground truth
+- `free_port` verified end-to-end — confirmed it terminates a test server and the port becomes unreachable afterward
+- Full `launch.sh` run on the normal fast path (prebuilt binary works, no fallback triggered) — unaffected, reaches healthy state as before
+
+---
+
 ## [1.3.2] - 2026-07-22 (GPU/CPU Auto-Discovery Fix & Worker Discovery)
 
 ### 🐛 Hardware Auto-Discovery
