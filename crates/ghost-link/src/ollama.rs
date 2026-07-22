@@ -728,6 +728,17 @@ mod tests {
 
     #[test]
     fn chat_request_nests_sampling_params_under_options() {
+        fn assert_json_number_close(value: &Value, expected: f64, label: &str) {
+            let actual = value
+                .as_f64()
+                .unwrap_or_else(|| panic!("{label} must be a JSON number"));
+            let delta = (actual - expected).abs();
+            assert!(
+                delta <= 1e-6,
+                "{label} expected {expected} but was {actual} (|delta|={delta})"
+            );
+        }
+
         // Regression: Ollama's /api/chat and /api/generate silently ignore
         // temperature/top_p/top_k/repeat_penalty/num_predict at the top
         // level of the request body -- they're only honored inside a
@@ -746,13 +757,18 @@ mod tests {
             }),
         };
         let value = serde_json::to_value(&request).expect("serialize ChatRequest");
-        assert!(value.get("temperature").is_none(), "temperature must not be top-level");
+        assert!(
+            value.get("temperature").is_none(),
+            "temperature must not be top-level"
+        );
         assert!(value.get("top_p").is_none(), "top_p must not be top-level");
-        let options = value.get("options").expect("options object must be present");
-        assert_eq!(options["temperature"], 0.5);
-        assert_eq!(options["top_p"], 0.8);
+        let options = value
+            .get("options")
+            .expect("options object must be present");
+        assert_json_number_close(&options["temperature"], 0.5, "temperature");
+        assert_json_number_close(&options["top_p"], 0.8, "top_p");
         assert_eq!(options["top_k"], 30);
-        assert_eq!(options["repeat_penalty"], 1.2);
+        assert_json_number_close(&options["repeat_penalty"], 1.2, "repeat_penalty");
         assert_eq!(options["num_predict"], 256);
     }
 }
