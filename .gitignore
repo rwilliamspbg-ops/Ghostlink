@@ -63,3 +63,4 @@ models/*.gguf
 models/
 models.json
 ghostlink_gui_modern/dist/
+.ghostlink-npm-platform
