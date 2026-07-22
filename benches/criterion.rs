@@ -181,7 +181,11 @@ fn bench_cluster(c: &mut Criterion) {
         b.iter(|| black_box(snapshot_cluster.total_vram_gb()));
     });
     group.bench_function("calculate_cluster_health_10", |b| {
-        b.iter(|| black_box(ghostlink_core::planning::calculate_cluster_health(black_box(&snapshot_cluster))));
+        b.iter(|| {
+            black_box(ghostlink_core::planning::calculate_cluster_health(
+                black_box(&snapshot_cluster),
+            ))
+        });
     });
     group.finish();
 }
