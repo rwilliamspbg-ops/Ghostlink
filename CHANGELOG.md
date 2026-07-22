@@ -4,6 +4,21 @@ All notable changes to Ghostlink Studio are documented here.
 
 ---
 
+## [1.3.4] - 2026-07-22 (Launch: Port-Conflict Detection)
+
+### 🐛 Launch Reliability
+
+- Root-caused a real user-reported failure: on one machine, `launch.sh` consistently reported `Ghostlink API ready` / `API /api/health ready` and then failed with `GET /api/settings ... HTTP 404` — even after the `cargo run` fallback rebuild (added in [1.3.3]) confirmed a live, correctly-routed process. Turned out an unrelated Python/uvicorn service was already bound to port 8003 on that machine, answering `/health` and `/api/models` with its own (different-shaped) 200 responses. `free_port`'s kill couldn't keep it off the port, and a bare "curl succeeded" was never proof that *Ghostlink* was what answered.
+- `wait_for_http()` now accepts an optional content-marker argument: for the two `/health` and `/api/health` checks (both the initial and `cargo run`-fallback paths), it now requires `"inference_backend"` to actually appear in the response body, not just a 2xx status. Any unrelated service on the port — even one that respawns faster than `free_port` can evict it — is now correctly rejected instead of silently accepted, with a clear diagnostic naming the real cause and pointing at `GHOSTLINK_API_PORT=<port>` as an immediate workaround.
+
+### ✅ Validation
+
+- `bash -n launch.sh` — syntax OK
+- Reproduced the exact failure locally with a throwaway Python HTTP server bound to port 8003 (both a one-shot and an auto-respawning variant, matching the reported symptom) — confirmed `wait_for_http` now correctly times out and reports the new diagnostic instead of a false "ready"
+- Confirmed the positive case is unaffected: full `launch.sh` run with no port conflict reaches healthy state exactly as before, `/api/settings` returns `200`
+
+---
+
 ## [1.3.3] - 2026-07-22 (Launch Script: Stale-Process Detection Hardening)
 
 ### 🐛 Launch Reliability

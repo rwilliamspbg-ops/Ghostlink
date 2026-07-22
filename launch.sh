@@ -86,21 +86,42 @@ spinner() {
     return $?
 }
 
-# Wait for HTTP endpoint with animated spinner
+# Wait for HTTP endpoint with animated spinner.
+# Optional 4th arg: a substring that must appear in the response BODY, not
+# just a 2xx status. A bare "curl -sf succeeded" is not proof that GHOSTLINK
+# is what answered — any unrelated service already bound to the same port
+# (a leftover dev server, a different project's process, anything) will
+# also return 200 and fool a status-only check, especially since free_port
+# can't do anything about a process that immediately respawns (a supervised
+# service, `--reload`, a cron job). Content-checking a marker unique to
+# Ghostlink's own response body closes that gap regardless of what's
+# supervising the conflicting process or how fast it respawns.
 wait_for_http() {
     local url="$1"
     local label="$2"
     local timeout_s="${3:-120}"
+    local body_marker="${4:-}"
     local start
     start=$(date +%s)
-    
+    local body
+
     while true; do
-        if curl -sf "$url" >/dev/null 2>&1; then
+        if [ -n "$body_marker" ]; then
+            body=$(curl -sf "$url" 2>/dev/null || true)
+            if [ -n "$body" ] && echo "$body" | grep -qF "$body_marker"; then
+                printf "\r${CLEAR_LINE}  ${GREEN}✓${NC} ${WHITE}%s${NC} ${GREEN}ready${NC} at ${CYAN}%s${NC}\n" "$label" "$url"
+                return 0
+            fi
+        elif curl -sf "$url" >/dev/null 2>&1; then
             printf "\r${CLEAR_LINE}  ${GREEN}✓${NC} ${WHITE}%s${NC} ${GREEN}ready${NC} at ${CYAN}%s${NC}\n" "$label" "$url"
             return 0
         fi
         if (( $(date +%s) - start >= timeout_s )); then
             printf "\r${CLEAR_LINE}  ${RED}✗${NC} ${WHITE}%s${NC} ${RED}timeout${NC} after %ds: %s\n" "$label" "$timeout_s" "$url"
+            if [ -n "$body_marker" ] && [ -n "${body:-}" ]; then
+                echo -e "  ${YELLOW}⚠${NC} ${DIM}Something answered ${url} but it isn't Ghostlink (missing '${body_marker}' in response).${NC}"
+                echo -e "  ${DIM}A different service is likely already bound to this port. Pick another with GHOSTLINK_API_PORT=<port> ./launch.sh${NC}"
+            fi
             return 1
         fi
         printf "\r  ${CYAN}⠋${NC} ${WHITE}%s${NC} ${DIM}waiting...${NC}" "$label"
@@ -1083,13 +1104,13 @@ start_services() {
     if is_wsl; then
         api_wait=180
     fi
-    if ! wait_for_http "http://${BACKEND_HOST}:${BACKEND_PORT}/health" "Ghostlink API" "$api_wait"; then
+    if ! wait_for_http "http://${BACKEND_HOST}:${BACKEND_PORT}/health" "Ghostlink API" "$api_wait" "inference_backend"; then
         echo -e "  ${RED}✗${NC} API failed — see /tmp/ghostlink_api.log"
         echo -e "  ${DIM}Tip: ensure port ${BACKEND_PORT} is free and ghost-link is a Linux binary under WSL.${NC}"
         tail -40 /tmp/ghostlink_api.log 2>/dev/null || true
         return 1
     fi
-    if ! wait_for_http "http://${BACKEND_HOST}:${BACKEND_PORT}/api/health" "API /api/health" 30; then
+    if ! wait_for_http "http://${BACKEND_HOST}:${BACKEND_PORT}/api/health" "API /api/health" 30 "inference_backend"; then
         echo -e "  ${RED}✗${NC} /api/health failed — wrong process on :${BACKEND_PORT} or outdated binary"
         echo -e "  ${DIM}Check: curl -i http://${BACKEND_HOST}:${BACKEND_PORT}/api/health${NC}"
         tail -40 /tmp/ghostlink_api.log 2>/dev/null || true
@@ -1114,11 +1135,11 @@ start_services() {
             API_PID=$!
             API_LAUNCH_MODE="cargo"
 
-            if ! wait_for_http "http://${BACKEND_HOST}:${BACKEND_PORT}/health" "Ghostlink API (cargo fallback)" 90; then
+            if ! wait_for_http "http://${BACKEND_HOST}:${BACKEND_PORT}/health" "Ghostlink API (cargo fallback)" 90 "inference_backend"; then
                 echo -e "  ${RED}✗${NC} API failed after cargo fallback — see /tmp/ghostlink_api.log"
                 return 1
             fi
-            if ! wait_for_http "http://${BACKEND_HOST}:${BACKEND_PORT}/api/health" "API /api/health (cargo fallback)" 30; then
+            if ! wait_for_http "http://${BACKEND_HOST}:${BACKEND_PORT}/api/health" "API /api/health (cargo fallback)" 30 "inference_backend"; then
                 echo -e "  ${RED}✗${NC} /api/health failed after cargo fallback"
                 return 1
             fi
