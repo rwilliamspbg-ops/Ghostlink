@@ -14,3 +14,7 @@
 ## 2026-07-02 - [Cluster Health Query Optimization]
 **Learning:** Redundant iterations and nested metric lookups on thread-safe collections (like `ClusterState::get_metrics`) introduce unnecessary mutex acquisition overhead and expensive clones of large status structs (such as `NodeMetrics`). Consolidating query loops with functional combinators like `filter_map` reduces lock contention and halves cloning/lookup overhead.
 **Action:** When querying statuses or counting/collecting across thread-safe shared maps or lists, perform lookups once per element, derive any aggregations directly, and avoid secondary lookups or passes.
+
+## 2026-07-02 - [Cluster Health Lock & Clone Overhead Elimination]
+**Learning:** In cluster health calculations, calling multiple helper methods on `ClusterState` (e.g., `active_nodes`, `nodes_snapshot`, `get_metrics`) leads to acquiring the internal metrics mutex multiple times per call and performing numerous expensive deep clones of `NodeMetrics`. Exposing crate-private (`pub(crate)`) access to the underlying metrics map allows acquiring the mutex exactly once and performing a single linear iteration. This bypasses all allocation, cloning, and redundant lock acquisition overhead completely.
+**Action:** Consolidate multiple metrics lookup sweeps into a single-lock, zero-clone traversal. Expose inner collections internally (using `pub(crate)`) when complex multi-metric queries can be performed in a single lock acquisition rather than invoking multiple smaller methods.
