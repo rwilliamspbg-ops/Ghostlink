@@ -206,7 +206,7 @@ pub struct ClusterState {
     /// Indicates whether the shared snapshot needs to be refreshed
     nodes_snapshot_dirty: Arc<AtomicBool>,
     /// Map of node ID to live metrics
-    metrics: Arc<Mutex<HashMap<String, NodeMetrics>>>,
+    pub(crate) metrics: Arc<Mutex<HashMap<String, NodeMetrics>>>,
     /// Last cluster update timestamp
     last_update: Arc<AtomicU64>,
     /// Cached total VRAM across all registered nodes
