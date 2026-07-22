@@ -290,13 +290,14 @@ detect_gpu() {
 check_components() {
     echo -e "${BLUE}┌─ Component Verification ─────────────────────────────────────────────────────────┐${NC}"
     
-    # Backend
+    # Backend (native ELF only — ignore Windows ghost-link.exe under WSL)
     echo -ne "${BLUE}│${NC}  ${WHITE}Backend Binary${NC}        "
-    if [ -f "./target/release/ghost-link" ] || [ -f "./target/debug/ghost-link" ]; then
-        echo -e "${GREEN}✓ Found${NC}  ${DIM}($(ls -1 target/*/ghost-link 2>/dev/null | head -1))${NC}"
+    local _api_bin=""
+    if _api_bin=$(resolve_api_bin 2>/dev/null); then
+        echo -e "${GREEN}✓ Found${NC}  ${DIM}(${_api_bin})${NC}"
         BACKEND_FOUND=1
     else
-        echo -e "${YELLOW}⚠ Building...${NC}  ${DIM}(will compile on launch)${NC}"
+        echo -e "${YELLOW}⚠ Building...${NC}  ${DIM}(Linux binary required under WSL)${NC}"
         BACKEND_FOUND=0
     fi
     
@@ -428,6 +429,96 @@ build_llama_cpp() {
     echo ""
 }
 
+# True when running under WSL (Linux kernel, Windows host paths)
+is_wsl() {
+    if [ -n "${WSL_DISTRO_NAME:-}" ] || [ -n "${WSL_INTEROP:-}" ]; then
+        return 0
+    fi
+    grep -qiE 'microsoft|wsl' /proc/version 2>/dev/null
+}
+
+# Host OS family for binary selection (never run Windows PE under WSL/Linux)
+host_os_family() {
+    local u
+    u=$(uname -s 2>/dev/null || echo unknown)
+    if [[ "$u" =~ MINGW|MSYS|CYGWIN ]]; then
+        echo windows
+    elif is_wsl; then
+        echo linux
+    else
+        case "$u" in
+            Linux*) echo linux ;;
+            Darwin*) echo darwin ;;
+            *) echo other ;;
+        esac
+    fi
+}
+
+# Reject Windows PE binaries on Linux/WSL (they "run" via interop but break on /mnt paths)
+is_runnable_native_bin() {
+    local path="$1"
+    [ -n "$path" ] && [ -f "$path" ] || return 1
+    local family
+    family=$(host_os_family)
+    case "$path" in
+        *.exe|*.EXE|*.dll|*.DLL)
+            [ "$family" = "windows" ] || return 1
+            ;;
+    esac
+    if [ "$family" != "windows" ] && command -v file >/dev/null 2>&1; then
+        local ft
+        ft=$(file -b "$path" 2>/dev/null || true)
+        if echo "$ft" | grep -qiE 'PE32|MS Windows|MS-DOS'; then
+            return 1
+        fi
+    fi
+    return 0
+}
+
+# Prefer a real Linux/macOS node; ignore Windows node.exe on PATH via WSL interop
+resolve_node_bin() {
+    local candidate
+    # Load nvm if present (common under WSL)
+    if [ -z "${NVM_DIR:-}" ] && [ -s "$HOME/.nvm/nvm.sh" ]; then
+        export NVM_DIR="$HOME/.nvm"
+        # shellcheck disable=SC1091
+        . "$NVM_DIR/nvm.sh" >/dev/null 2>&1 || true
+    elif [ -n "${NVM_DIR:-}" ] && [ -s "$NVM_DIR/nvm.sh" ]; then
+        # shellcheck disable=SC1091
+        . "$NVM_DIR/nvm.sh" >/dev/null 2>&1 || true
+    fi
+    # Newest nvm node first
+    local nvm_nodes=()
+    if compgen -G "$HOME/.nvm/versions/node/*/bin/node" >/dev/null 2>&1; then
+        # shellcheck disable=SC2207
+        nvm_nodes=($(ls -1d "$HOME/.nvm/versions/node/"*/bin/node 2>/dev/null | sort -V -r))
+    fi
+    for candidate in \
+        "${GHOSTLINK_NODE_BIN:-}" \
+        "${nvm_nodes[@]}" \
+        "$HOME/.local/share/fnm/node-versions/"*/installation/bin/node \
+        /usr/local/bin/node \
+        /usr/bin/node
+    do
+        if is_runnable_native_bin "$candidate" && [ -x "$candidate" ]; then
+            echo "$candidate"
+            return 0
+        fi
+    done
+    if command -v node >/dev/null 2>&1; then
+        candidate=$(command -v node)
+        # Reject Windows node.exe exposed through WSL interop
+        case "$candidate" in
+            /mnt/c/*|*/Program\ Files/*|*.exe) return 1 ;;
+        esac
+        if is_runnable_native_bin "$candidate"; then
+            echo "$candidate"
+            return 0
+        fi
+    fi
+    return 1
+}
+
 # Free a TCP port (best-effort) so stale processes do not cause bind errors / 405 from wrong servers
 free_port() {
     local port="$1"
@@ -449,27 +540,105 @@ free_port() {
     fi
 }
 
-# Resolve llama-server binary (absolute path)
+# Resolve llama-server binary (absolute path). Never returns Windows .exe under WSL/Linux.
 resolve_llama_server_bin() {
     local candidate
-    for candidate in \
-        "${GHOSTLINK_LLAMA_SERVER_BIN:-}" \
-        "$PROJECT_ROOT/bin/llama-server" \
-        "$PROJECT_ROOT/third_party/llama.cpp/build/bin/llama-server" \
-        "$PROJECT_ROOT/third_party/llama.cpp/build/bin/Release/llama-server.exe" \
-        "$PROJECT_ROOT/third_party/llama.cpp/build/bin/llama-server.exe" \
-        "$PROJECT_ROOT/target/release/llama-server" \
+    local family
+    family=$(host_os_family)
+    local candidates=(
+        "${GHOSTLINK_LLAMA_SERVER_BIN:-}"
+        "${GHOSTLINK_WSL_BIN_DIR:-$HOME/.cache/ghostlink/bin}/llama-server"
+        "$PROJECT_ROOT/bin/llama-server"
+        "$PROJECT_ROOT/third_party/llama.cpp/build/bin/llama-server"
+        "$PROJECT_ROOT/target/release/llama-server"
         "$PROJECT_ROOT/target/debug/llama-server"
-    do
-        if [ -n "$candidate" ] && [ -f "$candidate" ]; then
+    )
+    if [ "$family" = "windows" ]; then
+        candidates+=(
+            "$PROJECT_ROOT/third_party/llama.cpp/build/bin/Release/llama-server.exe"
+            "$PROJECT_ROOT/third_party/llama.cpp/build/bin/llama-server.exe"
+        )
+    fi
+    for candidate in "${candidates[@]}"; do
+        if is_runnable_native_bin "$candidate"; then
             echo "$candidate"
             return 0
         fi
     done
     if command -v llama-server >/dev/null 2>&1; then
-        command -v llama-server
+        candidate=$(command -v llama-server)
+        if is_runnable_native_bin "$candidate"; then
+            echo "$candidate"
+            return 0
+        fi
+    fi
+    return 1
+}
+
+# Resolve ghost-link API binary (Linux ELF under WSL — never ghost-link.exe)
+resolve_api_bin() {
+    local candidate
+    for candidate in \
+        "${GHOSTLINK_API_BIN:-}" \
+        "${CARGO_TARGET_DIR:-}/release/ghost-link" \
+        "${CARGO_TARGET_DIR:-}/debug/ghost-link" \
+        "$HOME/.cache/ghostlink/target/release/ghost-link" \
+        "$HOME/.cache/ghostlink/target/debug/ghost-link" \
+        "$PROJECT_ROOT/target/release/ghost-link" \
+        "$PROJECT_ROOT/target/debug/ghost-link" \
+        "$PROJECT_ROOT/bin/ghost-link"
+    do
+        if is_runnable_native_bin "$candidate" && [ -x "$candidate" ]; then
+            echo "$candidate"
+            return 0
+        fi
+    done
+    return 1
+}
+
+# Ensure a native Linux/macOS ghost-link exists (build if only Windows .exe is present)
+ensure_api_bin() {
+    local bin
+    if bin=$(resolve_api_bin); then
+        echo "$bin"
         return 0
     fi
+    if ! command -v cargo >/dev/null 2>&1; then
+        echo -e "  ${RED}✗${NC} ghost-link not found and cargo is not on PATH" >&2
+        if is_wsl; then
+            echo -e "  ${DIM}WSL needs a Linux build. Install Rust: https://rustup.rs${NC}" >&2
+            echo -e "  ${DIM}Or launch from Windows instead: .\\launch.bat${NC}" >&2
+        fi
+        return 1
+    fi
+    # On WSL, building into /mnt/c is extremely slow and can mix with Windows artifacts.
+    # Use a Linux-native target dir under $HOME unless the user overrides it.
+    if is_wsl && [ -z "${CARGO_TARGET_DIR:-}" ]; then
+        export CARGO_TARGET_DIR="${GHOSTLINK_CARGO_TARGET_DIR:-$HOME/.cache/ghostlink/target}"
+        mkdir -p "$CARGO_TARGET_DIR"
+        echo -e "  ${DIM}CARGO_TARGET_DIR=${CARGO_TARGET_DIR}${NC}" >&2
+    fi
+    echo -e "  ${YELLOW}Building Linux ghost-link (Windows .exe cannot serve under WSL)...${NC}" >&2
+    (
+        cd "$PROJECT_ROOT" || exit 1
+        cargo build --release -p ghost-link
+    ) >/tmp/ghostlink_api_build.log 2>&1
+    # resolve after build (also check CARGO_TARGET_DIR)
+    if bin=$(resolve_api_bin); then
+        echo "$bin"
+        return 0
+    fi
+    for candidate in \
+        "${CARGO_TARGET_DIR:-}/release/ghost-link" \
+        "$HOME/.cache/ghostlink/target/release/ghost-link"
+    do
+        if is_runnable_native_bin "$candidate" && [ -x "$candidate" ]; then
+            echo "$candidate"
+            return 0
+        fi
+    done
+    echo -e "  ${RED}✗${NC} cargo build failed — see /tmp/ghostlink_api_build.log" >&2
+    tail -30 /tmp/ghostlink_api_build.log >&2 2>/dev/null || true
     return 1
 }
 
@@ -500,30 +669,70 @@ download_prebuilt_llama() {
     if [ "$(uname -s)" != "Linux" ] || [ "$(uname -m)" != "x86_64" ]; then
         return 1
     fi
+    # Prefer Linux-native dir under WSL home (fast); fall back to repo bin/
+    local dest="$PROJECT_ROOT/bin"
+    if is_wsl; then
+        dest="${GHOSTLINK_WSL_BIN_DIR:-$HOME/.cache/ghostlink/bin}"
+    fi
+    # Thin launcher needs sibling .so bundle (keep symlinks intact)
+    if [ -x "$dest/llama-server" ] && is_runnable_native_bin "$dest/llama-server" \
+        && { [ -e "$dest/libllama-server-impl.so" ] || [ -e "$dest/libllama-common.so.0" ]; } \
+        && env LD_LIBRARY_PATH="$dest" "$dest/llama-server" --version >/dev/null 2>&1; then
+        echo "$dest/llama-server"
+        return 0
+    fi
     local variant="ubuntu-x64"
     if ldconfig -p 2>/dev/null | grep -q "libvulkan.so.1"; then
         variant="ubuntu-vulkan-x64"
     fi
     local url
-    url=$(curl -fsSL "https://api.github.com/repos/ggml-org/llama.cpp/releases?per_page=10" 2>/dev/null \
-        | grep -o "https://github.com/ggml-org/llama.cpp/releases/download/[^\"]*-bin-${variant}\\.tar\\.gz" \
+    url=$(curl -fsSL "https://api.github.com/repos/ggml-org/llama.cpp/releases?per_page=15" 2>/dev/null \
+        | grep -oE "https://github.com/ggml-org/llama.cpp/releases/download/[^\"]+-bin-${variant}\\.tar\\.gz" \
         | head -1)
     [ -n "$url" ] || return 1
-    local dest="$PROJECT_ROOT/third_party/llama.cpp/build/bin"
-    local tmp_tar
+    local tmp_tar tmp_dir
     tmp_tar=$(mktemp) || return 1
+    tmp_dir=$(mktemp -d) || { rm -f "$tmp_tar"; return 1; }
     mkdir -p "$dest"
-    if ! curl -fsSL --retry 3 -o "$tmp_tar" "$url"; then
+    echo -e "  ${DIM}Downloading llama-server (${variant})...${NC}" >&2
+    if ! curl -fL --retry 3 --progress-bar -o "$tmp_tar" "$url"; then
         rm -f "$tmp_tar"
+        rm -rf "$tmp_dir"
         return 1
     fi
-    if ! tar xzf "$tmp_tar" -C "$dest" --strip-components=1; then
+    if ! tar xzf "$tmp_tar" -C "$tmp_dir"; then
         rm -f "$tmp_tar"
+        rm -rf "$tmp_dir"
         return 1
     fi
     rm -f "$tmp_tar"
-    [ -f "$dest/llama-server" ] || return 1
+    local found src_dir
+    found=$(find "$tmp_dir" -type f -name 'llama-server' | head -1)
+    if [ -z "$found" ] || [ ! -f "$found" ]; then
+        rm -rf "$tmp_dir"
+        return 1
+    fi
+    src_dir=$(dirname "$found")
+    # Copy full runtime bundle (thin llama-server + all .so deps, keep symlinks)
+    mkdir -p "$dest"
+    cp -a "$found" "$dest/llama-server"
+    # Include regular files and symlinks (*.so / *.so.*)
+    find "$src_dir" -maxdepth 1 \( -type f -o -type l \) \( -name '*.so' -o -name '*.so.*' \) \
+        -exec cp -a {} "$dest/" \;
+    rm -rf "$tmp_dir"
     chmod +x "$dest/llama-server" 2>/dev/null || true
+    if ! is_runnable_native_bin "$dest/llama-server"; then
+        return 1
+    fi
+    if [ ! -e "$dest/libllama-server-impl.so" ] && [ ! -e "$dest/libllama-common.so.0" ]; then
+        return 1
+    fi
+    # Smoke-check dynamic linker can resolve deps when LD_LIBRARY_PATH=dest
+    if ! env LD_LIBRARY_PATH="$dest" "$dest/llama-server" --version >/dev/null 2>&1; then
+        echo -e "  ${YELLOW}⚠${NC} llama-server failed --version smoke check" >&2
+        env LD_LIBRARY_PATH="$dest" ldd "$dest/llama-server" 2>&1 | grep -i "not found" >&2 || true
+        return 1
+    fi
     echo "$dest/llama-server"
 }
 
@@ -646,20 +855,36 @@ start_services() {
             echo " ${GREEN}llama.cpp ready${NC}               "
         else
             progress_bar 1 3
-            echo " ${YELLOW}Building / downloading llama-server...${NC}"
-            if command -v cmake >/dev/null 2>&1; then
-                build_llama_cpp >/tmp/ghostlink-bootstrap.log 2>&1 || true
-            fi
-            if ! LLAMA_SERVER_BIN=$(resolve_llama_server_bin); then
+            echo " ${YELLOW}Building / downloading Linux llama-server...${NC}"
+            # Prefer official Linux prebuilt under WSL (Windows .exe is unusable here)
+            if is_wsl || [ "$(host_os_family)" = "linux" ]; then
                 LLAMA_SERVER_BIN=$(download_prebuilt_llama 2>/tmp/ghostlink-prebuilt.log) || true
             fi
-            if [ -z "${LLAMA_SERVER_BIN:-}" ] || [ ! -f "$LLAMA_SERVER_BIN" ]; then
-                echo -e "\r${CLEAR_LINE}  ${RED}✗${NC} llama-server not found. Build third_party/llama.cpp or set GHOSTLINK_LLAMA_SERVER_BIN"
+            if [ -z "${LLAMA_SERVER_BIN:-}" ] || ! is_runnable_native_bin "${LLAMA_SERVER_BIN:-}"; then
+                if command -v cmake >/dev/null 2>&1; then
+                    build_llama_cpp >/tmp/ghostlink-bootstrap.log 2>&1 || true
+                fi
+                LLAMA_SERVER_BIN=$(resolve_llama_server_bin || true)
+            fi
+            if [ -z "${LLAMA_SERVER_BIN:-}" ] || ! is_runnable_native_bin "${LLAMA_SERVER_BIN:-}"; then
+                LLAMA_SERVER_BIN=$(download_prebuilt_llama 2>/tmp/ghostlink-prebuilt.log) || true
+            fi
+            if [ -z "${LLAMA_SERVER_BIN:-}" ] || ! is_runnable_native_bin "${LLAMA_SERVER_BIN:-}"; then
+                echo -e "\r${CLEAR_LINE}  ${RED}✗${NC} Native llama-server not found for $(host_os_family)"
+                echo -e "  ${DIM}Windows .exe cannot load models from WSL paths (/mnt/c/...).${NC}"
+                echo -e "  ${DIM}Fix: set GHOSTLINK_LLAMA_SERVER_BIN to a Linux llama-server, or run .\\launch.bat on Windows.${NC}"
                 return 1
             fi
         fi
+        if ! is_runnable_native_bin "$LLAMA_SERVER_BIN"; then
+            echo -e "  ${RED}✗${NC} Refusing non-native llama-server: $LLAMA_SERVER_BIN"
+            echo -e "  ${DIM}Under WSL use a Linux build (prebuilt download or cmake), not llama-server.exe${NC}"
+            return 1
+        fi
         chmod +x "$LLAMA_SERVER_BIN" 2>/dev/null || true
         export GHOSTLINK_LLAMA_SERVER_BIN="$LLAMA_SERVER_BIN"
+        # Prebuilt tarballs ship .so next to the binary
+        export LD_LIBRARY_PATH="$(dirname "$LLAMA_SERVER_BIN"):${LD_LIBRARY_PATH:-}"
 
         if ! MODEL_FILE=$(resolve_model_file); then
             echo -e "  ${DIM}Downloading default tiny model...${NC}"
@@ -718,6 +943,14 @@ start_services() {
         echo -e "  ${DIM}llama-server: ${LLAMA_SERVER_BIN}${NC}"
         echo -e "  ${DIM}Starting llama-server: -c ${CTX_SIZE} -ngl ${LLAMA_NGL} -t ${THREADS} ${LLAMA_PERF_ARGS[*]}${NC}"
 
+        # Resolve to a real path (helps when models live on /mnt/c under WSL)
+        MODEL_FILE="$(readlink -f "$MODEL_FILE" 2>/dev/null || echo "$MODEL_FILE")"
+        if [ ! -r "$MODEL_FILE" ]; then
+            echo -e "  ${RED}✗${NC} Model not readable: $MODEL_FILE"
+            return 1
+        fi
+
+        env LD_LIBRARY_PATH="$(dirname "$LLAMA_SERVER_BIN"):${LD_LIBRARY_PATH:-}" \
         "$LLAMA_SERVER_BIN" \
             -m "$MODEL_FILE" \
             --alias "$MODEL_ALIAS" \
@@ -770,36 +1003,39 @@ start_services() {
     fi
 
     local API_BIN=""
-    local API_LAUNCH_MODE="cargo"
-    if [ -x "$PROJECT_ROOT/target/release/ghost-link" ]; then
-        API_BIN="$PROJECT_ROOT/target/release/ghost-link"
-    elif [ -x "$PROJECT_ROOT/target/debug/ghost-link" ]; then
-        API_BIN="$PROJECT_ROOT/target/debug/ghost-link"
+    local API_LAUNCH_MODE="bin"
+    if ! API_BIN=$(ensure_api_bin); then
+        return 1
     fi
-
-    if [ -n "$API_BIN" ]; then
-        API_LAUNCH_MODE="bin"
-        (
-            cd "$PROJECT_ROOT"
-            "$API_BIN" serve "$BACKEND_HOST" "$BACKEND_PORT"
-        ) >/tmp/ghostlink_api.log 2>&1 &
-        API_PID=$!
-    else
-        (
-            cd "$PROJECT_ROOT"
-            cargo run -p ghost-link -- serve "$BACKEND_HOST" "$BACKEND_PORT"
-        ) >/tmp/ghostlink_api.log 2>&1 &
-        API_PID=$!
+    # Guard: never exec Windows PE under WSL (wrong binary → silent fail / wrong ports)
+    if ! is_runnable_native_bin "$API_BIN"; then
+        echo -e "  ${RED}✗${NC} Refusing non-native API binary: $API_BIN"
+        echo -e "  ${DIM}Under WSL, build Linux binary: cargo build --release -p ghost-link${NC}"
+        return 1
     fi
+    echo -e "  ${DIM}API binary: ${API_BIN}${NC}"
 
-    if ! wait_for_http "http://${BACKEND_HOST}:${BACKEND_PORT}/health" "Ghostlink API" 90; then
+    (
+        cd "$PROJECT_ROOT"
+        "$API_BIN" serve "$BACKEND_HOST" "$BACKEND_PORT"
+    ) >/tmp/ghostlink_api.log 2>&1 &
+    API_PID=$!
+
+    # First boot after cargo build can be slow on /mnt/c
+    local api_wait=90
+    if is_wsl; then
+        api_wait=180
+    fi
+    if ! wait_for_http "http://${BACKEND_HOST}:${BACKEND_PORT}/health" "Ghostlink API" "$api_wait"; then
         echo -e "  ${RED}✗${NC} API failed — see /tmp/ghostlink_api.log"
-        echo -e "  ${DIM}Tip: ensure port ${BACKEND_PORT} is free and ghost-link was built recently.${NC}"
+        echo -e "  ${DIM}Tip: ensure port ${BACKEND_PORT} is free and ghost-link is a Linux binary under WSL.${NC}"
+        tail -40 /tmp/ghostlink_api.log 2>/dev/null || true
         return 1
     fi
     if ! wait_for_http "http://${BACKEND_HOST}:${BACKEND_PORT}/api/health" "API /api/health" 30; then
         echo -e "  ${RED}✗${NC} /api/health failed — wrong process on :${BACKEND_PORT} or outdated binary"
         echo -e "  ${DIM}Check: curl -i http://${BACKEND_HOST}:${BACKEND_PORT}/api/health${NC}"
+        tail -40 /tmp/ghostlink_api.log 2>/dev/null || true
         return 1
     fi
 
@@ -861,11 +1097,57 @@ start_services() {
     progress_bar 0 3
     echo " ${DIM}Checking dependencies...${NC}"
 
+    local NODE_BIN=""
+    if ! NODE_BIN=$(resolve_node_bin); then
+        echo -e "  ${RED}✗${NC} Native Node.js not found (Windows node.exe via WSL interop is not supported)"
+        echo -e "  ${DIM}Install in WSL: curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash - && sudo apt-get install -y nodejs${NC}"
+        echo -e "  ${DIM}Or use Windows launcher: .\\launch.bat${NC}"
+        return 1
+    fi
+    local NPM_BIN
+    NPM_BIN="$(dirname "$NODE_BIN")/npm"
+    if [ ! -x "$NPM_BIN" ]; then
+        if command -v npm >/dev/null 2>&1 && is_runnable_native_bin "$(command -v npm)"; then
+            NPM_BIN=$(command -v npm)
+        else
+            echo -e "  ${RED}✗${NC} npm not found next to native node at $NODE_BIN"
+            return 1
+        fi
+    fi
+    echo -e "  ${DIM}Node: ${NODE_BIN}${NC}"
+
     cd "$PROJECT_ROOT/ghostlink_gui_modern" || return 1
+    # Windows node_modules (from launch.bat) lack Linux optional natives (e.g. @rollup/rollup-linux-x64-gnu)
+    local need_npm_install=0
+    local platform_marker=".ghostlink-npm-platform"
+    local want_platform
+    want_platform="$(host_os_family)-$(uname -m)"
     if [ ! -d "node_modules" ]; then
+        need_npm_install=1
+    elif [ "$(cat "$platform_marker" 2>/dev/null || true)" != "$want_platform" ]; then
+        need_npm_install=1
+        echo -e "  ${YELLOW}node_modules platform mismatch (need ${want_platform}) — reinstalling...${NC}"
+    elif [ "$(host_os_family)" = "linux" ] \
+        && [ ! -d "node_modules/@rollup/rollup-linux-x64-gnu" ] \
+        && [ ! -d "node_modules/@rollup/rollup-linux-x64-musl" ]; then
+        need_npm_install=1
+        echo -e "  ${YELLOW}Missing Linux rollup binary — reinstalling npm packages...${NC}"
+    fi
+    if [ "$need_npm_install" -eq 1 ]; then
         progress_bar 1 3
         echo " ${YELLOW}Installing npm packages...${NC}"
-        npm install --legacy-peer-deps >/tmp/ghostlink_frontend_install.log 2>&1
+        # Drop previous OS-specific tree so optional deps resolve for this host
+        if [ -d "node_modules" ] && [ ! -L "node_modules" ]; then
+            rm -rf node_modules
+        fi
+        PATH="$(dirname "$NODE_BIN"):$PATH" \
+          "$NPM_BIN" install --legacy-peer-deps >/tmp/ghostlink_frontend_install.log 2>&1 \
+          || {
+            echo -e "  ${RED}✗${NC} npm install failed — see /tmp/ghostlink_frontend_install.log"
+            tail -40 /tmp/ghostlink_frontend_install.log 2>/dev/null || true
+            return 1
+          }
+        printf '%s\n' "$want_platform" >"$platform_marker"
     else
         progress_bar 1 3
         echo " ${GREEN}Dependencies cached${NC}         "
@@ -873,11 +1155,15 @@ start_services() {
 
     progress_bar 2 3
     echo " ${DIM}Starting Vite dev server...${NC}"
+    # Always pin GUI → ghost-link API (:8003). Never :8080/:11434.
     export VITE_GHOSTLINK_API_BASE="http://${BACKEND_HOST}:${BACKEND_PORT}"
     export VITE_PROXY_TARGET="http://${BACKEND_HOST}:${BACKEND_PORT}"
     # Clear any stale override that pointed at wrong ports
     unset VITE_GHOSTLINK_BACKEND_URL 2>/dev/null || true
-    npm run dev -- --host 127.0.0.1 --port "$GUI_PORT" >/tmp/ghostlink_frontend.log 2>&1 &
+    PATH="$(dirname "$NODE_BIN"):$PATH" \
+      VITE_GHOSTLINK_API_BASE="http://${BACKEND_HOST}:${BACKEND_PORT}" \
+      VITE_PROXY_TARGET="http://${BACKEND_HOST}:${BACKEND_PORT}" \
+      "$NPM_BIN" run dev -- --host 127.0.0.1 --port "$GUI_PORT" >/tmp/ghostlink_frontend.log 2>&1 &
     GUI_PID=$!
     cd "$PROJECT_ROOT" || true
 
@@ -971,11 +1257,18 @@ trap cleanup EXIT INT TERM
 
 # Main cinematic sequence
 main() {
-    # Detect Windows (Git Bash/WSL) and redirect to launch.bat
+    # Detect Git Bash / MSYS (not WSL) and redirect to launch.bat
     if [[ "$(uname -s)" =~ MINGW|MSYS|CYGWIN ]]; then
-        echo -e "${YELLOW}Windows detected.${NC} Please use ${BOLD}launch.bat${NC} instead of launch.sh on Windows."
+        echo -e "${YELLOW}Windows shell detected.${NC} Please use ${BOLD}launch.bat${NC} instead of launch.sh."
         echo -e "Run: ${CYAN}.\\launch.bat${NC}"
         exit 1
+    fi
+
+    if is_wsl; then
+        echo -e "${CYAN}WSL detected (${WSL_DISTRO_NAME:-WSL2}).${NC} Using Linux binaries only (ignoring Windows .exe)."
+        echo -e "${DIM}API must be http://127.0.0.1:8003 — not llama-server :8080.${NC}"
+        echo -e "${DIM}For GPU/Windows-native stack, prefer: .\\launch.bat${NC}"
+        echo ""
     fi
     
     echo -e "${HIDE_CURSOR}"
