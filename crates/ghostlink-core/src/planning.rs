@@ -476,30 +476,39 @@ pub fn simulate_layer_streaming(
 
 /// Calculate network health across the cluster
 pub fn calculate_cluster_health(cluster: &ClusterState) -> (f32, usize, Vec<String>) {
-    let active_nodes = cluster.active_nodes();
+    // Acquire the lock on metrics map exactly ONCE to avoid redundant mutex lock/unlock and clones
+    let metrics = cluster
+        .metrics
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
 
-    if active_nodes.is_empty() {
+    if metrics.is_empty() {
         return (0.0, 0, vec![]);
     }
 
-    // Calculate average delivery ratio
-    let avg_delivery_ratio =
-        active_nodes.iter().map(|m| m.delivery_ratio).sum::<f32>() / active_nodes.len() as f32;
+    let mut sum_delivery_ratio = 0.0f32;
+    let mut active_count = 0usize;
+    let mut failed_nodes = Vec::new();
 
-    // Get failed node IDs and count them in a single pass, avoiding redundant mutex locks and clones of NodeMetrics
-    let failed_nodes: Vec<String> = cluster
-        .nodes_snapshot()
-        .iter()
-        .filter_map(|n| {
-            cluster.get_metrics(&n.id).and_then(|metrics| {
-                if metrics.status == NodeStatus::Failed {
-                    Some(n.id.clone())
-                } else {
-                    None
-                }
-            })
-        })
-        .collect();
+    // Iterate once over all live node metrics to aggregate statistics and collect failed nodes
+    for (node_id, metric) in metrics.iter() {
+        match metric.status {
+            NodeStatus::Active => {
+                sum_delivery_ratio += metric.delivery_ratio;
+                active_count += 1;
+            }
+            NodeStatus::Failed => {
+                failed_nodes.push(node_id.clone());
+            }
+            _ => {}
+        }
+    }
+
+    let avg_delivery_ratio = if active_count > 0 {
+        sum_delivery_ratio / active_count as f32
+    } else {
+        0.0
+    };
 
     let failed_count = failed_nodes.len();
 

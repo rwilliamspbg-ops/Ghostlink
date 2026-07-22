@@ -35,6 +35,27 @@ SHOW_CURSOR='\033[?25h'
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# Ensure Rust toolchain is available even when shell PATH has not sourced ~/.cargo/env.
+ensure_rust_toolchain() {
+    if command -v cargo >/dev/null 2>&1 && command -v rustc >/dev/null 2>&1; then
+        return 0
+    fi
+
+    if [ -f "$HOME/.cargo/env" ]; then
+        # shellcheck source=/dev/null
+        . "$HOME/.cargo/env"
+    fi
+
+    if command -v cargo >/dev/null 2>&1 && command -v rustc >/dev/null 2>&1; then
+        return 0
+    fi
+
+    echo -e "${RED}✗${NC} ${BOLD}Rust toolchain not found${NC} - cargo/rustc are required"
+    echo -e "  Install with: ${CYAN}curl https://sh.rustup.rs -sSf | sh -s -- -y${NC}"
+    echo -e "  Then restart shell or run: ${CYAN}source \"\$HOME/.cargo/env\"${NC}"
+    return 1
+}
+
 # Cursor will be hidden in main() and shown by cleanup() trap below
 
 # Progress bar with smooth animation
@@ -719,6 +740,8 @@ download_prebuilt_llama() {
 start_services() {
     cd "$PROJECT_ROOT" || return 1
 
+    ensure_rust_toolchain || return 1
+
     local BACKEND_HOST="${GHOSTLINK_API_HOST:-127.0.0.1}"
     local BACKEND_PORT="${GHOSTLINK_API_PORT:-8003}"
     local GUI_PORT="${GUI_PORT:-5173}"
@@ -965,7 +988,7 @@ start_services() {
     export GHOSTLINK_INFERENCE_BACKEND="$INFERENCE_BACKEND"
     export GHOSTLINK_NATIVE_ENGINE="$NATIVE_ENGINE"
     if [ "$INFERENCE_BACKEND" = "native" ]; then
-        export GHOSTLINK_LLAMA_SERVER_URL="http://127.0.0.1:${LLAMA_PORT}/completion"
+        export GHOSTLINK_LLAMA_SERVER_URL="http://127.0.0.1:${LLAMA_PORT}"
     fi
     export GHOSTLINK_LLAMA_NGL="${LLAMA_NGL:-0}"
     export GHOSTLINK_LLAMA_THREADS="${THREADS}"
@@ -980,6 +1003,7 @@ start_services() {
     fi
 
     local API_BIN=""
+<<<<<<< HEAD
     if ! API_BIN=$(ensure_api_bin); then
         return 1
     fi
@@ -988,6 +1012,28 @@ start_services() {
         echo -e "  ${RED}✗${NC} Refusing non-native API binary: $API_BIN"
         echo -e "  ${DIM}Under WSL, build Linux binary: cargo build --release -p ghost-link${NC}"
         return 1
+=======
+    local API_LAUNCH_MODE="cargo"
+    if [ -x "$PROJECT_ROOT/target/release/ghost-link" ]; then
+        API_BIN="$PROJECT_ROOT/target/release/ghost-link"
+    elif [ -x "$PROJECT_ROOT/target/debug/ghost-link" ]; then
+        API_BIN="$PROJECT_ROOT/target/debug/ghost-link"
+    fi
+
+    if [ -n "$API_BIN" ]; then
+        API_LAUNCH_MODE="bin"
+        (
+            cd "$PROJECT_ROOT"
+            "$API_BIN" serve "$BACKEND_HOST" "$BACKEND_PORT"
+        ) >/tmp/ghostlink_api.log 2>&1 &
+        API_PID=$!
+    else
+        (
+            cd "$PROJECT_ROOT"
+            cargo run -p ghost-link -- serve "$BACKEND_HOST" "$BACKEND_PORT"
+        ) >/tmp/ghostlink_api.log 2>&1 &
+        API_PID=$!
+>>>>>>> origin/main
     fi
     echo -e "  ${DIM}API binary: ${API_BIN}${NC}"
 
@@ -1019,6 +1065,31 @@ start_services() {
     local code
     for path in /api/settings /api/models; do
         code=$(curl -s -o /dev/null -w "%{http_code}" "http://${BACKEND_HOST}:${BACKEND_PORT}${path}" || echo "000")
+        if [ "$API_LAUNCH_MODE" = "bin" ] && { [ "$code" = "404" ] || [ "$code" = "405" ]; }; then
+            echo -e "  ${YELLOW}⚠${NC} GET ${path} returned ${code} from prebuilt API binary; retrying with cargo run"
+
+            [ -n "${API_PID:-}" ] && kill "$API_PID" 2>/dev/null || true
+            wait "$API_PID" 2>/dev/null || true
+            free_port "$BACKEND_PORT"
+
+            (
+                cd "$PROJECT_ROOT"
+                cargo run -p ghost-link -- serve "$BACKEND_HOST" "$BACKEND_PORT"
+            ) >/tmp/ghostlink_api.log 2>&1 &
+            API_PID=$!
+            API_LAUNCH_MODE="cargo"
+
+            if ! wait_for_http "http://${BACKEND_HOST}:${BACKEND_PORT}/health" "Ghostlink API (cargo fallback)" 90; then
+                echo -e "  ${RED}✗${NC} API failed after cargo fallback — see /tmp/ghostlink_api.log"
+                return 1
+            fi
+            if ! wait_for_http "http://${BACKEND_HOST}:${BACKEND_PORT}/api/health" "API /api/health (cargo fallback)" 30; then
+                echo -e "  ${RED}✗${NC} /api/health failed after cargo fallback"
+                return 1
+            fi
+
+            code=$(curl -s -o /dev/null -w "%{http_code}" "http://${BACKEND_HOST}:${BACKEND_PORT}${path}" || echo "000")
+        fi
         if [ "$code" = "405" ]; then
             echo -e "  ${RED}✗${NC} GET ${path} returned 405 Method Not Allowed"
             echo -e "  ${DIM}Port ${BACKEND_PORT} is not ghost-link. Free the port and relaunch.${NC}"
