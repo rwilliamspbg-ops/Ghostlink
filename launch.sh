@@ -770,6 +770,7 @@ start_services() {
     fi
 
     local API_BIN=""
+    local API_LAUNCH_MODE="cargo"
     if [ -x "$PROJECT_ROOT/target/release/ghost-link" ]; then
         API_BIN="$PROJECT_ROOT/target/release/ghost-link"
     elif [ -x "$PROJECT_ROOT/target/debug/ghost-link" ]; then
@@ -777,6 +778,7 @@ start_services() {
     fi
 
     if [ -n "$API_BIN" ]; then
+        API_LAUNCH_MODE="bin"
         (
             cd "$PROJECT_ROOT"
             "$API_BIN" serve "$BACKEND_HOST" "$BACKEND_PORT"
@@ -805,6 +807,31 @@ start_services() {
     local code
     for path in /api/settings /api/models; do
         code=$(curl -s -o /dev/null -w "%{http_code}" "http://${BACKEND_HOST}:${BACKEND_PORT}${path}" || echo "000")
+        if [ "$API_LAUNCH_MODE" = "bin" ] && { [ "$code" = "404" ] || [ "$code" = "405" ]; }; then
+            echo -e "  ${YELLOW}⚠${NC} GET ${path} returned ${code} from prebuilt API binary; retrying with cargo run"
+
+            [ -n "${API_PID:-}" ] && kill "$API_PID" 2>/dev/null || true
+            wait "$API_PID" 2>/dev/null || true
+            free_port "$BACKEND_PORT"
+
+            (
+                cd "$PROJECT_ROOT"
+                cargo run -p ghost-link -- serve "$BACKEND_HOST" "$BACKEND_PORT"
+            ) >/tmp/ghostlink_api.log 2>&1 &
+            API_PID=$!
+            API_LAUNCH_MODE="cargo"
+
+            if ! wait_for_http "http://${BACKEND_HOST}:${BACKEND_PORT}/health" "Ghostlink API (cargo fallback)" 90; then
+                echo -e "  ${RED}✗${NC} API failed after cargo fallback — see /tmp/ghostlink_api.log"
+                return 1
+            fi
+            if ! wait_for_http "http://${BACKEND_HOST}:${BACKEND_PORT}/api/health" "API /api/health (cargo fallback)" 30; then
+                echo -e "  ${RED}✗${NC} /api/health failed after cargo fallback"
+                return 1
+            fi
+
+            code=$(curl -s -o /dev/null -w "%{http_code}" "http://${BACKEND_HOST}:${BACKEND_PORT}${path}" || echo "000")
+        fi
         if [ "$code" = "405" ]; then
             echo -e "  ${RED}✗${NC} GET ${path} returned 405 Method Not Allowed"
             echo -e "  ${DIM}Port ${BACKEND_PORT} is not ghost-link. Free the port and relaunch.${NC}"
