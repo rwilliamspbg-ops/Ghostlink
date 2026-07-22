@@ -1649,6 +1649,10 @@ mod tests {
         assert_eq!(rp.recommended_workers, sp.recommended_workers);
     }
 
+    // Both scenarios below live in one test (rather than two separate #[test]
+    // fns) because they mutate process-global env vars — Rust runs tests in
+    // parallel by default, and a second test setting/clearing the same vars
+    // races with this one regardless of what either asserts.
     #[test]
     fn detect_gpu_handles_env_overrides() {
         std::env::set_var("GHOSTLINK_GPU_NAME", "RTX 4090");
@@ -1663,19 +1667,12 @@ mod tests {
         std::env::remove_var("GHOSTLINK_GPU_NAME");
         std::env::remove_var("GHOSTLINK_VRAM_GB");
         std::env::remove_var("GHOSTLINK_COMPUTE_CAPABILITY");
-    }
 
-    #[test]
-    fn detect_gpu_from_env_ignores_zero_vram_default() {
-        // launch.sh always exports GHOSTLINK_VRAM_GB (defaulting to "0" on CPU-only
-        // hosts). That alone must not be treated as a GPU override, or CPU-only
-        // hosts would falsely report GPU acceleration as available.
-        std::env::remove_var("GHOSTLINK_GPU_NAME");
+        // launch.sh always exports GHOSTLINK_VRAM_GB (defaulting to "0" on
+        // CPU-only hosts). That alone must not be treated as a GPU override,
+        // or CPU-only hosts would falsely report GPU acceleration available.
         std::env::set_var("GHOSTLINK_VRAM_GB", "0");
-        std::env::remove_var("GHOSTLINK_COMPUTE_CAPABILITY");
-
         assert!(detect_gpu_from_env().is_none());
-
         std::env::remove_var("GHOSTLINK_VRAM_GB");
     }
 
