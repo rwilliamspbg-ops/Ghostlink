@@ -520,21 +520,61 @@ resolve_node_bin() {
 }
 
 # Free a TCP port (best-effort) so stale processes do not cause bind errors / 405 from wrong servers
+# Tool-independent fallback: find PIDs with a LISTEN socket on $1 by walking
+# /proc directly. Needed on minimal hosts without fuser/lsof/ss/netstat —
+# without this, free_port() silently no-ops on such hosts, a stale listener
+# is never actually killed, and a later health check can be fooled into
+# reporting a freshly-started replacement as "ready" when it's really still
+# talking to the old process (which then fails on any route added since).
+proc_net_pids_for_port() {
+    local port="$1"
+    [ -r /proc/net/tcp ] || return 0
+    local hex_port
+    hex_port=$(printf '%04X' "$port")
+    local inodes
+    inodes=$( { cat /proc/net/tcp 2>/dev/null; cat /proc/net/tcp6 2>/dev/null; } \
+        | awk -v hp="$hex_port" 'NR>1 { split($2,a,":"); if (a[2]==hp && $4=="0A") print $10 }' \
+        | sort -u)
+    [ -n "$inodes" ] || return 0
+    local inode fd link pid
+    local -A seen=()
+    for fd in /proc/[0-9]*/fd/*; do
+        link=$(readlink "$fd" 2>/dev/null) || continue
+        case "$link" in
+            socket:\[*\])
+                for inode in $inodes; do
+                    if [ "$link" = "socket:[$inode]" ]; then
+                        pid="${fd#/proc/}"
+                        pid="${pid%%/*}"
+                        if [ -z "${seen[$pid]:-}" ]; then
+                            seen[$pid]=1
+                            echo "$pid"
+                        fi
+                    fi
+                done
+                ;;
+        esac
+    done
+}
+
 free_port() {
     local port="$1"
     local pids=""
     if command -v fuser >/dev/null 2>&1; then
         fuser -k "${port}/tcp" >/dev/null 2>&1 || true
-        return 0
-    fi
-    if command -v lsof >/dev/null 2>&1; then
+    elif command -v lsof >/dev/null 2>&1; then
         pids=$(lsof -ti "tcp:${port}" -sTCP:LISTEN 2>/dev/null || lsof -ti ":${port}" 2>/dev/null || true)
     elif command -v ss >/dev/null 2>&1; then
         pids=$(ss -lptn "sport = :${port}" 2>/dev/null | grep -oE 'pid=[0-9]+' | cut -d= -f2 | sort -u || true)
     elif command -v netstat >/dev/null 2>&1 && [[ "$(uname -s)" != "Darwin" ]]; then
         pids=$(netstat -tlnp 2>/dev/null | awk -v p=":${port}" '$4 ~ p"$" {print $7}' | cut -d/ -f1 | grep -E '^[0-9]+$' || true)
     fi
-    if [ -n "$pids" ]; then
+    # Always cross-check via /proc directly — covers hosts with none of the
+    # above tools, and catches orphaned processes the tool-based lookup missed.
+    if [[ "$(uname -s)" != "Darwin" ]]; then
+        pids="$pids $(proc_net_pids_for_port "$port" 2>/dev/null || true)"
+    fi
+    if [ -n "${pids// /}" ]; then
         # shellcheck disable=SC2086
         kill -9 $pids >/dev/null 2>&1 || true
     fi
@@ -1080,6 +1120,22 @@ start_services() {
             fi
             if ! wait_for_http "http://${BACKEND_HOST}:${BACKEND_PORT}/api/health" "API /api/health (cargo fallback)" 30; then
                 echo -e "  ${RED}✗${NC} /api/health failed after cargo fallback"
+                return 1
+            fi
+
+            # A passing health check above is not proof the NEW process answered
+            # it: if the old process was never actually killed (e.g. free_port
+            # had no way to find it, or it was orphaned by shell subshell
+            # semantics), the new `cargo run` fails to bind the port, exits, and
+            # every health check up to here would have kept talking to the OLD
+            # process the whole time — which then still 404s on any route it
+            # predates. Catch that here with a clear diagnostic instead of
+            # letting it surface as a confusing later 404.
+            if ! kill -0 "$API_PID" 2>/dev/null; then
+                echo -e "  ${RED}✗${NC} cargo-fallback API process exited — port ${BACKEND_PORT} is likely still held by a stale process"
+                echo -e "  ${DIM}Health checks above answered from that stale process, not the rebuild. See /tmp/ghostlink_api.log${NC}"
+                echo -e "  ${DIM}Fix: manually stop whatever holds port ${BACKEND_PORT} (e.g. sudo lsof -i:${BACKEND_PORT}) and relaunch.${NC}"
+                tail -20 /tmp/ghostlink_api.log 2>/dev/null || true
                 return 1
             fi
 
