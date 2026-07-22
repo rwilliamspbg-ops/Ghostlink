@@ -4,6 +4,31 @@ All notable changes to Ghostlink Studio are documented here.
 
 ---
 
+## [1.3.1] - 2026-07-22 (Launch Reliability & CI Stabilization)
+
+### 🔧 Launch Hardening
+
+- `launch.sh` now auto-recovers when a stale prebuilt API binary responds with mismatched routes:
+  - On `404`/`405` from critical route checks (`/api/settings`, `/api/models`), launcher stops the stale process.
+  - Launcher retries API startup via `cargo run -p ghost-link -- serve ...` and re-validates route health.
+- Preserves strict route validation while preventing false-negative startup failures caused by outdated local binaries.
+
+### 🩹 Backend API Stability
+
+- Removed duplicate `handle_gui_model_download_progress` implementation in `crates/ghost-link/src/main.rs`.
+- Removed duplicate `GET /api/models/download/progress` route registration and duplicate route-list print.
+- Eliminated startup panic from overlapping Axum route registration and restored clean API boot for smoke tests.
+
+### ✅ Validation
+
+- `cargo fmt --all --check` — OK
+- `cargo clippy --workspace --all-targets -- -D warnings` — OK
+- `cargo test --workspace` — OK
+- `cargo audit` — completed with existing allowed advisory warnings
+- `python3 scripts/ci_gui_backend_smoke.py` — OK
+
+---
+
 ## [1.3.0] - 2026-07-19 (Performance Overhaul & Auto-Discovery)
 
 ### 🚀 Performance
