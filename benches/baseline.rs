@@ -377,7 +377,16 @@ fn main() {
     bench("autotune: detect_runtime_profile_fast", 20_000, || {
         let _ = detect_runtime_profile("bench-local");
     });
-    bench("autotune: detect_runtime_profile_full", 5_000, || {
+    // Unlike Fast mode (TTL-cached), Full mode's detect_gpus() spawns several
+    // real OS subprocesses per call (powershell/wmic/nvidia-smi/rocm-smi/
+    // vulkaninfo) with no caching at all. At 5_000 iterations (plus this
+    // bench()'s own 500-iteration warmup = 5,500 real subprocess-spawning
+    // calls), this single benchmark took 10-30+ minutes depending on the
+    // platform — the entire suite looked hung well past the point every
+    // other benchmark had already printed. 20 iterations is enough to see a
+    // representative number for an operation this heavy without turning one
+    // line of output into the dominant cost of running `cargo bench`.
+    bench("autotune: detect_runtime_profile_full", 20, || {
         let _ = detect_runtime_profile_with_mode("bench-local", ProbeMode::Full);
     });
     bench("autotune: load_balance 80 layers", 100_000, || {

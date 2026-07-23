@@ -4,6 +4,43 @@ All notable changes to Ghostlink Studio are documented here.
 
 ---
 
+## [1.4.2] - 2026-07-23 (Fix: `cargo bench` effectively hung for hours)
+
+### 🐛 Benchmarks
+
+- **`benches/baseline.rs`: `cargo bench --package ghostlink-core` looked hung** —
+  every other benchmark printed its result within seconds, then the run sat
+  with no output for a very long time before a maintainer would reasonably
+  conclude something had crashed. Root cause: `detect_runtime_profile_full`'s
+  bench call ran `ProbeMode::Full` for 5,000 measured iterations (plus this
+  harness's own warmup, `1000.min(iters/10)` = 500 more — 5,500 real calls
+  total). Unlike `ProbeMode::Fast` (TTL-cached), Full mode's `detect_gpus()`
+  spawns several real OS subprocesses per call with **no caching at all**
+  (`powershell`, `wmic`, `nvidia-smi`, `rocm-smi`, `vulkaninfo` — see
+  `system_profile.rs`). Measured directly: **3.92 seconds per call**. At
+  5,500 calls that's ~6 hours for one line of a benchmark suite meant to run
+  in a couple of minutes — not a hang, just an iteration count that was fine
+  for a cheap function and catastrophic for one that shells out repeatedly.
+  Reduced to 20 iterations (matching how expensive the operation actually
+  is); the full `cargo bench --package ghostlink-core --bench baseline` now
+  completes in ~1m30s end to end (warm build cache), verified by letting it
+  run to completion rather than assuming the fix worked.
+
+### ✅ Validation
+
+- `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`,
+  `cargo test --workspace`, `cargo audit` — all clean. One flaky failure
+  (`discovery::tests::respond_once_ignores_auth_mismatch_then_accepts_valid_request`)
+  seen once under full parallel test load, passed in isolation and on a
+  clean re-run of the full suite immediately after — pre-existing test
+  flakiness unrelated to this change (a one-line edit to a benchmark's
+  iteration count), not a regression it introduced.
+- Confirmed the fix by actually running the full benchmark suite to
+  completion (exit code 0, all expected output lines present, process exits
+  promptly) rather than assuming a smaller iteration count would be enough.
+
+---
+
 ## [1.4.1] - 2026-07-23 (Performance: HTTP client reuse, LTO, KV cache primitive)
 
 A profiling pass across the core primitives (ring buffer, protocol, planning)
