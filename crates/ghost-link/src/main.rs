@@ -1611,14 +1611,6 @@ fn load_persistent_models() -> Vec<ModelRecord> {
             status: "Ready".to_string(),
             local_path: String::new(),
         },
-        ModelRecord {
-            name: "ghostlink-30b-v1".to_string(),
-            size_gb: 30.0,
-            model_type: "LLM".to_string(),
-            quantization: "Q4_K_M".to_string(),
-            status: "Ready".to_string(),
-            local_path: String::new(),
-        },
     ]
 }
 

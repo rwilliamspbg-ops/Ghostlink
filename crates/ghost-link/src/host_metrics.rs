@@ -269,7 +269,96 @@ fn sample_gpu_util() -> (f32, bool, f32) {
     if let Some((util, vram)) = try_rocm_smi() {
         return (util, true, vram);
     }
+    #[cfg(target_os = "windows")]
+    if let Some((util, vram)) = try_windows_gpu_counters() {
+        return (util, true, vram);
+    }
     (0.0, false, 0.0)
+}
+
+/// Windows-native fallback GPU utilization for hosts with no nvidia-smi/rocm-smi
+/// (i.e. DirectML/Vulkan GPUs — AMD and Intel iGPUs, most Windows laptops) using
+/// the "GPU Engine" performance counter category, which Windows exposes for any
+/// vendor with no CLI tool required.
+///
+/// Scoped to llama-server's own PID specifically, taking the max across *its*
+/// engine instances (3D, Compute, Copy, Video — matches how Task Manager's
+/// single GPU% figure picks the busiest engine for a process). An earlier
+/// version took the max across ALL processes system-wide, which in practice
+/// surfaced desktop-compositor (dwm.exe) or unrelated-app noise instead of the
+/// inference workload — verified by comparing against a per-process query
+/// while llama-server was actively generating (96.7% on its compute engine,
+/// vs ~0.6% from unrelated processes the unscoped query happened to be
+/// picking up). No llama-server process running just means 0% — not a probe
+/// failure — so this still reports gpu_available=true (there IS a GPU here,
+/// it's simply idle).
+#[cfg(target_os = "windows")]
+fn try_windows_gpu_counters() -> Option<(f32, f32)> {
+    let output = Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "$p = Get-Process -Name llama-server -ErrorAction SilentlyContinue | Select-Object -First 1; \
+             if ($p) { \
+               $pat = \"*pid_$($p.Id)_*\"; \
+               (Get-Counter '\\GPU Engine(*)\\Utilization Percentage' -ErrorAction Stop).CounterSamples \
+                 | Where-Object { $_.Path -like $pat } \
+                 | Measure-Object -Property CookedValue -Maximum \
+                 | Select-Object -ExpandProperty Maximum \
+             } else { 0 }",
+        ])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    let trimmed = text.trim();
+    // Empty output means llama-server is running but currently has no active
+    // engine instances (Measure-Object -Maximum with zero matches emits
+    // nothing) — that's a legitimate 0%, not a parse failure.
+    let util: f32 = if trimmed.is_empty() {
+        0.0
+    } else {
+        trimmed.parse().ok()?
+    };
+    Some((util.clamp(0.0, 100.0), windows_vram_gb_cached()))
+}
+
+/// VRAM (really: usable GPU memory budget) for the Windows fallback path.
+/// `Win32_VideoController.AdapterRAM` — the source `backend_registry.rs` uses
+/// for the Settings-tab figure — is a known-unreliable static field on modern
+/// Windows for integrated GPUs (frequently caps out around 4GB regardless of
+/// actual shared-memory budget). llama-server's own Vulkan memory budget query
+/// is accurate (verified: reports ~17GB free on a host where AdapterRAM claims
+/// 4GB), so reuse it here rather than re-deriving GPU memory info a third way.
+/// Cached for the process lifetime since total capacity doesn't change at runtime.
+/// `pub(crate)` so `backend_registry.rs` can use the same accurate figure for
+/// the Settings-tab backend card instead of the unreliable `AdapterRAM` value.
+#[cfg(target_os = "windows")]
+pub(crate) fn windows_vram_gb_cached() -> f32 {
+    static VRAM_GB: OnceLock<f32> = OnceLock::new();
+    *VRAM_GB.get_or_init(|| windows_vram_from_llama_list_devices().unwrap_or(0.0))
+}
+
+#[cfg(target_os = "windows")]
+fn windows_vram_from_llama_list_devices() -> Option<f32> {
+    let bin = std::env::var("GHOSTLINK_LLAMA_SERVER_BIN")
+        .unwrap_or_else(|_| "third_party/llama.cpp/build/bin/Release/llama-server.exe".to_string());
+    let output = Command::new(&bin).arg("--list-devices").output().ok()?;
+    let text = String::from_utf8_lossy(&output.stdout);
+    // e.g. "  Vulkan0: AMD Radeon(TM) 860M Graphics (18237 MiB, 17325 MiB free)"
+    for line in text.lines() {
+        if let Some(idx) = line.find("MiB free") {
+            let before = &line[..idx];
+            let segment = before.rsplit(',').next().unwrap_or(before);
+            if let Some(mib) = extract_first_number(segment) {
+                return Some(mib / 1024.0);
+            }
+        }
+    }
+    None
 }
 
 fn try_nvidia_smi() -> Option<(f32, f32)> {

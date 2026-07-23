@@ -173,11 +173,17 @@ export const SettingsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
     label: string; desc?: string; value: number; min: number; max: number; step?: number; onChange: (v: number) => void; unit?: string;
   }) => {
     const fieldId = label.toLowerCase().replace(/\s+/g, '-');
+    // Settings round-trip through an f32 backend, so fractional values arrive
+    // as things like 0.8999999761581421 — round for display to the precision
+    // `step` actually offers instead of showing the float32 artifact.
+    const displayValue = !step || step >= 1
+      ? Math.round(value).toString()
+      : value.toFixed(Math.max(0, -Math.floor(Math.log10(step))));
     return (
       <div className="space-y-1.5">
         <div className="flex items-center justify-between">
           <label htmlFor={fieldId} className="text-sm font-medium text-slate-300">{label}</label>
-          <span className="text-xs font-mono text-blue-400 bg-blue-500/10 px-2 py-0.5 rounded-md">{value}{unit}</span>
+          <span className="text-xs font-mono text-blue-400 bg-blue-500/10 px-2 py-0.5 rounded-md">{displayValue}{unit}</span>
         </div>
         {desc && <p className="text-[10px] text-slate-500">{desc}</p>}
         <input
@@ -393,8 +399,8 @@ export const SettingsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                 desc="Inference engine backend"
                 value={settings.inference_backend}
                 options={[
+                  { value: 'native', label: 'Native (recommended)' },
                   { value: 'ollama', label: 'Ollama' },
-                  { value: 'native', label: 'Native (legacy)' },
                 ]}
                 onChange={(v) => update('inference_backend', v)}
               />

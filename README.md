@@ -79,8 +79,8 @@ Optional:
 # Ollama instead of llama-server
 $env:GHOSTLINK_INFERENCE_BACKEND="ollama"; .\launch.bat
 
-# Also start OpenAI-compatible control-plane proxy on :8000 (GUI still uses :8003)
-$env:GHOSTLINK_WITH_CONTROL_PLANE="1"; .\launch.bat
+# Fall back to the old WSL-delegated launcher (runs launch.sh inside WSL)
+$env:GHOSTLINK_USE_WSL="1"; .\launch.bat
 ```
 
 Open http://127.0.0.1:5173 → **Models** → load a model → **Chat**.
@@ -156,11 +156,11 @@ Compiling with `RUSTFLAGS="-C target-cpu=native"` further improves performance b
 
 | Script | Description |
 |--------|-------------|
-| `launch.bat` | **Windows** — unified launcher (llama-server + API :8003 + GUI :5173) |
+| `launch.bat` | **Windows** — native launcher (llama-server + API :8003 + GUI :5173, no WSL). Set `GHOSTLINK_USE_WSL=1` to use `launch.sh` inside WSL instead. |
+| `launch-native.ps1` | The actual native-Windows implementation `launch.bat` calls into |
 | `launch.sh` | **Linux/macOS** — same stack with hardware detection |
 | `launch-complete.bat` / `launch-complete.sh` | Compatibility wrappers → `launch.bat` / `launch.sh` |
-| `launch-with-control-plane.bat` | Same as `launch.bat` + optional control-plane on :8000 |
-| `launch-ollama.bat` / `launch-native.bat` | Thin wrappers setting `GHOSTLINK_INFERENCE_BACKEND` |
+| `launch-ollama.bat` | Thin wrapper setting `GHOSTLINK_INFERENCE_BACKEND=native` (both bat and ps1 launchers respect it; set `GHOSTLINK_INFERENCE_BACKEND=ollama` yourself for Ollama) |
 
 ## Usage (Developer)
 

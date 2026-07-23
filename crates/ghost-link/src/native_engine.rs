@@ -333,8 +333,15 @@ impl NativeEngineClient {
             .unwrap_or(false)
     }
 
-    /// Wait for llama-server to become ready
-    async fn wait_for_llama_server_ready(url: &str, timeout_secs: u64) -> Result<(), String> {
+    /// Wait for llama-server to become ready. Polls `child`'s exit status
+    /// alongside the HTTP health check so a process that dies immediately
+    /// (corrupt model file, missing shared lib, bad CLI arg) is reported in
+    /// well under a second instead of only after the full timeout elapses.
+    async fn wait_for_llama_server_ready(
+        url: &str,
+        timeout_secs: u64,
+        child: &mut Child,
+    ) -> Result<(), String> {
         let start = std::time::Instant::now();
         let timeout = Duration::from_secs(timeout_secs);
         let base = Self::normalize_llama_base_url(url);
@@ -342,6 +349,17 @@ impl NativeEngineClient {
         while start.elapsed() < timeout {
             if Self::check_llama_server_health(&base).await {
                 return Ok(());
+            }
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    return Err(format!(
+                        "llama-server exited before becoming ready (status: {status})"
+                    ));
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    return Err(format!("failed to poll llama-server process state: {e}"));
+                }
             }
             tokio_sleep(Duration::from_millis(500)).await;
         }
@@ -437,19 +455,42 @@ impl NativeEngineClient {
         Err(format!("model file not found: {model_path}"))
     }
 
+    /// Find a free TCP port to stage a new llama-server on. Tries `preferred`
+    /// first (for readable logs), then falls back to letting the OS assign one.
+    /// There's an inherent bind-then-release race here (the port could be
+    /// grabbed by something else before llama-server binds it), but that's
+    /// the same best-effort tradeoff `free_llama_port` already makes.
+    fn find_free_port(host: &str, preferred: u16) -> Option<u16> {
+        use std::net::TcpListener;
+        if let Ok(listener) = TcpListener::bind((host, preferred)) {
+            if let Ok(addr) = listener.local_addr() {
+                return Some(addr.port());
+            }
+        }
+        if let Ok(listener) = TcpListener::bind((host, 0)) {
+            if let Ok(addr) = listener.local_addr() {
+                return Some(addr.port());
+            }
+        }
+        None
+    }
+
     /// Load a model into llama-server by restarting it with the new model.
     /// llama-server loads models at startup and doesn't support runtime hot-swapping,
     /// so we must restart it with the new model path.
+    ///
+    /// The new model is first staged on a scratch port and health-checked
+    /// *before* the currently running server is touched. If the new model
+    /// fails to load (bad file, OOM, slow CPU-only load exceeding the
+    /// readiness timeout, etc.) the previous server keeps serving requests
+    /// instead of the caller being left with no server running at all.
     pub fn load_model_into_slot(&self, model_path: &str) -> Result<(), String> {
         let resolved = Self::resolve_model_path(model_path)?;
         let normalized_path = resolved.to_string_lossy().replace('\\', "/");
         eprintln!("[model-load] Preparing to load model: {normalized_path}");
 
-        // Stop process we own and any externally-launched llama-server on the port.
-        Self::stop_owned_llama_server();
         let base_url = Self::get_llama_base_url();
         let (host, port) = Self::parse_host_port_from_url(&base_url);
-        Self::free_llama_port(port);
 
         // Get binary and configuration
         let bin = Self::get_llama_server_bin();
@@ -470,38 +511,124 @@ impl NativeEngineClient {
 
         // Build the command:
         //   llama-server -m <model> --alias <name> --host <host> --port <port> -c <ctx> [-ngl <n>] [-t <n>]
-        let mut cmd = Command::new(&bin);
-        cmd.arg("-m").arg(&normalized_path);
-        cmd.arg("--alias").arg(&alias);
-        cmd.arg("--host").arg(&host);
-        cmd.arg("--port").arg(port.to_string());
-        cmd.arg("-c").arg(ctx.to_string());
-        cmd.arg("-np").arg("1");
-        if ngl >= 0 {
-            cmd.arg("-ngl").arg(ngl.to_string());
+        let build_cmd = |bind_port: u16, args: &[String]| -> Command {
+            let mut cmd = Command::new(&bin);
+            cmd.arg("-m").arg(&normalized_path);
+            cmd.arg("--alias").arg(&alias);
+            cmd.arg("--host").arg(&host);
+            cmd.arg("--port").arg(bind_port.to_string());
+            cmd.arg("-c").arg(ctx.to_string());
+            cmd.arg("-np").arg("1");
+            if ngl >= 0 {
+                cmd.arg("-ngl").arg(ngl.to_string());
+            }
+            cmd.arg("-t").arg(threads.to_string());
+            for arg in args {
+                cmd.arg(arg);
+            }
+            cmd.stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .stdin(Stdio::null());
+            cmd
+        };
+
+        // Fallback arg set with quantized KV cache (-ctk/-ctv) stripped: some
+        // architectures fail to create a context with it (e.g. stories15M's
+        // 48-dim attention heads don't divide evenly into q8_0's 32-element
+        // blocks: "K cache type q8_0 ... does not divide n_embd_head_k=48").
+        // Tried automatically below if the default args fail to load.
+        let no_quant_kv_args: Vec<String> = {
+            let mut out = Vec::new();
+            let mut iter = extra_args.iter();
+            while let Some(a) = iter.next() {
+                if a == "-ctk" || a == "-ctv" {
+                    iter.next();
+                } else {
+                    out.push(a.clone());
+                }
+            }
+            out
+        };
+        let arg_variants: Vec<&Vec<String>> = if no_quant_kv_args.len() != extra_args.len() {
+            vec![&extra_args, &no_quant_kv_args]
+        } else {
+            vec![&extra_args]
+        };
+
+        let rt = tokio::runtime::Runtime::new()
+            .map_err(|e| format!("failed to create async runtime: {e}"))?;
+
+        // Stage the new model on a scratch port so the current server (if any)
+        // keeps running while it loads.
+        let staging_port = Self::find_free_port(&host, port.wrapping_add(1))
+            .ok_or_else(|| "failed to find a free port to stage the new model".to_string())?;
+        let staging_url = format!("http://{host}:{staging_port}");
+
+        let mut winning_args: Option<&Vec<String>> = None;
+        let mut last_err = String::new();
+        for (attempt, args) in arg_variants.iter().enumerate() {
+            eprintln!("[model-load] Staging model on port {staging_port}: {normalized_path}");
+            let mut staging_cmd = build_cmd(staging_port, args);
+            eprintln!(
+                "[model-load] Command: {} {}",
+                bin,
+                staging_cmd
+                    .get_args()
+                    .map(|a| a.to_string_lossy())
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            );
+            let mut staging_child = match staging_cmd.spawn() {
+                Ok(c) => c,
+                Err(err) => {
+                    return Err(format!(
+                        "failed to start llama-server ('{bin}'): {err}. Ensure the binary exists and port {staging_port} is free."
+                    ));
+                }
+            };
+            eprintln!(
+                "[model-load] Staged llama-server PID: {:?}",
+                staging_child.id()
+            );
+
+            let staged_ready = rt.block_on(Self::wait_for_llama_server_ready(
+                &staging_url,
+                90,
+                &mut staging_child,
+            ));
+            let _ = staging_child.kill();
+            let _ = staging_child.wait();
+            match staged_ready {
+                Ok(()) => {
+                    winning_args = Some(args);
+                    break;
+                }
+                Err(e) => {
+                    last_err = e;
+                    if attempt + 1 < arg_variants.len() {
+                        eprintln!(
+                            "[model-load] Staged load failed with this arg set ({last_err}); retrying without quantized KV cache."
+                        );
+                    }
+                }
+            }
         }
-        cmd.arg("-t").arg(threads.to_string());
-        for arg in &extra_args {
-            cmd.arg(arg);
-        }
 
-        // Set up process
-        cmd.stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .stdin(Stdio::null());
+        let Some(winning_args) = winning_args else {
+            eprintln!(
+                "[model-load] New model failed to become ready ({last_err}); leaving previous server running."
+            );
+            return Err(last_err);
+        };
 
-        eprintln!("[model-load] Starting llama-server with model: {normalized_path}");
-        eprintln!(
-            "[model-load] Command: {} {}",
-            bin,
-            cmd.get_args()
-                .map(|a| a.to_string_lossy())
-                .collect::<Vec<_>>()
-                .join(" ")
-        );
+        // New model verified healthy on the scratch port — safe to retire the
+        // old server and rebind the real port. The OS page cache from the
+        // staging load makes this second load fast.
+        Self::stop_owned_llama_server();
+        Self::free_llama_port(port);
 
-        // Spawn the process
-        let child = cmd.spawn().map_err(|err| {
+        eprintln!("[model-load] Starting llama-server on {port}: {normalized_path}");
+        let mut child = build_cmd(port, winning_args).spawn().map_err(|err| {
             format!(
                 "failed to start llama-server ('{bin}'): {err}. Ensure the binary exists and port {port} is free."
             )
@@ -510,23 +637,20 @@ impl NativeEngineClient {
         let pid = child.id();
         eprintln!("[model-load] Started llama-server with PID: {pid}");
 
-        // Store the process handle
+        let ready = rt.block_on(Self::wait_for_llama_server_ready(&base_url, 90, &mut child));
+        if let Err(e) = ready {
+            let _ = child.kill();
+            let _ = child.wait();
+            Self::free_llama_port(port);
+            return Err(e);
+        }
+
+        // Store the process handle now that it's confirmed healthy.
         let handle = Self::get_process_handle();
         if let Ok(mut guard) = handle.lock() {
             *guard = Some(child);
         }
         drop(handle);
-
-        // Wait for server to be ready (using tokio runtime)
-        let rt = tokio::runtime::Runtime::new()
-            .map_err(|e| format!("failed to create async runtime: {e}"))?;
-
-        let ready = rt.block_on(Self::wait_for_llama_server_ready(&base_url, 90));
-        if let Err(ref _e) = ready {
-            Self::stop_owned_llama_server();
-            Self::free_llama_port(port);
-        }
-        ready?;
 
         eprintln!("[model-load] Successfully loaded model: {normalized_path}");
         Ok(())

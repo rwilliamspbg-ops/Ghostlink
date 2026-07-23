@@ -319,7 +319,7 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
               activeTab === 'local' ? 'bg-blue-600 text-white shadow-lg shadow-blue-500/20' : 'text-slate-400 hover:bg-slate-900'
             }`}
           >
-            Ollama Models
+            My Models
           </button>
           <button
             onClick={() => setActiveTab('recommended')}
@@ -372,7 +372,7 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
             <div className="flex items-center justify-between px-4 py-3 bg-slate-800 rounded-lg">
               <div className="flex items-center gap-3">
                 <Database size={20} className="text-blue-400" />
-                <h2 className="text-lg font-bold text-white">Ollama Models</h2>
+                <h2 className="text-lg font-bold text-white">My Models</h2>
               </div>
               <div className="text-sm text-slate-400">
                 {ollamaModels.length} models available
@@ -382,7 +382,7 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
               {ollamaModels.length === 0 ? (
                 <div className="text-center py-12 text-slate-500">
                   <Database size={48} className="mx-auto mb-4 text-slate-700" />
-                  <p>No Ollama models found. Pull a model from the list below or run <code>{'ollama pull <model>'}</code></p>
+                  <p>No models found. Drop a .gguf into <code>models/</code>, or pull one from the list below</p>
                 </div>
               ) : (
                 ollamaModels.map((model: any) => (
@@ -394,7 +394,7 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                           <div>
                             <div className="font-semibold text-white">{model.name}</div>
                             <div className="text-xs text-slate-400">
-                              {(model.size / (1024 * 1024 * 1024)).toFixed(2)} GB • {model.details?.family || 'Unknown'} • {model.details?.quantization_level || 'Unknown'}
+                              {model.size > 0 ? `${(model.size / (1024 * 1024 * 1024)).toFixed(2)} GB` : 'Size unknown'} • {model.details?.family || 'Unknown'} • {model.details?.quantization_level || 'Unknown'}
                             </div>
                           </div>
                         </div>
@@ -475,7 +475,16 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
               <h3 className="text-lg font-bold text-white mb-3">Popular Ollama Models</h3>
               <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
                 {POPULAR_MODELS.map((m) => {
-                  const isInstalled = ollamaModels.some((om: any) => om.name === m.id);
+                  // Exact-name match catches real Ollama pulls; the normalized
+                  // substring check also catches an equivalent local GGUF filed
+                  // under a different name (e.g. "tinyllama" vs the local file
+                  // "tinyllama-1.1b-chat-v1.0.Q2_K") so we don't offer a
+                  // redundant download for a model already on disk.
+                  const normalize = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
+                  const normId = normalize(m.id.split(':')[0]);
+                  const isInstalled = ollamaModels.some(
+                    (om: any) => om.name === m.id || normalize(om.name).includes(normId)
+                  );
                   const isPending = pendingActions[m.id] === 'downloading';
                   return (
                     <button
@@ -546,7 +555,7 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                       </div>
                       <div className="min-w-0">
                         <div className="font-bold text-slate-200 truncate">{model.name}</div>
-                        <div className="text-[10px] text-slate-500 font-mono truncate">{model.parameters} • {model.size_gb} GB • {model.quality_tier} • {model.inference_speed}</div>
+                        <div className="text-[10px] text-slate-500 font-mono truncate">{model.parameters} • {model.size_gb > 0 ? `${model.size_gb} GB` : 'size unknown'} • {model.quality_tier} • {model.inference_speed}</div>
                       </div>
                     </div>
                     <div className="flex items-center gap-4 shrink-0">
@@ -606,7 +615,7 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                       </div>
                       <div className="min-w-0">
                         <div className="font-bold text-slate-200 truncate">{model.name}</div>
-                        <div className="text-[10px] text-slate-500 font-mono truncate">{model.parameters} • {model.size_gb} GB • {model.quality_tier} • {model.inference_speed}</div>
+                        <div className="text-[10px] text-slate-500 font-mono truncate">{model.parameters} • {model.size_gb > 0 ? `${model.size_gb} GB` : 'size unknown'} • {model.quality_tier} • {model.inference_speed}</div>
                       </div>
                     </div>
                     <div className="flex items-center gap-4 shrink-0">
