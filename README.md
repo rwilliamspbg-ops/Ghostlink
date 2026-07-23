@@ -150,7 +150,11 @@ run on an **Intel i7-14700K (Linux/WSL2)** with `RUSTFLAGS="-C target-cpu=native
 
 Native nodes enable Flash Attention, VRAM-scaled batch sizes, and Q8_0 KV cache by default. Prefer **Q4_K_M** / **IQ4_XS** over FP16/Q8_0 for ~1.5–2× decode speed. Override with `GHOSTLINK_LLAMA_SERVER_ARGS`. See [docs/LOCAL_INFERENCE_TUNING.md](docs/LOCAL_INFERENCE_TUNING.md).
 
-Compiling with `RUSTFLAGS="-C target-cpu=native"` further improves performance by enabling CPU-specific instruction sets (opt-in; not set by default).
+Compiling with `RUSTFLAGS="-C target-cpu=native"` further improves performance by enabling CPU-specific instruction sets (opt-in; not set by default — a multi-node cluster can't assume every node shares one CPU microarchitecture).
+
+### Build profile
+
+Release builds use `lto = "thin"` and `codegen-units = 1` (`[profile.release]` in the workspace `Cargo.toml`) so the compiler can inline across the `ghostlink-core` / `ghost-link` crate boundary — the ring buffer, protocol, and planning hot paths all cross it. A same-machine, same-run A/B (not the table above, which is a different machine/OS) showed the deterministic single-threaded paths 6–19% faster with this profile; thread-scheduling-bound benchmarks were noisier and not clearly attributable to it either way. `panic = "abort"` was considered and deliberately not set, since it would crash the whole server process on any panic instead of failing just one request.
 
 ## Launch Scripts
 
