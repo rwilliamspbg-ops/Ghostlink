@@ -38,16 +38,22 @@ export const SecurityTab: React.FC<{ api: any }> = ({ api }) => {
 
   const handleRefresh = async () => {
     setLoading(true);
-    const result = await api.refreshJWT();
-    if (result.success) setToken(result.data.token || token);
-    setLoading(false);
+    try {
+      const result = await api.refreshJWT();
+      if (result.success) setToken(result.data?.token || token);
+    } finally {
+      setLoading(false);
+    }
   };
 
   const handlePqc = async () => {
     setLoading(true);
-    const result = await api.enablePQC();
-    if (result.success) setPqcEnabled(true);
-    setLoading(false);
+    try {
+      const result = await api.enablePQC();
+      if (result.success) setPqcEnabled(true);
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (

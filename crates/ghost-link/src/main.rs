@@ -2654,24 +2654,12 @@ InferenceBackend::Native => match native_engine_client
         }
     }
 
-    async fn handle_gui_model_delete(
-        State(state): State<Arc<Mutex<BackendState>>>,
-        Json(req): Json<ModelDeleteRequest>,
-    ) -> Json<serde_json::Value> {
-        let requested_model = req.model.trim().to_string();
-        let mut backend = lock_state(&state);
-        backend.models.retain(|m| m.name != requested_model);
-        save_persistent_models(&backend.models);
-        Json(serde_json::json!({ "status": "ok", "message": "deleted" }))
-    }
-
-    async fn handle_gui_model_delete_v2(
-        State(state): State<Arc<Mutex<BackendState>>>,
-        Path(model_name): Path<String>,
-    ) -> Json<serde_json::Value> {
-        let mut backend = lock_state(&state);
-
-        // Also check local scan for this model
+    // Shared by both delete routes so they can't drift apart again — the JSON-body
+    // route (below) used to only remove the in-memory record and never touch the
+    // .gguf on disk, while the path-param route did the real deletion. A model
+    // "deleted" via the body route never actually freed disk space and reappeared
+    // on the next /api/models refresh (scan_local_models_dir re-discovers it).
+    fn delete_model_files_and_record(backend: &mut BackendState, model_name: &str) {
         let local = scan_local_models_dir(&backend.settings.models_dir);
         for l in &local {
             if l.name == model_name && !l.local_path.is_empty() {
@@ -2690,6 +2678,24 @@ InferenceBackend::Native => match native_engine_client
             backend.current_model = "none".to_string();
         }
         save_persistent_models(&backend.models);
+    }
+
+    async fn handle_gui_model_delete(
+        State(state): State<Arc<Mutex<BackendState>>>,
+        Json(req): Json<ModelDeleteRequest>,
+    ) -> Json<serde_json::Value> {
+        let requested_model = req.model.trim().to_string();
+        let mut backend = lock_state(&state);
+        delete_model_files_and_record(&mut backend, &requested_model);
+        Json(serde_json::json!({ "status": "ok", "message": "deleted" }))
+    }
+
+    async fn handle_gui_model_delete_v2(
+        State(state): State<Arc<Mutex<BackendState>>>,
+        Path(model_name): Path<String>,
+    ) -> Json<serde_json::Value> {
+        let mut backend = lock_state(&state);
+        delete_model_files_and_record(&mut backend, &model_name);
         Json(serde_json::json!({
             "status": "ok",
             "model": model_name

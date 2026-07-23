@@ -45,10 +45,15 @@ impl LoadBalanceConfig {
             AccelerationMode::Avx512 => 750,
             _ => 1000,
         };
+        // skew_ratio (max_available / min_available) is mathematically always
+        // >= 1.0, so a threshold below 1.0 here made rebalance() return true
+        // unconditionally for this tier — including the all-zero-VRAM CPU-only
+        // case (skew_ratio pinned to exactly 1.0), which a threshold of 1.0
+        // itself would still have wrongly matched. Must stay strictly > 1.0.
         let min_load_threshold = match profile.acceleration_mode {
             AccelerationMode::Gpu => 1.15,
             AccelerationMode::Avx512 => 1.05,
-            _ => 0.95,
+            _ => 1.02,
         };
         let max_layers_per_assignment = profile.recommended_workers.max(1) * 2;
 
@@ -637,6 +642,52 @@ mod tests {
         assert_eq!(config.max_layers_per_assignment, 12);
         assert_eq!(config.max_concurrent_rebalances, 6);
         assert!(config.min_load_threshold > 1.0);
+    }
+
+    #[test]
+    fn autotuned_cpu_threshold_stays_above_one() {
+        // Regression: the CPU/generic tier's min_load_threshold was 0.95,
+        // below the mathematical minimum of skew_ratio (always >= 1.0), so
+        // rebalance() always returned true regardless of actual balance.
+        let profile = RuntimeProfile {
+            node_resources: NodeResources::new("node-a", 0.0, 16.0, "generic", None),
+            logical_cores: 4,
+            recommended_workers: 2,
+            acceleration_mode: AccelerationMode::Generic,
+            gpu_backend: crate::host::GpuBackend::Cpu,
+            xdp_supported: false,
+            detection_source: String::from("test"),
+            probe_mode: crate::host::ProbeMode::Fast,
+        };
+        let config = LoadBalanceConfig::autotuned(&profile);
+        assert!(
+            config.min_load_threshold > 1.0,
+            "CPU-tier threshold {} must exceed skew_ratio's mathematical floor of 1.0",
+            config.min_load_threshold
+        );
+    }
+
+    #[test]
+    fn rebalance_does_not_always_trigger_on_balanced_cpu_cluster() {
+        let cluster = Arc::new(ClusterState::new());
+        cluster.register(NodeResources::new("node-a", 0.0, 16.0, "generic", None));
+        cluster.register(NodeResources::new("node-b", 0.0, 16.0, "generic", None));
+
+        let profile = RuntimeProfile {
+            node_resources: NodeResources::new("node-a", 0.0, 16.0, "generic", None),
+            logical_cores: 4,
+            recommended_workers: 2,
+            acceleration_mode: AccelerationMode::Generic,
+            gpu_backend: crate::host::GpuBackend::Cpu,
+            xdp_supported: false,
+            detection_source: String::from("test"),
+            probe_mode: crate::host::ProbeMode::Fast,
+        };
+        let balancer = LoadBalancer::new(cluster, LoadBalanceConfig::autotuned(&profile));
+        assert!(
+            !balancer.rebalance(),
+            "a perfectly balanced (zero-VRAM) CPU cluster must not be reported as needing rebalance"
+        );
     }
 
     #[test]

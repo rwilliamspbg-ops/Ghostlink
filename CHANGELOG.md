@@ -4,6 +4,44 @@ All notable changes to Ghostlink Studio are documented here.
 
 ---
 
+## [1.3.7] - 2026-07-23 (Repo-Wide Correctness Review)
+
+A broad review pass across backend handlers, cluster/health/load-balance logic, a launch script, and the frontend — dispatched as three independent research agents scanning previously-unreviewed areas, then triaged and fixed directly. Every fix below is a confirmed, reproducible bug, not a style nitpick.
+
+### 🐛 Backend
+
+- **`POST /api/models/delete` never deleted the file.** It only removed the in-memory record; `POST /api/models/:name` (DELETE, a second route doing "the same thing") correctly removed the `.gguf`. Since `GET /api/models` re-scans the models directory on every call, a model "deleted" via the first route reappeared on the next refresh and disk space was never freed. Both routes now share one deletion path.
+
+### 🐛 Cluster Health / Load Balancing / Auto-Tuning
+
+- **`health.rs`: a node could almost never be marked `Failed`.** `get_health_status()` classified a node as `Degraded` if *either* delivery ratio or latency was still acceptable (an OR) — meaning `Failed` only triggered when *both* metrics were simultaneously catastrophic. A node with perfect delivery but 10x-over-threshold latency (or vice versa) stayed `Degraded` forever. Now requires both metrics within their degraded floor to stay `Degraded`; either one crossing it fails the node.
+- **`load_balance.rs`: CPU-only clusters always reported needing rebalance.** `LoadBalanceConfig::autotuned()`'s CPU/generic tier used `min_load_threshold = 0.95`, below the mathematical minimum of `skew_ratio` (`max_available / min_available`, always `>= 1.0`). `rebalance()` returned `true` unconditionally for any CPU cluster with 2+ nodes, including a perfectly balanced one (skew_ratio pinned to exactly 1.0 when all nodes report 0 VRAM). Threshold raised to `1.02`, strictly above the floor.
+- **`autotune.rs`: `load_cache()`'s in-memory fast path never checked the hardware fingerprint**, unlike `from_system_profile()` and this same function's own disk-fallback path — both of which do. A hardware change mid-process (GPU hot-plug/unplug, VRAM change) kept serving stale tuning forever once anything had populated the in-memory cache. Now validates against the current fingerprint before returning the in-memory entry, same as the disk path.
+
+### 🐛 Launch Scripts
+
+- **`scripts/run_native_llama_server_stack.sh` crashed on every fresh checkout.** `local` was used outside any function (a plain `if` block at script top level) — a hard error under this script's `set -euo pipefail`, aborting the entire from-scratch build branch, the only branch that ever runs on a first checkout.
+- Same script's `wait_http()` also only checked for a bare 2xx status — the same false-positive class already fixed in `launch.sh` twice this cycle (a different service already bound to the target port fools a status-only check). Now supports the same content-marker verification (`"llamacpp"` for llama-server via `/v1/models`, `"inference_backend"` for the Ghostlink API).
+
+### 🐛 Frontend
+
+- **`api.loadModel()` (and `downloadModel()`) silently swallowed backend rejections.** The backend returns HTTP 200 with an `error` field in the body when it rejects a load (e.g. a catalog/placeholder model with no local `.gguf`) — it never throws for this case, so the code only checked in `catch`, never in the success path. Picking an undownloaded model looked identical to a real selection; the failure only surfaced later, opaquely, when chat was attempted. Both methods now check the body for an `error` field.
+- **`ModelsTab.tsx` hardcoded a green "Ready" badge for every model**, including catalog placeholders with no local file — the backend marks those `status: "Ready"` too (status alone can't distinguish them). Fixed the *root* signal in `api.getModels()`: `usable` now requires either `status === 'Loaded'` or (`status === 'Ready'` AND a non-empty `local_path`). The badge now correctly shows "Not downloaded" for placeholders, with a tooltip on the "Use" button explaining why it may error.
+- **`SecurityTab.tsx`'s "Refresh Token" button called `api.refreshJWT()`, a method that didn't exist** on the `GhostlinkAPI` class — clicking it threw a `TypeError` with no error handling, so `setLoading(false)` never ran and the button was stuck spinning forever (page reload required). Added the missing method and wrapped both this and the PQC-enable handler in `try/finally` so loading state always clears.
+
+### ✅ Validation
+
+- `cargo fmt --all --check` / `cargo clippy --workspace --all-targets -- -D warnings` — clean
+- `cargo test -p ghost-link -p ghostlink-core` — all passing, run 3x with zero flakiness (including the previously-flaky `test_environment_manager_set_env`, not touched by this change)
+- `tsc --noEmit`, `npm run build` (production build), `npx vitest run` — all clean, 104/104 frontend tests passing (one test failure surfaced and was resolved during this pass — see below)
+- `bash -n scripts/run_native_llama_server_stack.sh` — syntax OK; the top-level-`local` fix verified directly against a minimal `set -euo pipefail` repro
+
+### ⚠️ Process note
+
+An earlier draft of the `ModelsTab.tsx` fix also disabled the "Use" button entirely for non-`usable` models. `ModelsTab.test.tsx`'s existing mock data (`usable: false` on a non-current model, with an assertion that clicking "Use" still calls `loadModel`) revealed this was the wrong scope — the intended design lets the request through so the now-fixed error surfaces clearly, rather than silently blocking it. Reverted to a tooltip-only affordance; the existing test caught this before it shipped.
+
+---
+
 ## [1.3.6] - 2026-07-22 (GPU Backend Selection: DirectML/NPU/Vulkan)
 
 ### 🐛 GPU Backend Selection

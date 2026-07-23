@@ -274,13 +274,21 @@ impl NetworkHealthMonitor {
             .unwrap_or_else(|poison| poison.into_inner()) = Some(now);
     }
 
-    /// Get health status based on metrics
+    /// Get health status based on metrics.
+    ///
+    /// Degraded requires BOTH metrics to still be within their (looser)
+    /// degraded floor — using OR here previously meant a node was only ever
+    /// classified Failed when *both* metrics were simultaneously catastrophic,
+    /// since either one alone being within its floor was enough to satisfy the
+    /// OR. A node with fine delivery but catastrophic latency (or vice versa)
+    /// could never reach Failed. Either metric crossing its floor should be
+    /// enough to fail the node.
     fn get_health_status(&self, latency_us: f32, delivery_ratio: f32) -> HealthStatus {
         let cfg = self.config();
         if delivery_ratio >= cfg.healthy_delivery_ratio && latency_us <= cfg.healthy_latency_us {
             HealthStatus::Healthy
         } else if delivery_ratio >= cfg.degraded_delivery_ratio
-            || latency_us <= cfg.degraded_latency_us
+            && latency_us <= cfg.degraded_latency_us
         {
             HealthStatus::Degraded
         } else {
@@ -741,6 +749,33 @@ mod tests {
         let config = HealthConfig::autotuned(&profile);
         assert!(config.healthy_latency_us < 10.0);
         assert!(config.healthy_delivery_ratio > 0.95);
+    }
+
+    #[test]
+    fn get_health_status_fails_on_either_metric_crossing_floor() {
+        // Regression: Degraded used to require only ONE metric within its
+        // floor (an OR), so a node could never reach Failed unless BOTH
+        // metrics were simultaneously catastrophic. Either one alone crossing
+        // its floor must be enough.
+        let cluster = Arc::new(ClusterState::new());
+        let monitor = NetworkHealthMonitor::new(cluster, HealthConfig::default());
+        let cfg = HealthConfig::default();
+
+        // Delivery ratio fine, latency catastrophic — must be Failed, not Degraded.
+        assert_eq!(
+            monitor.get_health_status(cfg.degraded_latency_us * 10.0, 0.99),
+            HealthStatus::Failed
+        );
+        // Latency fine, delivery ratio catastrophic — must be Failed, not Degraded.
+        assert_eq!(
+            monitor.get_health_status(1.0, cfg.degraded_delivery_ratio / 2.0),
+            HealthStatus::Failed
+        );
+        // Both within their degraded floor but not healthy — genuinely Degraded.
+        assert_eq!(
+            monitor.get_health_status(cfg.degraded_latency_us, cfg.degraded_delivery_ratio),
+            HealthStatus::Degraded
+        );
     }
 
     #[test]

@@ -65,7 +65,13 @@ export class GhostlinkAPI {
             ? 'Ready'
             : rawStatus;
         const type = m.type || 'unknown';
-        const usable = normalizedStatus === 'Ready' || normalizedStatus === 'Loaded';
+        // The backend marks catalog/placeholder entries (never downloaded,
+        // no local_path) with status "Ready" too — it doesn't distinguish
+        // them from a real, loadable local file. Status alone can't tell
+        // them apart; a non-empty local_path is the only reliable signal
+        // that the model actually exists on disk and can be loaded.
+        const hasLocalFile = typeof m.local_path === 'string' && m.local_path.trim() !== '';
+        const usable = normalizedStatus === 'Loaded' || (normalizedStatus === 'Ready' && hasLocalFile);
         return {
           ...m,
           status: normalizedStatus,
@@ -82,6 +88,13 @@ export class GhostlinkAPI {
   async loadModel(modelName: string) {
     try {
       const response = await this.http.post('/api/models/load', { model: modelName });
+      // The backend returns HTTP 200 with an `error` field in the body when
+      // it rejects the load (e.g. no local GGUF path for a catalog/placeholder
+      // model) — it never throws for this case, so axios never lands in catch.
+      // Without this check, a rejected load looked identical to a real one.
+      if (response.data?.error) {
+        return { success: false, error: response.data.error };
+      }
       return { success: true, data: response.data };
     } catch (error: any) {
       return { success: false, error: error.response?.data?.error || error.message };
@@ -91,6 +104,10 @@ export class GhostlinkAPI {
   async downloadModel(modelId: string) {
     try {
       const response = await this.http.post('/api/models/download', { model_id: modelId });
+      // Same 200-with-error-body pattern as loadModel above.
+      if (response.data?.error) {
+        return { success: false, error: response.data.error };
+      }
       return { success: true, data: response.data };
     } catch (error: any) {
       return { success: false, error: error.response?.data?.error || error.message };
@@ -507,6 +524,15 @@ export class GhostlinkAPI {
       return { entries: response.data?.entries || [] };
     } catch (error: any) {
       return { entries: [], error: error.response?.data?.error || error.message };
+    }
+  }
+
+  async refreshJWT(): Promise<{ success: boolean; data?: any; error?: string }> {
+    try {
+      const response = await this.http.post('/api/security/jwt/refresh');
+      return { success: true, data: response.data };
+    } catch (error: any) {
+      return { success: false, error: error.response?.data?.error || error.message };
     }
   }
 
