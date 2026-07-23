@@ -576,7 +576,10 @@ export class GhostlinkAPI {
 
   async pullOllamaModel(modelName: string): Promise<{ success: boolean; error?: string }> {
     try {
-      await this.http.post('/api/ollama/pull', { model: modelName });
+      const response = await this.http.post('/api/ollama/pull', { model: modelName });
+      if (response.data?.error) {
+        return { success: false, error: response.data.error };
+      }
       return { success: true };
     } catch (error: any) {
       if (this.isNotFound(error)) {
