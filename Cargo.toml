@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/ghost-link", "crates/ghostlink-core"]
+members = ["crates/ghost-link", "crates/ghostlink-core", "crates/mcp-calculator", "crates/mcp-vision"]
 resolver = "2"
 
 [workspace.package]

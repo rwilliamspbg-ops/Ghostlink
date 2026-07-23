@@ -1,0 +1,160 @@
+[[mcp_servers]]
+name = "filesystem"
+slot = "file_operations"
+enabled = true
+transport = "stdio"
+command = "npx"
+args = [
+    "-y",
+    "@modelcontextprotocol/server-filesystem",
+    "./mcp_workspace",
+]
+requires_confirmation = false
+timeout_secs = 30
+
+[mcp_servers.env]
+
+[[mcp_servers]]
+name = "fetch"
+slot = "api_call"
+enabled = true
+transport = "stdio"
+command = "uvx"
+args = ["mcp-server-fetch"]
+requires_confirmation = false
+timeout_secs = 30
+
+[mcp_servers.env]
+
+[[mcp_servers]]
+name = "calculator"
+slot = "calculator"
+enabled = true
+transport = "stdio"
+command = "target/release/mcp-calculator.exe"
+args = []
+requires_confirmation = false
+timeout_secs = 30
+
+[mcp_servers.env]
+
+[[mcp_servers]]
+name = "sqlite"
+slot = "database_query"
+enabled = true
+transport = "stdio"
+command = "uvx"
+args = [
+    "mcp-server-sqlite",
+    "--db-path",
+    "./mcp_workspace/ghostlink.db",
+]
+requires_confirmation = false
+timeout_secs = 30
+
+[mcp_servers.env]
+
+[[mcp_servers]]
+name = "brave-search"
+slot = "web_search"
+enabled = false
+transport = "stdio"
+command = "npx"
+args = [
+    "-y",
+    "@modelcontextprotocol/server-brave-search",
+]
+requires_confirmation = false
+timeout_secs = 30
+
+[mcp_servers.env]
+BRAVE_API_KEY = "${BRAVE_API_KEY}"
+
+[[mcp_servers]]
+name = "docker-code-execution"
+slot = "code_execution"
+enabled = false
+transport = "stdio"
+command = "docker"
+args = [
+    "mcp",
+    "gateway",
+    "run",
+]
+requires_confirmation = true
+timeout_secs = 30
+
+[mcp_servers.env]
+
+[[mcp_servers]]
+name = "docker-terminal"
+slot = "terminal"
+enabled = false
+transport = "stdio"
+command = "docker"
+args = [
+    "mcp",
+    "gateway",
+    "run",
+]
+requires_confirmation = true
+timeout_secs = 30
+
+[mcp_servers.env]
+
+[[mcp_servers]]
+name = "image-generation"
+slot = "image_generation"
+enabled = false
+transport = "stdio"
+command = "unconfigured"
+args = []
+requires_confirmation = false
+timeout_secs = 30
+
+[mcp_servers.env]
+
+# --- Standalone additions (no legacy tool slot; addressed by server name) ---
+
+[[mcp_servers]]
+name = "sequential-thinking"
+slot = ""
+enabled = true
+transport = "stdio"
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-sequential-thinking"]
+requires_confirmation = false
+timeout_secs = 30
+
+[mcp_servers.env]
+
+[[mcp_servers]]
+name = "vision"
+slot = ""
+# Wraps Ghostlink's own local Ollama connection to call a vision-capable model
+# (llava, moondream, bakllava, ...) instead of adding a cloud dependency.
+# Disabled by default: enable once you've `ollama pull`ed a vision model.
+enabled = false
+transport = "stdio"
+command = "target/release/mcp-vision.exe"
+args = []
+requires_confirmation = false
+timeout_secs = 30
+
+[mcp_servers.env]
+OLLAMA_URL = "http://127.0.0.1:11434"
+OLLAMA_VISION_MODEL = "llava"
+
+[[mcp_servers]]
+name = "docker-mcp-gateway"
+slot = ""
+# Aggregates Docker MCP Toolkit's whole catalog behind one connection. Disabled
+# by default: requires Docker Desktop running.
+enabled = false
+transport = "stdio"
+command = "docker"
+args = ["mcp", "gateway", "run"]
+requires_confirmation = true
+timeout_secs = 30
+
+[mcp_servers.env]

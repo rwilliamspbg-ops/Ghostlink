@@ -65,3 +65,11 @@ models/
 models.json
 ghostlink_gui_modern/dist/
 .ghostlink-npm-platform
+
+# mcp_servers.toml is a per-install copy of mcp_servers.example.toml (same
+# pattern as ghostlink.toml/ghostlink.example.toml) — the GUI's MCP tab writes
+# enable/disable toggles back to it, so it shouldn't be tracked.
+mcp_servers.toml
+
+# Runtime data created by MCP servers (see mcp_servers.toml) — not source
+mcp_workspace/ghostlink.db
