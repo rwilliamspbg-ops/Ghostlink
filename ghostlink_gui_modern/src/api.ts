@@ -1,5 +1,5 @@
 import axios, { AxiosInstance } from 'axios';
-import { Model, Metric, Session, Worker, Settings } from './store';
+import { Model, Metric, Session, Worker, Settings, McpServer } from './store';
 
 type CircuitState = 'closed' | 'open' | 'half-open';
 
@@ -273,6 +273,49 @@ export class GhostlinkAPI {
         const response = await this.http.post('/api/inference/chat', payload);
         return { success: true, data: response.data };
       }
+    } catch (error: any) {
+      return { success: false, error: error.response?.data?.error || error.message };
+    }
+  }
+
+  /** Approves or denies a tool call the model requested that needed confirmation
+   *  first (see the `pending_tool_call` field `sendMessage` can return) — resumes
+   *  the same chat turn on the backend. */
+  async confirmToolCall(requestId: string, approve: boolean) {
+    try {
+      const response = await this.http.post('/api/inference/chat/tool-confirm', {
+        request_id: requestId,
+        approve,
+      });
+      return { success: true, data: response.data };
+    } catch (error: any) {
+      return { success: false, error: error.response?.data?.error || error.message };
+    }
+  }
+
+  async listMcpServers(): Promise<{ servers: McpServer[]; error?: string }> {
+    try {
+      const response = await this.http.get('/api/mcp/servers');
+      return { servers: response.data.servers || [], error: response.data.error };
+    } catch (error: any) {
+      return { servers: [], error: error.response?.data?.error || error.message };
+    }
+  }
+
+  async toggleMcpServer(
+    name: string,
+    enabled: boolean
+  ): Promise<{ success: boolean; servers?: McpServer[]; error?: string }> {
+    try {
+      const response = await this.http.post(
+        `/api/mcp/servers/${encodeURIComponent(name)}/toggle`,
+        { enabled }
+      );
+      return {
+        success: response.data.success !== false,
+        servers: response.data.servers,
+        error: response.data.error,
+      };
     } catch (error: any) {
       return { success: false, error: error.response?.data?.error || error.message };
     }

@@ -49,6 +49,11 @@ pub struct OllamaModelsResponse {
 pub struct ChatMessage {
     pub role: String,
     pub content: String,
+    /// Only ever populated by Ollama on an incoming response (when the model
+    /// natively supports tool-calling and decides to call one) — never set on
+    /// an outgoing message we build ourselves.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_calls: Option<Vec<Value>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -59,6 +64,11 @@ pub struct ChatRequest {
     pub stream: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub options: Option<OllamaOptions>,
+    /// OpenAI-style function-tool definitions:
+    /// `{"type": "function", "function": {"name", "description", "parameters"}}`.
+    /// Only sent to models that declare tool-calling support in their template.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tools: Option<Vec<Value>>,
 }
 
 /// Sampling parameters accepted by Ollama's `/api/generate` and `/api/chat`
@@ -330,6 +340,7 @@ impl OllamaClient {
 
     /// Chat with Ollama (non-streaming)
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     pub async fn chat(
         &self,
         model: &str,
@@ -339,6 +350,7 @@ impl OllamaClient {
         top_k: Option<usize>,
         repeat_penalty: Option<f32>,
         max_tokens: Option<usize>,
+        tools: Option<Vec<Value>>,
     ) -> Result<ChatResponse, Box<dyn Error>> {
         let request = ChatRequest {
             model: model.to_string(),
@@ -351,6 +363,7 @@ impl OllamaClient {
                 repeat_penalty,
                 num_predict: max_tokens,
             }),
+            tools,
         };
 
         let resp = self
@@ -390,6 +403,7 @@ impl OllamaClient {
                 repeat_penalty,
                 num_predict: max_tokens,
             }),
+            tools: None,
         };
 
         let resp = self
@@ -755,6 +769,7 @@ mod tests {
                 repeat_penalty: Some(1.2),
                 num_predict: Some(256),
             }),
+            tools: None,
         };
         let value = serde_json::to_value(&request).expect("serialize ChatRequest");
         assert!(

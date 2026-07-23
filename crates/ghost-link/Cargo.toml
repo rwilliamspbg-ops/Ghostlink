@@ -52,3 +52,10 @@ uuid = { version = "1", features = ["v4"] }
 
 # Host CPU / memory sampling for /api/metrics
 sysinfo = "0.33"
+
+# MCP (Model Context Protocol) client — spawns/connects to tool servers
+rmcp = { version = "2", default-features = false, features = [
+    "client",
+    "transport-child-process",
+    "transport-streamable-http-client-reqwest",
+] }

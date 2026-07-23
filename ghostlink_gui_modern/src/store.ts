@@ -87,6 +87,15 @@ export interface BackendStatus {
   temperature: number | null;
 }
 
+export interface McpServer {
+  name: string;
+  slot: string;
+  enabled: boolean;
+  connected: boolean;
+  tool_count: number;
+  requires_confirmation: boolean;
+}
+
 interface AppState {
   apiBase: string;
   backendOnline: boolean;
@@ -101,7 +110,8 @@ interface AppState {
   backendStatus: BackendStatus | null;
   selectedModel: string | null;
   activeTab: number;
-  
+  mcpServers: McpServer[];
+
   setApiBase: (base: string) => void;
   setBackendOnline: (online: boolean) => void;
   setCurrentModel: (model: string) => void;
@@ -115,6 +125,7 @@ interface AppState {
   setBackendStatus: (status: BackendStatus | null) => void;
   setSelectedModel: (model: string | null) => void;
   setActiveTab: (tab: number) => void;
+  setMcpServers: (servers: McpServer[]) => void;
 }
 
 export const useAppStore = create<AppState>((set) => ({
@@ -131,7 +142,8 @@ export const useAppStore = create<AppState>((set) => ({
   backendStatus: null,
   selectedModel: null,
   activeTab: 0,
-  
+  mcpServers: [],
+
   setApiBase: (base) => set({ apiBase: base }),
   setBackendOnline: (online) => set({ backendOnline: online }),
   setCurrentModel: (model) => set({ currentModel: model }),
@@ -145,4 +157,5 @@ export const useAppStore = create<AppState>((set) => ({
   setBackendStatus: (backendStatus) => set({ backendStatus }),
   setSelectedModel: (model) => set({ selectedModel: model }),
   setActiveTab: (tab) => set({ activeTab: tab }),
+  setMcpServers: (servers) => set({ mcpServers: servers }),
 }));

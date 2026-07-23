@@ -1467,6 +1467,8 @@ struct BackendState {
     ollama_client: ollama::OllamaClient,
     ollama_available: Arc<tokio::sync::Mutex<bool>>,
     settings: RuntimeSettings,
+    mcp_registry: Arc<mcp::McpRegistry>,
+    pending_tool_calls: Arc<tokio::sync::Mutex<HashMap<String, PendingToolCall>>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1526,41 +1528,6 @@ impl Default for RuntimeSettings {
             discovery_auth_token: String::new(),
             tcp_auth_token: String::new(),
             xdp_interface: "eth0".to_string(),
-        }
-    }
-}
-
-struct ToolDispatcher;
-
-impl ToolDispatcher {
-    fn dispatch(tool_name: &str, _args: &serde_json::Value) -> ToolResult {
-        match tool_name {
-            "calculator" => ToolResult {
-                tool: tool_name.to_string(),
-                result: "42 (Calculated via Rust built-in tool)".to_string(),
-                success: true,
-            },
-            "web_search" => ToolResult {
-                tool: tool_name.to_string(),
-                result: "Ghostlink is a high-performance distributed LLM inference fabric."
-                    .to_string(),
-                success: true,
-            },
-            "terminal" => ToolResult {
-                tool: tool_name.to_string(),
-                result: "System: All nodes operational. Kernel bypass active.".to_string(),
-                success: true,
-            },
-            "code_execution" => ToolResult {
-                tool: tool_name.to_string(),
-                result: "Output: Processed tensor batch in 2.4ms".to_string(),
-                success: true,
-            },
-            _ => ToolResult {
-                tool: tool_name.to_string(),
-                result: format!("Tool '{}' executed successfully.", tool_name),
-                success: true,
-            },
         }
     }
 }
@@ -1718,7 +1685,6 @@ struct GuiChatRequest {
     penalty: Option<f32>,
     #[allow(dead_code)]
     max_tokens: Option<usize>,
-    #[allow(dead_code)]
     system_prompt: Option<String>,
     #[allow(dead_code)]
     ollama_url: Option<String>,
@@ -1831,11 +1797,52 @@ struct Choice {
     message: serde_json::Value,
     finish_reason: String,
 }
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct ToolResult {
     tool: String,
+    server: String,
     result: String,
     success: bool,
+}
+
+/// Generation parameters captured once per chat request so the tool-calling loop
+/// (see `run_tool_loop`) can call the same backend repeatedly across iterations —
+/// and so a confirmation round-trip (`handle_gui_chat_tool_confirm`) can resume
+/// generation later using the exact same settings the original request used.
+#[derive(Debug, Clone)]
+struct GenerationParams {
+    inference_backend: InferenceBackend,
+    current_model: String,
+    native_engine_client: native_engine::NativeEngineClient,
+    ollama_client: ollama::OllamaClient,
+    settings: RuntimeSettings,
+    temperature: f32,
+    top_p: f32,
+    top_k: usize,
+    repeat_penalty: f32,
+    exec_tokens: usize,
+    /// Enabled tools, offered to the Ollama backend's native `tools` API
+    /// (`generate_once` prefers this over ReAct-marker parsing for models that
+    /// declare tool support; the native backend has no equivalent API today, so
+    /// it always uses the ReAct prompt fallback regardless of this field).
+    tool_schemas: Vec<mcp::McpToolSchema>,
+}
+
+/// A tool call the model requested that requires explicit user approval
+/// (`McpServerConfig.requires_confirmation`) before it runs — e.g. terminal or
+/// code_execution once Docker MCP Toolkit backs them. Stored server-side, keyed by
+/// a request id, so the GUI's approve/deny click can resume the same chat turn.
+#[derive(Debug, Clone)]
+struct PendingToolCall {
+    gen: GenerationParams,
+    effective_prompt: String,
+    iteration: usize,
+    tool_owner: HashMap<String, String>,
+    enabled_tool_names: Vec<String>,
+    tool_results_so_far: Vec<ToolResult>,
+    tool: String,
+    server: String,
+    args: serde_json::Value,
 }
 
 fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
@@ -1858,6 +1865,15 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
 
     fn lock_state(state: &Arc<Mutex<BackendState>>) -> std::sync::MutexGuard<'_, BackendState> {
         state.lock().unwrap_or_else(|poison| poison.into_inner())
+    }
+
+    /// Waits for Ctrl+C, then force-tears-down every connected MCP server before
+    /// `axum::serve`'s graceful shutdown lets the process exit. Without this, a
+    /// `cmd /C npx ...`-spawned server's child processes (see mcp::client) would
+    /// otherwise be orphaned when Ghostlink exits.
+    async fn mcp_shutdown_on_ctrl_c(mcp_registry: Arc<mcp::McpRegistry>) {
+        let _ = tokio::signal::ctrl_c().await;
+        mcp_registry.shutdown_all().await;
     }
 
     fn chat_exec_micro_batch() -> usize {
@@ -3466,6 +3482,7 @@ InferenceBackend::Native => match native_engine_client
                 Some(ollama::ChatMessage {
                     role: role.to_string(),
                     content: content.to_string(),
+                    tool_calls: None,
                 })
             })
             .collect::<Vec<_>>();
@@ -3488,6 +3505,7 @@ InferenceBackend::Native => match native_engine_client
                 req.top_k,
                 req.repeat_penalty,
                 req.max_tokens,
+                None,
             )
             .await
         {
@@ -3498,69 +3516,41 @@ InferenceBackend::Native => match native_engine_client
         }
     }
 
-    async fn handle_gui_chat(
-        State(state): State<Arc<Mutex<BackendState>>>,
-        Json(req): Json<GuiChatRequest>,
-    ) -> axum::response::Response {
-        let started = Instant::now();
-
-        let mut tool_results = Vec::new();
-        // Performance optimization: avoid cloning potentially large MCP payloads
-        // and dispatch tools without async-await state machine overhead.
-        // Expected impact: lower per-request CPU and latency for tool-heavy chat calls.
-        let empty_tool_args = serde_json::Value::Null;
-        if let Some(mcp) = req.mcp.as_ref() {
-            if let Some(tools) = mcp.get("tools").and_then(|t| t.as_array()) {
-                tool_results = Vec::with_capacity(tools.len());
-                for tool_val in tools {
-                    if let Some(tool_name) = tool_val.as_str() {
-                        tool_results.push(ToolDispatcher::dispatch(tool_name, &empty_tool_args));
+    /// Single inference call against whichever backend is active. Pulled out of
+    /// `handle_gui_chat` so the tool-calling loop (`run_tool_loop`) can call it
+    /// repeatedly across iterations with a growing prompt, instead of once.
+    /// Converts our MCP tool schemas into Ollama's OpenAI-style function-tool
+    /// format so models with native tool-calling support in their chat template
+    /// can use it directly, instead of relying solely on the ReAct text marker.
+    fn ollama_tools_json(schemas: &[mcp::McpToolSchema]) -> Vec<serde_json::Value> {
+        schemas
+            .iter()
+            .map(|schema| {
+                serde_json::json!({
+                    "type": "function",
+                    "function": {
+                        "name": schema.name,
+                        "description": schema.description,
+                        "parameters": schema.input_schema,
                     }
-                }
-            }
-        }
+                })
+            })
+            .collect()
+    }
 
-        let (
-            current_model,
-            _cluster,
-            ollama_client,
-            ollama_available,
-            inference_backend,
-            native_engine_client,
-            settings,
-        ) = {
-            let backend = lock_state(&state);
-            let inference_backend = InferenceBackend::parse(&backend.settings.inference_backend);
-            (
-                backend.current_model.clone(),
-                Arc::clone(&backend.cluster),
-                backend.ollama_client.clone(),
-                Arc::clone(&backend.ollama_available),
-                inference_backend,
-                backend.native_engine_client.clone(),
-                backend.settings.clone(),
-            )
-        };
-
-        let token_estimate = req.message.split_whitespace().count().clamp(1, 1024);
-        let temp = req.temperature.unwrap_or(settings.temperature);
-        let top_p = req.top_p.unwrap_or(settings.top_p);
-        let top_k = req.top_k.unwrap_or(settings.top_k);
-        let penalty = req.penalty.unwrap_or(settings.repeat_penalty);
-        let requested_exec_tokens = req
-            .max_tokens
-            .unwrap_or(settings.max_tokens)
-            .clamp(16, 4096);
-        let exec_tokens = chat_exec_token_budget(requested_exec_tokens);
-        let exec_micro_batch = chat_exec_micro_batch();
-        let request_tracker = active_runtime_switcher().request_tracker().clone();
-        request_tracker.increment().await;
-
-        let mut gen_tokens: Option<u32> = None;
-        let mut gen_tps: Option<f32> = None;
-        let mut gen_latency_ms: Option<f32> = None;
-
-        let (response_text, real_inference, backend_used) = match inference_backend {
+    async fn generate_once(
+        state: &Arc<Mutex<BackendState>>,
+        gen: &GenerationParams,
+        prompt: &str,
+    ) -> (
+        String,
+        bool,
+        &'static str,
+        Option<u32>,
+        Option<f32>,
+        Option<f32>,
+    ) {
+        match gen.inference_backend {
             InferenceBackend::Ollama => {
                 let resolve_model = |requested: &str, available: &[String]| -> Option<String> {
                     if available.iter().any(|m| m == requested) {
@@ -3586,43 +3576,145 @@ InferenceBackend::Native => match native_engine_client
                     None
                 };
 
-                let available_models_result: Result<Vec<String>, String> = ollama_client
+                let available_models_result: Result<Vec<String>, String> = gen
+                    .ollama_client
                     .list_models()
                     .await
                     .map_err(|err| err.to_string());
 
                 match available_models_result {
                     Ok(available_models) => {
-                        let effective_model = resolve_model(&current_model, &available_models);
+                        let effective_model = resolve_model(&gen.current_model, &available_models);
                         if let Some(model_name) = effective_model {
-                            match ollama_client
-                                .generate(
-                                    &model_name,
-                                    &req.message,
-                                    temp,
-                                    top_p,
-                                    top_k,
-                                    penalty,
-                                    exec_tokens,
-                                )
-                                .await
-                            {
-                                Ok(text) => {
-                                    if model_name != current_model {
-                                        let mut backend = lock_state(&state);
-                                        backend.current_model = model_name;
+                            if gen.tool_schemas.is_empty() {
+                                match gen
+                                    .ollama_client
+                                    .generate(
+                                        &model_name,
+                                        prompt,
+                                        gen.temperature,
+                                        gen.top_p,
+                                        gen.top_k,
+                                        gen.repeat_penalty,
+                                        gen.exec_tokens,
+                                    )
+                                    .await
+                                {
+                                    Ok(text) => {
+                                        if model_name != gen.current_model {
+                                            let mut backend = lock_state(state);
+                                            backend.current_model = model_name;
+                                        }
+                                        let text = text.trim().to_string();
+                                        let gen_tokens =
+                                            Some((text.split_whitespace().count() as u32).max(1));
+                                        (
+                                            text,
+                                            true,
+                                            InferenceBackend::Ollama.as_str(),
+                                            gen_tokens,
+                                            None,
+                                            None,
+                                        )
                                     }
-                                    let text = text.trim().to_string();
-                                    gen_tokens =
-                                        Some((text.split_whitespace().count() as u32).max(1));
-                                    (text, true, InferenceBackend::Ollama.as_str())
+                                    Err(err) => {
+                                        let fallback = format!(
+                                            "Ollama generate failed for model '{}': {}",
+                                            model_name, err
+                                        );
+                                        (
+                                            fallback,
+                                            false,
+                                            InferenceBackend::Ollama.as_str(),
+                                            None,
+                                            None,
+                                            None,
+                                        )
+                                    }
                                 }
-                                Err(err) => {
-                                    let fallback = format!(
-                                        "Ollama generate failed for model '{}': {}",
-                                        model_name, err
-                                    );
-                                    (fallback, false, InferenceBackend::Ollama.as_str())
+                            } else {
+                                // Native tool-calling path: offer Ollama's `tools` param
+                                // (best-effort — only models whose chat template
+                                // declares tool support will actually populate
+                                // `message.tool_calls`). When present, synthesize our
+                                // internal `TOOL_CALL: {...}` marker so the existing
+                                // ReAct parser in `run_tool_loop` handles it identically
+                                // either way; otherwise fall back to the model's plain
+                                // text (which may itself contain a ReAct-style marker).
+                                let messages = vec![ollama::ChatMessage {
+                                    role: "user".to_string(),
+                                    content: prompt.to_string(),
+                                    tool_calls: None,
+                                }];
+                                let tools_json = ollama_tools_json(&gen.tool_schemas);
+
+                                match gen
+                                    .ollama_client
+                                    .chat(
+                                        &model_name,
+                                        &messages,
+                                        Some(gen.temperature),
+                                        Some(gen.top_p),
+                                        Some(gen.top_k),
+                                        Some(gen.repeat_penalty),
+                                        Some(gen.exec_tokens),
+                                        Some(tools_json),
+                                    )
+                                    .await
+                                {
+                                    Ok(response) => {
+                                        if model_name != gen.current_model {
+                                            let mut backend = lock_state(state);
+                                            backend.current_model = model_name;
+                                        }
+                                        let native_call = response
+                                            .message
+                                            .tool_calls
+                                            .as_ref()
+                                            .and_then(|calls| calls.first());
+                                        let text = match native_call {
+                                            Some(call) => {
+                                                let name = call
+                                                    .get("function")
+                                                    .and_then(|f| f.get("name"))
+                                                    .and_then(|n| n.as_str())
+                                                    .unwrap_or_default();
+                                                let args = call
+                                                    .get("function")
+                                                    .and_then(|f| f.get("arguments"))
+                                                    .cloned()
+                                                    .unwrap_or(serde_json::Value::Null);
+                                                format!(
+                                                    "TOOL_CALL: {{\"tool\": \"{name}\", \"args\": {args}}}"
+                                                )
+                                            }
+                                            None => response.message.content.trim().to_string(),
+                                        };
+                                        let gen_tokens =
+                                            Some((text.split_whitespace().count() as u32).max(1));
+                                        (
+                                            text,
+                                            true,
+                                            InferenceBackend::Ollama.as_str(),
+                                            gen_tokens,
+                                            None,
+                                            None,
+                                        )
+                                    }
+                                    Err(err) => {
+                                        let fallback = format!(
+                                            "Ollama chat failed for model '{}': {}",
+                                            model_name, err
+                                        );
+                                        (
+                                            fallback,
+                                            false,
+                                            InferenceBackend::Ollama.as_str(),
+                                            None,
+                                            None,
+                                            None,
+                                        )
+                                    }
                                 }
                             }
                         } else {
@@ -3636,10 +3728,11 @@ InferenceBackend::Native => match native_engine_client
                             (
                                 format!(
                                     "Configured model '{}' is not installed in Ollama. Available: {}. Pull/select an exact tag and retry.",
-                                    current_model, available_hint
+                                    gen.current_model, available_hint
                                 ),
                                 false,
                                 InferenceBackend::Ollama.as_str(),
+                                None, None, None,
                             )
                         }
                     }
@@ -3649,48 +3742,229 @@ InferenceBackend::Native => match native_engine_client
                             InferenceBackend::Ollama.as_str(),
                             err_text
                         );
-                        (fallback, false, InferenceBackend::Ollama.as_str())
+                        (
+                            fallback,
+                            false,
+                            InferenceBackend::Ollama.as_str(),
+                            None,
+                            None,
+                            None,
+                        )
                     }
                 }
             }
             InferenceBackend::Native => {
-                match native_engine_client
+                match gen
+                    .native_engine_client
                     .generate(
-                        &current_model,
-                        &req.message,
-                        exec_tokens,
-                        temp,
-                        top_p,
-                        top_k,
-                        penalty,
-                        &settings.native_engine,
+                        &gen.current_model,
+                        prompt,
+                        gen.exec_tokens,
+                        gen.temperature,
+                        gen.top_p,
+                        gen.top_k,
+                        gen.repeat_penalty,
+                        &gen.settings.native_engine,
                     )
                     .await
                 {
-                    Ok(gen) => {
-                        gen_tokens = gen.tokens_generated.or_else(|| {
-                            Some((gen.text.split_whitespace().count() as u32).max(1))
+                    Ok(native_gen) => {
+                        let gen_tokens = native_gen.tokens_generated.or_else(|| {
+                            Some((native_gen.text.split_whitespace().count() as u32).max(1))
                         });
-                        gen_tps = gen.tokens_per_sec;
-                        gen_latency_ms = gen.latency_ms;
                         (
-                            gen.text,
-                            gen.real_inference,
+                            native_gen.text,
+                            native_gen.real_inference,
                             InferenceBackend::Native.as_str(),
+                            gen_tokens,
+                            native_gen.tokens_per_sec,
+                            native_gen.latency_ms,
                         )
                     }
                     Err(err) => (
                         format!(
                             "Ghostlink native fabric backend processed model '{}' with {} estimated tokens. Native error: {}",
-                            current_model, exec_tokens, err
+                            gen.current_model, gen.exec_tokens, err
                         ),
                         false,
                         InferenceBackend::Native.as_str(),
+                        None, None, None,
                     ),
                 }
             }
-        };
+        }
+    }
 
+    enum ToolLoopOutcome {
+        Final {
+            response_text: String,
+            real_inference: bool,
+            backend_used: &'static str,
+            gen_tokens: Option<u32>,
+            gen_tps: Option<f32>,
+            gen_latency_ms: Option<f32>,
+            tool_results: Vec<ToolResult>,
+        },
+        PendingConfirmation {
+            request_id: String,
+            tool: String,
+            server: String,
+            args: serde_json::Value,
+        },
+    }
+
+    /// The model-driven tool-calling loop: generate, check whether the model asked
+    /// for a tool (`mcp::toolcall::extract_tool_call`), execute it for real via the
+    /// MCP registry, feed the result back as an "Observation", and repeat — capped
+    /// at `MAX_TOOL_ITERATIONS` round-trips. Replaces the old behavior of
+    /// unconditionally dispatching every checked tool regardless of what the model
+    /// actually needed.
+    #[allow(clippy::too_many_arguments)]
+    async fn run_tool_loop(
+        state: &Arc<Mutex<BackendState>>,
+        mcp_registry: &Arc<mcp::McpRegistry>,
+        gen: &GenerationParams,
+        tool_owner: &HashMap<String, String>,
+        enabled_tool_names: &[String],
+        mut effective_prompt: String,
+        mut iteration: usize,
+        mut tool_results: Vec<ToolResult>,
+    ) -> ToolLoopOutcome {
+        loop {
+            let (text, real_inference, backend_used, gen_tokens, gen_tps, gen_latency_ms) =
+                generate_once(state, gen, &effective_prompt).await;
+
+            let Some(call) = mcp::toolcall::extract_tool_call(&text) else {
+                return ToolLoopOutcome::Final {
+                    response_text: text,
+                    real_inference,
+                    backend_used,
+                    gen_tokens,
+                    gen_tps,
+                    gen_latency_ms,
+                    tool_results,
+                };
+            };
+
+            iteration += 1;
+            if iteration > mcp::toolcall::MAX_TOOL_ITERATIONS {
+                return ToolLoopOutcome::Final {
+                    response_text: text,
+                    real_inference,
+                    backend_used,
+                    gen_tokens,
+                    gen_tps,
+                    gen_latency_ms,
+                    tool_results,
+                };
+            }
+
+            let Some(server) = tool_owner.get(&call.tool).cloned() else {
+                effective_prompt.push_str(&mcp::toolcall::format_observation(
+                    &call.tool,
+                    &serde_json::json!({
+                        "error": format!("unknown tool '{}': not one of the enabled tools", call.tool)
+                    }),
+                ));
+                continue;
+            };
+
+            if mcp_registry.requires_confirmation(&server).await {
+                let request_id = uuid::Uuid::new_v4().to_string();
+                let pending = PendingToolCall {
+                    gen: gen.clone(),
+                    effective_prompt,
+                    iteration,
+                    tool_owner: tool_owner.clone(),
+                    enabled_tool_names: enabled_tool_names.to_vec(),
+                    tool_results_so_far: tool_results,
+                    tool: call.tool.clone(),
+                    server: server.clone(),
+                    args: call.args.clone(),
+                };
+
+                let pending_map = {
+                    let backend = lock_state(state);
+                    Arc::clone(&backend.pending_tool_calls)
+                };
+                pending_map.lock().await.insert(request_id.clone(), pending);
+
+                return ToolLoopOutcome::PendingConfirmation {
+                    request_id,
+                    tool: call.tool,
+                    server,
+                    args: call.args,
+                };
+            }
+
+            let (tool_result, observation_json) = match mcp_registry
+                .call_tool(&server, &call.tool, call.args.clone())
+                .await
+            {
+                Some(outcome) => {
+                    let result_str = if outcome.success {
+                        serde_json::to_string(&outcome.result)
+                            .unwrap_or_else(|_| "<unserializable result>".to_string())
+                    } else {
+                        outcome
+                            .error
+                            .clone()
+                            .unwrap_or_else(|| "tool call failed".to_string())
+                    };
+                    (
+                        ToolResult {
+                            tool: outcome.tool.clone(),
+                            server: outcome.server.clone(),
+                            result: result_str,
+                            success: outcome.success,
+                        },
+                        outcome.result.clone(),
+                    )
+                }
+                None => {
+                    let msg = format!("no MCP server available for tool '{}'", call.tool);
+                    (
+                        ToolResult {
+                            tool: call.tool.clone(),
+                            server: server.clone(),
+                            result: msg.clone(),
+                            success: false,
+                        },
+                        serde_json::json!({ "error": msg }),
+                    )
+                }
+            };
+
+            effective_prompt.push_str(&mcp::toolcall::format_observation(
+                &call.tool,
+                &observation_json,
+            ));
+            tool_results.push(tool_result);
+        }
+    }
+
+    /// Shared response assembly (metrics recording, session bookkeeping, streaming
+    /// vs. plain JSON) for a finished chat turn — used both by a fresh request and
+    /// by one resumed after a tool-confirmation round-trip.
+    #[allow(clippy::too_many_arguments)]
+    async fn finish_chat_response(
+        state: &Arc<Mutex<BackendState>>,
+        ollama_available: &Arc<tokio::sync::Mutex<bool>>,
+        started: Instant,
+        current_model: &str,
+        token_estimate: usize,
+        exec_tokens: usize,
+        exec_micro_batch: usize,
+        mcp_echo: Option<serde_json::Value>,
+        stream_response: bool,
+        response_text: String,
+        real_inference: bool,
+        backend_used: &'static str,
+        gen_tokens: Option<u32>,
+        gen_tps: Option<f32>,
+        gen_latency_ms: Option<f32>,
+        tool_results: Vec<ToolResult>,
+    ) -> axum::response::Response {
         {
             let mut available_flag = ollama_available.lock().await;
             *available_flag = real_inference;
@@ -3709,7 +3983,7 @@ InferenceBackend::Native => match native_engine_client
         });
 
         let (request_id, session_id, metrics_json) = {
-            let mut backend = lock_state(&state);
+            let mut backend = lock_state(state);
             backend.chat_requests = backend.chat_requests.saturating_add(1);
             let request_seq = backend.chat_requests;
 
@@ -3733,7 +4007,7 @@ InferenceBackend::Native => match native_engine_client
                 session.tokens = session.tokens.saturating_add(tokens_out as usize);
                 session.throughput = throughput_u;
                 session.latency = latency_u;
-                session.model = current_model.clone();
+                session.model = current_model.to_string();
                 session.status = if real_inference {
                     "Running".to_string()
                 } else {
@@ -3744,7 +4018,7 @@ InferenceBackend::Native => match native_engine_client
                 let session_id = "sess_local_001".to_string();
                 backend.sessions.push(SessionRecord {
                     id: session_id.clone(),
-                    model: current_model.clone(),
+                    model: current_model.to_string(),
                     status: if real_inference {
                         "Running".to_string()
                     } else {
@@ -3794,7 +4068,7 @@ InferenceBackend::Native => match native_engine_client
             "metrics": metrics_json
         });
 
-        if let Some(mcp) = req.mcp {
+        if let Some(mcp) = mcp_echo {
             if let Some(response_object) = response.as_object_mut() {
                 response_object.insert("tool_access".to_string(), serde_json::json!(true));
                 response_object.insert("mcp".to_string(), mcp);
@@ -3809,9 +4083,7 @@ InferenceBackend::Native => match native_engine_client
             }
         }
 
-        request_tracker.decrement().await;
-
-        if req.stream.unwrap_or(false) {
+        if stream_response {
             let tokens: Vec<String> = final_response
                 .split_whitespace()
                 .map(|s| format!("{} ", s))
@@ -3829,6 +4101,395 @@ InferenceBackend::Native => match native_engine_client
             Sse::new(stream).into_response()
         } else {
             Json(response).into_response()
+        }
+    }
+
+    fn pending_tool_call_response(
+        outcome: &str,
+        tool: &str,
+        server: &str,
+        args: &serde_json::Value,
+        request_id: &str,
+    ) -> axum::response::Response {
+        Json(serde_json::json!({
+            "pending_tool_call": {
+                "request_id": request_id,
+                "tool": tool,
+                "server": server,
+                "args": args,
+            },
+            "response": format!(
+                "This turn wants to run '{tool}' on MCP server '{server}', which requires your approval before it executes.",
+            ),
+            "outcome": outcome,
+        }))
+        .into_response()
+    }
+
+    async fn handle_gui_chat(
+        State(state): State<Arc<Mutex<BackendState>>>,
+        Json(req): Json<GuiChatRequest>,
+    ) -> axum::response::Response {
+        let started = Instant::now();
+
+        let (
+            current_model,
+            _cluster,
+            ollama_client,
+            ollama_available,
+            inference_backend,
+            native_engine_client,
+            settings,
+            mcp_registry,
+        ) = {
+            let backend = lock_state(&state);
+            let inference_backend = InferenceBackend::parse(&backend.settings.inference_backend);
+            (
+                backend.current_model.clone(),
+                Arc::clone(&backend.cluster),
+                backend.ollama_client.clone(),
+                Arc::clone(&backend.ollama_available),
+                inference_backend,
+                backend.native_engine_client.clone(),
+                backend.settings.clone(),
+                Arc::clone(&backend.mcp_registry),
+            )
+        };
+
+        let token_estimate = req.message.split_whitespace().count().clamp(1, 1024);
+        let temp = req.temperature.unwrap_or(settings.temperature);
+        let top_p = req.top_p.unwrap_or(settings.top_p);
+        let top_k = req.top_k.unwrap_or(settings.top_k);
+        let penalty = req.penalty.unwrap_or(settings.repeat_penalty);
+        let requested_exec_tokens = req
+            .max_tokens
+            .unwrap_or(settings.max_tokens)
+            .clamp(16, 4096);
+        let exec_tokens = chat_exec_token_budget(requested_exec_tokens);
+        let exec_micro_batch = chat_exec_micro_batch();
+
+        // Gather real tool schemas for every enabled tool identifier — a legacy
+        // "slot" name (calculator, file_operations, ...) or, for standalone
+        // additions with no slot (sequential-thinking, Docker gateway), the
+        // server's own name — so the model can see real schemas and decide for
+        // itself whether and which tool to call.
+        let enabled_tool_names: Vec<String> = req
+            .mcp
+            .as_ref()
+            .and_then(|mcp| mcp.get("tools"))
+            .and_then(|t| t.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let mut enabled_schemas = Vec::new();
+        let mut tool_owner: HashMap<String, String> = HashMap::new();
+        for identifier in &enabled_tool_names {
+            let server_name = match mcp_registry.server_for_slot(identifier).await {
+                Some(name) => Some(name),
+                None => {
+                    let schemas = mcp_registry.tool_schemas_for_server(identifier).await;
+                    if schemas.is_empty() {
+                        None
+                    } else {
+                        Some(identifier.clone())
+                    }
+                }
+            };
+            if let Some(server_name) = server_name {
+                for schema in mcp_registry.tool_schemas_for_server(&server_name).await {
+                    tool_owner.insert(schema.name.clone(), schema.server.clone());
+                    enabled_schemas.push(schema);
+                }
+            }
+        }
+
+        let gen = GenerationParams {
+            inference_backend,
+            current_model: current_model.clone(),
+            native_engine_client,
+            ollama_client,
+            settings,
+            temperature: temp,
+            top_p,
+            top_k,
+            repeat_penalty: penalty,
+            exec_tokens,
+            tool_schemas: enabled_schemas.clone(),
+        };
+
+        let tool_instructions = mcp::toolcall::build_tool_instructions(&enabled_schemas);
+        let effective_prompt = if tool_instructions.is_empty() {
+            req.message.clone()
+        } else {
+            let user_system_prompt = req.system_prompt.clone().unwrap_or_default();
+            format!(
+                "{tool_instructions}\n{user_system_prompt}\n\nUser: {}",
+                req.message
+            )
+        };
+
+        let request_tracker = active_runtime_switcher().request_tracker().clone();
+        request_tracker.increment().await;
+
+        let outcome = run_tool_loop(
+            &state,
+            &mcp_registry,
+            &gen,
+            &tool_owner,
+            &enabled_tool_names,
+            effective_prompt,
+            0,
+            Vec::new(),
+        )
+        .await;
+
+        request_tracker.decrement().await;
+
+        match outcome {
+            ToolLoopOutcome::Final {
+                response_text,
+                real_inference,
+                backend_used,
+                gen_tokens,
+                gen_tps,
+                gen_latency_ms,
+                tool_results,
+            } => {
+                finish_chat_response(
+                    &state,
+                    &ollama_available,
+                    started,
+                    &current_model,
+                    token_estimate,
+                    exec_tokens,
+                    exec_micro_batch,
+                    req.mcp,
+                    req.stream.unwrap_or(false),
+                    response_text,
+                    real_inference,
+                    backend_used,
+                    gen_tokens,
+                    gen_tps,
+                    gen_latency_ms,
+                    tool_results,
+                )
+                .await
+            }
+            ToolLoopOutcome::PendingConfirmation {
+                request_id,
+                tool,
+                server,
+                args,
+            } => pending_tool_call_response(
+                "awaiting_confirmation",
+                &tool,
+                &server,
+                &args,
+                &request_id,
+            ),
+        }
+    }
+
+    #[derive(Debug, Deserialize)]
+    struct ToolConfirmRequest {
+        request_id: String,
+        approve: bool,
+    }
+
+    /// Resumes a chat turn that paused for tool-call approval (see
+    /// `run_tool_loop`'s confirmation gate): executes (or records the denial of)
+    /// the pending tool, feeds the result back as an Observation, and continues
+    /// generating from exactly where the original request left off.
+    async fn handle_gui_chat_tool_confirm(
+        State(state): State<Arc<Mutex<BackendState>>>,
+        Json(req): Json<ToolConfirmRequest>,
+    ) -> axum::response::Response {
+        let (pending_map, mcp_registry, ollama_available) = {
+            let backend = lock_state(&state);
+            (
+                Arc::clone(&backend.pending_tool_calls),
+                Arc::clone(&backend.mcp_registry),
+                Arc::clone(&backend.ollama_available),
+            )
+        };
+
+        let pending = pending_map.lock().await.remove(&req.request_id);
+        let Some(pending) = pending else {
+            return Json(serde_json::json!({
+                "error": format!("no pending tool call with request_id '{}'", req.request_id),
+            }))
+            .into_response();
+        };
+
+        let PendingToolCall {
+            gen,
+            mut effective_prompt,
+            iteration,
+            tool_owner,
+            enabled_tool_names,
+            mut tool_results_so_far,
+            tool,
+            server,
+            args,
+        } = pending;
+
+        if req.approve {
+            let (tool_result, observation_json) =
+                match mcp_registry.call_tool(&server, &tool, args).await {
+                    Some(outcome) => {
+                        let result_str = if outcome.success {
+                            serde_json::to_string(&outcome.result)
+                                .unwrap_or_else(|_| "<unserializable result>".to_string())
+                        } else {
+                            outcome
+                                .error
+                                .clone()
+                                .unwrap_or_else(|| "tool call failed".to_string())
+                        };
+                        (
+                            ToolResult {
+                                tool: outcome.tool.clone(),
+                                server: outcome.server.clone(),
+                                result: result_str,
+                                success: outcome.success,
+                            },
+                            outcome.result.clone(),
+                        )
+                    }
+                    None => {
+                        let msg = format!("no MCP server available for tool '{tool}'");
+                        (
+                            ToolResult {
+                                tool: tool.clone(),
+                                server: server.clone(),
+                                result: msg.clone(),
+                                success: false,
+                            },
+                            serde_json::json!({ "error": msg }),
+                        )
+                    }
+                };
+            effective_prompt.push_str(&mcp::toolcall::format_observation(&tool, &observation_json));
+            tool_results_so_far.push(tool_result);
+        } else {
+            effective_prompt.push_str(&mcp::toolcall::format_denial(&tool));
+            tool_results_so_far.push(ToolResult {
+                tool: tool.clone(),
+                server: server.clone(),
+                result: "denied by user".to_string(),
+                success: false,
+            });
+        }
+
+        let started = Instant::now();
+        let request_tracker = active_runtime_switcher().request_tracker().clone();
+        request_tracker.increment().await;
+
+        let current_model = gen.current_model.clone();
+        let exec_tokens = gen.exec_tokens;
+
+        let outcome = run_tool_loop(
+            &state,
+            &mcp_registry,
+            &gen,
+            &tool_owner,
+            &enabled_tool_names,
+            effective_prompt,
+            iteration,
+            tool_results_so_far,
+        )
+        .await;
+
+        request_tracker.decrement().await;
+
+        match outcome {
+            ToolLoopOutcome::Final {
+                response_text,
+                real_inference,
+                backend_used,
+                gen_tokens,
+                gen_tps,
+                gen_latency_ms,
+                tool_results,
+            } => {
+                finish_chat_response(
+                    &state,
+                    &ollama_available,
+                    started,
+                    &current_model,
+                    0,
+                    exec_tokens,
+                    chat_exec_micro_batch(),
+                    None,
+                    false,
+                    response_text,
+                    real_inference,
+                    backend_used,
+                    gen_tokens,
+                    gen_tps,
+                    gen_latency_ms,
+                    tool_results,
+                )
+                .await
+            }
+            ToolLoopOutcome::PendingConfirmation {
+                request_id,
+                tool,
+                server,
+                args,
+            } => pending_tool_call_response(
+                "awaiting_confirmation",
+                &tool,
+                &server,
+                &args,
+                &request_id,
+            ),
+        }
+    }
+
+    /// Every server configured in `mcp_servers.toml` plus its live connection
+    /// status — backs the GUI's MCP tab (replacing the old hardcoded 8-tool list).
+    async fn handle_list_mcp_servers(
+        State(state): State<Arc<Mutex<BackendState>>>,
+    ) -> Json<serde_json::Value> {
+        let mcp_registry = {
+            let backend = lock_state(&state);
+            Arc::clone(&backend.mcp_registry)
+        };
+
+        match mcp_registry.list_all_servers().await {
+            Ok(servers) => Json(serde_json::json!({ "servers": servers })),
+            Err(err) => Json(serde_json::json!({ "error": err })),
+        }
+    }
+
+    #[derive(Debug, Deserialize)]
+    struct ToggleMcpServerRequest {
+        enabled: bool,
+    }
+
+    /// Enables or disables one MCP server, taking effect immediately (connects or
+    /// tears it down right away — see `McpRegistry::set_enabled`).
+    async fn handle_toggle_mcp_server(
+        State(state): State<Arc<Mutex<BackendState>>>,
+        Path(name): Path<String>,
+        Json(req): Json<ToggleMcpServerRequest>,
+    ) -> Json<serde_json::Value> {
+        let mcp_registry = {
+            let backend = lock_state(&state);
+            Arc::clone(&backend.mcp_registry)
+        };
+
+        match mcp_registry.set_enabled(&name, req.enabled).await {
+            Ok(()) => match mcp_registry.list_all_servers().await {
+                Ok(servers) => Json(serde_json::json!({ "success": true, "servers": servers })),
+                Err(err) => Json(serde_json::json!({ "success": true, "error": err })),
+            },
+            Err(err) => Json(serde_json::json!({ "success": false, "error": err })),
         }
     }
 
@@ -4402,12 +5063,25 @@ InferenceBackend::Native => match native_engine_client
         ollama_client,
         ollama_available,
         settings,
+        mcp_registry: Arc::new(mcp::McpRegistry::new(mcp::McpConfigManager::new(
+            mcp::default_config_path(),
+        ))),
+        pending_tool_calls: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
     }));
 
     // Background CPU/RAM/GPU sampler — keeps /api/metrics non-blocking.
     host_metrics::ensure_host_sampler();
 
     rt.block_on(async {
+        // Connect every `enabled` MCP server before the API starts serving chat
+        // requests. A misconfigured server is logged and skipped (see
+        // McpRegistry::connect_enabled), so this never blocks Ghostlink from launching.
+        let mcp_registry = {
+            let backend = lock_state(&state);
+            Arc::clone(&backend.mcp_registry)
+        };
+        mcp_registry.connect_enabled().await;
+
         let app = Router::new()
             .route("/v1/chat/completions", post(handle_chat_completions))
             .route("/v1/models", get(handle_models))
@@ -4475,6 +5149,10 @@ InferenceBackend::Native => match native_engine_client
             .route("/api/security/pqc/state", get(handle_gui_pqc_state))
             .route("/api/security/audit-log", get(handle_gui_audit_log))
             .route("/api/inference/chat", post(handle_gui_chat))
+            .route(
+                "/api/inference/chat/tool-confirm",
+                post(handle_gui_chat_tool_confirm),
+            )
             // Accept GET/POST/PUT for settings — some clients issue PUT and previously got 405.
             .route(
                 "/api/settings",
@@ -4497,6 +5175,11 @@ InferenceBackend::Native => match native_engine_client
                 "/api/backends/:name/status",
                 get(backend_api::handle_backend_status),
             )
+            .route("/api/mcp/servers", get(handle_list_mcp_servers))
+            .route(
+                "/api/mcp/servers/:name/toggle",
+                post(handle_toggle_mcp_server),
+            )
             .with_state(state)
             .layer(CorsLayer::permissive());
 
@@ -4510,6 +5193,7 @@ API Server Online. Ready for connections."
         );
 
         axum::serve(listener, app)
+            .with_graceful_shutdown(mcp_shutdown_on_ctrl_c(mcp_registry))
             .await
             .map_err(|err| anyhow::anyhow!("API server terminated with error: {}", err))
     })?;
@@ -6511,6 +7195,7 @@ mod backend_api;
 mod backend_config;
 mod backend_registry;
 mod host_metrics;
+mod mcp;
 mod native_engine;
 mod ollama;
 mod runtime;

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {
@@ -23,9 +23,25 @@ import {
   FolderOpen,
   Trash2,
   Database,
+  Wrench,
+  ShieldAlert,
 } from 'lucide-react';
 import { useAppStore } from '../store';
 import { GhostlinkAPI } from '../api';
+
+interface ToolCallTrace {
+  tool: string;
+  server: string;
+  result: string;
+  success: boolean;
+}
+
+interface PendingToolCall {
+  request_id: string;
+  tool: string;
+  server: string;
+  args: unknown;
+}
 
 interface Message {
   role: 'user' | 'assistant';
@@ -33,6 +49,8 @@ interface Message {
   id: string;
   timestamp: string;
   model?: string;
+  toolCalls?: ToolCallTrace[];
+  pendingToolCall?: PendingToolCall;
 }
 
 interface Session {
@@ -63,19 +81,8 @@ interface Tool {
   enabled: boolean;
 }
 
-const AVAILABLE_TOOLS: Tool[] = [
-  { name: 'web_search', description: 'Search the web', enabled: false },
-  { name: 'calculator', description: 'Basic math', enabled: false },
-  { name: 'code_execution', description: 'Run Python', enabled: false },
-  { name: 'file_operations', description: 'File I/O', enabled: false },
-  { name: 'terminal', description: 'Shell access', enabled: false },
-  { name: 'database_query', description: 'SQL query', enabled: false },
-  { name: 'api_call', description: 'HTTP request', enabled: false },
-  { name: 'image_generation', description: 'AI images', enabled: false },
-];
-
 export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
-  const { currentModel, models, setCurrentModel } = useAppStore();
+  const { currentModel, models, setCurrentModel, mcpServers, setMcpServers } = useAppStore();
   const [messages, setMessages] = useState<Message[]>(loadMessages);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
@@ -93,9 +100,41 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
   const [showModelSelector, setShowModelSelector] = useState(false);
   const [showSessions, setShowSessions] = useState(false);
   const [sessionName, setSessionName] = useState(`Session ${new Date().toLocaleDateString()}`);
-  const [tools, setTools] = useState<Tool[]>(AVAILABLE_TOOLS);
+  const [tools, setTools] = useState<Tool[]>([]);
   const [sessions, setSessions] = useState<Session[]>([]);
   const [sessionsLoading, setSessionsLoading] = useState(false);
+  const [confirmingId, setConfirmingId] = useState<string | null>(null);
+
+  // One checkbox per legacy "tool slot" (calculator, file_operations, ...) that
+  // has a real MCP server configured for it — replaces the old hardcoded
+  // 8-fake-tool list with whatever `mcp_servers.toml` actually defines.
+  const availableTools: Tool[] = useMemo(() => {
+    const bySlot = new Map<string, Tool>();
+    mcpServers.forEach((s) => {
+      if (s.slot) {
+        bySlot.set(s.slot, {
+          name: s.slot,
+          description: s.connected ? s.name : `${s.name} (disconnected)`,
+          enabled: false,
+        });
+      }
+    });
+    return Array.from(bySlot.values());
+  }, [mcpServers]);
+
+  useEffect(() => {
+    setTools((prev) => {
+      const prevEnabled = new Map(prev.map((t) => [t.name, t.enabled]));
+      return availableTools.map((t) => ({ ...t, enabled: prevEnabled.get(t.name) ?? false }));
+    });
+  }, [availableTools]);
+
+  useEffect(() => {
+    api.listMcpServers().then((result) => {
+      if (!result.error) setMcpServers(result.servers);
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [api]);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const modelSelectorRef = useRef<HTMLDivElement>(null);
@@ -208,6 +247,11 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
     setMessages((prev) => [...prev, { role: 'assistant', content: '', id: assistantId, timestamp: '', model: currentModel || undefined }]);
 
     const enabledTools = tools.filter((t) => t.enabled).map((t) => t.name);
+    // Tool calls, their real results, and any pending-confirmation card only ever
+    // arrive on the plain JSON response — the token-streaming SSE path only ever
+    // sends {token} chunks. So a turn with tools enabled skips streaming in
+    // exchange for seeing what actually happened.
+    const useStreaming = enabledTools.length === 0;
 
     const result = await api.sendMessage({
       message: messageText,
@@ -218,7 +262,7 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
       max_tokens: maxTokens,
       system_prompt: systemPrompt,
       mcp: { tools: enabledTools },
-      stream: true,
+      stream: useStreaming,
       model: currentModel === 'none' ? undefined : currentModel,
     }, (token: string) => {
       setMessages((prev) => prev.map(m =>
@@ -230,14 +274,44 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
     setStreamingId(null);
 
     if (result.success) {
+      const data = result.data || {};
       setMessages((prev) => prev.map(m =>
         m.id === assistantId
-          ? { ...m, timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) }
+          ? {
+              ...m,
+              content: useStreaming ? m.content : (data.response ?? m.content),
+              toolCalls: data.tool_results,
+              pendingToolCall: data.pending_tool_call,
+              timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+            }
           : m
       ));
     } else {
       setMessages((prev) => prev.filter(m => m.id !== assistantId));
       setError(result.error || 'Failed to send message');
+    }
+  };
+
+  const handleConfirmToolCall = async (messageId: string, requestId: string, approve: boolean) => {
+    setConfirmingId(requestId);
+    const result = await api.confirmToolCall(requestId, approve);
+    setConfirmingId(null);
+
+    if (result.success) {
+      const data = result.data || {};
+      setMessages((prev) => prev.map(m =>
+        m.id === messageId
+          ? {
+              ...m,
+              content: data.response ?? m.content,
+              toolCalls: data.tool_results,
+              pendingToolCall: data.pending_tool_call,
+              timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+            }
+          : m
+      ));
+    } else {
+      setError(result.error || 'Failed to resolve tool call');
     }
   };
 
@@ -441,6 +515,61 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                             </span>
                             <span className="text-[10px] text-slate-500">{msg.timestamp}</span>
                         </div>
+
+                        {msg.toolCalls && msg.toolCalls.length > 0 && (
+                            <div className="flex flex-col gap-1 px-1 w-full">
+                                {msg.toolCalls.map((call, i) => (
+                                    <div
+                                        key={i}
+                                        className={`flex items-start gap-2 px-3 py-1.5 rounded-xl text-[11px] font-mono border ${
+                                            call.success
+                                                ? 'bg-slate-900/50 border-slate-800 text-slate-400'
+                                                : 'bg-red-950/30 border-red-900/50 text-red-400'
+                                        }`}
+                                    >
+                                        <Wrench size={12} className="mt-0.5 shrink-0" />
+                                        <span className="truncate">
+                                            <span className="font-bold">{call.tool}</span>
+                                            {call.server && <span className="text-slate-600"> @ {call.server}</span>}
+                                            {' → '}
+                                            <span className="break-all">{call.result}</span>
+                                        </span>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+
+                        {msg.pendingToolCall && (
+                            <div className="flex flex-col gap-2 px-4 py-3 rounded-2xl border border-amber-500/30 bg-amber-500/10 w-full max-w-md">
+                                <div className="flex items-center gap-2 text-amber-400 text-xs font-bold">
+                                    <ShieldAlert size={14} />
+                                    Approval needed
+                                </div>
+                                <p className="text-xs text-slate-300">
+                                    Run <span className="font-mono font-bold">{msg.pendingToolCall.tool}</span> on server{' '}
+                                    <span className="font-mono font-bold">{msg.pendingToolCall.server}</span>?
+                                </p>
+                                <pre className="text-[10px] text-slate-500 bg-slate-950/50 rounded-lg p-2 overflow-x-auto">
+                                    {JSON.stringify(msg.pendingToolCall.args, null, 2)}
+                                </pre>
+                                <div className="flex gap-2">
+                                    <button
+                                        onClick={() => handleConfirmToolCall(msg.id, msg.pendingToolCall!.request_id, true)}
+                                        disabled={confirmingId === msg.pendingToolCall.request_id}
+                                        className="flex-1 px-3 py-1.5 bg-green-600 hover:bg-green-500 disabled:opacity-50 text-white text-xs font-bold rounded-lg transition"
+                                    >
+                                        Approve
+                                    </button>
+                                    <button
+                                        onClick={() => handleConfirmToolCall(msg.id, msg.pendingToolCall!.request_id, false)}
+                                        disabled={confirmingId === msg.pendingToolCall.request_id}
+                                        className="flex-1 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-slate-300 text-xs font-bold rounded-lg transition"
+                                    >
+                                        Deny
+                                    </button>
+                                </div>
+                            </div>
+                        )}
 
                         <div className={`px-4 py-3 rounded-2xl text-sm leading-relaxed ${
                             msg.role === 'user'

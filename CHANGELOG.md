@@ -4,6 +4,91 @@ All notable changes to Ghostlink Studio are documented here.
 
 ---
 
+## [1.4.0] - 2026-07-23 (Real MCP Server Support for Chat)
+
+Ghostlink chat's "Tools & MCP" feature was entirely fake: the 8 tool checkboxes
+dispatched to a hardcoded `ToolDispatcher` that always returned canned strings
+(calculator always said "42"), with no real execution, no argument passing,
+and no model involvement in deciding to call a tool. This replaces it with
+real [MCP](https://modelcontextprotocol.io) server integration end to end.
+
+### ✨ Backend
+
+- **New native Rust MCP client** (`crates/ghost-link/src/mcp/`, built on the
+  official `rmcp` SDK) spawns real MCP servers over stdio, with a Windows
+  `cmd /C` fix for `.cmd`-shim commands (`npx`/`uvx`) and real process-tree
+  teardown (`rmcp`'s own cleanup only kills the direct child; a `cmd /C
+  npx ...`-spawned server's own children would otherwise be orphaned).
+- **Model-driven tool-calling loop**: the model decides whether and which
+  tool to call via a ReAct-style prompt (works with any local GGUF/Ollama
+  model), with real arguments extracted from the model's own output and fed
+  back as an "Observation" for up to 3 round-trips per turn. Ollama models
+  whose chat template declares native tool-calling support use Ollama's
+  `tools` API directly instead, when available.
+- **Confirmation gate**: tools marked `requires_confirmation` in
+  `mcp_servers.toml` (terminal, code_execution) pause and return a
+  `pending_tool_call` instead of executing; a new
+  `POST /api/inference/chat/tool-confirm` endpoint resumes the same turn on
+  approval or denial.
+- **All 8 chat tool slots now have real backing servers**: `filesystem`,
+  `fetch`, a new custom `mcp-calculator` server (`evalexpr`-backed, replacing
+  the old "42" stub), and `sqlite` are enabled by default; `brave-search`
+  (needs `BRAVE_API_KEY`), Docker MCP Toolkit-routed `terminal`/
+  `code_execution` (needs Docker Desktop — deliberately never backed by a raw
+  host-shell server), and `image_generation` (no backend chosen yet) ship
+  disabled.
+- **Two standalone additions**: the official `sequential-thinking` reference
+  server (enabled by default), and a new custom `mcp-vision` server wrapping
+  a local Ollama vision model (llava/moondream/...) — stays local-model-first
+  instead of adding a cloud dependency.
+- `mcp_servers.toml` follows the existing `ghostlink.toml`/
+  `ghostlink.example.toml` pattern: the real file is gitignored (the GUI
+  writes enable/disable toggles back to it) and auto-bootstraps from the
+  checked-in `mcp_servers.example.toml` on first run.
+
+### ✨ Frontend
+
+- New **MCP tab** listing every configured server with live connected/
+  disabled status and working enable/disable toggles that take effect
+  immediately (no restart needed).
+- `ChatTab`'s tool checklist now reflects real configured servers instead of
+  a hardcoded 8-tool array; messages show a trace of which tool actually ran
+  and its real result, plus an inline approve/deny card for tool calls
+  awaiting confirmation. Tool-enabled turns skip token streaming, since tool
+  traces and confirmation cards only ever arrive on the plain JSON response.
+
+### ✅ Validation
+
+- `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`,
+  `cargo test --workspace`, `cargo audit` — all clean (workspace now includes
+  the new `mcp-calculator` and `mcp-vision` crates).
+- `tsc --noEmit`, `npx vitest run` (104 tests) — all clean.
+- Live-verified end to end, not just unit-tested: real filesystem/fetch/
+  calculator/sqlite/sequential-thinking servers connecting and executing for
+  real; the full tool loop (parse → execute → feed back → final answer) with
+  both a scripted mock model and a real loaded model (`gemma-4-E4B-it-Q4_K_M`);
+  the confirmation approve/deny round-trip; the MCP tab's toggle causing an
+  immediate live reconnect in the browser; clean process teardown (no
+  orphaned `node.exe`/`cmd.exe`) after graceful shutdown.
+- A smaller model (`Llama-3.2-1B-Instruct-IQ3_M`) followed the tool-call
+  format inconsistently during testing — a known limitation of ~1B-class
+  models with structured-output prompting, not a bug in the mechanism itself;
+  noted here as an operational caveat rather than something this PR can fix.
+
+### ⚠️ Operational caveats
+
+- Requires `npx`/`node` (bundled MCP servers) and `uvx`/`python` (Python-
+  distributed ones) on `PATH`; Docker Desktop for the terminal/code_execution
+  slots. None of these are vendored — a fresh checkout without them will see
+  those specific servers fail to connect (logged and skipped), not a crash.
+- Docker MCP Toolkit and the native-Ollama-tool-calling path could not be
+  live-verified in the development sandbox (no running Docker daemon / no
+  Ollama instance with a tool-capable model pulled there) — both share code
+  paths already proven live for other servers, but call this out per the
+  pre-push checklist's platform-awareness guidance.
+
+---
+
 ## [1.3.9] - 2026-07-22 (Launch Verification: GUI UX Fixes)
 
 A full end-to-end verification pass of both launch entrypoints (`launch.sh` directly under WSL, and `launch.bat` on Windows delegating to WSL) — driven through the real browser UI, not just curl — surfaced two real, reproducible GUI bugs. (A third finding from the same pass, the System Info panel misreporting Node.js/npm as "not installed," turned out to already be fixed on `main` by [1.3.8] via a parallel effort; no change needed here.)
