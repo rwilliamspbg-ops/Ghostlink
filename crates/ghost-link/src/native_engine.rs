@@ -36,14 +36,26 @@ impl NativeGeneration {
 }
 
 #[derive(Debug, Clone)]
-pub struct NativeEngineClient;
+pub struct NativeEngineClient {
+    /// Shared, connection-pooled HTTP client. `reqwest::Client` is explicitly
+    /// designed to be built once and reused — internally it's an `Arc` around
+    /// the connection pool, so `.clone()` is a cheap refcount bump, not a new
+    /// pool. Building a fresh client per request (the previous behavior)
+    /// meant a brand-new TCP connection to llama-server on every single chat
+    /// completion, with no keep-alive reuse at all.
+    http: reqwest::Client,
+}
 
 // Static variable to track the llama-server process
 static LLAMA_SERVER_PROCESS: OnceLock<Arc<Mutex<Option<Child>>>> = OnceLock::new();
 
 impl NativeEngineClient {
     pub fn new() -> Self {
-        Self
+        Self {
+            http: reqwest::Client::builder()
+                .build()
+                .unwrap_or_else(|_| reqwest::Client::new()),
+        }
     }
 
     /// Get or initialize the llama-server process handle
@@ -864,16 +876,20 @@ impl NativeEngineClient {
             "stream": false
         });
 
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(timeout_secs))
-            .build()
-            .map_err(|e| format!("failed to create HTTP client: {}", e))?;
+        // Reuse the shared, connection-pooled client instead of building a new
+        // one (and a new TCP connection) per request; apply the configurable
+        // timeout per-request instead of baking it into the client so this
+        // still behaves exactly as before if GHOSTLINK_LLAMA_SERVER_TIMEOUT_SECS
+        // changes between calls.
+        let client = self.http.clone();
+        let request_timeout = Duration::from_secs(timeout_secs);
 
         // Try chat endpoint first
         let chat_response = client
             .post(&chat_url)
             .header("Content-Type", "application/json")
             .json(&chat_payload)
+            .timeout(request_timeout)
             .send()
             .await;
 
@@ -916,6 +932,7 @@ impl NativeEngineClient {
             .post(&completion_url)
             .header("Content-Type", "application/json")
             .json(&completion_payload)
+            .timeout(request_timeout)
             .send()
             .await
             .map_err(|e| format!("llama_server request failed: {}", e))?;

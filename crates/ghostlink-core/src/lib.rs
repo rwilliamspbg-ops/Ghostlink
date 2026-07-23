@@ -22,6 +22,7 @@
 //! │   ├── planning.rs      # Layer assignment + fault tolerance
 //! │   ├── health.rs        # Network health monitoring
 //! │   ├── load_balance.rs  # Tensor distribution
+//! │   ├── kv_cache.rs      # KV cache primitive (no current caller — see module docs)
 //! │   ├── xdp.rs           # Experimental XDP scaffolding (stubbed)
 //! │   └── dashboard.rs     # Terminal UI with ratatui
 //! └── ghost-link/          # CLI demo entrypoint
@@ -34,6 +35,7 @@ pub mod dashboard;
 pub mod discovery;
 pub mod health;
 pub mod host;
+pub mod kv_cache;
 pub mod load_balance;
 pub mod models;
 pub mod planning;
@@ -55,6 +57,7 @@ pub use host::{
     detect_runtime_profile_with_mode, infer_compute_capability_from_name, is_apple_silicon,
     AccelerationMode, GpuBackend, ProbeMode, RuntimeProfile,
 };
+pub use kv_cache::{KVCacheConfig, KVCacheEntry, LayerKvCache};
 pub use planning::{
     assign_layers_sequentially, assign_layers_with_fault_tolerance_and_runtime,
     assign_layers_with_runtime_profile, chunk_assignments_for_workers, select_quantization_mode,
