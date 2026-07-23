@@ -11,6 +11,7 @@ vi.mock('./api', () => ({
     getSessions: vi.fn().mockResolvedValue({ sessions: [] }),
     listSessions: vi.fn().mockResolvedValue({ sessions: [] }),
     getWorkers: vi.fn().mockResolvedValue({ workers: [] }),
+    listMcpServers: vi.fn().mockResolvedValue({ servers: [] }),
   })),
 }));
 

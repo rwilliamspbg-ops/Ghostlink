@@ -13,6 +13,7 @@ import {
   Cpu,
   Zap,
   Wifi,
+  Plug,
 } from 'lucide-react';
 import { useAppStore } from './store';
 import { GhostlinkAPI } from './api';
@@ -23,6 +24,7 @@ import { SessionsTab } from './components/SessionsTab';
 import { WorkersTab } from './components/WorkersTab';
 import { SecurityTab } from './components/SecurityTab';
 import { SettingsTab } from './components/SettingsTab';
+import { McpTab } from './components/McpTab';
 import { ErrorBoundary, OfflineBanner, useOnlineStatus } from './components/ErrorBoundary';
 import { resolveApiBase } from './config';
 
@@ -32,6 +34,7 @@ const tabs = [
   { label: 'Metrics', icon: BarChart3, id: 2 },
   { label: 'Sessions', icon: Clock, id: 3 },
   { label: 'Workers', icon: Network, id: 4 },
+  { label: 'MCP', icon: Plug, id: 7 },
   { label: 'Security', icon: Shield, id: 5 },
   { label: 'Settings', icon: Settings, id: 6 },
 ];
@@ -229,6 +232,8 @@ function App() {
         return <SecurityTab api={api} />;
       case 6:
         return <SettingsTab api={api} />;
+      case 7:
+        return <McpTab api={api} />;
       default:
         return null;
     }
