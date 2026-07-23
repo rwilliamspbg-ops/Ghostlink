@@ -109,6 +109,9 @@ impl BackendRegistry {
                     // Windows (verified: reports ~4GB on a host where the real
                     // usable budget is ~17GB). Prefer llama-server's own Vulkan
                     // memory budget query when it's available and higher.
+                    // `mut` is only exercised on Windows — non-Windows builds
+                    // never reassign it, hence the explicit allow.
+                    #[allow(unused_mut)]
                     let mut vram_gb = gpu.vram_gb;
                     #[cfg(target_os = "windows")]
                     if matches!(b, ComputeBackend::Directml | ComputeBackend::Vulkan) {
