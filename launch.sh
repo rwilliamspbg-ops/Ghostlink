@@ -188,8 +188,32 @@ echo -e "${BLUE}│${NC}  ${WHITE}OS:${NC}           $(uname -s) $(uname -r) ($(
 echo -e "${BLUE}│${NC}  ${WHITE}Shell:${NC}         $SHELL"
 echo -e "${BLUE}│${NC}  ${WHITE}Rust:${NC}          $(rustc --version 2>/dev/null | cut -d' ' -f2 || echo 'not installed')"
 echo -e "${BLUE}│${NC}  ${WHITE}Cargo:${NC}         $(cargo --version 2>/dev/null | cut -d' ' -f2 || echo 'not installed')"
-echo -e "${BLUE}│${NC}  ${WHITE}Node.js:${NC}       $(node -v 2>/dev/null || echo 'not installed')"
-echo -e "${BLUE}│${NC}  ${WHITE}npm:${NC}           $(npm -v 2>/dev/null || echo 'not installed')"
+_display_node_bin="$(resolve_node_bin 2>/dev/null)"
+if [ -n "$_display_node_bin" ]; then
+    echo -e "${BLUE}│${NC}  ${WHITE}Node.js:${NC}       $("$_display_node_bin" -v 2>/dev/null || echo 'not installed')"
+    _display_npm_bin="$(dirname "$_display_node_bin")/npm"
+    if [ -x "$_display_npm_bin" ]; then
+        # npm is typically a symlink to a `#!/usr/bin/env node`-shebang JS
+        # file — that shebang needs `node` resolvable on PATH, so it must be
+        # prepended here too (same pattern start_services() already uses
+        # when actually invoking npm), or this silently fails to "not
+        # installed" even though a perfectly good npm was just found.
+        echo -e "${BLUE}│${NC}  ${WHITE}npm:${NC}           $(PATH="$(dirname "$_display_node_bin"):$PATH" "$_display_npm_bin" -v 2>/dev/null || echo 'not installed')"
+    else
+        echo -e "${BLUE}│${NC}  ${WHITE}npm:${NC}           $(npm -v 2>/dev/null || echo 'not installed')"
+    fi
+else
+    # Same reasoning as resolve_node_bin/resolve_llama_server_bin elsewhere in
+    # this script: a bare `node -v`/`npm -v` here can silently succeed against
+    # a wrong-platform binary reached via WSL interop (e.g. Windows' npm.exe
+    # under /mnt/c), showing a version for a binary the script would later
+    # reject outright — misleading the user into thinking Node "is installed"
+    # when the actual dependency-install/dev-server step will fail to find a
+    # usable one. Falls back to the bare commands only when resolve_node_bin
+    # itself found nothing, for a still-useful (if less precise) display.
+    echo -e "${BLUE}│${NC}  ${WHITE}Node.js:${NC}       $(node -v 2>/dev/null || echo 'not installed')"
+    echo -e "${BLUE}│${NC}  ${WHITE}npm:${NC}           $(npm -v 2>/dev/null || echo 'not installed')"
+fi
 if [[ "$(uname -s)" == "Darwin" ]]; then
     local _ram=$(sysctl -n hw.memsize 2>/dev/null | awk '{printf "%.0f", $1/1073741824}' || echo '?')
     echo -e "${BLUE}│${NC}  ${WHITE}RAM:${NC}          ${_ram} GB"

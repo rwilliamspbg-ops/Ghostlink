@@ -4,6 +4,21 @@ All notable changes to Ghostlink Studio are documented here.
 
 ---
 
+## [1.3.8] - 2026-07-23 (Launch: Accurate Node/npm Version Display)
+
+### 🐛 Launch Script
+
+- The System Information banner's `Node.js`/`npm` lines used a bare `node -v`/`npm -v`, independent of `resolve_node_bin()` (the function actually used moments later to start the dev server). On a host where Node is only reachable via nvm (not on the bare `PATH` a non-interactive script starts with), this showed `Node.js: not installed` / `npm: not installed` even though the script goes on to successfully find and use a working Node install seconds later — directly contradicting itself in the same output. Now resolves the same binary `resolve_node_bin()` would use and reports its real version; falls back to the bare commands only when that resolution itself finds nothing.
+- The `npm` symlink at a resolved Node install's `bin/` typically points to a `#!/usr/bin/env node`-shebang JS file, which needs `node`'s directory on `PATH` to resolve — same requirement `start_services()` already handles when actually invoking npm. Missed this on the first pass (shipped `npm: not installed` despite Node resolving correctly); caught by re-testing after the fix rather than assuming a `-x` check alone was sufficient, and fixed by prepending `PATH` the same way.
+
+### ✅ Validation
+
+- `bash -n launch.sh` — syntax OK
+- Live-tested against a real nvm-only Node install (no bare `node`/`npm` on default `PATH`): confirmed both the initial fix attempt's `npm: not installed` regression and the corrected `npm: 10.8.2` output, via a debug-instrumented run showing the exact resolved paths and exit code before removing the instrumentation
+- Confirmed positive case unaffected: full launch reaches healthy state, `/api/health` returns `200`
+
+---
+
 ## [1.3.7] - 2026-07-23 (Repo-Wide Correctness Review)
 
 A broad review pass across backend handlers, cluster/health/load-balance logic, a launch script, and the frontend — dispatched as three independent research agents scanning previously-unreviewed areas, then triaged and fixed directly. Every fix below is a confirmed, reproducible bug, not a style nitpick.
