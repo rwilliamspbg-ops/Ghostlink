@@ -8,6 +8,7 @@ import {
   Cpu,
   Layers,
   CheckCircle2,
+  AlertCircle,
   Loader,
   ChevronRight,
   Copy,
@@ -115,6 +116,10 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
               quantization_level: m.quantization || 'unknown',
             },
             status: m.status || 'unknown',
+            // Computed in api.getModels() from status + local_path together,
+            // since backend status alone doesn't distinguish a real local
+            // file from a never-downloaded catalog placeholder.
+            usable: !!m.usable,
           }))
         );
       }
@@ -394,8 +399,17 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                           </div>
                         </div>
                         <div className="flex items-center gap-2">
-                          <CheckCircle2 className="h-4 w-4 text-green-500" />
-                          <span className="text-xs text-slate-400">Ready</span>
+                          {model.usable ? (
+                            <>
+                              <CheckCircle2 className="h-4 w-4 text-green-500" />
+                              <span className="text-xs text-slate-400">Ready</span>
+                            </>
+                          ) : (
+                            <>
+                              <AlertCircle className="h-4 w-4 text-amber-500" />
+                              <span className="text-xs text-amber-500">Not downloaded</span>
+                            </>
+                          )}
                         </div>
                       </div>
                       <div className="flex items-center gap-2">
@@ -421,6 +435,7 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                           <button
                             onClick={() => handleSetModel(model.name)}
                             disabled={pendingActions[model.name] === 'setting' || loading}
+                            title={model.usable ? undefined : 'Not downloaded yet — selecting will show an error until it is'}
                             className="flex items-center gap-2 px-3 py-1 bg-slate-800 hover:bg-blue-600 text-xs font-medium rounded-full transition"
                           >
                             {pendingActions[model.name] === 'setting' ? (
