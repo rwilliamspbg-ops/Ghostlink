@@ -64,12 +64,12 @@ describe('ModelsTab', () => {
     });
   });
 
-  it('shows Ollama tab by default', async () => {
+  it('shows My Models tab by default', async () => {
     const api = createMockApi();
     render(<ModelsTab api={api} />);
     await waitFor(() => {
       expect(api.getModels).toHaveBeenCalled();
-      expect(screen.getAllByText('Ollama Models').length).toBeGreaterThanOrEqual(2);
+      expect(screen.getAllByText('My Models').length).toBeGreaterThanOrEqual(2);
       expect(screen.getByText('Popular Ollama Models')).toBeInTheDocument();
     });
   });

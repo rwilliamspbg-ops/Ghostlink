@@ -289,7 +289,12 @@ detect_gpu() {
                 GPU_NAME="${gpu_name:-AMD GPU}"
                 gpu_vendor="amd"
                 GPU_VENDOR="amd"
-                BACKEND="rocm"
+                # rocm-smi already gets its own detection branch above; if we
+                # only found this GPU via lspci vendor-string matching, ROCm
+                # support is unconfirmed (and unsupported entirely on most
+                # integrated Radeon chips), so use the generic Vulkan backend
+                # rather than assuming a HIP/ROCm toolchain is usable.
+                BACKEND="vulkan"
             elif echo "$gpu_name" | grep -qiE "intel|arc|iris|uhd"; then
                 echo -e "  ${GREEN}╡${NC} ${WHITE}GPU${NC}          ${GREEN}Intel: ${gpu_name}${NC}"
                 GPU_NAME="$gpu_name"

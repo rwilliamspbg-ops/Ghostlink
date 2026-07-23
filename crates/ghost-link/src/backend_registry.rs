@@ -104,10 +104,26 @@ impl BackendRegistry {
             // host with more than one kind of accelerator.
             if let Some(b) = backend {
                 if !backends.iter().any(|bi: &BackendInfo| bi.backend == b) {
+                    // `gpu.vram_gb` comes from Win32_VideoController.AdapterRAM,
+                    // a known-unreliable static field for integrated GPUs on
+                    // Windows (verified: reports ~4GB on a host where the real
+                    // usable budget is ~17GB). Prefer llama-server's own Vulkan
+                    // memory budget query when it's available and higher.
+                    // `mut` is only exercised on Windows — non-Windows builds
+                    // never reassign it, hence the explicit allow.
+                    #[allow(unused_mut)]
+                    let mut vram_gb = gpu.vram_gb;
+                    #[cfg(target_os = "windows")]
+                    if matches!(b, ComputeBackend::Directml | ComputeBackend::Vulkan) {
+                        let accurate = crate::host_metrics::windows_vram_gb_cached();
+                        if accurate > vram_gb {
+                            vram_gb = accurate;
+                        }
+                    }
                     backends.push(BackendInfo {
                         backend: b,
                         device_name: gpu.name.clone(),
-                        vram_gb: Some(gpu.vram_gb),
+                        vram_gb: Some(vram_gb),
                         compute_capability: gpu.compute_capability.clone(),
                         driver_version: gpu.driver_version.clone(),
                         available: true,
