@@ -36,7 +36,8 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
   const [hfSearch, setHfSearch] = useState('');
   const [message, setMessage] = useState<string | null>(null);
   const [pendingActions, setPendingActions] = useState<Record<string, string>>({});
-  const [hfResults, setHfResults] = useState<{ id: string; name: string; downloads: number; likes: number }[]>(POPULAR_MODELS);
+  const [hfResults, setHfResults] = useState<{ id: string; name: string; downloads: number; likes: number }[]>([]);
+  const [hfLoading, setHfLoading] = useState(false);
   const [downloadProgress, setDownloadProgress] = useState<Record<string, number>>({});
   const [ollamaModels, setOllamaModels] = useState<any[]>([]);
   const [showModelfile, setShowModelfile] = useState<string | null>(null);
@@ -46,11 +47,14 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
   const [availableMemoryGb, setAvailableMemoryGb] = useState<number>(0);
 
   const searchHF = useCallback(async (query: string) => {
+    setHfLoading(true);
     try {
       const result = await api.searchHuggingFace(query || 'llama');
       if (result.models && result.models.length > 0) setHfResults(result.models);
     } catch {
       // silent
+    } finally {
+      setHfLoading(false);
     }
   }, [api]);
 
@@ -95,10 +99,9 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
     fetchRecommendations();
   }, [fetchRecommendations]);
 
-  const filteredHfResults = hfResults.filter(model =>
-    model.name.toLowerCase().includes(hfSearch.toLowerCase()) ||
-    model.id.toLowerCase().includes(hfSearch.toLowerCase())
-  );
+  // hfResults already reflects the live server-side search for hfSearch (see searchHF),
+  // so no further client-side filtering is applied here.
+  const filteredHfResults = hfResults;
 
   const refreshModels = useCallback(async () => {
     setLoading(true);
@@ -479,11 +482,13 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                   // substring check also catches an equivalent local GGUF filed
                   // under a different name (e.g. "tinyllama" vs the local file
                   // "tinyllama-1.1b-chat-v1.0.Q2_K") so we don't offer a
-                  // redundant download for a model already on disk.
+                  // redundant download for a model already on disk. `usable` is
+                  // required so a never-downloaded catalog placeholder sharing
+                  // the name doesn't count as installed.
                   const normalize = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
                   const normId = normalize(m.id.split(':')[0]);
                   const isInstalled = ollamaModels.some(
-                    (om: any) => om.name === m.id || normalize(om.name).includes(normId)
+                    (om: any) => om.usable && (om.name === m.id || normalize(om.name).includes(normId))
                   );
                   const isPending = pendingActions[m.id] === 'downloading';
                   return (
@@ -652,7 +657,18 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
               </div>
             </div>
             <div className="space-y-2">
-              {filteredHfResults.map((m) => (
+              {hfLoading && filteredHfResults.length === 0 ? (
+                <div className="text-center py-12 text-slate-500">
+                  <Loader size={48} className="mx-auto mb-4 text-slate-700 animate-spin" />
+                  <p>Searching Hugging Face...</p>
+                </div>
+              ) : filteredHfResults.length === 0 ? (
+                <div className="text-center py-12 text-slate-500">
+                  <Layers size={48} className="mx-auto mb-4 text-slate-700" />
+                  <p>No models found.</p>
+                </div>
+              ) : (
+              filteredHfResults.map((m) => (
                 <div key={m.id} className="flex items-center justify-between px-4 py-3 hover:bg-slate-800/50 rounded-lg transition">
                   <div className="flex items-center gap-3 min-w-0">
                     <div className="flex items-center justify-center text-orange-500 bg-orange-500/10 h-10 w-10 rounded-lg shrink-0">
@@ -685,7 +701,8 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                     </button>
                   </div>
                 </div>
-              ))}
+              ))
+              )}
             </div>
           </div>
         )}
