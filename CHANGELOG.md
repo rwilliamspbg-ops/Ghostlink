@@ -4,18 +4,26 @@ All notable changes to Ghostlink Studio are documented here.
 
 ---
 
-## [1.3.8] - 2026-07-23 (Launch: Accurate Node/npm Version Display)
+## [1.3.9] - 2026-07-22 (Launch Verification: GUI UX Fixes)
 
-### 🐛 Launch Script
+A full end-to-end verification pass of both launch entrypoints (`launch.sh` directly under WSL, and `launch.bat` on Windows delegating to WSL) — driven through the real browser UI, not just curl — surfaced two real, reproducible GUI bugs. (A third finding from the same pass, the System Info panel misreporting Node.js/npm as "not installed," turned out to already be fixed on `main` by [1.3.8] via a parallel effort; no change needed here.)
 
-- The System Information banner's `Node.js`/`npm` lines used a bare `node -v`/`npm -v`, independent of `resolve_node_bin()` (the function actually used moments later to start the dev server). On a host where Node is only reachable via nvm (not on the bare `PATH` a non-interactive script starts with), this showed `Node.js: not installed` / `npm: not installed` even though the script goes on to successfully find and use a working Node install seconds later — directly contradicting itself in the same output. Now resolves the same binary `resolve_node_bin()` would use and reports its real version; falls back to the bare commands only when that resolution itself finds nothing.
-- The `npm` symlink at a resolved Node install's `bin/` typically points to a `#!/usr/bin/env node`-shebang JS file, which needs `node`'s directory on `PATH` to resolve — same requirement `start_services()` already handles when actually invoking npm. Missed this on the first pass (shipped `npm: not installed` despite Node resolving correctly); caught by re-testing after the fix rather than assuming a `-x` check alone was sufficient, and fixed by prepending `PATH` the same way.
+### 🐛 Frontend
+
+- **`SettingsTab.tsx`: the "Inference Runtime" section was rendered twice**, back to back, with identical fields and the same `onChange` handler — a copy-paste leftover. Confirmed as a genuine duplicate render (two visible headings at different screen coordinates) before removing the second occurrence, not a text-extraction artifact.
+- **`App.tsx`: the active model never synced into the UI on page load.** `fetchModels()` already received `current_model` from the backend via `api.getModels()`, but only used `result.models` — the store's `currentModel` stayed at its default `'none'` regardless of what the backend actually had loaded. A user reloading the app saw "Select Model" in the header and new chat replies labeled "N / none," even while a model was already loaded and actively serving requests. Now syncs `currentModel` from the backend's `current_model` field when the store is still at its default.
+
+### ℹ️ Environment note (not a code change)
+
+Edits made from the Windows side did not reliably trigger the WSL-side Vite dev server's file watcher across the `/mnt/c` boundary during this verification — each fix above needed the dev server restarted from inside WSL before it took effect in the browser. This is a WSL2/NTFS file-watching limitation, not a Ghostlink bug; noted here so it isn't mistaken for one during future WSL-backed development.
 
 ### ✅ Validation
 
-- `bash -n launch.sh` — syntax OK
-- Live-tested against a real nvm-only Node install (no bare `node`/`npm` on default `PATH`): confirmed both the initial fix attempt's `npm: not installed` regression and the corrected `npm: 10.8.2` output, via a debug-instrumented run showing the exact resolved paths and exit code before removing the instrumentation
-- Confirmed positive case unaffected: full launch reaches healthy state, `/api/health` returns `200`
+- Both launch paths run fresh, start to finish: hardware detection, backend build/start, and all health checks passed on the first attempt for both `launch.sh` and `launch.bat`.
+- Each fix verified live in the browser, before and after: duplicate section confirmed via DOM inspection then confirmed gone; model label confirmed stuck at "none" via a live chat message, then confirmed correct after the fix with a second live chat message.
+- Real inference cross-checked three ways on the same request (direct API call, browser network panel, live Metrics tab): 601.9 tok/s, 102.3 ms p50/p95 latency, `real_inference: true` — all three agree.
+- `cargo bench --package ghostlink-core` run directly against the compiled binaries (all three targets: `baseline`, `criterion`, `tensor_streaming_fabric`); no Rust source changed in this PR, included for the record per the pre-push checklist.
+- `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`, `tsc --noEmit`, `npm run build`, `npx vitest run` — all clean.
 
 ---
 

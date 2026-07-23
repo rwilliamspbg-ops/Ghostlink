@@ -151,6 +151,9 @@ function App() {
       const result = await api.getModels();
       if (!result.error) {
         setModels(result.models);
+        if (result.current_model && result.current_model !== 'none' && useAppStore.getState().currentModel === 'none') {
+          useAppStore.getState().setCurrentModel(result.current_model);
+        }
       }
     };
 
