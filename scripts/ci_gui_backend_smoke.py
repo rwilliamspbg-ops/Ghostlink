@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import os
 import signal
 import subprocess
 import sys
@@ -16,6 +17,9 @@ ROOT = Path(__file__).resolve().parent.parent
 HOST = "127.0.0.1"
 PORT = 18013
 BASE_URL = f"http://{HOST}:{PORT}"
+BINARY_PATH = Path(os.environ.get("CARGO_TARGET_DIR", ROOT / "target")) / "debug" / (
+    "ghost-link.exe" if sys.platform == "win32" else "ghost-link"
+)
 
 
 def _get_json(path: str, timeout: float = 5.0) -> dict:
@@ -48,12 +52,22 @@ def _wait_for_health(max_wait_s: int = 45) -> None:
     raise RuntimeError("backend health endpoint did not become ready")
 
 
-def main() -> int:
-    proc = subprocess.Popen(
-        ["cargo", "run", "-p", "ghost-link", "--", "serve", HOST, str(PORT)],
+def _build_backend() -> None:
+    subprocess.run(
+        ["cargo", "build", "-p", "ghost-link", "--bin", "ghost-link"],
         cwd=str(ROOT),
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.STDOUT,
+        check=True,
+    )
+
+
+def main() -> int:
+    _build_backend()
+
+    proc = subprocess.Popen(
+        [str(BINARY_PATH), "serve", HOST, str(PORT)],
+        cwd=str(ROOT),
+        stdout=None,
+        stderr=None,
         preexec_fn=None,
     )
 
