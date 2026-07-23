@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parent.parent
 HOST = "127.0.0.1"
 PORT = 18013
 BASE_URL = f"http://{HOST}:{PORT}"
-BINARY_PATH = Path(os.environ.get("CARGO_TARGET_DIR", ROOT / "target")) / "debug" / (
+BINARY_PATH = Path(os.environ.get("CARGO_TARGET_DIR") or ROOT / "target") / "debug" / (
     "ghost-link.exe" if sys.platform == "win32" else "ghost-link"
 )
 
@@ -57,6 +57,8 @@ def _build_backend() -> None:
         ["cargo", "build", "-p", "ghost-link", "--bin", "ghost-link"],
         cwd=str(ROOT),
         check=True,
+        stdout=None,
+        stderr=None,
     )
 
 
