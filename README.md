@@ -267,8 +267,41 @@ crates/
 │   ├── accelerator.rs       # NPU acceleration detection
 │   └── xdp.rs               # AF_XDP kernel bypass (fallback-safe)
 ├── ghost-link/              # CLI demo & API server
+│   └── src/mcp/              # MCP client (rmcp): registry, config, tool-calling loop
+├── mcp-calculator/          # Custom MCP server backing the calculator chat tool
+├── mcp-vision/              # Custom MCP server backing the vision chat tool (local Ollama)
 ghostlink_gui_modern/        # React frontend (Vite + Tailwind)
 ```
+
+## MCP Tools (Model Context Protocol)
+
+Ghostlink chat can call real tools via [MCP](https://modelcontextprotocol.io) servers,
+configured in `mcp_servers.toml` (a gitignored, per-install copy of
+`mcp_servers.example.toml`, auto-created on first run — same pattern as
+`ghostlink.toml`/`ghostlink.example.toml`).
+
+Default servers:
+
+| Chat tool slot | Backing server | Enabled by default |
+|---|---|---|
+| `file_operations` | `@modelcontextprotocol/server-filesystem` (npx) | ✅ |
+| `api_call` | `mcp-server-fetch` (uvx) | ✅ |
+| `calculator` | `mcp-calculator` (this repo, `evalexpr`-backed) | ✅ |
+| `database_query` | `mcp-server-sqlite` (uvx) | ✅ |
+| `web_search` | `@modelcontextprotocol/server-brave-search` (npx) | needs `BRAVE_API_KEY` |
+| `code_execution` / `terminal` | Docker MCP Toolkit gateway | needs Docker Desktop running |
+| `image_generation` | *(not yet configured — no default backend picked)* | ❌ |
+| — | `sequential-thinking` (npx) | ✅ |
+| — | `vision` (this repo, wraps local Ollama) | needs a pulled vision model |
+
+The model decides whether and which tool to call (a ReAct-style prompt works
+with any local GGUF/Ollama model; Ollama models whose chat template declares
+native tool-calling support use that automatically instead). Tools marked
+`requires_confirmation` in `mcp_servers.toml` (terminal, code_execution) pause
+for explicit user approval before executing — see the MCP tab in the GUI.
+
+Requires `npx`/`node` (bundled MCP servers) and `uvx`/`python` (Python-distributed
+ones) on `PATH`; Docker Desktop for the terminal/code_execution slots.
 
 ## Testing
 
