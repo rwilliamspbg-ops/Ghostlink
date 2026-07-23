@@ -188,8 +188,16 @@ echo -e "${BLUE}│${NC}  ${WHITE}OS:${NC}           $(uname -s) $(uname -r) ($(
 echo -e "${BLUE}│${NC}  ${WHITE}Shell:${NC}         $SHELL"
 echo -e "${BLUE}│${NC}  ${WHITE}Rust:${NC}          $(rustc --version 2>/dev/null | cut -d' ' -f2 || echo 'not installed')"
 echo -e "${BLUE}│${NC}  ${WHITE}Cargo:${NC}         $(cargo --version 2>/dev/null | cut -d' ' -f2 || echo 'not installed')"
-echo -e "${BLUE}│${NC}  ${WHITE}Node.js:${NC}       $(node -v 2>/dev/null || echo 'not installed')"
-echo -e "${BLUE}│${NC}  ${WHITE}npm:${NC}           $(npm -v 2>/dev/null || echo 'not installed')"
+local _node_bin _node_ver _npm_ver
+if _node_bin=$(resolve_node_bin); then
+    _node_ver="$("$_node_bin" -v 2>/dev/null || echo 'not installed')"
+    _npm_ver="$(PATH="$(dirname "$_node_bin"):$PATH" "$(dirname "$_node_bin")/npm" -v 2>/dev/null || npm -v 2>/dev/null || echo 'not installed')"
+else
+    _node_ver="not installed"
+    _npm_ver="$(npm -v 2>/dev/null || echo 'not installed')"
+fi
+echo -e "${BLUE}│${NC}  ${WHITE}Node.js:${NC}       ${_node_ver}"
+echo -e "${BLUE}│${NC}  ${WHITE}npm:${NC}           ${_npm_ver}"
 if [[ "$(uname -s)" == "Darwin" ]]; then
     local _ram=$(sysctl -n hw.memsize 2>/dev/null | awk '{printf "%.0f", $1/1073741824}' || echo '?')
     echo -e "${BLUE}│${NC}  ${WHITE}RAM:${NC}          ${_ram} GB"

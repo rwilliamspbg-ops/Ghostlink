@@ -4,6 +4,32 @@ All notable changes to Ghostlink Studio are documented here.
 
 ---
 
+## [1.3.8] - 2026-07-22 (Launch Verification: GUI + System Info UX Fixes)
+
+A full end-to-end verification pass of both launch entrypoints (`launch.sh` directly under WSL, and `launch.bat` on Windows delegating to WSL) — driven through the real browser UI, not just curl — surfaced three real, reproducible UX bugs. All three were caught live: two in the GUI, one in the launcher's own startup banner.
+
+### 🐛 Frontend
+
+- **`SettingsTab.tsx`: the "Inference Runtime" section was rendered twice**, back to back, with identical fields and the same `onChange` handler — a copy-paste leftover. Confirmed as a genuine duplicate render (two visible headings at different screen coordinates) before removing the second occurrence, not a text-extraction artifact.
+- **`App.tsx`: the active model never synced into the UI on page load.** `fetchModels()` already received `current_model` from the backend via `api.getModels()`, but only used `result.models` — the store's `currentModel` stayed at its default `'none'` regardless of what the backend actually had loaded. A user reloading the app saw "Select Model" in the header and new chat replies labeled "N / none," even while a model was already loaded and actively serving requests. Now syncs `currentModel` from the backend's `current_model` field when the store is still at its default.
+
+### 🐛 Launch Script
+
+- **`launch.sh`'s System Info panel reported `Node.js: not installed` while Node was in active, working use.** `show_system_info()` shelled out to bare `node -v`/`npm -v`, which fail in this WSL/nvm setup because the nvm-managed Node isn't on bare `PATH` — only the script's own `resolve_node_bin()` (used later to actually start Vite) knows how to find it. The banner alarmed the user with "not installed" seconds before the same script successfully started the frontend with that exact binary. Now resolves via `resolve_node_bin()` for both Node and npm, with `PATH` set for npm's own `#!/usr/bin/env node` shebang to resolve correctly.
+
+### ℹ️ Environment note (not a code change)
+
+Edits made from the Windows side did not reliably trigger the WSL-side Vite dev server's file watcher across the `/mnt/c` boundary during this verification — each fix above needed the dev server restarted from inside WSL before it took effect in the browser. This is a WSL2/NTFS file-watching limitation, not a Ghostlink bug; noted here so it isn't mistaken for one during future WSL-backed development.
+
+### ✅ Validation
+
+- Both launch paths run fresh, start to finish: hardware detection, backend build/start, and all health checks passed on the first attempt for both `launch.sh` and `launch.bat`.
+- Each fix verified live in the browser, before and after: duplicate section confirmed via DOM inspection then confirmed gone; model label confirmed stuck at "none" via a live chat message, then confirmed correct after the fix with a second live chat message; Node/npm detection re-run directly against the live WSL environment (`v20.20.2` / `10.8.2`, both previously misreported as "not installed").
+- Real inference cross-checked three ways on the same request (direct API call, browser network panel, live Metrics tab): 601.9 tok/s, 102.3 ms p50/p95 latency, `real_inference: true` — all three agree.
+- `cargo bench --package ghostlink-core` run directly against the compiled binaries (all three targets: `baseline`, `criterion`, `tensor_streaming_fabric`); no Rust source changed in this PR, included for the record per the pre-push checklist.
+
+---
+
 ## [1.3.7] - 2026-07-23 (Repo-Wide Correctness Review)
 
 A broad review pass across backend handlers, cluster/health/load-balance logic, a launch script, and the frontend — dispatched as three independent research agents scanning previously-unreviewed areas, then triaged and fixed directly. Every fix below is a confirmed, reproducible bug, not a style nitpick.

@@ -400,20 +400,6 @@ export const SettingsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
               />
             </Section>
 
-            {/* Runtime Section */}
-            <Section title="Inference Runtime" icon={Cpu}>
-              <SelectField
-                label="Backend"
-                desc="Inference engine backend"
-                value={settings.inference_backend}
-                options={[
-                  { value: 'ollama', label: 'Ollama' },
-                  { value: 'native', label: 'Native (legacy)' },
-                ]}
-                onChange={(v) => update('inference_backend', v)}
-              />
-            </Section>
-
             {/* Sampling Section */}
             <Section title="Sampling Parameters" icon={Sliders}>
               <SliderField
