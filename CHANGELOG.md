@@ -4,7 +4,7 @@ All notable changes to Ghostlink Studio are documented here.
 
 ---
 
-## [1.4.1] - 2026-07-23 (Fix: `cargo bench` effectively hung for hours)
+## [1.4.2] - 2026-07-23 (Fix: `cargo bench` effectively hung for hours)
 
 ### 🐛 Benchmarks
 
@@ -38,6 +38,88 @@ All notable changes to Ghostlink Studio are documented here.
 - Confirmed the fix by actually running the full benchmark suite to
   completion (exit code 0, all expected output lines present, process exits
   promptly) rather than assuming a smaller iteration count would be enough.
+
+---
+
+## [1.4.1] - 2026-07-23 (Performance: HTTP client reuse, LTO, KV cache primitive)
+
+A profiling pass across the core primitives (ring buffer, protocol, planning)
+and the native inference request path, prioritized by measured evidence
+rather than assumption — this codebase is a distributed scheduling/transport
+fabric around an external inference engine (llama-server/Ollama), not an
+inference engine itself, so the audit focused on what Ghostlink's own Rust
+code actually controls: per-request overhead and cross-node transport, not
+token-generation kernels.
+
+### ⚡ Performance
+
+- **`native_engine.rs`: every chat request rebuilt its HTTP client.**
+  `generate_with_llama_server()` — the hot path for every request on the
+  default `native` backend — called `reqwest::Client::builder()...build()`
+  fresh on every single call: a new connection pool, no keep-alive reuse,
+  meaning a brand-new TCP connection to llama-server on every chat turn.
+  `NativeEngineClient` now holds one shared, connection-pooled client, built
+  once and cloned (a cheap `Arc` refcount bump) per request; the configurable
+  timeout moved from client-level to request-level so behavior is otherwise
+  identical. Measured against a real local `llama-server` on loopback:
+  **376µs → 45µs per-request HTTP overhead (8.35x)**. Client *construction*
+  alone measured ~540x more expensive than a clone (4.86µs vs 9ns), entirely
+  independent of network cost.
+- **New `[profile.release]`**: `lto = "thin"`, `codegen-units = 1`, enabling
+  cross-crate inlining between `ghostlink-core`'s hot paths (ring buffer,
+  protocol, planning) and `ghost-link`. A same-machine, single-run-per-config
+  A/B showed the deterministic, single-threaded, CPU-bound paths 6–19%
+  faster (ring push+pop -19%, protocol decode -17%, planning autotuned
+  -19%); two thread-scheduling/syscall-bound benchmarks came back noisier
+  instead (SPSC cross-thread 10k +12%, autotune detect_fast +40%) — reported
+  here rather than cherry-picked, since that's far more likely scheduler
+  variance than a real regression from this change. `panic = "abort"` was
+  considered and deliberately **not** set: verified zero `catch_unwind` usage
+  in the codebase, but for a long-running server, abort-on-any-panic crashes
+  the whole process instead of failing one request/task — a reliability
+  regression, not a pure win, for this binary.
+
+### 🧹 Correctness / cleanup
+
+- **`kv_cache.rs` was dead code** — not declared as a module in `lib.rs`, so
+  it was never compiled into the crate and its own tests never ran. Redesigned
+  before wiring it in: the old design called `resize_with` on a
+  `Vec<KVCacheEntry>` where every entry independently allocated its own
+  `keys`/`values` `Vec<f32>` (up to 16,384 separate small heap allocations
+  for a full 8192-token sequence); `current_len` was also duplicated on every
+  single entry instead of being one cache-level field. Now: one contiguous
+  buffer allocated once per layer/sequence, `current_len` tracked once,
+  `Mutex` replaced with `RwLock` (attention reads vastly outnumber writes),
+  and a new `read_range()` for a single batched read over a token span
+  instead of N separate per-token reads. Declared as a real module and
+  re-exported from `lib.rs`; 11 new tests added. Documented plainly that it
+  has **no current caller** — this is a ready primitive for a future local
+  execution path, not something wired into live serving today.
+
+### ✅ Validation
+
+- `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`,
+  `cargo test --workspace` (82+124+7+28+19, all passing, including under
+  `--release` with the new LTO profile — specifically re-checked since
+  aggressive optimization can surface latent UB in `unsafe` code, e.g. the
+  ring buffer's SPSC implementation, that a non-LTO build masks), `cargo audit`
+  (only pre-existing unmaintained/unsound advisories on transitive deps, no
+  actionable vulnerabilities) — all clean.
+- Per the pre-push checklist's benchmark-reporting requirement (ring buffer /
+  transport / pipeline code changed): see the LTO A/B numbers above and in
+  the PR body.
+
+### ⚠️ Operational caveats
+
+- The LTO A/B is a single run per configuration on one machine, not an
+  averaged/statistical comparison — treat the regression numbers especially
+  as noise-until-proven-otherwise, not confirmed effects.
+- While benchmarking, both configurations' `cargo bench` runs printed all
+  their output and finished their real work within ~30–40s, but the process
+  then took a long time to actually exit afterward. Not diagnosed as part of
+  this change (out of scope), but worth a maintainer's attention separately —
+  likely in the benchmark harness's shutdown path, not the library code
+  itself.
 
 ---
 
