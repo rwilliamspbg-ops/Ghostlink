@@ -1,10 +1,14 @@
-//! High_Performance_Transport/eBPF Socket Integration for Ghost-Link
+//! AF_XDP kernel-bypass scaffold for Ghost-Link (not a working transport yet).
 //!
-//! This module provides:
-//! - Raw socket binding with High_Performance_Transport
-//! - EtherType filtering (0x88B5)
-//! - Frame reception loop with zero-copy buffers
-//! - eBPF program loading helpers
+//! Every I/O path here — socket creation, bind, send, recv, the frame
+//! receiver — is a stub that either errors or returns `None`; see
+//! `TransportSocketHandle::new`, `TransportSocketManager::recv_frame`, and
+//! `XdpFrameReceiver::process_frame`. This module defines the shape a real
+//! AF_XDP backend would take (EtherType filtering, stats tracking, config)
+//! so that shape can be exercised by tests, but no kernel-bypass I/O
+//! actually happens. `docs/BENCHMARKS.md` is correct that AF_XDP is not
+//! currently implemented — treat that as authoritative over anything this
+//! module's naming implies.
 
 use std::os::raw::c_int;
 use std::path::Path;

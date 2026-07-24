@@ -211,6 +211,7 @@ impl NativeEngineClient {
     fn get_llama_server_args() -> Vec<String> {
         if let Ok(v) = std::env::var("GHOSTLINK_LLAMA_SERVER_ARGS") {
             if !v.trim().is_empty() {
+                eprintln!("[perf-tier] Using explicit GHOSTLINK_LLAMA_SERVER_ARGS override: {v}");
                 return v.split_whitespace().map(|s| s.to_string()).collect();
             }
         }
@@ -247,15 +248,21 @@ impl NativeEngineClient {
             .ok()
             .and_then(|v| v.trim().parse::<f32>().ok())
             .unwrap_or(0.0);
-        let (batch, ubatch) = if vram >= 12.0 {
-            (2048, 512)
+        let (tier, batch, ubatch) = if vram >= 12.0 {
+            (">=12GB", 2048, 512)
         } else if vram >= 8.0 {
-            (1024, 512)
+            (">=8GB", 1024, 512)
         } else if vram >= 4.0 {
-            (512, 256)
+            (">=4GB", 512, 256)
         } else {
-            (512, 128)
+            ("<4GB", 512, 128)
         };
+        // Cheap, greppable proof at boot that the VRAM-scaled tuning table in
+        // docs/LOCAL_INFERENCE_TUNING.md actually landed for this hardware,
+        // instead of only being inferable later from slow generations.
+        eprintln!(
+            "[perf-tier] Detected VRAM={vram}GB -> tier {tier} (-b {batch} -ub {ubatch} -fa on -ctk/-ctv q8_0)"
+        );
         // q8_0 KV cuts cache memory ~2× vs f16 → more room for GPU layers / speed.
         vec![
             "-fa".to_string(),

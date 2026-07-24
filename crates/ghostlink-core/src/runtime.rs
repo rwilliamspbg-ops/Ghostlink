@@ -1208,6 +1208,16 @@ pub fn spawn_tcp_bridge(
                             &mut frame_buf,
                         )
                         .map_err(|_| ())?;
+                        // BufWriter only spills to the socket once its 64KB
+                        // buffer fills — for the small, sub-buffer-size frames
+                        // this bridge carries, that meant every batch sat in
+                        // userspace until the whole input channel drained, so
+                        // the receiver saw nothing until one final burst at
+                        // stream end instead of the pipelined, per-batch
+                        // delivery TCP_NODELAY above was set up to provide.
+                        // Flushing per frame is what actually puts NODELAY to
+                        // work for this latency-sensitive path.
+                        writer.flush().map_err(|_| ())?;
                         total_write_ms += write_start.elapsed().as_secs_f32() * 1000.0;
                         processed_batches += 1;
                     }
@@ -1222,6 +1232,7 @@ pub fn spawn_tcp_bridge(
                             &mut frame_buf,
                         )
                         .map_err(|_| ())?;
+                        writer.flush().map_err(|_| ())?;
                         total_write_ms += write_start.elapsed().as_secs_f32() * 1000.0;
                         processed_batches += 1;
                     }
@@ -1305,8 +1316,6 @@ impl BridgeAccumulator {
     }
 }
 
-/// Execute pipeline stages with real TCP loopback transport bridges between stages.
-/// Execute pipeline stages distributed across the LAN using TCP transport.
 /// Execute pipeline stages distributed across the LAN using TCP transport.
 pub fn execute_pipeline_distributed(
     plan: &PipelinePlan,
