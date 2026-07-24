@@ -114,13 +114,23 @@ export class GhostlinkAPI {
     }
   }
 
-  async getDownloadProgress(modelId: string): Promise<{ progress: number; status: string; error?: string }> {
+  async getDownloadProgress(
+    modelId: string
+  ): Promise<{ progress: number; status: string; bytesDownloaded?: number; totalBytes?: number; error?: string }> {
     try {
       const response = await this.http.get('/api/models/download/progress', { params: { model_id: modelId } });
       const rawProgress = Number(response.data?.progress ?? 0);
       const progress = Number.isFinite(rawProgress) ? Math.max(0, Math.min(1, rawProgress)) : 0;
       const status = String(response.data?.status ?? 'unknown');
-      return { progress, status };
+      const bytesDownloaded = Number(response.data?.bytes_downloaded);
+      const totalBytes = Number(response.data?.total_bytes);
+      return {
+        progress,
+        status,
+        bytesDownloaded: Number.isFinite(bytesDownloaded) ? bytesDownloaded : undefined,
+        totalBytes: Number.isFinite(totalBytes) && totalBytes > 0 ? totalBytes : undefined,
+        error: response.data?.error ?? undefined,
+      };
     } catch (error: any) {
       try {
         // Fallback for backends that expose aggregate status instead of a per-model progress endpoint.

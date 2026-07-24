@@ -15,8 +15,27 @@ import {
   Check,
   X,
 } from 'lucide-react';
-import { useAppStore } from '../store';
+import { useAppStore, DownloadProgressEntry } from '../store';
 import { GhostlinkAPI } from '../api';
+
+function formatBytes(bytes?: number): string {
+  if (!bytes || bytes <= 0) return '';
+  const gb = bytes / (1024 * 1024 * 1024);
+  if (gb >= 1) return `${gb.toFixed(2)} GB`;
+  return `${(bytes / (1024 * 1024)).toFixed(0)} MB`;
+}
+
+// A real, byte-accurate progress label like "1.52 GB / 4.30 GB" when the
+// backend has reported a total size, falling back to a bare percentage
+// before the first size-probing pass completes.
+function progressLabel(entry: DownloadProgressEntry | undefined): string {
+  if (!entry) return '...';
+  const pct = `${Math.round(entry.progress * 100)}%`;
+  if (entry.totalBytes) {
+    return `${formatBytes(entry.bytesDownloaded)} / ${formatBytes(entry.totalBytes)} (${pct})`;
+  }
+  return pct;
+}
 
 const POPULAR_MODELS = [
   { id: 'llama3.2:3b', name: 'Llama 3.2 3B Instruct', downloads: 2500000, likes: 120000 },
@@ -30,15 +49,17 @@ const POPULAR_MODELS = [
 ];
 
 export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
-  const { currentModel, setModels, setCurrentModel } = useAppStore();
+  const {
+    currentModel, setModels, setCurrentModel,
+    pendingModelActions: pendingActions, setPendingModelActions: setPendingActions,
+    downloadProgress, setDownloadProgress,
+  } = useAppStore();
   const [activeTab, setActiveTab] = useState<'local' | 'huggingface' | 'recommended'>('local');
   const [loading, setLoading] = useState(false);
   const [hfSearch, setHfSearch] = useState('');
   const [message, setMessage] = useState<string | null>(null);
-  const [pendingActions, setPendingActions] = useState<Record<string, string>>({});
   const [hfResults, setHfResults] = useState<{ id: string; name: string; downloads: number; likes: number }[]>([]);
   const [hfLoading, setHfLoading] = useState(false);
-  const [downloadProgress, setDownloadProgress] = useState<Record<string, number>>({});
   const [ollamaModels, setOllamaModels] = useState<any[]>([]);
   const [showModelfile, setShowModelfile] = useState<string | null>(null);
   const [recommendedModels, setRecommendedModels] = useState<any[]>([]);
@@ -233,12 +254,22 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
   const handleDownloadHFModel = async (id: string) => {
     setPendingActions(prev => ({ ...prev, [id]: 'downloading' }));
     setMessage(`Downloading ${id}...`);
-    setDownloadProgress(prev => ({ ...prev, [id]: 0 }));
+    setDownloadProgress(prev => ({ ...prev, [id]: { progress: 0 } }));
 
+    // The backend now starts the transfer in a detached background task and
+    // responds immediately with {status: "started"} — it no longer blocks
+    // this request for the entire multi-GB download, so this resolves in
+    // milliseconds regardless of model size. Polling below is what tracks
+    // real progress from here; it isn't gated on waiting for the request above.
     const dlResult = await api.downloadModel(id);
     if (!dlResult.success) {
       setMessage(`Error: ${dlResult.error}`);
       setPendingActions(prev => {
+        const newState = { ...prev };
+        delete newState[id];
+        return newState;
+      });
+      setDownloadProgress(prev => {
         const newState = { ...prev };
         delete newState[id];
         return newState;
@@ -248,7 +279,11 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
 
     refreshModels();
 
-    let pollsRemaining = 300;
+    // A large GGUF over a slow connection can legitimately take a long time
+    // now that it's no longer cut off by a client-side request timeout —
+    // bound the poll loop generously (3 hours at 2s/poll) rather than at the
+    // old 10-minute cap.
+    let pollsRemaining = 5400;
     const poll = async () => {
       while (pollsRemaining > 0) {
         pollsRemaining--;
@@ -256,13 +291,20 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
         const result = await api.getDownloadProgress(id);
         const progress = result.progress ?? 0;
         const status = result.status ?? 'unknown';
-        setDownloadProgress(prev => ({ ...prev, [id]: progress }));
+        setDownloadProgress(prev => ({
+          ...prev,
+          [id]: { progress, bytesDownloaded: result.bytesDownloaded, totalBytes: result.totalBytes },
+        }));
 
         if (status === 'completed') {
-          setDownloadProgress(prev => ({ ...prev, [id]: 1 }));
           setMessage(`Downloaded ${id}`);
           refreshModels();
           setPendingActions(prev => {
+            const newState = { ...prev };
+            delete newState[id];
+            return newState;
+          });
+          setDownloadProgress(prev => {
             const newState = { ...prev };
             delete newState[id];
             return newState;
@@ -271,9 +313,14 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
         }
 
         if (status === 'failed') {
-          setMessage(`Download failed: ${id}`);
+          setMessage(`Download failed: ${id}${result.error ? ` (${result.error})` : ''}`);
           refreshModels();
           setPendingActions(prev => {
+            const newState = { ...prev };
+            delete newState[id];
+            return newState;
+          });
+          setDownloadProgress(prev => {
             const newState = { ...prev };
             delete newState[id];
             return newState;
@@ -510,11 +557,16 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                       </div>
                       <div className="text-xs text-slate-400 truncate w-full font-mono">{m.id}</div>
                       {isPending && downloadProgress[m.id] !== undefined && (
-                        <div className="mt-2 w-full bg-slate-700 rounded-full h-1.5">
-                          <div
-                            className="bg-blue-500 h-1.5 rounded-full transition-all duration-500"
-                            style={{ width: `${Math.round(downloadProgress[m.id] * 100)}%` }}
-                          />
+                        <div className="mt-2 w-full">
+                          <div className="w-full bg-slate-700 rounded-full h-1.5">
+                            <div
+                              className="bg-blue-500 h-1.5 rounded-full transition-all duration-500"
+                              style={{ width: `${Math.round(downloadProgress[m.id].progress * 100)}%` }}
+                            />
+                          </div>
+                          <div className="mt-1 text-[10px] text-slate-500 font-mono">
+                            {progressLabel(downloadProgress[m.id])}
+                          </div>
                         </div>
                       )}
                       {!isInstalled && !isPending && (
@@ -575,7 +627,7 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                         {pendingActions[model.name] === 'downloading' ? (
                           <>
                             <Loader size={14} className="mr-2" />
-                            {downloadProgress[model.name] !== undefined ? `${Math.round(downloadProgress[model.name] * 100)}%` : '...'}
+                            {progressLabel(downloadProgress[model.name])}
                           </>
                         ) : (
                           <Download size={14} />
@@ -635,7 +687,7 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                         {pendingActions[model.name] === 'downloading' ? (
                           <>
                             <Loader size={14} className="mr-2" />
-                            {downloadProgress[model.name] !== undefined ? `${Math.round(downloadProgress[model.name] * 100)}%` : '...'}
+                            {progressLabel(downloadProgress[model.name])}
                           </>
                         ) : (
                           <Download size={14} />
@@ -692,7 +744,7 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                       {pendingActions[m.id] === 'downloading' ? (
                         <>
                           <Loader size={14} className="mr-2" />
-                          {downloadProgress[m.id] !== undefined ? `${Math.round(downloadProgress[m.id] * 100)}%` : '...'}
+                          {progressLabel(downloadProgress[m.id])}
                         </>
                       ) : (
                         <Download size={14} />

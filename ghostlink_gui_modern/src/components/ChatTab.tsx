@@ -26,32 +26,10 @@ import {
   Wrench,
   ShieldAlert,
 } from 'lucide-react';
-import { useAppStore } from '../store';
+import { useAppStore, ChatMessage } from '../store';
 import { GhostlinkAPI } from '../api';
 
-interface ToolCallTrace {
-  tool: string;
-  server: string;
-  result: string;
-  success: boolean;
-}
-
-interface PendingToolCall {
-  request_id: string;
-  tool: string;
-  server: string;
-  args: unknown;
-}
-
-interface Message {
-  role: 'user' | 'assistant';
-  content: string;
-  id: string;
-  timestamp: string;
-  model?: string;
-  toolCalls?: ToolCallTrace[];
-  pendingToolCall?: PendingToolCall;
-}
+type Message = ChatMessage;
 
 interface Session {
   id: string;
@@ -62,19 +40,6 @@ interface Session {
   tokens: number;
 }
 
-const STORAGE_KEY = 'ghostlink-chat-messages';
-
-function loadMessages(): Message[] {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    return raw ? JSON.parse(raw) : [];
-  } catch { return []; }
-}
-
-function saveMessages(messages: Message[]) {
-  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(messages.slice(-200))); } catch { /* quota */ }
-}
-
 interface Tool {
   name: string;
   description: string;
@@ -82,12 +47,14 @@ interface Tool {
 }
 
 export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
-  const { currentModel, models, setCurrentModel, mcpServers, setMcpServers } = useAppStore();
-  const [messages, setMessages] = useState<Message[]>(loadMessages);
+  const {
+    currentModel, models, setCurrentModel, mcpServers, setMcpServers,
+    chatMessages: messages, setChatMessages: setMessages,
+    chatLoading: loading, setChatLoading: setLoading,
+    chatStreamingId: streamingId, setChatStreamingId: setStreamingId,
+    chatError: error, setChatError: setError,
+  } = useAppStore();
   const [input, setInput] = useState('');
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [streamingId, setStreamingId] = useState<string | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
 
   // Controls
@@ -147,10 +114,6 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
   useEffect(() => {
     scrollToBottom();
   }, [messages, loading]);
-
-  useEffect(() => {
-    saveMessages(messages);
-  }, [messages]);
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
