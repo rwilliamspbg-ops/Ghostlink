@@ -1469,6 +1469,17 @@ struct BackendState {
     settings: RuntimeSettings,
     mcp_registry: Arc<mcp::McpRegistry>,
     pending_tool_calls: Arc<tokio::sync::Mutex<HashMap<String, PendingToolCall>>>,
+    download_progress: HashMap<String, DownloadProgressInfo>,
+}
+
+/// Real byte-level progress for an in-flight (or just-finished) model download.
+/// Updated from the background download task, read by the GUI's polling loop.
+#[derive(Debug, Clone, Serialize, Default)]
+struct DownloadProgressInfo {
+    bytes_downloaded: u64,
+    total_bytes: u64,
+    status: String,
+    error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2245,6 +2256,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
     async fn download_hf_model(
         model_id: &str,
         models_dir: &std::path::Path,
+        mut on_progress: impl FnMut(u64, u64) + Send,
     ) -> Result<String, String> {
         let client = reqwest::Client::builder()
             .user_agent("ghostlink/1.0")
@@ -2291,26 +2303,68 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         let chosen_files = select_best_gguf_group(&groups, vram_gb)
             .ok_or_else(|| "No usable GGUF file found in this repository".to_string())?;
 
-        let mut first_dest_path: Option<std::path::PathBuf> = None;
-        for filename in &chosen_files {
+        // `filename` comes straight from the remote HuggingFace API response
+        // (`rfilename`) and may contain nested-path separators or, in the
+        // worst case, an absolute path. `PathBuf::join` silently discards the
+        // base directory when given an absolute path, and any path
+        // separators could otherwise let a crafted repo write outside
+        // `models_dir`. Only the file's base name is ever meaningful here.
+        let files: Vec<(String, std::path::PathBuf)> = chosen_files
+            .iter()
+            .map(|filename| {
+                let safe_filename = std::path::Path::new(filename.as_str())
+                    .file_name()
+                    .map(|f| f.to_string_lossy().into_owned())
+                    .filter(|f| !f.is_empty())
+                    .unwrap_or_else(|| "download.gguf".to_string());
+                let dest_path = models_dir.join(&safe_filename);
+                (filename.clone(), dest_path)
+            })
+            .collect();
+
+        // Sizing pass: HEAD every shard up front so the progress callback can
+        // report a real fraction from the very first update instead of sitting
+        // at an unknowable 0/0 until the last shard finishes.
+        let mut expected_sizes: Vec<u64> = Vec::with_capacity(files.len());
+        let mut total_bytes: u64 = 0;
+        for (filename, _) in &files {
             let file_url = format!(
                 "https://huggingface.co/{}/resolve/main/{}",
                 model_id, filename
             );
-            // `filename` comes straight from the remote HuggingFace API response
-            // (`rfilename`) and may contain nested-path separators or, in the
-            // worst case, an absolute path. `PathBuf::join` silently discards the
-            // base directory when given an absolute path, and any path
-            // separators could otherwise let a crafted repo write outside
-            // `models_dir`. Only the file's base name is ever meaningful here.
-            let safe_filename = std::path::Path::new(filename.as_str())
-                .file_name()
-                .map(|f| f.to_string_lossy().into_owned())
-                .filter(|f| !f.is_empty())
-                .unwrap_or_else(|| "download.gguf".to_string());
-            let dest_path = models_dir.join(&safe_filename);
+            let len = client
+                .head(&file_url)
+                .send()
+                .await
+                .ok()
+                .and_then(|r| r.content_length())
+                .unwrap_or(0);
+            expected_sizes.push(len);
+            total_bytes += len;
+        }
+        on_progress(0, total_bytes);
 
-            if !dest_path.exists() {
+        let mut downloaded_bytes: u64 = 0;
+        let mut first_dest_path: Option<std::path::PathBuf> = None;
+        let mut last_report = std::time::Instant::now();
+        for (idx, (filename, dest_path)) in files.iter().enumerate() {
+            let expected_len = expected_sizes[idx];
+            let existing_len = tokio::fs::metadata(dest_path)
+                .await
+                .map(|m| m.len())
+                .unwrap_or(0);
+            // A file only counts as already-downloaded if its size matches what
+            // HuggingFace reports. Previously any existing file — including one
+            // truncated by a dropped connection — was treated as complete and
+            // silently never retried.
+            let already_complete =
+                dest_path.exists() && (expected_len == 0 || existing_len == expected_len);
+
+            if !already_complete {
+                let file_url = format!(
+                    "https://huggingface.co/{}/resolve/main/{}",
+                    model_id, filename
+                );
                 let resp = client
                     .get(&file_url)
                     .send()
@@ -2324,10 +2378,11 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                 if let Some(parent) = dest_path.parent() {
                     fs::create_dir_all(parent).map_err(|e| format!("Dir error: {}", e))?;
                 }
-                let mut file = tokio::fs::File::create(&dest_path)
+                let mut file = tokio::fs::File::create(dest_path)
                     .await
                     .map_err(|e| format!("File error: {}", e))?;
                 let mut stream = resp;
+                let mut file_bytes: u64 = 0;
                 while let Some(chunk) = stream
                     .chunk()
                     .await
@@ -2336,12 +2391,35 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                     file.write_all(&chunk)
                         .await
                         .map_err(|e| format!("Write error: {}", e))?;
+                    file_bytes += chunk.len() as u64;
+                    if last_report.elapsed() >= std::time::Duration::from_millis(200) {
+                        on_progress(downloaded_bytes + file_bytes, total_bytes);
+                        last_report = std::time::Instant::now();
+                    }
                 }
                 file.flush().await.ok();
+                drop(file);
+
+                // The connection can be dropped mid-transfer (client timeout,
+                // network blip) without `chunk()` ever returning an `Err` — the
+                // stream just ends early. Compare against the size HuggingFace
+                // actually advertised instead of trusting an early EOF.
+                if expected_len > 0 && file_bytes != expected_len {
+                    let _ = tokio::fs::remove_file(dest_path).await;
+                    return Err(format!(
+                        "Download incomplete for {}: got {} of {} bytes",
+                        filename, file_bytes, expected_len
+                    ));
+                }
+                downloaded_bytes += file_bytes;
+            } else {
+                downloaded_bytes += existing_len;
             }
 
+            on_progress(downloaded_bytes, total_bytes);
+
             if first_dest_path.is_none() {
-                first_dest_path = Some(dest_path);
+                first_dest_path = Some(dest_path.clone());
             }
         }
 
@@ -2677,11 +2755,21 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             let backend = lock_state(&state);
             backend.settings.models_dir.clone()
         };
-        let models_path = std::path::Path::new(&models_dir);
-        fs::create_dir_all(models_path).ok();
+        let models_path = std::path::PathBuf::from(&models_dir);
+        fs::create_dir_all(&models_path).ok();
 
         {
             let mut backend = lock_state(&state);
+            // A download already running for this model — don't start a second
+            // one racing it on the same destination file.
+            if let Some(existing) = backend.download_progress.get(&model_id) {
+                if existing.status == "downloading" {
+                    return Json(serde_json::json!({
+                        "status": "started",
+                        "message": format!("{} is already downloading", model_id),
+                    }));
+                }
+            }
             if !backend.models.iter().any(|m| m.name == model_id) {
                 backend.models.push(ModelRecord {
                     name: model_id.clone(),
@@ -2696,50 +2784,91 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                 m.status = "Downloading".to_string();
                 save_persistent_models(&backend.models);
             }
+            backend.download_progress.insert(
+                model_id.clone(),
+                DownloadProgressInfo {
+                    bytes_downloaded: 0,
+                    total_bytes: 0,
+                    status: "downloading".to_string(),
+                    error: None,
+                },
+            );
         }
 
-        let result = download_hf_model(&model_id, models_path).await;
+        // The actual transfer runs detached from this request/response cycle so
+        // a multi-GB model isn't bound by the frontend's HTTP client timeout —
+        // that used to abort (and silently truncate) any download that took
+        // longer than the client's timeout window. The GUI now polls
+        // /api/models/download/progress for real byte-level progress instead.
+        let spawn_state = Arc::clone(&state);
+        let spawn_model_id = model_id.clone();
+        tokio::spawn(async move {
+            let progress_state = Arc::clone(&spawn_state);
+            let progress_model_id = spawn_model_id.clone();
+            let result =
+                download_hf_model(&spawn_model_id, &models_path, move |downloaded, total| {
+                    let mut backend = lock_state(&progress_state);
+                    if let Some(p) = backend.download_progress.get_mut(&progress_model_id) {
+                        p.bytes_downloaded = downloaded;
+                        p.total_bytes = total;
+                    }
+                })
+                .await;
 
-        match result {
-            Ok(local_path) => {
-                let filename = std::path::Path::new(&local_path)
-                    .file_name()
-                    .map(|f| f.to_string_lossy().to_string())
-                    .unwrap_or_else(|| local_path.clone());
-                let name = filename
-                    .strip_suffix(".gguf")
-                    .unwrap_or(&filename)
-                    .to_string();
-                let size_bytes = fs::metadata(&local_path).map(|m| m.len()).unwrap_or(0);
-                let size_gb = size_bytes as f32 / (1024.0 * 1024.0 * 1024.0);
+            match result {
+                Ok(local_path) => {
+                    let filename = std::path::Path::new(&local_path)
+                        .file_name()
+                        .map(|f| f.to_string_lossy().to_string())
+                        .unwrap_or_else(|| local_path.clone());
+                    let name = filename
+                        .strip_suffix(".gguf")
+                        .unwrap_or(&filename)
+                        .to_string();
+                    let size_bytes = fs::metadata(&local_path).map(|m| m.len()).unwrap_or(0);
+                    let size_gb = size_bytes as f32 / (1024.0 * 1024.0 * 1024.0);
 
-                let mut backend = lock_state(&state);
-                backend.models.retain(|m| m.name != model_id);
-                backend.models.push(ModelRecord {
-                    name,
-                    size_gb,
-                    model_type: "LLM".to_string(),
-                    quantization: detect_quantization(&filename),
-                    status: "Ready".to_string(),
-                    local_path,
-                });
-                save_persistent_models(&backend.models);
-
-                Json(serde_json::json!({
-                    "status": "ok",
-                    "message": format!("model downloaded ({:.2} GB)", size_gb),
-                }))
-            }
-            Err(err) => {
-                let mut backend = lock_state(&state);
-                if let Some(model) = backend.models.iter_mut().find(|m| m.name == model_id) {
-                    model.status = "Failed".to_string();
+                    let mut backend = lock_state(&spawn_state);
+                    backend.models.retain(|m| m.name != spawn_model_id);
+                    backend.models.push(ModelRecord {
+                        name,
+                        size_gb,
+                        model_type: "LLM".to_string(),
+                        quantization: detect_quantization(&filename),
+                        status: "Ready".to_string(),
+                        local_path,
+                    });
+                    save_persistent_models(&backend.models);
+                    backend.download_progress.insert(
+                        spawn_model_id.clone(),
+                        DownloadProgressInfo {
+                            bytes_downloaded: size_bytes,
+                            total_bytes: size_bytes,
+                            status: "completed".to_string(),
+                            error: None,
+                        },
+                    );
                 }
-                save_persistent_models(&backend.models);
-
-                Json(serde_json::json!({ "error": err }))
+                Err(err) => {
+                    let mut backend = lock_state(&spawn_state);
+                    if let Some(model) =
+                        backend.models.iter_mut().find(|m| m.name == spawn_model_id)
+                    {
+                        model.status = "Failed".to_string();
+                    }
+                    save_persistent_models(&backend.models);
+                    if let Some(p) = backend.download_progress.get_mut(&spawn_model_id) {
+                        p.status = "failed".to_string();
+                        p.error = Some(err);
+                    }
+                }
             }
-        }
+        });
+
+        Json(serde_json::json!({
+            "status": "started",
+            "message": format!("Downloading {}", model_id),
+        }))
     }
 
     async fn handle_gui_model_download_progress(
@@ -2756,6 +2885,26 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         }
 
         let backend = lock_state(&state);
+        // Real byte-level progress from the in-flight (or just-finished)
+        // background download task — this is the source of truth whenever
+        // it's available. The model-status heuristic below only covers
+        // entries left over from before this map existed (e.g. across a
+        // server restart mid-download).
+        if let Some(p) = backend.download_progress.get(&model_id) {
+            let progress = if p.total_bytes > 0 {
+                (p.bytes_downloaded as f64 / p.total_bytes as f64).min(1.0)
+            } else {
+                0.0
+            };
+            return Json(serde_json::json!({
+                "progress": progress,
+                "status": p.status,
+                "bytes_downloaded": p.bytes_downloaded,
+                "total_bytes": p.total_bytes,
+                "error": p.error,
+            }));
+        }
+
         if let Some(model) = backend.models.iter().find(|m| m.name == model_id) {
             let (progress, status) = match model.status.as_str() {
                 "Downloading" => (0.0, "downloading"),
@@ -5406,6 +5555,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             mcp::default_config_path(),
         ))),
         pending_tool_calls: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+        download_progress: HashMap::new(),
     }));
 
     // Background CPU/RAM/GPU sampler — keeps /api/metrics non-blocking.

@@ -96,6 +96,41 @@ export interface McpServer {
   requires_confirmation: boolean;
 }
 
+export interface ToolCallTrace {
+  tool: string;
+  server: string;
+  result: string;
+  success: boolean;
+}
+
+export interface PendingToolCall {
+  request_id: string;
+  tool: string;
+  server: string;
+  args: unknown;
+}
+
+export interface ChatMessage {
+  role: 'user' | 'assistant';
+  content: string;
+  id: string;
+  timestamp: string;
+  model?: string;
+  toolCalls?: ToolCallTrace[];
+  pendingToolCall?: PendingToolCall;
+}
+
+export interface DownloadProgressEntry {
+  progress: number;
+  bytesDownloaded?: number;
+  totalBytes?: number;
+}
+
+type Updater<T> = T | ((prev: T) => T);
+function resolveUpdater<T>(updater: Updater<T>, prev: T): T {
+  return typeof updater === 'function' ? (updater as (prev: T) => T)(prev) : updater;
+}
+
 interface AppState {
   apiBase: string;
   backendOnline: boolean;
@@ -112,6 +147,20 @@ interface AppState {
   activeTab: number;
   mcpServers: McpServer[];
 
+  // Chat and model-download state live here (rather than component-local
+  // useState) because the app only renders the active tab — switching tabs
+  // unmounts ChatTab/ModelsTab. A streaming chat reply or a download's
+  // progress poll loop is a plain async closure that keeps running
+  // regardless of unmount, but its setState calls become no-ops against a
+  // torn-down component. Storing the data here means it keeps updating in
+  // the background and the tab picks up right where it left off on remount.
+  chatMessages: ChatMessage[];
+  chatLoading: boolean;
+  chatStreamingId: string | null;
+  chatError: string | null;
+  pendingModelActions: Record<string, string>;
+  downloadProgress: Record<string, DownloadProgressEntry>;
+
   setApiBase: (base: string) => void;
   setBackendOnline: (online: boolean) => void;
   setCurrentModel: (model: string) => void;
@@ -126,6 +175,22 @@ interface AppState {
   setSelectedModel: (model: string | null) => void;
   setActiveTab: (tab: number) => void;
   setMcpServers: (servers: McpServer[]) => void;
+  setChatMessages: (updater: Updater<ChatMessage[]>) => void;
+  setChatLoading: (loading: boolean) => void;
+  setChatStreamingId: (id: string | null) => void;
+  setChatError: (error: string | null) => void;
+  setPendingModelActions: (updater: Updater<Record<string, string>>) => void;
+  setDownloadProgress: (updater: Updater<Record<string, DownloadProgressEntry>>) => void;
+}
+
+const CHAT_STORAGE_KEY = 'ghostlink-chat-messages';
+function loadStoredChatMessages(): ChatMessage[] {
+  try {
+    const raw = localStorage.getItem(CHAT_STORAGE_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch {
+    return [];
+  }
 }
 
 export const useAppStore = create<AppState>((set) => ({
@@ -143,6 +208,12 @@ export const useAppStore = create<AppState>((set) => ({
   selectedModel: null,
   activeTab: 0,
   mcpServers: [],
+  chatMessages: loadStoredChatMessages(),
+  chatLoading: false,
+  chatStreamingId: null,
+  chatError: null,
+  pendingModelActions: {},
+  downloadProgress: {},
 
   setApiBase: (base) => set({ apiBase: base }),
   setBackendOnline: (online) => set({ backendOnline: online }),
@@ -158,4 +229,21 @@ export const useAppStore = create<AppState>((set) => ({
   setSelectedModel: (model) => set({ selectedModel: model }),
   setActiveTab: (tab) => set({ activeTab: tab }),
   setMcpServers: (servers) => set({ mcpServers: servers }),
+  setChatMessages: (updater) =>
+    set((state) => {
+      const chatMessages = resolveUpdater(updater, state.chatMessages);
+      try {
+        localStorage.setItem(CHAT_STORAGE_KEY, JSON.stringify(chatMessages.slice(-200)));
+      } catch {
+        /* quota */
+      }
+      return { chatMessages };
+    }),
+  setChatLoading: (loading) => set({ chatLoading: loading }),
+  setChatStreamingId: (id) => set({ chatStreamingId: id }),
+  setChatError: (error) => set({ chatError: error }),
+  setPendingModelActions: (updater) =>
+    set((state) => ({ pendingModelActions: resolveUpdater(updater, state.pendingModelActions) })),
+  setDownloadProgress: (updater) =>
+    set((state) => ({ downloadProgress: resolveUpdater(updater, state.downloadProgress) })),
 }));
