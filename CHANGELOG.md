@@ -193,8 +193,8 @@ Root-caused two classes of flaky test rather than papering over symptoms:
 ### ✅ Validation
 
 - `cargo build --workspace --all-targets`, `cargo clippy --workspace
-  --all-targets` (zero warnings), `cargo test --workspace` (83 + 134 + 7 + 28
-  + 19, all passing) — checked repeatedly (11+ consecutive full-workspace
+  --all-targets` (zero warnings), `cargo test --workspace` (83+134+7+28+19
+  tests, all passing) — checked repeatedly (11+ consecutive full-workspace
   runs) specifically to confirm the flaky-test root causes above are actually
   fixed, not just quieter.
 - `cargo bench --package ghostlink-core` (criterion + `baseline.rs` +
