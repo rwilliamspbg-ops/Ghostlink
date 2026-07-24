@@ -411,6 +411,18 @@ impl ClusterState {
             .collect()
     }
 
+    /// Get the count of active nodes without cloning metrics
+    pub fn active_nodes_count(&self) -> usize {
+        let metrics = self
+            .metrics
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        metrics
+            .values()
+            .filter(|m| m.status == NodeStatus::Active)
+            .count()
+    }
+
     /// Get total cluster VRAM
     pub fn total_vram_gb(&self) -> f32 {
         f64::from_bits(self.total_vram_cache.load(Ordering::Acquire)) as f32
@@ -470,7 +482,7 @@ impl ClusterHealthMonitor {
 
     /// Get health report
     pub fn health_report(&self) -> String {
-        let active_count = self.cluster.active_nodes().len();
+        let active_count = self.cluster.active_nodes_count();
         let total_nodes = self.cluster.nodes_snapshot().len();
 
         format!(

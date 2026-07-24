@@ -382,13 +382,28 @@ pub fn assign_layers_with_fault_tolerance(
     // First pass: greedy assignment
     let assignments = assign_layers_sequentially(&nodes, layers)?;
 
-    // Calculate average delivery ratio across all nodes
-    let total_delivery_ratio = cluster
-        .active_nodes()
-        .iter()
-        .map(|m| m.delivery_ratio)
-        .sum::<f32>()
-        / cluster.active_nodes().len() as f32;
+    // Calculate average delivery ratio across all nodes in a single lock pass to avoid clone/allocation and lock contention
+    let (sum_delivery, active_count) = {
+        let metrics = cluster
+            .metrics
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let mut sum = 0.0f32;
+        let mut count = 0usize;
+        for metric in metrics.values() {
+            if metric.status == NodeStatus::Active {
+                sum += metric.delivery_ratio;
+                count += 1;
+            }
+        }
+        (sum, count)
+    };
+
+    let total_delivery_ratio = if active_count > 0 {
+        sum_delivery / active_count as f32
+    } else {
+        1.0
+    };
 
     // Select quantization mode based on health
     let quantization_mode = select_quantization_mode(total_delivery_ratio);
