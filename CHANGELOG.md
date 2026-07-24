@@ -4,6 +4,76 @@ All notable changes to Ghostlink Studio are documented here.
 
 ---
 
+## [1.4.5] - 2026-07-24 (HuggingFace downloads: hardware-aware quantization, complete shard downloads)
+
+A user-reported issue ("downloads doesn't work properly and completely for my
+machine") traced to `download_hf_model` always taking whichever `.gguf` file
+HuggingFace's API happened to list first, with no regard for size or for
+models split across multiple shard files.
+
+### 🐛 Correctness
+
+- **`download_hf_model` ignored file size entirely.** It always downloaded
+  `gguf_files[0]` — the first `.gguf` sibling HuggingFace's API returned —
+  regardless of whether that was a tiny IQ2 quant or a multi-GB F16/Q8_0
+  file. On a repo that lists largest-first, this could grab a file far too
+  big for the local machine's VRAM. Added `quant_rank` (scores common GGUF
+  quantization tags — IQ1 through F32 — by relative size/fidelity) and
+  `target_quant_rank_for_vram` (maps detected local VRAM to a sensible
+  target rank, e.g. Q4_K_M-tier for this class of hardware, lower for
+  genuinely constrained VRAM) so the download picks a quantization that
+  actually fits, instead of an arbitrary one.
+- **Split (sharded) GGUF files were silently broken.** HuggingFace repos
+  commonly split one quantization across multiple files named
+  `<name>-00001-of-00005.gguf`, etc. The old code could pick just one shard
+  of a multi-file split, "successfully" complete the download, and leave an
+  unloadable partial model on disk (llama.cpp requires every shard present
+  alongside the first). Added `group_gguf_shards`, which detects the
+  `-NNNNN-of-NNNNN` naming convention and groups a split model's files
+  together so every shard of the chosen quantization downloads, not just
+  the first one encountered.
+- Moved these three new functions (plus the selection logic) out of their
+  original nesting inside `start_openai_api_server` to module scope — they're
+  pure functions with no dependency on handler state, and nesting made them
+  unreachable from the existing test module. `download_hf_model` itself
+  (the actual HTTP-calling code) stays where it was and calls out to them.
+
+### ✅ Validation
+
+- 4 new unit tests: quantization ranking order, VRAM-based target scaling,
+  selection avoiding the naive first-listed file, and shard grouping keeping
+  a split set together in the correct order.
+- Live end-to-end test against the real HuggingFace API (isolated test
+  instance, separate port and models directory — never touching the
+  actual running server): queried `bartowski/Llama-3.2-1B-Instruct-GGUF`
+  (18 real quantization files), correctly selected `IQ3_M` for this
+  machine's ~4GB VRAM rather than the first-listed file, downloaded
+  completely (657MB, valid `GGUF` magic header confirmed, no truncation).
+- `cargo build --workspace --all-targets`, `cargo clippy --workspace
+  --all-targets -- -D warnings` (zero warnings), `cargo fmt --all --check`,
+  `cargo test --workspace` (87+134+7+28+19, all passing) — all clean.
+
+### ⚠️ Operational caveats
+
+- The quantization-rank-to-VRAM mapping is a heuristic based on the
+  quantization tag alone — it doesn't account for the underlying model's
+  parameter count (a 1B model in Q8_0 and a 70B model in Q8_0 have wildly
+  different memory footprints for the same tag). It errs conservative
+  (prefers a rank at or below the target on a tie) rather than risking an
+  out-of-memory load, which may pick a lower-fidelity quantization than
+  strictly necessary for small models — a correctness/safety tradeoff, not
+  an oversight.
+- While validating this live, a llama-server PID change was briefly
+  suspected to be caused by the test instance's model-load path (Windows'
+  port-cleanup step kills `llama-server.exe` by image name, not by port —
+  a real hazard for any second instance on the same machine). Investigation
+  confirmed it was unrelated concurrent model-switching activity on the
+  live instance, not this test — but the model-*load* step was deliberately
+  not re-exercised against the live server to avoid that risk entirely;
+  the download/file-integrity validation above stood on its own.
+
+---
+
 ## [1.4.4] - 2026-07-24 (Real incremental streaming for chat and model pulls)
 
 Chat "streaming" and Ollama model-pull "streaming" both looked like streaming
