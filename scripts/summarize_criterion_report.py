@@ -14,7 +14,11 @@ def collect_estimates(root: Path) -> dict[str, float]:
         if "/new/" not in str(estimates_path).replace("\\", "/"):
             continue
         rel = estimates_path.relative_to(root)
-        bench_key = str(rel.parent.parent)
+        # Use as_posix() so keys are stable across platforms — on Windows,
+        # str(Path) renders with backslashes, which would silently produce
+        # different keys than the same benchmark run on Linux/macOS CI,
+        # breaking any cross-platform diff/trend comparison of this file.
+        bench_key = rel.parent.parent.as_posix()
         payload = json.loads(estimates_path.read_text(encoding="utf-8"))
         mean = payload.get("mean", {}).get("point_estimate")
         if mean is None:

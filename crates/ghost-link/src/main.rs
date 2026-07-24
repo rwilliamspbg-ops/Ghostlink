@@ -24,7 +24,7 @@ use ghostlink_core::planning::{
 use ghostlink_core::protocol::NodeResources;
 use ghostlink_core::protocol::{DiscoveryFrame, FrameKind};
 use ghostlink_core::runtime::{
-    build_token_schedule, execute_pipeline_tcp_loopback, execute_pipeline_tcp_loopback_with_config,
+    build_token_schedule, execute_pipeline_tcp_loopback_with_config,
     execute_pipeline_with_rebalance_and_measured, DeviceKind, PipelinePlan, TcpTransportConfig,
 };
 use ghostlink_core::xdp::probe_xdp_support;
@@ -1206,7 +1206,7 @@ fn print_flow(opts: FlowOptions) -> Result<()> {
         })
         .collect();
 
-    let nodes = cluster.nodes();
+    let nodes = cluster.nodes_snapshot();
     let assignments = assign_layers_with_runtime_profile(&nodes, &layers, &local_profile)
         .map_err(|e| anyhow::anyhow!(e))?;
 
@@ -1912,15 +1912,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         let penalty = req.penalty.unwrap_or(1.1);
         let max_tokens = req.max_tokens.unwrap_or(1024).clamp(16, 4096);
 
-        let (
-            model,
-            cluster,
-            chat_req_id,
-            inference_backend,
-            native_engine_client,
-            ollama_client,
-            settings,
-        ) = {
+        let (model, chat_req_id, inference_backend, native_engine_client, ollama_client, settings) = {
             let mut backend = lock_state(&state);
             backend.chat_requests = backend.chat_requests.saturating_add(1);
             let model = if req.model.trim().is_empty() {
@@ -1930,7 +1922,6 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             };
             (
                 model,
-                Arc::clone(&backend.cluster),
                 backend.chat_requests,
                 backend.inference_backend,
                 backend.native_engine_client.clone(),
@@ -1939,144 +1930,122 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             )
         };
 
-        let nodes = cluster.nodes();
-        let total_vram = cluster.total_vram_gb();
-        let layer_count = (total_vram * 2.0).clamp(8.0, 60.0) as usize;
-        let layers: Vec<LayerSpec> = (0..layer_count)
-            .map(|index| LayerSpec {
-                index,
-                vram_gb: (total_vram / (layer_count as f32 + 1.0)).min(0.4),
-                num_weights: 500_000_000 / 60,
-            })
-            .collect();
-
-        let profile = detect_runtime_profile("studio-api");
         let exec_tokens = chat_exec_token_budget(32);
-        let exec_micro_batch = chat_exec_micro_batch();
-        let mut execution_info = String::new();
-        let result = match assign_layers_with_runtime_profile(&nodes, &layers, &profile) {
-            Ok(assignments) => {
-                let device_map = build_device_map_from_cluster(&profile, &cluster);
-                let pipeline_plan = PipelinePlan::from_assignments(&assignments, &device_map);
-                let pipeline_plan_clone = pipeline_plan.clone();
+        let gen_started = Instant::now();
 
-                let exec_result = if nodes.len() > 1 {
-                    ghostlink_core::runtime::execute_pipeline_distributed(
-                        &pipeline_plan,
-                        exec_tokens,
-                        exec_micro_batch,
-                        tcp_transport_config_from_env(),
-                        &cluster,
-                        None,
-                        None,
-                    )
-                    .ok()
-                } else {
-                    execute_pipeline_tcp_loopback(&pipeline_plan, exec_tokens, exec_micro_batch)
-                        .ok()
-                };
+        let (response_text, real_inference, backend_used, gen_tokens, gen_tps, gen_latency_ms) =
+            match inference_backend {
+                InferenceBackend::Ollama => {
+                    let ollama_temp = temp;
+                    let ollama_top_p = top_p;
+                    let ollama_top_k = top_k;
+                    let ollama_penalty = penalty;
+                    let ollama_max_tokens = max_tokens;
+                    let ollama_model = model.clone();
 
-                if let Some(ref exec) = exec_result {
-                    let mut backend = lock_state(&state);
-                    backend.last_latency_ms = exec.avg_token_latency_ms;
-                    let tokens_per_sec = exec.throughput_tokens_per_sec;
-                    backend.last_tokens_per_sec = tokens_per_sec;
-                    backend.inference_metrics.record(
-                        exec.avg_token_latency_ms,
-                        exec.token_count.min(u32::MAX as usize) as u32,
-                        Some(tokens_per_sec),
-                        true,
-                    );
-                    for stage in &exec.stage_stats {
-                        if let Some(stage_p) = pipeline_plan_clone.stages.get(stage.stage_idx) {
-                            backend.cluster.get_metrics_mut(&stage_p.node_id, |m| {
-                                // Fabric path stores latency in microseconds EMA.
-                                m.record_latency(stage.avg_compute_ms * 1000.0);
-                                // Keep fabric GB/s field separate; store tok/s scaled lightly
-                                // for dashboard fabric graphs only (not GUI tokens/s).
-                                m.record_throughput(tokens_per_sec / 1000.0);
-                            });
-                        }
+                    match ollama_client
+                        .generate(
+                            &ollama_model,
+                            &prompt,
+                            ollama_temp,
+                            ollama_top_p,
+                            ollama_top_k,
+                            ollama_penalty,
+                            ollama_max_tokens,
+                        )
+                        .await
+                    {
+                        Ok(text) => (
+                            text,
+                            true,
+                            InferenceBackend::Ollama.as_str(),
+                            None,
+                            None,
+                            None,
+                        ),
+                        Err(err) => (
+                            format!(
+                                "Ollama generation failed for model '{}': {}",
+                                ollama_model, err
+                            ),
+                            false,
+                            InferenceBackend::Ollama.as_str(),
+                            None,
+                            None,
+                            None,
+                        ),
                     }
                 }
-                exec_result
-            }
-            Err(_) => None,
-        };
-
-        if let Some(exec) = result {
-            execution_info = format!(
-                " (Throughput: {:.2} tok/s, Latency: {:.2} ms)",
-                exec.throughput_tokens_per_sec, exec.avg_token_latency_ms
-            );
-        }
-
-        let (response_text, real_inference, backend_used) = match inference_backend {
-            InferenceBackend::Ollama => {
-                let ollama_temp = temp;
-                let ollama_top_p = top_p;
-                let ollama_top_k = top_k;
-                let ollama_penalty = penalty;
-                let ollama_max_tokens = max_tokens;
-                let ollama_model = model.clone();
-
-                match ollama_client
-                    .generate(
-                        &ollama_model,
-                        &prompt,
-                        ollama_temp,
-                        ollama_top_p,
-                        ollama_top_k,
-                        ollama_penalty,
-                        ollama_max_tokens,
-                    )
+                InferenceBackend::Native => match native_engine_client
+                    .generate(&model, &prompt, exec_tokens, 0.7, 0.9, 40, 1.1, &settings.native_engine)
                     .await
                 {
-                    Ok(text) => (
-                        text,
-                        true,
-                        InferenceBackend::Ollama.as_str(),
+                    Ok(gen) => (
+                        gen.text,
+                        gen.real_inference,
+                        InferenceBackend::Native.as_str(),
+                        gen.tokens_generated,
+                        gen.tokens_per_sec,
+                        gen.latency_ms,
                     ),
                     Err(err) => (
                         format!(
-                            "Ollama generation failed for model '{}': {}",
-                            ollama_model, err
+                            "Ghostlink native backend executed request #{} on model '{}'. Prompt length: {} chars. Native error: {}",
+                            chat_req_id,
+                            model,
+                            prompt.len(),
+                            err
                         ),
                         false,
-                        InferenceBackend::Ollama.as_str(),
+                        InferenceBackend::Native.as_str(),
+                        None,
+                        None,
+                        None,
                     ),
-                }
+                },
+            };
+
+        // Real, measured latency/throughput from this actual generation call.
+        // Previously this handler also ran a full synthetic fabric-pipeline
+        // simulation (execute_pipeline_tcp_loopback/_distributed) on every
+        // request purely to produce a decorative throughput string — pure
+        // overhead (measured via `cargo bench`: ~0.3ms up to 40ms+ per request
+        // depending on stage count) that never reflected the real backend.
+        // This mirrors the pattern `finish_chat_response` already uses for
+        // the GUI chat path: prefer the backend's own reported numbers, fall
+        // back to wall-clock/word-count estimates otherwise.
+        let wall_ms = (gen_started.elapsed().as_secs_f32() * 1000.0).max(0.1);
+        let latency_ms = gen_latency_ms.unwrap_or(wall_ms);
+        let tokens_out =
+            gen_tokens.unwrap_or_else(|| (response_text.split_whitespace().count() as u32).max(1));
+        let tokens_per_sec = gen_tps.or_else(|| {
+            if real_inference && latency_ms > 0.0 {
+                Some(tokens_out as f32 / (latency_ms / 1000.0))
+            } else {
+                None
             }
-InferenceBackend::Native => match native_engine_client
-            .generate(&model, &prompt, exec_tokens, 0.7, 0.9, 40, 1.1, &settings.native_engine)
-            .await
-            {
-                Ok(gen) => (
-                    gen.text,
-                    gen.real_inference,
-                    InferenceBackend::Native.as_str(),
-                ),
-                Err(err) => (
-                    format!(
-                        "Ghostlink native fabric backend executed request #{} on model '{}'. Prompt length: {} chars.{} Native error: {}",
-                        chat_req_id,
-                        model,
-                        prompt.len(),
-                        execution_info,
-                        err
-                    ),
-                    false,
-                    InferenceBackend::Native.as_str(),
-                ),
-            },
-        };
+        });
+
+        {
+            let mut backend = lock_state(&state);
+            backend.last_latency_ms = latency_ms;
+            if let Some(tps) = tokens_per_sec {
+                backend.last_tokens_per_sec = tps;
+            }
+            backend.inference_metrics.record(
+                latency_ms,
+                tokens_out,
+                tokens_per_sec,
+                real_inference,
+            );
+        }
 
         let response = Json(ChatCompletionResponse {
             id: format!("chatcmpl-{}", rand::random::<u32>()),
             object: "chat.completion".to_string(),
             created: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
-                .unwrap()
+                .unwrap_or_default()
                 .as_secs(),
             model: model.clone(),
             choices: vec![Choice {
@@ -2186,7 +2155,18 @@ InferenceBackend::Native => match native_engine_client
             "https://huggingface.co/{}/resolve/main/{}",
             model_id, filename
         );
-        let dest_path = models_dir.join(filename);
+        // `filename` comes straight from the remote HuggingFace API response
+        // (`rfilename`) and may contain nested-path separators or, in the
+        // worst case, an absolute path. `PathBuf::join` silently discards the
+        // base directory when given an absolute path, and any path
+        // separators could otherwise let a crafted repo write outside
+        // `models_dir`. Only the file's base name is ever meaningful here.
+        let safe_filename = std::path::Path::new(filename.as_str())
+            .file_name()
+            .map(|f| f.to_string_lossy().into_owned())
+            .filter(|f| !f.is_empty())
+            .unwrap_or_else(|| "download.gguf".to_string());
+        let dest_path = models_dir.join(&safe_filename);
 
         if dest_path.exists() {
             return Ok(dest_path.to_string_lossy().to_string());
@@ -2576,9 +2556,8 @@ InferenceBackend::Native => match native_engine_client
             Ok(local_path) => {
                 let filename = std::path::Path::new(&local_path)
                     .file_name()
-                    .unwrap()
-                    .to_string_lossy()
-                    .to_string();
+                    .map(|f| f.to_string_lossy().to_string())
+                    .unwrap_or_else(|| local_path.clone());
                 let name = filename
                     .strip_suffix(".gguf")
                     .unwrap_or(&filename)
@@ -2836,7 +2815,7 @@ InferenceBackend::Native => match native_engine_client
             manual_workers.iter().map(|w| w.id.clone()).collect();
         let mut workers = manual_workers;
 
-        for node in cluster.nodes() {
+        for node in cluster.nodes_snapshot().iter() {
             if !seen.insert(node.id.clone()) {
                 continue;
             }
@@ -2961,8 +2940,7 @@ InferenceBackend::Native => match native_engine_client
         let (inf, node_count, cluster_vram, uptime_s, backend_name) = {
             let backend = lock_state(&state);
             let cluster = Arc::clone(&backend.cluster);
-            let nodes = cluster.nodes();
-            let node_count = nodes.len();
+            let node_count = cluster.node_count();
             let cluster_vram = cluster.total_vram_gb();
             let inf = backend.inference_metrics.snapshot();
             let uptime_s = backend.started_at.elapsed().as_secs_f32();
@@ -4953,15 +4931,21 @@ InferenceBackend::Native => match native_engine_client
         } else {
             -1
         };
-        if ngl > 0 {
-            settings.ngl = ngl;
-            // Also set the env var so NativeEngineClient::get_ngl() picks it up
-            std::env::set_var("GHOSTLINK_LLAMA_NGL", ngl.to_string());
-            eprintln!(
-                "[startup] Auto-configured ngl={} from detected VRAM ({:.1} GB)",
-                ngl, profile.node_resources.vram_gb
-            );
-        }
+        // Apply unconditionally, including ngl == -1 (below the lowest VRAM
+        // tier, or no GPU detected at all — by far the most common case on a
+        // GPU-less or low-VRAM host). Previously gated on `ngl > 0`, which
+        // silently skipped both the settings update and the env var for this
+        // case, leaving GHOSTLINK_LLAMA_NGL unset. native_engine.rs's
+        // get_ngl() then fell through to its own -1 fallback anyway, but
+        // unset -1 used to make the llama-server launch omit `-ngl` entirely
+        // (defaulting to CPU-only) instead of explicitly passing `-ngl -1`
+        // to let llama-server auto-decide.
+        settings.ngl = ngl;
+        std::env::set_var("GHOSTLINK_LLAMA_NGL", ngl.to_string());
+        eprintln!(
+            "[startup] Auto-configured ngl={} from detected VRAM ({:.1} GB)",
+            ngl, profile.node_resources.vram_gb
+        );
     }
 
     // Auto-compute threads from available parallelism if still at default (4)
@@ -5199,32 +5183,6 @@ API Server Online. Ready for connections."
     })?;
 
     Ok(())
-}
-
-fn build_device_map_from_cluster(
-    local_profile: &ghostlink_core::host::RuntimeProfile,
-    cluster: &ClusterState,
-) -> HashMap<String, DeviceKind> {
-    let local_device = match local_profile.acceleration_mode {
-        ghostlink_core::host::AccelerationMode::Gpu => DeviceKind::Gpu,
-        ghostlink_core::host::AccelerationMode::Neon => DeviceKind::Npu,
-        _ => DeviceKind::Cpu,
-    };
-
-    let mut map = HashMap::new();
-    for node in cluster.nodes() {
-        if node.id == local_profile.node_resources.id {
-            map.insert(node.id, local_device);
-        } else {
-            let device = if node.vram_gb > 0.0 {
-                DeviceKind::Gpu
-            } else {
-                DeviceKind::Cpu
-            };
-            map.insert(node.id, device);
-        }
-    }
-    map
 }
 
 fn build_device_map(

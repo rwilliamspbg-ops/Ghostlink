@@ -4,6 +4,222 @@ All notable changes to Ghostlink Studio are documented here.
 
 ---
 
+## [1.4.2] - 2026-07-24 (Correctness sweep, GPU offload fix, hardware-detection latency, flaky-test root cause)
+
+A broad correctness and performance pass across `ghostlink-core` and `ghost-link`,
+followed by two targeted sweeps on inference-path overhead and GPU utilization.
+Prioritized by measured evidence (`cargo bench`, repeated `cargo test --workspace`
+runs) over assumption throughout.
+
+### 🔒 Security
+
+- **`discovery.rs`: `enforce_auth: true` with no token configured silently
+  accepted unauthenticated UDP discovery frames.** `decode_datagram_with_options`
+  only gated authentication on whether `auth_token` was `Some`, never checking
+  `enforce_auth` itself. An operator setting `enforce_auth: true` while
+  `auth_token` was accidentally left `None` (e.g. an empty env-var lookup) got
+  silent fail-open behavior instead of an error — any well-formed datagram from
+  any sender on the LAN was accepted into a cluster believed to be running in
+  secure mode. Now fails closed: all three discovery entry points
+  (`broadcast_and_collect`, `respond_once`, `serve_discovery_with_stats`) return
+  a config error immediately when this combination is detected.
+- **`main.rs`: path traversal in `download_hf_model`.** The local write path for
+  a downloaded model was built directly from a filename taken out of the
+  HuggingFace API's JSON response (`rfilename`), with no sanitization. A
+  malicious or mirrored HF-compatible repo could supply an absolute or
+  traversal-laced filename and write outside the models directory. Fixed to use
+  only the basename (`Path::file_name()`) for the local destination; the
+  outbound download URL still uses the original remote filename.
+
+### ⚡ Performance
+
+- **GPU offload (`-ngl`) was silently dropped, forcing CPU-only inference —
+  the most significant finding of this pass.** Two compounding bugs, both
+  rooted in the same "`-1` = let llama-server auto-decide" design intent being
+  implemented inconsistently:
+  - `main.rs`'s startup auto-configuration computed `ngl = -1` for the
+    below-4GB-VRAM / no-GPU-detected case (by far the most common real-world
+    case on a GPU-less or low-VRAM host) but only applied the result — and
+    logged anything at all — when `ngl > 0`, so this case silently no-oped.
+  - `native_engine.rs`'s command builder only passed `-ngl` to `llama-server`
+    when `ngl >= 0`, omitting the flag entirely for `-1`. llama-server's own
+    default when `-ngl` is absent is `0` (CPU-only) — the opposite of the
+    documented "auto-offload" intent. Confirmed against the project's own
+    validated launchers (`scripts/run_native_llama_server_stack.sh`,
+    `scripts/validate_native_llama_server.sh`), which already pass `-ngl -1`
+    as literal CLI text, that this llama-server build honors `-1` correctly.
+
+  Net effect before this fix: any launch path bypassing `launch.sh`'s own
+  env-var wiring (running the binary directly, Docker, a different launcher),
+  or simply having <4GB VRAM or an undetected GPU, resulted in fully CPU-only
+  inference with zero indication to the user. Both now apply/pass `-ngl`
+  unconditionally.
+- **Hardware detection (`SystemProfile::detect()`, Full mode): 3.96s → 1.41s
+  (~65%), measured via `cargo bench` on the same machine.** This runs once at
+  `SystemProfileWatcher::new()` (server startup) and on-demand from CLI/API
+  diagnostic paths. Root cause: ~8-10 external-process probes (PowerShell/CIM
+  queries, `wmic`, `nvidia-smi`) running strictly sequentially with no shared
+  state between them.
+  - Parallelized the six independent top-level probes (hostname/cpu/memory/
+    gpu/npu/network) via `std::thread::scope`.
+  - Found via in-process instrumentation that `detect_cpu_info()` alone cost
+    2.79s from two *separate* sequential `Get-CimInstance Win32_Processor`
+    calls (brand string, physical-core count) — parallelized those too
+    (down to 1.33s, then the memory total/available probes the same way).
+  - Replaced the DXGI `Add-Type` C# VRAM fallback (compiles inline C# via
+    PowerShell — ~1-2s) with a plain registry read of
+    `HardwareInformation.qwMemorySize` (~0.3s, the same technique GPU-Z uses),
+    falling back to `Add-Type` only if the registry value is absent.
+  - **Thundering-herd cache bug introduced by the above and fixed in the same
+    pass**: the cache lock was held only to check freshness, not across the
+    detection itself, so concurrent Fast-mode callers within the same instant
+    all missed the cache and independently launched their own full probe
+    battery — observed spiking to dozens of concurrent PowerShell processes
+    and destabilizing unrelated tests. Fixed by holding the lock across the
+    whole check-compute-populate sequence so concurrent callers serialize on
+    one detection. This is a real concurrent-request fix, not just a test fix.
+- **Chat completion hot path ran a full synthetic pipeline simulation on every
+  real request.** `handle_chat_completions` (`/v1/chat/completions`) executed
+  `execute_pipeline_tcp_loopback`/`execute_pipeline_distributed` — the same
+  benchmark-harness code with `sin()`-based fake compute used in
+  `tensor_streaming_fabric` benchmarks — synchronously before calling the real
+  backend, purely to produce a throughput/latency string that appeared only in
+  one narrow error-fallback message and was otherwise discarded. Measured cost
+  via `cargo bench`: ~0.3ms (single stage) up to 40ms average / 112ms peak
+  (multi-stage). Removed entirely; replaced with real measured latency/
+  throughput from the actual generation call (mirroring the pattern
+  `finish_chat_response` already used for the GUI chat path). The dashboard
+  metrics this fed now reflect real generation numbers instead of fabricated
+  ones.
+- **`ClusterState::nodes()` vs `nodes_snapshot()`: 25x cost gap (463ns vs
+  18ns).** `.nodes()` deep-clones every `NodeResources` (including owned
+  `String` fields) into a fresh `Vec`; `.nodes_snapshot()` is a cheap `Arc`
+  load. Fixed three production call sites in `main.rs` that only needed a
+  borrow — including `handle_gui_metrics` (a metrics-polling endpoint), which
+  was cloning the entire cluster node list solely to call `.len()` on it;
+  replaced with the already-existing zero-clone `cluster.node_count()`.
+- **`ring.rs`: `push_batch()` never tracked `overflow_count`.** The batched
+  hot path silently hid backpressure from monitoring while the single-item
+  `push()` path correctly counted it. Fixed to track both full-ring rejection
+  and partial-batch overflow.
+
+### 🐛 Correctness
+
+- **`protocol.rs`**: an off-by-one in `encode_payload_into`'s length check
+  spuriously rejected valid max-size payloads with a GPU name set; a missing
+  combined-length check in `DiscoveryFrame::encode` could panic (slice
+  out-of-bounds) on oversized combined field lengths instead of falling back
+  gracefully like its sibling overflow checks.
+- **`planning.rs`**: trailing zero-VRAM layers (e.g. bias-only layers) were
+  silently dropped from the placement plan instead of flushed; a
+  divide-by-zero/NaN path existed when all cluster nodes are marked `Failed`
+  (a real path via heartbeat timeout / network partition) while the node list
+  is still non-empty.
+- **`load_balance.rs`**: the first `update_balance_ratio` call could be
+  diluted by a stale EMA (`0.0 * 0.9 + ratio * 0.1`) instead of initializing
+  directly, because its "first call" detector incorrectly used an unrelated
+  counter as a proxy.
+- **`health.rs`**: a node already marked `Degraded` whose heartbeat then timed
+  out completely never transitioned to `Failed` (the guard only checked for
+  `Active`); `get_recommendation()` compared an averaged delivery ratio against
+  a stale running-*minimum* latency instead of the averaged latency, letting
+  one early lucky fast sample mask permanent degradation forever.
+- **`native_engine.rs`**: `has_running_llama_server` checked only that a
+  `Child` handle existed (true for any real PID), so a crashed-but-unreaped
+  llama-server process was reported as still running; fixed to use
+  `try_wait()`.
+- **`ollama.rs`**: HTTP error responses were silently swallowed and reported
+  as success in three places — streaming methods (`generate_stream`,
+  `chat_stream`, `pull_model_stream`) didn't check status before parsing,
+  silently yielding an empty-but-`Ok` stream on error; non-streaming write
+  methods (`pull_model`, `create_model`, `copy_model`, `delete_model`)
+  returned `Ok` for any readable body regardless of status; `unload_model`
+  treated a failed `/api/ps` call as "nothing running" instead of propagating
+  the connectivity error.
+- **`system_profile.rs`** (carried over from the hardware-detection
+  parallelization pass): a Windows dual-socket core-count bug undercounted
+  physical cores by half (fed directly into worker-count tuning); an AMX
+  capability check always reported `false` on real AMX hardware because it
+  tested a compile-time build flag instead of runtime CPUID.
+- **`runtime.rs`**: a p95-latency calculation used non-saturating
+  subtraction, inconsistent with two sibling implementations in the same
+  file that both defensively use `saturating_sub` for exactly this reason.
+
+### 🧪 Test reliability
+
+Root-caused two classes of flaky test rather than papering over symptoms:
+
+- **`native_engine` tests failing together under `cargo test --workspace`**:
+  traced to `has_running_llama_server_reflects_actual_process_state` using a
+  fixed `sleep(300ms)` and hoping a helper process had exited by then — flaky
+  under system load, and a panic here while holding a shared test-only mutex
+  poisoned it for two *unrelated* tests in the same file. Replaced the sleep
+  with a real `child.wait()` (deterministic regardless of scheduling delays).
+- **`discovery` UDP timing tests failing under load**: five tests shared a
+  "spawn responder thread, `sleep(50ms)`, then send traffic" pattern with two
+  additionally-tight per-attempt timeouts (45ms/260ms); widened for headroom.
+  The deeper root cause, however, was the `SystemProfile` thundering-herd
+  cache bug above — concurrent Fast-mode probes from unrelated tests spiking
+  CPU/process-table contention was starving these UDP tests of scheduling
+  time. Fixing the cache is what actually stabilized the suite.
+- Result: 11 consecutive full-workspace `cargo test` runs clean, versus
+  roughly 1-in-2 failing before.
+
+### 🛠️ Tooling
+
+- **`benches/baseline.rs`** hardcoded 5,000 iterations for the Full hardware
+  probe benchmark — at ~1.4s/call that's ~2 hours, silently making this
+  benchmark file unusable end-to-end. Reduced to 10 iterations.
+- **`scripts/summarize_criterion_report.py`** built benchmark keys via
+  `str(Path)`, which renders with backslashes on Windows — silently producing
+  keys like `autotune\accelerator_scale_f32_slice` instead of
+  `autotune/accelerator_scale_f32_slice`, breaking any cross-platform
+  diff/trend comparison of `artifacts/criterion-summary.json` between CI
+  runners (ubuntu/windows/macos). Fixed to use `.as_posix()`.
+- `artifacts/criterion-summary.json` refreshed via the project's own
+  `summarize_criterion_report.py` against a fresh `cargo bench` run (see
+  Operational caveats below on why `docs/PERF_BASELINE.json` was
+  deliberately **not** touched).
+
+### ✅ Validation
+
+- `cargo build --workspace --all-targets`, `cargo clippy --workspace
+  --all-targets` (zero warnings), `cargo test --workspace` (83 + 134 + 7 + 28
+  + 19, all passing) — checked repeatedly (11+ consecutive full-workspace
+  runs) specifically to confirm the flaky-test root causes above are actually
+  fixed, not just quieter.
+- `cargo bench --package ghostlink-core` (criterion + `baseline.rs` +
+  `tensor_streaming_fabric`) — current numbers captured in
+  `artifacts/criterion-summary.json`.
+
+### ⚠️ Operational caveats
+
+- **`docs/PERF_BASELINE.json` was deliberately not refreshed.** It's a real
+  CI-gating file (`production-gate.yml`'s drift check), generated by
+  `scripts/flow_perf_snapshot.py` and compared by `scripts/check_perf_drift.py`.
+  A supplementary local run on this dev machine (release, `exec_tokens=512`,
+  `micro_batch=8`, 5 runs, matching the committed profile's methodology)
+  showed `tcp` mode at `throughput_avg=180,659` / `p95_avg=2.80ms` /
+  `wall_avg=2.85ms` vs the committed `256,020` / `1.97ms` / `2.03ms`, and
+  `inmem` roughly flat (`468,035` vs `506,809`). This is **not** presented as
+  a regression — the committed baseline's `local_id`/`remote_id` values
+  (`iprada-16gb`/`zenbook-32gb`) indicate it was captured on different
+  physical hardware, making a direct comparison invalid. Refreshing this file
+  should go through the proper CI-driven re-baseline process on the actual
+  target runner, not an ad hoc single dev-box run.
+- All new benchmark numbers in this changelog and in
+  `artifacts/criterion-summary.json` were measured on one Windows dev machine
+  (AMD Ryzen AI 7 350, integrated Radeon 860M) — cross-reference against
+  README.md's benchmark table (measured on a different machine/OS/build
+  flags) only qualitatively, not as a direct before/after.
+- The GPU offload (`-ngl`) fix is a categorical correctness change (GPU used
+  vs. silently not used) that no microbenchmark in this repo captures — there
+  is no live `llama-server` + loaded model in this environment to measure
+  real tokens/sec against. Recommend a spot-check on real hardware with a
+  loaded model before/after this change.
+
+---
+
 ## [1.4.1] - 2026-07-23 (Performance: HTTP client reuse, LTO, KV cache primitive)
 
 A profiling pass across the core primitives (ring buffer, protocol, planning)

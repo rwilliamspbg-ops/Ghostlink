@@ -116,6 +116,11 @@ $env:GHOSTLINK_VRAM_GB=8
 $env:GHOSTLINK_COMPUTE_CAPABILITY="gpu"
 ```
 
+A full hardware probe (spawning several external commands: PowerShell/CIM
+queries on Windows, `nvidia-smi`, etc.) runs concurrently rather than
+sequentially — measured at ~1.4s on a Windows dev machine, down from ~4s when
+these ran one after another with no shared state between them.
+
 ## Performance
 
 Sub-microsecond core primitives drive Ghostlink's distributed inference fabric. Benchmarks
@@ -149,6 +154,14 @@ run on an **Intel i7-14700K (Linux/WSL2)** with `RUSTFLAGS="-C target-cpu=native
 ### Local llama-server tuning
 
 Native nodes enable Flash Attention, VRAM-scaled batch sizes, and Q8_0 KV cache by default. Prefer **Q4_K_M** / **IQ4_XS** over FP16/Q8_0 for ~1.5–2× decode speed. Override with `GHOSTLINK_LLAMA_SERVER_ARGS`. See [docs/LOCAL_INFERENCE_TUNING.md](docs/LOCAL_INFERENCE_TUNING.md).
+
+GPU layer offload (`-ngl`) is now always passed explicitly to `llama-server`,
+including the "auto-detect" case (`-ngl -1`, let llama-server decide) when no
+VRAM/GPU is detected or the corresponding env vars aren't set. Previously the
+flag was omitted entirely in that case, and llama-server's own default
+(`-ngl` absent) is CPU-only — meaning inference silently ran on CPU with no
+GPU offload and no warning on any launch path that didn't set
+`GHOSTLINK_VRAM_GB`/`GHOSTLINK_LLAMA_NGL` itself.
 
 Compiling with `RUSTFLAGS="-C target-cpu=native"` further improves performance by enabling CPU-specific instruction sets (opt-in; not set by default — a multi-node cluster can't assume every node shares one CPU microarchitecture).
 

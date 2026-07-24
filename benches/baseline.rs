@@ -377,7 +377,13 @@ fn main() {
     bench("autotune: detect_runtime_profile_fast", 20_000, || {
         let _ = detect_runtime_profile("bench-local");
     });
-    bench("autotune: detect_runtime_profile_full", 5_000, || {
+    // Full-mode detection spawns several external processes and costs over a
+    // second per call (measured via `cargo bench --bench criterion`) even
+    // after parallelizing it — 5_000 iterations here would take on the order
+    // of two hours. This custom `bench()` helper uses a fixed iteration count
+    // with no adaptive timing, unlike the criterion suite, so the count must
+    // be picked by hand per-operation.
+    bench("autotune: detect_runtime_profile_full", 10, || {
         let _ = detect_runtime_profile_with_mode("bench-local", ProbeMode::Full);
     });
     bench("autotune: load_balance 80 layers", 100_000, || {
