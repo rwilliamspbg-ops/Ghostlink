@@ -48,7 +48,7 @@ impl DashboardState {
 
     /// Update cluster state
     pub fn update_cluster(&mut self) {
-        let active_count = self.cluster.active_nodes().len();
+        let active_count = self.cluster.active_nodes_count();
         let total_nodes = self.cluster.nodes_snapshot().len();
         let quantization_label = match self.quantization_mode {
             QuantizationMode::None => "full precision",

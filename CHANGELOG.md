@@ -4,7 +4,7 @@ All notable changes to Ghostlink Studio are documented here.
 
 ---
 
-## [1.4.2] - 2026-07-24 (Correctness sweep, GPU offload fix, hardware-detection latency, flaky-test root cause)
+## [1.4.3] - 2026-07-24 (Correctness sweep, GPU offload fix, hardware-detection latency, flaky-test root cause)
 
 A broad correctness and performance pass across `ghostlink-core` and `ghost-link`,
 followed by two targeted sweeps on inference-path overhead and GPU utilization.
@@ -114,7 +114,14 @@ runs) over assumption throughout.
   silently dropped from the placement plan instead of flushed; a
   divide-by-zero/NaN path existed when all cluster nodes are marked `Failed`
   (a real path via heartbeat timeout / network partition) while the node list
-  is still non-empty.
+  is still non-empty. Reconciled with the independent `active_nodes_count()`/
+  single-pass-lock optimization to this same function that landed on `main`
+  in parallel (PR #158): kept that PR's more efficient single-lock-pass
+  implementation, but changed its zero-active-nodes fallback from `1.0` to
+  `0.0` — assuming a perfect delivery ratio when there is literally no
+  corroborating health data is optimistic in exactly the scenario (all nodes
+  failed/degraded) where it's least likely to be true; `0.0` selects the most
+  conservative quantization mode instead.
 - **`load_balance.rs`**: the first `update_balance_ratio` call could be
   diluted by a stale EMA (`0.0 * 0.9 + ratio * 0.1`) instead of initializing
   directly, because its "first call" detector incorrectly used an unrelated
@@ -169,7 +176,9 @@ Root-caused two classes of flaky test rather than papering over symptoms:
 
 - **`benches/baseline.rs`** hardcoded 5,000 iterations for the Full hardware
   probe benchmark — at ~1.4s/call that's ~2 hours, silently making this
-  benchmark file unusable end-to-end. Reduced to 10 iterations.
+  benchmark file unusable end-to-end. Fixed independently in both this branch
+  and `main` (see the `[1.4.2]` entry below) while this work was in progress;
+  reconciled to `main`'s 20-iteration count.
 - **`scripts/summarize_criterion_report.py`** built benchmark keys via
   `str(Path)`, which renders with backslashes on Windows — silently producing
   keys like `autotune\accelerator_scale_f32_slice` instead of
@@ -217,6 +226,43 @@ Root-caused two classes of flaky test rather than papering over symptoms:
   is no live `llama-server` + loaded model in this environment to measure
   real tokens/sec against. Recommend a spot-check on real hardware with a
   loaded model before/after this change.
+
+---
+
+## [1.4.2] - 2026-07-23 (Fix: `cargo bench` effectively hung for hours)
+
+### 🐛 Benchmarks
+
+- **`benches/baseline.rs`: `cargo bench --package ghostlink-core` looked hung** —
+  every other benchmark printed its result within seconds, then the run sat
+  with no output for a very long time before a maintainer would reasonably
+  conclude something had crashed. Root cause: `detect_runtime_profile_full`'s
+  bench call ran `ProbeMode::Full` for 5,000 measured iterations (plus this
+  harness's own warmup, `1000.min(iters/10)` = 500 more — 5,500 real calls
+  total). Unlike `ProbeMode::Fast` (TTL-cached), Full mode's `detect_gpus()`
+  spawns several real OS subprocesses per call with **no caching at all**
+  (`powershell`, `wmic`, `nvidia-smi`, `rocm-smi`, `vulkaninfo` — see
+  `system_profile.rs`). Measured directly: **3.92 seconds per call**. At
+  5,500 calls that's ~6 hours for one line of a benchmark suite meant to run
+  in a couple of minutes — not a hang, just an iteration count that was fine
+  for a cheap function and catastrophic for one that shells out repeatedly.
+  Reduced to 20 iterations (matching how expensive the operation actually
+  is); the full `cargo bench --package ghostlink-core --bench baseline` now
+  completes in ~1m30s end to end (warm build cache), verified by letting it
+  run to completion rather than assuming the fix worked.
+
+### ✅ Validation
+
+- `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`,
+  `cargo test --workspace`, `cargo audit` — all clean. One flaky failure
+  (`discovery::tests::respond_once_ignores_auth_mismatch_then_accepts_valid_request`)
+  seen once under full parallel test load, passed in isolation and on a
+  clean re-run of the full suite immediately after — pre-existing test
+  flakiness unrelated to this change (a one-line edit to a benchmark's
+  iteration count), not a regression it introduced.
+- Confirmed the fix by actually running the full benchmark suite to
+  completion (exit code 0, all expected output lines present, process exits
+  promptly) rather than assuming a smaller iteration count would be enough.
 
 ---
 

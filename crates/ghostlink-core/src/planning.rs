@@ -385,16 +385,38 @@ pub fn assign_layers_with_fault_tolerance(
     // First pass: greedy assignment
     let assignments = assign_layers_sequentially(&nodes, layers)?;
 
-    // Calculate average delivery ratio across all nodes. Snapshot the active
-    // set once: calling `active_nodes()` twice (once for the sum, once for
-    // the count) risked dividing by a different node count than was summed
-    // if a node's status changed between the two calls, and an empty active
-    // set (e.g. all nodes failed but still registered) would divide by zero.
-    let active_nodes = cluster.active_nodes();
-    let total_delivery_ratio = if active_nodes.is_empty() {
-        0.0
+    // Calculate average delivery ratio across all nodes in a single lock pass
+    // (avoids the clone/allocation of active_nodes() and the lock contention
+    // of taking it twice). Also avoids a real divide-by-zero/TOCTOU hazard:
+    // calling `active_nodes()` twice (once for the sum, once for the count)
+    // risked dividing by a different node count than was summed if a node's
+    // status changed between calls, and an empty active set (e.g. all nodes
+    // failed but still registered) would divide by zero.
+    let (sum_delivery, active_count) = {
+        let metrics = cluster
+            .metrics
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let mut sum = 0.0f32;
+        let mut count = 0usize;
+        for metric in metrics.values() {
+            if metric.status == NodeStatus::Active {
+                sum += metric.delivery_ratio;
+                count += 1;
+            }
+        }
+        (sum, count)
+    };
+
+    // Fall back to 0.0 (not 1.0) when there are zero active nodes to sample:
+    // this selects the most conservative quantization mode below. Assuming a
+    // perfect 1.0 ratio when we have literally no corroborating health data
+    // is optimistic in exactly the scenario (all nodes failed/degraded) where
+    // it's least likely to be true.
+    let total_delivery_ratio = if active_count > 0 {
+        sum_delivery / active_count as f32
     } else {
-        active_nodes.iter().map(|m| m.delivery_ratio).sum::<f32>() / active_nodes.len() as f32
+        0.0
     };
 
     // Select quantization mode based on health
