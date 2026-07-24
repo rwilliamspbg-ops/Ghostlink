@@ -1845,6 +1845,139 @@ struct PendingToolCall {
     args: serde_json::Value,
 }
 
+/// Rough size/quality rank for common GGUF quantization tags — higher
+/// means bigger file / higher fidelity. Used to pick a quantization that
+/// actually fits the local machine instead of an arbitrary file from the
+/// repo. Matched by substring against the uppercased filename; ties are
+/// broken by preferring the longest matching tag (so "Q3_K_M" doesn't
+/// get miscategorized by a shorter unrelated prefix).
+fn quant_rank(name_upper: &str) -> Option<i32> {
+    const TIERS: &[(&str, i32)] = &[
+        ("IQ1", 0),
+        ("IQ2_XXS", 1),
+        ("IQ2_XS", 2),
+        ("IQ2_S", 3),
+        ("IQ2_M", 3),
+        ("Q2_K", 3),
+        ("IQ3_XXS", 4),
+        ("IQ3_XS", 5),
+        ("Q3_K_S", 5),
+        ("IQ3_S", 5),
+        ("IQ3_M", 6),
+        ("Q3_K_M", 6),
+        ("Q3_K_L", 7),
+        ("IQ4_XS", 7),
+        ("IQ4_NL", 8),
+        ("Q4_0", 8),
+        ("Q4_1", 8),
+        ("Q4_K_S", 8),
+        ("Q4_K_M", 9),
+        ("Q5_0", 10),
+        ("Q5_1", 10),
+        ("Q5_K_S", 10),
+        ("Q5_K_M", 11),
+        ("Q6_K", 12),
+        ("Q8_0", 13),
+        ("F16", 14),
+        ("BF16", 14),
+        ("F32", 15),
+    ];
+    TIERS
+        .iter()
+        .filter(|(tag, _)| name_upper.contains(tag))
+        .max_by_key(|(tag, _)| tag.len())
+        .map(|(_, rank)| *rank)
+}
+
+/// Target quantization rank (see `quant_rank`) for a given amount of
+/// VRAM — aims for a comfortable sweet spot rather than the smallest or
+/// largest option technically available. Below 4GB in particular, most
+/// 7B+ full-precision or Q6/Q8 files won't fit at all, so favor a much
+/// smaller quantization there rather than picking whatever the repo
+/// happens to list first (previously: always `gguf_files[0]`, with no
+/// regard for size at all).
+fn target_quant_rank_for_vram(vram_gb: f32) -> i32 {
+    if vram_gb >= 16.0 {
+        12 // Q6_K
+    } else if vram_gb >= 12.0 {
+        11 // Q5_K_M
+    } else if vram_gb >= 8.0 || vram_gb >= 4.0 {
+        9 // Q4_K_M — the common "fits almost anywhere with partial offload" sweet spot
+    } else {
+        6 // Q3_K_M / IQ3_M for genuinely constrained VRAM
+    }
+}
+
+/// HuggingFace GGUF repos commonly split a single quantization across
+/// multiple files named `<name>-00001-of-00005.gguf`. Groups filenames
+/// that belong to the same split set together (by filename with the
+/// shard suffix stripped) so all shards of a chosen quantization get
+/// downloaded — previously only `gguf_files[0]` was ever fetched, which
+/// for a split model meant downloading one shard of a multi-file model
+/// and silently leaving it unloadable (llama.cpp requires every shard
+/// alongside the first). Each returned group is sorted by shard index.
+fn group_gguf_shards(files: &[String]) -> Vec<Vec<String>> {
+    use std::collections::BTreeMap;
+
+    let shard_re = |name: &str| -> Option<(String, u32)> {
+        // Matches "...-00001-of-00005.gguf" (case-insensitive "of").
+        let lower = name.to_ascii_lowercase();
+        let gguf_pos = lower.rfind(".gguf")?;
+        let stem = &name[..gguf_pos];
+        let of_pos = stem.to_ascii_lowercase().rfind("-of-")?;
+        let (before_of, after_of) = stem.split_at(of_pos);
+        let _total: u32 = after_of[4..].parse().ok()?;
+        let dash_pos = before_of.rfind('-')?;
+        let shard_idx: u32 = before_of[dash_pos + 1..].parse().ok()?;
+        let base = before_of[..dash_pos].to_string();
+        Some((base, shard_idx))
+    };
+
+    let mut groups: BTreeMap<String, Vec<(u32, String)>> = BTreeMap::new();
+    for file in files {
+        match shard_re(file) {
+            Some((base, idx)) => groups.entry(base).or_default().push((idx, file.clone())),
+            None => groups
+                .entry(file.clone())
+                .or_default()
+                .push((0, file.clone())),
+        }
+    }
+
+    groups
+        .into_values()
+        .map(|mut shards| {
+            shards.sort_by_key(|(idx, _)| *idx);
+            shards.into_iter().map(|(_, name)| name).collect()
+        })
+        .collect()
+}
+
+/// Picks the shard-group whose quantization rank is closest to the
+/// target for the detected VRAM, preferring a rank at or below the
+/// target (safe) over one above it (might not fit) when both are
+/// equally close. Falls back to the smallest available quantization if
+/// none can be ranked (unusual filenames) rather than failing outright.
+fn select_best_gguf_group(groups: &[Vec<String>], vram_gb: f32) -> Option<Vec<String>> {
+    let target = target_quant_rank_for_vram(vram_gb);
+    groups
+        .iter()
+        .filter(|g| !g.is_empty())
+        .min_by_key(|g| {
+            let upper = g[0].to_ascii_uppercase();
+            match quant_rank(&upper) {
+                Some(rank) => {
+                    let diff = (rank - target).abs();
+                    // Prefer <= target over > target on a tie in absolute distance.
+                    (diff, if rank > target { 1 } else { 0 }, rank)
+                }
+                None => (i32::MAX, 1, i32::MAX),
+            }
+        })
+        .cloned()
+        .or_else(|| groups.first().cloned())
+}
+
 fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
     use axum::{
         extract::{Path, Query, State},
@@ -2150,57 +2283,72 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             return Err("No GGUF files found in this repository. Try a GGUF-quantized variant (e.g. lmstudio-community/Meta-Llama-3-8B-Instruct-GGUF).".to_string());
         }
 
-        let filename = &gguf_files[0];
-        let file_url = format!(
-            "https://huggingface.co/{}/resolve/main/{}",
-            model_id, filename
-        );
-        // `filename` comes straight from the remote HuggingFace API response
-        // (`rfilename`) and may contain nested-path separators or, in the
-        // worst case, an absolute path. `PathBuf::join` silently discards the
-        // base directory when given an absolute path, and any path
-        // separators could otherwise let a crafted repo write outside
-        // `models_dir`. Only the file's base name is ever meaningful here.
-        let safe_filename = std::path::Path::new(filename.as_str())
-            .file_name()
-            .map(|f| f.to_string_lossy().into_owned())
-            .filter(|f| !f.is_empty())
-            .unwrap_or_else(|| "download.gguf".to_string());
-        let dest_path = models_dir.join(&safe_filename);
+        // Pick a quantization that fits this machine's VRAM instead of
+        // blindly taking whatever file the repo listed first, and pull every
+        // shard of a split GGUF instead of just one.
+        let vram_gb = detect_runtime_profile("hf-download").node_resources.vram_gb;
+        let groups = group_gguf_shards(&gguf_files);
+        let chosen_files = select_best_gguf_group(&groups, vram_gb)
+            .ok_or_else(|| "No usable GGUF file found in this repository".to_string())?;
 
-        if dest_path.exists() {
-            return Ok(dest_path.to_string_lossy().to_string());
+        let mut first_dest_path: Option<std::path::PathBuf> = None;
+        for filename in &chosen_files {
+            let file_url = format!(
+                "https://huggingface.co/{}/resolve/main/{}",
+                model_id, filename
+            );
+            // `filename` comes straight from the remote HuggingFace API response
+            // (`rfilename`) and may contain nested-path separators or, in the
+            // worst case, an absolute path. `PathBuf::join` silently discards the
+            // base directory when given an absolute path, and any path
+            // separators could otherwise let a crafted repo write outside
+            // `models_dir`. Only the file's base name is ever meaningful here.
+            let safe_filename = std::path::Path::new(filename.as_str())
+                .file_name()
+                .map(|f| f.to_string_lossy().into_owned())
+                .filter(|f| !f.is_empty())
+                .unwrap_or_else(|| "download.gguf".to_string());
+            let dest_path = models_dir.join(&safe_filename);
+
+            if !dest_path.exists() {
+                let resp = client
+                    .get(&file_url)
+                    .send()
+                    .await
+                    .map_err(|e| format!("Download error: {}", e))?;
+
+                if !resp.status().is_success() {
+                    return Err(format!("Failed to download file (HTTP {})", resp.status()));
+                }
+
+                if let Some(parent) = dest_path.parent() {
+                    fs::create_dir_all(parent).map_err(|e| format!("Dir error: {}", e))?;
+                }
+                let mut file = tokio::fs::File::create(&dest_path)
+                    .await
+                    .map_err(|e| format!("File error: {}", e))?;
+                let mut stream = resp;
+                while let Some(chunk) = stream
+                    .chunk()
+                    .await
+                    .map_err(|e| format!("Stream error: {}", e))?
+                {
+                    file.write_all(&chunk)
+                        .await
+                        .map_err(|e| format!("Write error: {}", e))?;
+                }
+                file.flush().await.ok();
+            }
+
+            if first_dest_path.is_none() {
+                first_dest_path = Some(dest_path);
+            }
         }
 
-        let resp = client
-            .get(&file_url)
-            .send()
-            .await
-            .map_err(|e| format!("Download error: {}", e))?;
-
-        if !resp.status().is_success() {
-            return Err(format!("Failed to download file (HTTP {})", resp.status()));
-        }
-
-        if let Some(parent) = dest_path.parent() {
-            fs::create_dir_all(parent).map_err(|e| format!("Dir error: {}", e))?;
-        }
-        let mut file = tokio::fs::File::create(&dest_path)
-            .await
-            .map_err(|e| format!("File error: {}", e))?;
-        let mut stream = resp;
-        while let Some(chunk) = stream
-            .chunk()
-            .await
-            .map_err(|e| format!("Stream error: {}", e))?
-        {
-            file.write_all(&chunk)
-                .await
-                .map_err(|e| format!("Write error: {}", e))?;
-        }
-        file.flush().await.ok();
-
-        Ok(dest_path.to_string_lossy().to_string())
+        Ok(first_dest_path
+            .expect("chosen_files is non-empty")
+            .to_string_lossy()
+            .to_string())
     }
 
     async fn handle_models(
@@ -7514,6 +7662,87 @@ mod tests {
         let map = build_device_map(&profile, "amdgpu", "n2");
         assert_eq!(map.get("amdgpu"), Some(&DeviceKind::Gpu));
         assert_eq!(map.get("n2"), Some(&DeviceKind::Gpu));
+    }
+
+    #[test]
+    fn quant_rank_orders_common_tags_by_size() {
+        assert!(quant_rank("MODEL-Q2_K.GGUF") < quant_rank("MODEL-Q4_K_M.GGUF"));
+        assert!(quant_rank("MODEL-Q4_K_M.GGUF") < quant_rank("MODEL-Q8_0.GGUF"));
+        assert!(quant_rank("MODEL-Q8_0.GGUF") < quant_rank("MODEL-F16.GGUF"));
+        // Longest-match tie-break: "Q3_K_M" must not be misread via a
+        // hypothetical shorter overlapping tag.
+        assert_eq!(
+            quant_rank("MODEL-Q3_K_M.GGUF"),
+            quant_rank("model-q3_k_m.gguf".to_uppercase().as_str())
+        );
+        assert_eq!(quant_rank("MODEL-UNKNOWNQUANT.GGUF"), None);
+    }
+
+    #[test]
+    fn target_quant_rank_scales_down_for_low_vram() {
+        let high = target_quant_rank_for_vram(24.0);
+        let mid = target_quant_rank_for_vram(8.0);
+        let low = target_quant_rank_for_vram(2.0);
+        assert!(low < mid);
+        assert!(mid <= high);
+    }
+
+    #[test]
+    fn select_best_gguf_group_picks_fitting_quant_not_first_listed() {
+        // Regression: previously `download_hf_model` always took whatever
+        // file HuggingFace's API listed first, regardless of size. A repo
+        // commonly lists a large quant before smaller ones.
+        let files = vec![
+            "model-F16.gguf".to_string(),
+            "model-Q8_0.gguf".to_string(),
+            "model-Q4_K_M.gguf".to_string(),
+            "model-Q2_K.gguf".to_string(),
+        ];
+        let groups = group_gguf_shards(&files);
+        // Below 4GB VRAM should land on a small/mid quant, never blindly on
+        // F16 (index 0, and the largest/most likely to fail to load).
+        let chosen = select_best_gguf_group(&groups, 3.5).expect("a group should be chosen");
+        assert_ne!(chosen, vec!["model-F16.gguf".to_string()]);
+        let rank = quant_rank(&chosen[0].to_ascii_uppercase()).expect("known tag");
+        assert!(
+            rank <= quant_rank("Q4_K_M").unwrap(),
+            "expected a Q4_K_M-or-smaller pick for 3.5GB VRAM, got rank {rank}"
+        );
+
+        // Higher VRAM should land on a noticeably bigger quant than the
+        // low-VRAM case, confirming the target actually scales with VRAM
+        // rather than always converging on the same answer.
+        let chosen_high = select_best_gguf_group(&groups, 24.0).expect("a group should be chosen");
+        let rank_high = quant_rank(&chosen_high[0].to_ascii_uppercase()).expect("known tag");
+        assert!(rank_high > rank);
+    }
+
+    #[test]
+    fn group_gguf_shards_keeps_split_files_together_in_order() {
+        // Regression: previously only the first shard of a split GGUF was
+        // ever downloaded, leaving an unloadable partial model on disk.
+        let files = vec![
+            "model-Q8_0-00002-of-00003.gguf".to_string(),
+            "model-Q4_K_M.gguf".to_string(),
+            "model-Q8_0-00001-of-00003.gguf".to_string(),
+            "model-Q8_0-00003-of-00003.gguf".to_string(),
+        ];
+        let groups = group_gguf_shards(&files);
+        let split_group = groups
+            .iter()
+            .find(|g| g.len() > 1)
+            .expect("the Q8_0 split set should be grouped together");
+        assert_eq!(
+            split_group,
+            &vec![
+                "model-Q8_0-00001-of-00003.gguf".to_string(),
+                "model-Q8_0-00002-of-00003.gguf".to_string(),
+                "model-Q8_0-00003-of-00003.gguf".to_string(),
+            ]
+        );
+        assert!(groups
+            .iter()
+            .any(|g| g == &vec!["model-Q4_K_M.gguf".to_string()]));
     }
 
     #[test]
