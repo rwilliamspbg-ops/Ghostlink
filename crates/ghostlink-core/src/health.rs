@@ -520,7 +520,7 @@ impl HealthMetrics {
             return "No data available".to_string();
         }
 
-        match (self.avg_delivery_ratio, self.min_latency_us) {
+        match (self.avg_delivery_ratio, self.avg_latency_us) {
             (ratio, latency) if ratio >= 0.95 && latency <= 10.0 => {
                 "Cluster is healthy. No action needed.".to_string()
             }
@@ -560,8 +560,13 @@ impl FaultDetector {
         for node in self.cluster.nodes_snapshot().iter() {
             if self.cluster.check_heartbeat_timeout(&node.id) {
                 if let Some(metrics) = self.cluster.get_metrics(&node.id) {
-                    // Check if node is already marked as failed
-                    if metrics.status == NodeStatus::Active {
+                    // Any node whose heartbeat has timed out should be marked
+                    // Failed, not just ones currently Active. This used to
+                    // check `status == Active`, so a node already marked
+                    // Degraded (e.g. by NetworkHealthMonitor) that then went
+                    // completely silent would never be detected as failed
+                    // here, and would never be reported in `failed_nodes`.
+                    if metrics.status != NodeStatus::Failed {
                         self.cluster.mark_failed(&node.id);
                         failed_nodes.push(node.id.clone());
                     }
@@ -703,6 +708,31 @@ mod tests {
     }
 
     #[test]
+    fn fault_detector_detects_failures_for_degraded_nodes() {
+        // Regression: detect_failures() used to only transition a node from
+        // Active -> Failed on heartbeat timeout. A node already marked
+        // Degraded (e.g. by NetworkHealthMonitor.check_all) that then went
+        // completely silent was never picked up, so it stayed Degraded
+        // forever and was never reported in the failed_nodes list.
+        let cluster = Arc::new(ClusterState::new());
+        cluster.register(NodeResources::new("node-a", 24.0, 64.0, "8.9", None));
+        cluster.get_metrics_mut("node-a", |metrics| {
+            metrics.status = NodeStatus::Degraded;
+        });
+
+        std::thread::sleep(Duration::from_secs(6));
+
+        let detector = FaultDetector::new(cluster.clone(), Duration::from_secs(1));
+        let failed = detector.detect_failures();
+
+        assert!(failed.contains(&"node-a".to_string()));
+        assert_eq!(
+            cluster.get_metrics("node-a").unwrap().status,
+            NodeStatus::Failed
+        );
+    }
+
+    #[test]
     fn fault_detector_recovers_nodes() {
         let cluster = Arc::new(ClusterState::new());
         cluster.register(NodeResources::new("node-a", 24.0, 64.0, "8.9", None));
@@ -731,6 +761,21 @@ mod tests {
 
         let recommendation = metrics.get_recommendation();
         assert!(recommendation.contains("healthy"));
+    }
+
+    #[test]
+    fn get_recommendation_uses_average_latency_not_minimum() {
+        // Regression: get_recommendation() used to key off `min_latency_us`
+        // instead of `avg_latency_us`, paired against `avg_delivery_ratio`.
+        // Since min_latency_us only ever decreases (or holds), a single fast
+        // sample early on would make the recommendation report "healthy"
+        // forever, no matter how bad subsequent (averaged) latency became.
+        let mut metrics = HealthMetrics::new();
+        metrics.record(1.0, 0.98);
+        metrics.record(200.0, 0.98);
+
+        let recommendation = metrics.get_recommendation();
+        assert!(!recommendation.contains("healthy"));
     }
 
     #[test]

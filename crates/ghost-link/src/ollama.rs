@@ -298,6 +298,23 @@ impl OllamaClient {
             .send()
             .await?;
 
+        // Without this check, an HTTP error response (model not found, bad
+        // request, etc.) flows into `stream_response`, which only forwards
+        // lines that parse as `{"response": ..., "done": ...}`. An error
+        // body like `{"error": "..."}` matches neither shape, so it was
+        // silently dropped and the caller got back an empty-but-Ok stream
+        // instead of any indication the request failed.
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp
+                .text()
+                .await
+                .unwrap_or_else(|_| "<unreadable body>".to_string());
+            return Err(Box::new(io::Error::other(format!(
+                "Ollama generate failed: HTTP {status} - {body}"
+            ))));
+        }
+
         let stream = Box::pin(tokio_stream::wrappers::ReceiverStream::new(
             Self::stream_response(resp).await?,
         ));
@@ -373,6 +390,17 @@ impl OllamaClient {
             .send()
             .await?;
 
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp
+                .text()
+                .await
+                .unwrap_or_else(|_| "<unreadable body>".to_string());
+            return Err(Box::new(io::Error::other(format!(
+                "Ollama chat failed: HTTP {status} - {body}"
+            ))));
+        }
+
         let data: ChatResponse = resp.json().await?;
         Ok(data)
     }
@@ -412,6 +440,21 @@ impl OllamaClient {
             .json(&request)
             .send()
             .await?;
+
+        // Same class of bug as `generate_stream`: an HTTP error body doesn't
+        // deserialize as `ChatResponse` (which requires `model`/`created_at`/
+        // `message`/`done`), so without this check it was silently dropped
+        // by `stream_chat_response` and the caller saw an empty Ok stream.
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp
+                .text()
+                .await
+                .unwrap_or_else(|_| "<unreadable body>".to_string());
+            return Err(Box::new(io::Error::other(format!(
+                "Ollama chat failed: HTTP {status} - {body}"
+            ))));
+        }
 
         let stream = Box::pin(tokio_stream::wrappers::ReceiverStream::new(
             Self::stream_chat_response(resp).await?,
@@ -466,6 +509,21 @@ impl OllamaClient {
             .send()
             .await?;
 
+        // Previously this returned `Ok(text)` for any response whose body
+        // could be read as text, including 4xx/5xx error responses — a
+        // failed pull (unknown model, registry unreachable, etc.) was
+        // reported to the caller as a successful result.
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp
+                .text()
+                .await
+                .unwrap_or_else(|_| "<unreadable body>".to_string());
+            return Err(Box::new(io::Error::other(format!(
+                "Ollama pull failed: HTTP {status} - {body}"
+            ))));
+        }
+
         match resp.text().await {
             Ok(text) => Ok(text),
             Err(e) => Err(Box::new(e)),
@@ -496,6 +554,21 @@ impl OllamaClient {
             .json(&payload)
             .send()
             .await?;
+
+        // Same class of bug as `generate_stream`/`chat_stream`: an error body
+        // (e.g. unknown model name) doesn't parse as `PullProgressResponse`
+        // (requires a `status` field), so it was silently dropped and the
+        // caller saw an empty Ok stream instead of the pull failure.
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp
+                .text()
+                .await
+                .unwrap_or_else(|_| "<unreadable body>".to_string());
+            return Err(Box::new(io::Error::other(format!(
+                "Ollama pull failed: HTTP {status} - {body}"
+            ))));
+        }
 
         let stream = Box::pin(tokio_stream::wrappers::ReceiverStream::new(
             Self::stream_pull_progress(resp).await?,
@@ -580,7 +653,12 @@ impl OllamaClient {
 
     /// Unload a model by setting keep_alive to zero.
     pub async fn unload_model(&self, model_name: &str) -> Result<String, Box<dyn Error>> {
-        let running_models = self.list_running().await.unwrap_or_default();
+        // Propagate failures from `list_running` instead of treating them as
+        // "nothing is running": if Ollama is unreachable or errors here, we
+        // genuinely don't know the model's state, and silently reporting
+        // "unload skipped" as success would hide a real connectivity failure
+        // from the caller.
+        let running_models = self.list_running().await?;
         if !running_models
             .iter()
             .any(|model| Self::matches_model_name(&model.name, model_name))
@@ -638,6 +716,18 @@ impl OllamaClient {
             .send()
             .await?;
 
+        // See `pull_model`: an error response must not be reported as Ok.
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp
+                .text()
+                .await
+                .unwrap_or_else(|_| "<unreadable body>".to_string());
+            return Err(Box::new(io::Error::other(format!(
+                "Ollama create failed: HTTP {status} - {body}"
+            ))));
+        }
+
         match resp.text().await {
             Ok(text) => Ok(text),
             Err(e) => Err(Box::new(e)),
@@ -662,6 +752,18 @@ impl OllamaClient {
             .send()
             .await?;
 
+        // See `pull_model`: an error response must not be reported as Ok.
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp
+                .text()
+                .await
+                .unwrap_or_else(|_| "<unreadable body>".to_string());
+            return Err(Box::new(io::Error::other(format!(
+                "Ollama copy failed: HTTP {status} - {body}"
+            ))));
+        }
+
         match resp.text().await {
             Ok(text) => Ok(text),
             Err(e) => Err(Box::new(e)),
@@ -680,6 +782,18 @@ impl OllamaClient {
             .json(&payload)
             .send()
             .await?;
+
+        // See `pull_model`: an error response must not be reported as Ok.
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp
+                .text()
+                .await
+                .unwrap_or_else(|_| "<unreadable body>".to_string());
+            return Err(Box::new(io::Error::other(format!(
+                "Ollama delete failed: HTTP {status} - {body}"
+            ))));
+        }
 
         match resp.text().await {
             Ok(text) => Ok(text),

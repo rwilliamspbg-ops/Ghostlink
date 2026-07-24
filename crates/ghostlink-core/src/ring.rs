@@ -336,6 +336,9 @@ impl<T> SpscRingBuffer<T> {
             self.cached_head.store(head, Ordering::Relaxed);
             current_len = tail.wrapping_sub(head) & (Self::CAPACITY - 1);
             if current_len >= self.config.capacity {
+                // Ring is full: every requested element is rejected.
+                self.overflow_count
+                    .fetch_add(slice.len(), Ordering::Relaxed);
                 return 0;
             }
         }
@@ -344,6 +347,12 @@ impl<T> SpscRingBuffer<T> {
         let count = available.min(slice.len());
         if count == 0 {
             return 0;
+        }
+        if count < slice.len() {
+            // Partial batch: track the elements that didn't fit as overflow,
+            // matching push()'s per-element overflow accounting.
+            self.overflow_count
+                .fetch_add(slice.len() - count, Ordering::Relaxed);
         }
 
         let buf = unsafe { &mut *self.buffer.get() };
@@ -582,6 +591,9 @@ mod tests {
         let n = ring.push_batch(&data);
         assert_eq!(n, 10);
         assert_eq!(ring.len(), 10);
+        // The 90 elements that didn't fit must be observable via overflow_count,
+        // otherwise backpressure through the batch path is invisible to monitoring.
+        assert_eq!(ring.overflow_count(), 90);
     }
 
     #[test]

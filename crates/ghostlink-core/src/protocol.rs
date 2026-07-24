@@ -188,7 +188,7 @@ impl NodeResources {
         }
 
         let payload_len =
-            11 + id_bytes.len() + cc_bytes.len() + gpu_bytes.map_or(0, |bytes| 2 + bytes.len());
+            11 + id_bytes.len() + cc_bytes.len() + gpu_bytes.map_or(0, |bytes| 1 + bytes.len());
         if payload_len > max_size {
             return Err("payload length exceeds max_size");
         }
@@ -353,6 +353,17 @@ impl DiscoveryFrame {
             }
         }
 
+        // Guard against the combined fields overflowing the fixed-size stack
+        // buffer: each field is individually bounded by u8::MAX above, but
+        // their sum can still exceed MAX_PAYLOAD_SIZE and panic on the
+        // slice-index writes below if left unchecked.
+        let gpu_len = self.node.gpu_name.as_ref().map(|name| name.len());
+        let payload_len = 11 + id_bytes.len() + cc_bytes.len() + gpu_len.map_or(0, |len| 1 + len);
+        if payload_len > MAX_PAYLOAD_SIZE {
+            buf[4..8].copy_from_slice(&crc32(&[]).to_le_bytes());
+            return buf[..8].to_vec();
+        }
+
         let mut pos = 8usize;
 
         buf[pos] = id_bytes.len() as u8;
@@ -506,6 +517,42 @@ mod tests {
 
         let result = DiscoveryFrame::decode(&fake_frame);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn encode_payload_into_accepts_exact_max_size_with_gpu_name() {
+        // Regression test: encode_payload_into previously overcounted the
+        // gpu-name field length by 1 byte, causing it to reject payloads
+        // that actually fit exactly within max_size.
+        let node = NodeResources::new("a", 1.0, 1.0, "b", Some("c".to_string()));
+        let mut buffer = Vec::new();
+        // Actual encoded length: id_len(1)+id(1)+vram(4)+mem(4)+cc_len(1)+cc(1)
+        // +has_gpu(1)+gpu_len(1)+gpu(1) = 15 bytes.
+        let written = node
+            .encode_payload_into(&mut buffer, 15)
+            .expect("payload of exactly 15 bytes must fit within max_size 15");
+        assert_eq!(written, 15);
+        assert_eq!(buffer.len(), 15);
+    }
+
+    #[test]
+    fn encode_does_not_panic_when_combined_field_lengths_exceed_max_payload() {
+        // Regression test: DiscoveryFrame::encode only validated each field
+        // individually against u8::MAX, so combined field lengths could
+        // exceed MAX_PAYLOAD_SIZE and panic on the fixed-size stack buffer
+        // writes. It should now fall back to a safe header-only frame.
+        let big_id = "x".repeat(200);
+        let big_cc = "y".repeat(200);
+        let frame = DiscoveryFrame {
+            kind: FrameKind::Discovery,
+            node: NodeResources::new(big_id, 1.0, 1.0, big_cc, None),
+        };
+
+        let encoded = frame.encode();
+        assert_eq!(encoded.len(), 8, "should fall back to header-only frame");
+
+        let decoded_err = DiscoveryFrame::decode(&encoded).unwrap_err();
+        assert!(decoded_err.contains("payload too short") || decoded_err.contains("truncated"));
     }
 
     #[test]

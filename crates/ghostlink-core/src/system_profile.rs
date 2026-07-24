@@ -140,24 +140,62 @@ impl SystemProfile {
     }
 
     fn detect_with_mode(mode: ProbeMode) -> Self {
-        // Try cache first for fast mode
         if mode == ProbeMode::Fast {
             let cache = SYSTEM_PROFILE_CACHE.get_or_init(|| Mutex::new(None));
-            if let Ok(guard) = cache.lock() {
-                if let Some(entry) = guard.as_ref() {
-                    if entry.captured_at.elapsed() < SYSTEM_PROFILE_CACHE_TTL {
-                        return entry.profile.clone();
-                    }
+            // Hold the lock across the whole check-compute-populate sequence
+            // instead of just the check. Only checking (and releasing) the
+            // lock here would let every concurrent cache-miss caller within
+            // the TTL window race into its own full multi-subprocess
+            // detection at once — observed in practice when several
+            // Fast-mode callers start near-simultaneously (e.g. concurrently
+            // running tests), each spawning ~6 external processes and
+            // causing severe CPU/process-table contention. Holding the lock
+            // makes followers wait for the leader's result instead of
+            // duplicating the work.
+            let mut guard = match cache.lock() {
+                Ok(guard) => guard,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            if let Some(entry) = guard.as_ref() {
+                if entry.captured_at.elapsed() < SYSTEM_PROFILE_CACHE_TTL {
+                    return entry.profile.clone();
                 }
             }
+            let profile = Self::detect_uncached(mode);
+            *guard = Some(CachedSystemProfile {
+                captured_at: Instant::now(),
+                profile: profile.clone(),
+            });
+            return profile;
         }
 
-        let system_id = hostname().unwrap_or_else(|| "unknown".into());
-        let cpu = detect_cpu_info();
-        let memory = detect_memory_info();
-        let gpus = detect_gpus(mode);
-        let npus = detect_npus();
-        let network = detect_network_info();
+        Self::detect_uncached(mode)
+    }
+
+    fn detect_uncached(mode: ProbeMode) -> Self {
+        // Each of these probes independently spawns 0-N external processes
+        // (wmic/powershell on Windows, lscpu/sysctl on Linux/macOS, nvidia-smi
+        // everywhere) with no shared mutable state between them. Sequentially
+        // these can sum to multiple seconds of wall-clock time (measured via
+        // `cargo bench`: ~4s for a Full probe); running them concurrently
+        // bounds total latency to the single slowest probe instead of the sum.
+        let (system_id, cpu, memory, gpus, npus, network) = std::thread::scope(|scope| {
+            let system_id = scope.spawn(|| hostname().unwrap_or_else(|| "unknown".into()));
+            let cpu = scope.spawn(detect_cpu_info);
+            let memory = scope.spawn(detect_memory_info);
+            let gpus = scope.spawn(move || detect_gpus(mode));
+            let npus = scope.spawn(detect_npus);
+            let network = scope.spawn(detect_network_info);
+
+            (
+                system_id.join().unwrap(),
+                cpu.join().unwrap(),
+                memory.join().unwrap(),
+                gpus.join().unwrap(),
+                npus.join().unwrap(),
+                network.join().unwrap(),
+            )
+        });
         let acceleration_mode = pick_acceleration_mode(&gpus, &cpu);
         let recommended_workers =
             compute_recommended_workers(&cpu, &memory, &gpus, acceleration_mode);
@@ -172,7 +210,7 @@ impl SystemProfile {
             })
             .unwrap_or_else(|| "cpu".into());
 
-        let profile = Self {
+        Self {
             cpu,
             memory,
             gpus,
@@ -182,20 +220,7 @@ impl SystemProfile {
             recommended_workers,
             system_id,
             detection_source,
-        };
-
-        // Cache fast profiles
-        if mode == ProbeMode::Fast {
-            let cache = SYSTEM_PROFILE_CACHE.get_or_init(|| Mutex::new(None));
-            if let Ok(mut guard) = cache.lock() {
-                *guard = Some(CachedSystemProfile {
-                    captured_at: Instant::now(),
-                    profile: profile.clone(),
-                });
-            }
         }
-
-        profile
     }
 }
 
@@ -293,14 +318,20 @@ fn detect_cpu_info() -> CpuInfo {
 
     let arch = std::env::consts::ARCH.to_string();
 
-    // Brand string (platform-specific)
-    let brand = detect_cpu_brand();
-
-    // SIMD features (platform-specific at compile-time, runtime-checked on x86)
+    // SIMD features are compile-time/CPUID-only (no subprocess), cheap to run inline.
     let features = detect_cpu_features(&arch);
 
-    // Physical cores: best-effort approximation
-    let physical_cores = detect_physical_cores().unwrap_or(logical_cores / 2).max(1);
+    // Brand string and physical-core count are independent external-process
+    // probes (e.g. on Windows, two separate `Get-CimInstance Win32_Processor`
+    // PowerShell invocations). Measured via `cargo bench`: ~1-1.5s each,
+    // ~2.8s combined when run sequentially. Running them concurrently bounds
+    // this to the slower of the two.
+    let (brand, physical_cores) = std::thread::scope(|scope| {
+        let brand = scope.spawn(detect_cpu_brand);
+        let physical_cores = scope.spawn(detect_physical_cores);
+        (brand.join().unwrap(), physical_cores.join().unwrap())
+    });
+    let physical_cores = physical_cores.unwrap_or(logical_cores / 2).max(1);
 
     CpuInfo {
         brand,
@@ -420,13 +451,52 @@ fn detect_cpu_features(arch: &str) -> CpuFeatures {
 fn detect_x86_features() -> CpuFeatures {
     let avx2 = is_x86_feature_detected!("avx2");
     let avx_512 = is_x86_feature_detected!("avx512f");
-    let amx = is_x86_feature_detected!("avx512f") && cfg!(target_feature = "amx-tile");
+    let amx = detect_amx_tile();
     CpuFeatures {
         avx2,
         avx_512,
         amx,
         ..Default::default()
     }
+}
+
+/// Runtime AMX-TILE detection via raw CPUID.
+///
+/// `is_x86_feature_detected!("amx-tile")` is gated behind the unstable
+/// `x86_amx_intrinsics` feature on current stable Rust, so it can't be used
+/// here. The previous implementation substituted
+/// `cfg!(target_feature = "amx-tile")`, a *compile-time* check that reflects
+/// only whether this binary was built with `-C target-feature=+amx-tile`
+/// (true for essentially no real-world build) — so `amx` silently reported
+/// `false` on every AMX-capable host (e.g. Sapphire Rapids) regardless of
+/// actual hardware support. CPUID leaf 7, sub-leaf 0, EDX bit 24 is the
+/// architectural AMX-TILE feature bit.
+// `__cpuid`/`__cpuid_count` require an explicit `unsafe` block on this
+// project's MSRV toolchain, but a newer compiler considers that block
+// unnecessary (their signature became safe) and denies it under
+// `-D warnings` instead. `#[allow(unused_unsafe)]` keeps this function
+// compiling on both: required for MSRV, a silenced no-op warning on newer
+// rustc.
+#[cfg(target_arch = "x86_64")]
+#[allow(unused_unsafe)]
+fn detect_amx_tile() -> bool {
+    // Safety: `__cpuid`/`__cpuid_count` require the CPUID instruction to be
+    // available, which is guaranteed on every x86_64 CPU (part of the
+    // baseline x86_64 architecture, unlike 32-bit x86 where it can be
+    // absent on pre-Pentium hardware) — this cfg-gates to x86_64 only.
+    let max_leaf = unsafe { core::arch::x86_64::__cpuid(0) }.eax;
+    if max_leaf < 7 {
+        return false;
+    }
+    let leaf7 = unsafe { core::arch::x86_64::__cpuid_count(7, 0) };
+    (leaf7.edx & (1 << 24)) != 0
+}
+
+// AMX only exists on 64-bit server-class parts; no known 32-bit x86 target
+// implements it, so avoid the extra unsafe surface for that arch.
+#[cfg(all(target_arch = "x86", not(target_arch = "x86_64")))]
+fn detect_amx_tile() -> bool {
+    false
 }
 
 #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
@@ -446,6 +516,15 @@ fn detect_sve() -> bool {
         }
     }
     false
+}
+
+/// Sum `NumberOfCores` values across all lines of CIM/WMI output, one line
+/// per physical CPU package on multi-socket hosts.
+#[cfg(target_os = "windows")]
+fn sum_windows_cim_core_counts(text: &str) -> usize {
+    text.lines()
+        .filter_map(|line| line.trim().parse::<usize>().ok())
+        .sum()
 }
 
 fn detect_physical_cores() -> Option<usize> {
@@ -500,20 +579,15 @@ fn detect_physical_cores() -> Option<usize> {
             .output()
         {
             let text = String::from_utf8_lossy(&output.stdout);
-            for line in text.lines() {
-                if let Ok(count) = line.trim().parse::<usize>() {
-                    if count > 0 {
-                        return Some(
-                            count
-                                * std::thread::available_parallelism()
-                                    .map(|n| n.get())
-                                    .unwrap_or(1)
-                                / std::thread::available_parallelism()
-                                    .map(usize::from)
-                                    .unwrap_or(1),
-                        );
-                    }
-                }
+            // Get-CimInstance without -ErrorAction/indexing returns one line per
+            // physical CPU package on multi-socket hosts. The previous code
+            // `return`ed on the first parseable line, silently reporting only
+            // one socket's core count (e.g. 16 instead of 32 on a dual-socket
+            // Xeon box) and skewing worker/tuning decisions that divide by
+            // physical core count. Sum across all reported packages instead.
+            let total = sum_windows_cim_core_counts(&text);
+            if total > 0 {
+                return Some(total);
             }
         }
     }
@@ -526,8 +600,16 @@ fn detect_physical_cores() -> Option<usize> {
 // ---------------------------------------------------------------------------
 
 fn detect_memory_info() -> MemoryInfo {
-    let total_gb = detect_system_memory_gb().unwrap_or(0.0);
-    let available_gb = detect_available_memory_gb().unwrap_or(total_gb * 0.5);
+    // Total and available memory are independent external-process probes
+    // (e.g. two separate PowerShell/CIM calls on Windows); run them
+    // concurrently rather than paying both costs sequentially.
+    let (total, available) = std::thread::scope(|scope| {
+        let total = scope.spawn(detect_system_memory_gb);
+        let available = scope.spawn(detect_available_memory_gb);
+        (total.join().unwrap(), available.join().unwrap())
+    });
+    let total_gb = total.unwrap_or(0.0);
+    let available_gb = available.unwrap_or(total_gb * 0.5);
     MemoryInfo {
         total_gb,
         available_gb,
@@ -1044,10 +1126,50 @@ fn probe_windows_wmi_gpu() -> Option<Vec<GpuInfo>> {
     }
 }
 
-/// Secondary DXGI-based VRAM probe via PowerShell `Add-Type` with C# DXGI wrapper.
-/// Only called when WMI returns 0 VRAM for a detected GPU.
+/// Secondary VRAM probe used when WMI returns 0 VRAM for a detected GPU
+/// (common for integrated GPUs, where `Win32_VideoController.AdapterRAM`'s
+/// 32-bit field is unreliable).
+///
+/// Tries a plain registry read first (`HardwareInformation.qwMemorySize`,
+/// the same technique GPU-Z uses), which needs no in-process compilation.
+/// Falls back to the DXGI `Add-Type` C# probe — measured via `cargo bench`
+/// to cost ~1-2s of wall-clock time compiling the inline C# shim, the
+/// dominant cost in a Full hardware probe — only if the registry value is
+/// absent, so drivers that don't publish it still get a VRAM reading.
 #[cfg(target_os = "windows")]
 fn probe_windows_dxgi_vram() -> Option<f32> {
+    if let Some(vram) = probe_windows_registry_vram() {
+        return Some(vram);
+    }
+    probe_windows_dxgi_vram_via_addtype()
+}
+
+#[cfg(target_os = "windows")]
+fn probe_windows_registry_vram() -> Option<f32> {
+    let output = Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-Command",
+            "Get-ItemProperty -Path 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Class\\{4d36e968-e325-11ce-bfc1-08002be10318}\\*' -Name 'HardwareInformation.qwMemorySize' -ErrorAction SilentlyContinue | Select-Object -ExpandProperty 'HardwareInformation.qwMemorySize' -First 1",
+        ])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let bytes: f64 = String::from_utf8_lossy(&output.stdout)
+        .trim()
+        .parse()
+        .ok()?;
+    if bytes > 0.0 {
+        Some((bytes / 1_073_741_824.0) as f32)
+    } else {
+        None
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn probe_windows_dxgi_vram_via_addtype() -> Option<f32> {
     let script = r#"
 Add-Type @"
 using System;
@@ -1734,5 +1856,27 @@ mod tests {
     fn physical_cores_nonzero() {
         let cpu = detect_cpu_info();
         assert!(cpu.physical_cores >= 1);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn sum_windows_cim_core_counts_handles_multi_socket_output() {
+        // Get-CimInstance emits one line per physical CPU package on
+        // multi-socket hosts. The old code `return`ed on the first parseable
+        // line, undercounting total physical cores on such hosts.
+        assert_eq!(sum_windows_cim_core_counts("16\n16\n"), 32);
+        assert_eq!(sum_windows_cim_core_counts("24\n"), 24);
+        assert_eq!(sum_windows_cim_core_counts(""), 0);
+        // Tolerate stray blank/non-numeric lines some locales/tools emit.
+        assert_eq!(sum_windows_cim_core_counts("8\n\n8\n"), 16);
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn amx_tile_detection_does_not_panic() {
+        // Exercises the raw CPUID leaf-7 path. The actual bit value is
+        // hardware-dependent; this guards against a panic/miscount on hosts
+        // whose CPUID max leaf is below 7.
+        let _ = detect_amx_tile();
     }
 }

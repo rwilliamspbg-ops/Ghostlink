@@ -478,6 +478,8 @@ pub struct LoadStats {
     pub avg_load_balance_ratio: f32,
     /// Number of rebalancing operations
     pub rebalancing_count: usize,
+    /// Whether avg_load_balance_ratio has received its first sample yet.
+    balance_ratio_initialized: bool,
 }
 
 impl LoadStats {
@@ -494,12 +496,10 @@ impl LoadStats {
 
     /// Update load balance ratio
     pub fn update_balance_ratio(&mut self, ratio: f32) {
-        if self.avg_load_balance_ratio == 0.0
-            && self.rebalancing_count == 0
-            && self.total_layers_distributed == 0
-        {
+        if !self.balance_ratio_initialized {
             // First call - initialize directly
             self.avg_load_balance_ratio = ratio;
+            self.balance_ratio_initialized = true;
         } else {
             // EMA with alpha=0.1
             self.avg_load_balance_ratio = self.avg_load_balance_ratio * 0.9 + ratio * 0.1;
@@ -611,6 +611,27 @@ mod tests {
         stats.update_balance_ratio(0.85);
         // EMA: 0.95 * 0.9 + 0.85 * 0.1 = 0.855 + 0.085 = 0.94
         assert!((stats.avg_load_balance_ratio - 0.94).abs() < 1e-6);
+    }
+
+    #[test]
+    fn load_stats_first_balance_ratio_not_diluted_by_prior_distribution() {
+        // Regression: the "first call" check for update_balance_ratio used
+        // total_layers_distributed == 0 as a proxy for "never updated
+        // before". If record_distribution() ran first (the normal order:
+        // record layer placements, then periodically report a balance
+        // ratio), the very first update_balance_ratio() call fell through
+        // to the EMA branch and diluted the true first sample by 10x
+        // (0.0 * 0.9 + ratio * 0.1) instead of setting it directly.
+        let mut stats = LoadStats::new();
+
+        stats.record_distribution(24, 24.0);
+        stats.update_balance_ratio(0.95);
+
+        assert!(
+            (stats.avg_load_balance_ratio - 0.95).abs() < 1e-6,
+            "first balance ratio sample must be set directly, got {}",
+            stats.avg_load_balance_ratio
+        );
     }
 
     #[test]

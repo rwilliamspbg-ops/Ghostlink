@@ -531,9 +531,16 @@ impl NativeEngineClient {
             cmd.arg("--port").arg(bind_port.to_string());
             cmd.arg("-c").arg(ctx.to_string());
             cmd.arg("-np").arg("1");
-            if ngl >= 0 {
-                cmd.arg("-ngl").arg(ngl.to_string());
-            }
+            // Always pass -ngl, including -1 ("let llama-server decide /
+            // offload all it can" per get_ngl()'s doc comment). Previously
+            // this was gated on `ngl >= 0`, which silently omitted the flag
+            // for -1 — and llama-server defaults -ngl to 0 (CPU-only) when
+            // the flag isn't given at all, defeating the documented "auto"
+            // intent on any launch path where GHOSTLINK_VRAM_GB/
+            // GHOSTLINK_LLAMA_NGL aren't set. scripts/run_native_llama_server_stack.sh
+            // and validate_native_llama_server.sh already pass `-ngl -1`
+            // explicitly, confirming this build of llama-server accepts it.
+            cmd.arg("-ngl").arg(ngl.to_string());
             cmd.arg("-t").arg(threads.to_string());
             for arg in args {
                 cmd.arg(arg);
@@ -683,8 +690,17 @@ impl NativeEngineClient {
     pub fn has_running_llama_server(&self) -> bool {
         let handle = Self::get_process_handle();
         let locked = handle.lock();
-        if let Ok(guard) = locked {
-            guard.as_ref().map(|c| c.id() > 0).unwrap_or(false)
+        if let Ok(mut guard) = locked {
+            match guard.as_mut() {
+                // `try_wait` returns `Ok(None)` while the child is still
+                // alive. `Ok(Some(_))` (or an error polling it) means the
+                // process already exited (crash, OOM-kill, etc.) without
+                // anyone reaping it yet — the stale handle must not be
+                // reported as "running", or callers would believe a dead
+                // server is still serving requests.
+                Some(child) => matches!(child.try_wait(), Ok(None)),
+                None => false,
+            }
         } else {
             false
         }
@@ -1203,5 +1219,45 @@ mod tests {
         assert_eq!(NativeEngineClient::get_ngl(), 7);
         std::env::remove_var("GHOSTLINK_LLAMA_NGL");
         std::env::remove_var("GHOSTLINK_VRAM_GB");
+    }
+
+    #[test]
+    fn has_running_llama_server_reflects_actual_process_state() {
+        let _guard = env_lock().lock().expect("env lock poisoned");
+        let engine = NativeEngineClient::new();
+
+        // Regression: `has_running_llama_server` used to only check that a
+        // `Child` handle existed (`c.id() > 0`, which is true for every real
+        // PID), so a process that already crashed/exited but hadn't been
+        // reaped yet was still reported as "running".
+        let handle = NativeEngineClient::get_process_handle();
+
+        let mut child = if cfg!(windows) {
+            std::process::Command::new("cmd")
+                .args(["/C", "exit 0"])
+                .spawn()
+        } else {
+            std::process::Command::new("true").spawn()
+        }
+        .expect("spawn short-lived helper process");
+
+        // Block until the helper process has actually exited instead of
+        // sleeping a fixed duration and hoping it's done by then. Under
+        // system load (e.g. `cargo test --workspace` running many tests
+        // concurrently) a fixed sleep isn't reliably long enough, and a
+        // panic here while holding `_guard` poisons `env_lock()` for every
+        // other test in this file that also locks it. `wait()` blocks for
+        // as long as it actually takes, so this is deterministic regardless
+        // of scheduling delays.
+        child.wait().expect("helper process should exit");
+
+        *handle.lock().expect("process handle lock poisoned") = Some(child);
+
+        assert!(
+            !engine.has_running_llama_server(),
+            "an exited process must not be reported as a running llama-server"
+        );
+
+        *handle.lock().expect("process handle lock poisoned") = None;
     }
 }

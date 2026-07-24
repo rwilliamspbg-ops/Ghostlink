@@ -385,7 +385,10 @@ fn main() {
     // platform — the entire suite looked hung well past the point every
     // other benchmark had already printed. 20 iterations is enough to see a
     // representative number for an operation this heavy without turning one
-    // line of output into the dominant cost of running `cargo bench`.
+    // line of output into the dominant cost of running `cargo bench`. (This
+    // cost is somewhat lower after also parallelizing the underlying probes
+    // in system_profile.rs — still expensive enough to keep the iteration
+    // count low.)
     bench("autotune: detect_runtime_profile_full", 20, || {
         let _ = detect_runtime_profile_with_mode("bench-local", ProbeMode::Full);
     });
