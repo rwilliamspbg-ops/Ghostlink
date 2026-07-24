@@ -4,6 +4,101 @@ All notable changes to Ghostlink Studio are documented here.
 
 ---
 
+## [1.4.4] - 2026-07-24 (Real incremental streaming for chat and model pulls)
+
+Chat "streaming" and Ollama model-pull "streaming" both looked like streaming
+downstream but weren't upstream: the client-facing plumbing existed, but
+every path still waited for the entire backend response before relaying
+anything. Verified live against a real running `llama-server` throughout
+(a throwaway instance on a separate port, never touching the actual running
+server or its process — see Validation below).
+
+### ⚡ Performance / correctness
+
+- **`handle_gui_chat`'s SSE response was fake streaming.** It waited for
+  `run_tool_loop`/`generate_once` to fully finish generation (blocking on the
+  entire response, for both backends), *then* split the already-complete
+  text into word chunks and dripped them out over SSE. For a longer response,
+  a client saw zero output for the entire generation time, then everything
+  at once — the request explicitly asked for `stream: true` but got none of
+  the actual benefit (reduced time-to-first-token). Added
+  `NativeEngineClient::generate_chat_stream` (llama-server had no streaming
+  client method at all before this) and wired real streaming into
+  `handle_gui_chat` for the common case: `stream: true` with no MCP tools
+  enabled. Tool-calling requests still use the existing buffer-then-chunk
+  path — tool-call marker detection needs the complete text, so real-time
+  interleaving there is a separate, larger piece of work left for later
+  rather than rushed into this change.
+- **`ollama.rs`'s existing "streaming" methods buffered the whole response
+  first.** `generate_stream`/`chat_stream`/`stream_pull_progress` all called
+  `resp.bytes().await` — which waits for the entire HTTP body — before
+  processing any of it, then faked incremental delivery downstream via an
+  mpsc channel. Ghostlink itself never got any earlier data than a
+  non-streaming call would. `stream_pull_progress` is the one of the three
+  that's actually wired in and used (model download progress in the GUI),
+  which made this the more consequential half of the bug: a multi-minute
+  model pull would show a frozen progress bar for the entire download, then
+  jump straight to 100%. `generate_stream`/`chat_stream` are unwired dead
+  code today (confirmed via full-crate grep) but fixed for correctness and
+  in case they're wired in later. All three now use `bytes_stream()` with
+  explicit partial-line buffering across chunk boundaries (a network chunk
+  boundary rarely lines up with a JSON-line boundary).
+- Extracted `record_generation_metrics` (request counter, `inference_metrics`,
+  dashboard session record) out of `finish_chat_response` so the new
+  streaming path shares the exact same side effects instead of a second,
+  divergence-prone copy of this bookkeeping.
+- `reqwest`'s `stream` feature enabled in `ghost-link`'s `Cargo.toml` —
+  required for `bytes_stream()`; wasn't needed before since nothing actually
+  streamed incrementally.
+
+### ✅ Validation
+
+- Direct client-method test against the live `llama-server`: 10 chunks
+  arrived over 190ms (43ms, 54ms, 68ms, 80ms, 93ms, ...) — incremental
+  delivery, not one blob at the end.
+- Full HTTP path (`POST /api/inference/chat`, `stream: true`, no tools)
+  through a throwaway `ghost-link` instance on a separate port pointed at
+  the same live `llama-server`: 15 chunks arrived progressively from 0.27s
+  to 0.45s, correct generated text.
+- Regression-checked: non-streaming requests unchanged; streaming requests
+  with tools enabled still correctly fall back to the existing
+  buffer-then-chunk path.
+- Confirmed the live `ghost-link`/`llama-server` instances were completely
+  unaffected throughout (same `llama-server` PID before and after; the
+  Windows port-cleanup path (`taskkill /IM llama-server.exe`) that model
+  hot-swapping uses was checked and confirmed *not* reachable from plain
+  `serve` startup, only from explicit model-load/switch calls, before
+  running a second instance alongside the live one).
+- A found-and-fixed-before-shipping bug during this work: the new streaming
+  task's client-disconnect early-return bypassed releasing the
+  graceful-shutdown request-tracker counter (a real leak under concurrent
+  use). Restructured to a single exit point so the tracker release and
+  metrics recording can't be skipped by any of the three ways the stream
+  can end (normal completion, backend error, client disconnect).
+- `cargo build --workspace --all-targets`, `cargo clippy --workspace
+  --all-targets -- -D warnings` (zero warnings), `cargo fmt --all --check`,
+  `cargo test --workspace` (83+134+7+28+19, all passing) — checked 3x
+  consecutively for stability. Added one `#[ignore]`d test
+  (`generate_chat_stream_yields_incremental_chunks_against_live_server`,
+  run manually with `--ignored` against a live server) asserting more than
+  one chunk arrives, specifically to catch a regression back to buffering.
+
+### ⚠️ Operational caveats
+
+- Real streaming only covers the no-tools-enabled case for both backends.
+  Streaming *with* tool-calling enabled still uses the old buffer-then-chunk
+  behavior — implementing real-time streaming that also interleaves
+  tool-call detection mid-generation is a larger redesign, intentionally out
+  of scope here.
+- `generate_chat_stream`'s fallback-on-no-chat-template path (HTTP 400 from
+  the chat endpoint) degrades to the existing non-streaming `/completion`
+  call and presents the whole result as a single SSE chunk, rather than
+  duplicating a second incremental parser for llama.cpp's native
+  `/completion` streaming shape — an intentional scope boundary, not an
+  oversight.
+
+---
+
 ## [1.4.3] - 2026-07-24 (Correctness sweep, GPU offload fix, hardware-detection latency, flaky-test root cause)
 
 A broad correctness and performance pass across `ghostlink-core` and `ghost-link`,

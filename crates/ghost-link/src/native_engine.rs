@@ -5,11 +5,17 @@
 
 #![allow(dead_code)]
 
+use futures::Stream;
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
+use tokio::sync::mpsc;
 use tokio::time::sleep as tokio_sleep;
+
+/// Stream of incremental text deltas from a native backend's chat endpoint.
+pub type NativeChatStream = Pin<Box<dyn Stream<Item = Result<String, String>> + Send>>;
 
 #[derive(Debug, Clone)]
 pub struct NativeGeneration {
@@ -973,6 +979,151 @@ impl NativeEngineClient {
 
         Err("llama_server returned empty content".to_string())
     }
+
+    /// Real incremental streaming against llama-server's OpenAI-compatible
+    /// chat endpoint. Unlike `generate_with_llama_server` (which always sends
+    /// `"stream": false` and returns only the complete text), this forwards
+    /// text deltas to the caller as llama-server produces them.
+    ///
+    /// Only covers the chat-completions endpoint (the common case for models
+    /// with a chat template, which is what this project's models use in
+    /// practice). If the model has no chat template (chat endpoint returns
+    /// HTTP 400), falls back to the existing non-streaming `/completion`
+    /// path and yields the whole result as a single chunk rather than
+    /// duplicating a second incremental parser for an uncommon case.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn generate_chat_stream(
+        &self,
+        model: &str,
+        cleaned_prompt: &str,
+        max_tokens: usize,
+        temperature: f32,
+        top_p: f32,
+        top_k: usize,
+        repeat_penalty: f32,
+    ) -> Result<NativeChatStream, String> {
+        use futures::StreamExt;
+
+        let base_url = Self::get_llama_base_url();
+        let timeout_secs = std::env::var("GHOSTLINK_LLAMA_SERVER_TIMEOUT_SECS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(60)
+            .clamp(5, 300);
+        let system_prompt = format!(
+            "You are a helpful assistant. Current local date and time: {}.",
+            chrono::Local::now().format("%A, %B %d, %Y, %H:%M")
+        );
+        let chat_url = format!("{base_url}/v1/chat/completions");
+        let chat_payload = serde_json::json!({
+            "model": model,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": cleaned_prompt}
+            ],
+            "max_tokens": max_tokens,
+            "temperature": temperature.clamp(0.0, 2.0),
+            "top_p": top_p.clamp(0.0, 1.0),
+            "top_k": top_k.clamp(1, 200),
+            "repeat_penalty": repeat_penalty.clamp(0.0, 2.0),
+            "stream": true
+        });
+
+        let client = self.http.clone();
+        let request_timeout = Duration::from_secs(timeout_secs);
+
+        let response = client
+            .post(&chat_url)
+            .header("Content-Type", "application/json")
+            .json(&chat_payload)
+            .timeout(request_timeout)
+            .send()
+            .await
+            .map_err(|e| format!("llama_server streaming request failed: {}", e))?;
+
+        if response.status().as_u16() == 400 {
+            // No chat template on this model: fall back to the existing
+            // non-streaming completion path and present it as one chunk.
+            let gen = self
+                .generate_with_llama_server(
+                    model,
+                    cleaned_prompt,
+                    max_tokens,
+                    temperature,
+                    top_p,
+                    top_k,
+                    repeat_penalty,
+                )
+                .await?;
+            let single = futures::stream::once(async move { Ok(gen.text) });
+            return Ok(Box::pin(single));
+        }
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            return Err(format!(
+                "llama_server streaming request failed with status {}: {}",
+                status, body
+            ));
+        }
+
+        let (tx, rx) = mpsc::channel::<Result<String, String>>(100);
+        tokio::spawn(async move {
+            let mut byte_stream = response.bytes_stream();
+            let mut buf = String::new();
+            while let Some(chunk) = byte_stream.next().await {
+                let chunk = match chunk {
+                    Ok(c) => c,
+                    Err(e) => {
+                        let _ = tx.send(Err(format!("stream read error: {e}"))).await;
+                        return;
+                    }
+                };
+                buf.push_str(&String::from_utf8_lossy(&chunk));
+                while let Some(pos) = buf.find('\n') {
+                    let line = buf[..pos].trim().to_string();
+                    buf.drain(..=pos);
+                    if line.is_empty() {
+                        continue;
+                    }
+                    let payload = match line.strip_prefix("data: ") {
+                        Some(p) => p,
+                        None => continue,
+                    };
+                    if payload == "[DONE]" {
+                        return;
+                    }
+                    let data: serde_json::Value = match serde_json::from_str(payload) {
+                        Ok(v) => v,
+                        Err(_) => continue,
+                    };
+                    let delta = data
+                        .get("choices")
+                        .and_then(|c| c.get(0))
+                        .and_then(|c| c.get("delta"))
+                        .and_then(|d| d.get("content"))
+                        .and_then(|v| v.as_str());
+                    if let Some(text) = delta {
+                        if !text.is_empty() && tx.send(Ok(text.to_string())).await.is_err() {
+                            return; // receiver dropped, stop reading
+                        }
+                    }
+                    let finished = data
+                        .get("choices")
+                        .and_then(|c| c.get(0))
+                        .and_then(|c| c.get("finish_reason"))
+                        .map(|v| !v.is_null())
+                        .unwrap_or(false);
+                    if finished {
+                        return;
+                    }
+                }
+            }
+        });
+
+        Ok(Box::pin(tokio_stream::wrappers::ReceiverStream::new(rx)))
+    }
 }
 
 fn generation_from_llama_json(parsed: &serde_json::Value) -> Option<NativeGeneration> {
@@ -1119,6 +1270,51 @@ mod tests {
     fn env_lock() -> &'static Mutex<()> {
         static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         ENV_LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    #[test]
+    #[ignore] // requires a live llama-server; run manually with --ignored
+    fn generate_chat_stream_yields_incremental_chunks_against_live_server() {
+        use futures::StreamExt;
+        let _guard = env_lock().lock().expect("env lock poisoned");
+        std::env::set_var("GHOSTLINK_LLAMA_SERVER_URL", "http://127.0.0.1:8080");
+
+        let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+        let engine = NativeEngineClient::new();
+        rt.block_on(async {
+            let mut stream = engine
+                .generate_chat_stream(
+                    "test-model",
+                    "Count from one to five, one number per line.",
+                    64,
+                    0.7,
+                    0.9,
+                    40,
+                    1.1,
+                )
+                .await
+                .expect("stream should start");
+
+            let mut chunk_count = 0usize;
+            let mut chunk_times = Vec::new();
+            let start = std::time::Instant::now();
+            let mut full_text = String::new();
+            while let Some(item) = stream.next().await {
+                let text = item.expect("chunk should not error");
+                chunk_count += 1;
+                chunk_times.push(start.elapsed());
+                full_text.push_str(&text);
+            }
+            eprintln!("received {chunk_count} chunks over {:?}", start.elapsed());
+            eprintln!("first few chunk arrival times: {:?}", &chunk_times[..chunk_times.len().min(5)]);
+            eprintln!("accumulated text: {full_text:?}");
+            assert!(
+                chunk_count > 1,
+                "expected multiple incremental chunks, got {chunk_count} (looks like buffering, not streaming)"
+            );
+        });
+
+        std::env::remove_var("GHOSTLINK_LLAMA_SERVER_URL");
     }
 
     #[test]
