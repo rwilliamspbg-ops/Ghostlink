@@ -471,13 +471,24 @@ fn detect_x86_features() -> CpuFeatures {
 /// `false` on every AMX-capable host (e.g. Sapphire Rapids) regardless of
 /// actual hardware support. CPUID leaf 7, sub-leaf 0, EDX bit 24 is the
 /// architectural AMX-TILE feature bit.
+// `__cpuid`/`__cpuid_count` require an explicit `unsafe` block on this
+// project's MSRV toolchain, but a newer compiler considers that block
+// unnecessary (their signature became safe) and denies it under
+// `-D warnings` instead. `#[allow(unused_unsafe)]` keeps this function
+// compiling on both: required for MSRV, a silenced no-op warning on newer
+// rustc.
 #[cfg(target_arch = "x86_64")]
+#[allow(unused_unsafe)]
 fn detect_amx_tile() -> bool {
-    let max_leaf = core::arch::x86_64::__cpuid(0).eax;
+    // Safety: `__cpuid`/`__cpuid_count` require the CPUID instruction to be
+    // available, which is guaranteed on every x86_64 CPU (part of the
+    // baseline x86_64 architecture, unlike 32-bit x86 where it can be
+    // absent on pre-Pentium hardware) — this cfg-gates to x86_64 only.
+    let max_leaf = unsafe { core::arch::x86_64::__cpuid(0) }.eax;
     if max_leaf < 7 {
         return false;
     }
-    let leaf7 = core::arch::x86_64::__cpuid_count(7, 0);
+    let leaf7 = unsafe { core::arch::x86_64::__cpuid_count(7, 0) };
     (leaf7.edx & (1 << 24)) != 0
 }
 
