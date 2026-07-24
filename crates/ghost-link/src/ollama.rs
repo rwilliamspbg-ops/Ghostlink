@@ -327,26 +327,46 @@ impl OllamaClient {
     ) -> Result<mpsc::Receiver<Result<String, Box<dyn Error + Send + Sync>>>, Box<dyn Error>> {
         let (tx, rx) = mpsc::channel(100);
 
-        let body = resp.bytes().await?;
-
+        // Process the response as it arrives over the wire (`bytes_stream()`)
+        // instead of `bytes().await` (which buffers the *entire* body before
+        // returning). The previous version only faked streaming downstream of
+        // this call — Ghostlink itself still waited for Ollama's whole
+        // response before relaying anything, defeating the actual purpose of
+        // streaming (reducing time-to-first-token).
         tokio::spawn(async move {
-            let text = String::from_utf8_lossy(&body);
-            for line in text.lines() {
-                if let Some(json_str) = line.strip_prefix("data: ") {
+            use futures::StreamExt;
+            let mut byte_stream = resp.bytes_stream();
+            let mut buf = String::new();
+            while let Some(chunk) = byte_stream.next().await {
+                let chunk = match chunk {
+                    Ok(c) => c,
+                    Err(e) => {
+                        let _ = tx
+                            .send(Err(Box::new(e) as Box<dyn Error + Send + Sync>))
+                            .await;
+                        return;
+                    }
+                };
+                buf.push_str(&String::from_utf8_lossy(&chunk));
+                // A network chunk boundary rarely lines up with a JSON-line
+                // boundary; only consume complete lines, keep any trailing
+                // partial line buffered for the next chunk.
+                while let Some(pos) = buf.find('\n') {
+                    let line = buf[..pos].trim().to_string();
+                    buf.drain(..=pos);
+                    if line.is_empty() {
+                        continue;
+                    }
+                    let json_str = line.strip_prefix("data: ").unwrap_or(&line);
                     if let Ok(data) = serde_json::from_str::<Value>(json_str) {
                         if let Some(response) = data.get("response").and_then(|v| v.as_str()) {
-                            let _ = tx.send(Ok(response.to_string())).await;
+                            if tx.send(Ok(response.to_string())).await.is_err() {
+                                return; // receiver dropped, stop reading
+                            }
                         }
                         if data.get("done").and_then(|v| v.as_bool()).unwrap_or(false) {
                             return;
                         }
-                    }
-                } else if let Ok(data) = serde_json::from_str::<Value>(line) {
-                    if let Some(response) = data.get("response").and_then(|v| v.as_str()) {
-                        let _ = tx.send(Ok(response.to_string())).await;
-                    }
-                    if data.get("done").and_then(|v| v.as_bool()).unwrap_or(false) {
-                        return;
                     }
                 }
             }
@@ -469,24 +489,38 @@ impl OllamaClient {
     {
         let (tx, rx) = mpsc::channel(100);
 
-        let body = resp.bytes().await?;
-
+        // See stream_response's comment: process as bytes arrive rather than
+        // buffering the whole body first.
         tokio::spawn(async move {
-            let text = String::from_utf8_lossy(&body);
-            for line in text.lines() {
-                if let Some(json_str) = line.strip_prefix("data: ") {
+            use futures::StreamExt;
+            let mut byte_stream = resp.bytes_stream();
+            let mut buf = String::new();
+            while let Some(chunk) = byte_stream.next().await {
+                let chunk = match chunk {
+                    Ok(c) => c,
+                    Err(e) => {
+                        let _ = tx
+                            .send(Err(Box::new(e) as Box<dyn Error + Send + Sync>))
+                            .await;
+                        return;
+                    }
+                };
+                buf.push_str(&String::from_utf8_lossy(&chunk));
+                while let Some(pos) = buf.find('\n') {
+                    let line = buf[..pos].trim().to_string();
+                    buf.drain(..=pos);
+                    if line.is_empty() {
+                        continue;
+                    }
+                    let json_str = line.strip_prefix("data: ").unwrap_or(&line);
                     if let Ok(data) = serde_json::from_str::<ChatResponse>(json_str) {
                         let done = data.done;
-                        let _ = tx.send(Ok(data)).await;
+                        if tx.send(Ok(data)).await.is_err() {
+                            return; // receiver dropped, stop reading
+                        }
                         if done {
                             return;
                         }
-                    }
-                } else if let Ok(data) = serde_json::from_str::<ChatResponse>(line) {
-                    let done = data.done;
-                    let _ = tx.send(Ok(data)).await;
-                    if done {
-                        return;
                     }
                 }
             }
@@ -585,16 +619,41 @@ impl OllamaClient {
     > {
         let (tx, rx) = mpsc::channel(100);
 
-        let body = resp.bytes().await?;
-
+        // Was `resp.bytes().await?` (buffers the whole response before
+        // processing any of it). A model pull can run for minutes; this made
+        // the GUI's progress bar sit frozen for the entire download and then
+        // jump straight to 100% instead of updating incrementally as Ollama
+        // reports real progress. `bytes_stream()` processes chunks as they
+        // arrive over the wire instead.
         tokio::spawn(async move {
-            let text = String::from_utf8_lossy(&body);
-            for line in text.lines() {
-                if let Ok(data) = serde_json::from_str::<PullProgressResponse>(line) {
-                    let status = data.status.clone();
-                    let _ = tx.send(Ok(data)).await;
-                    if status == "success" || status == "error" {
+            use futures::StreamExt;
+            let mut byte_stream = resp.bytes_stream();
+            let mut buf = String::new();
+            while let Some(chunk) = byte_stream.next().await {
+                let chunk = match chunk {
+                    Ok(c) => c,
+                    Err(e) => {
+                        let _ = tx
+                            .send(Err(Box::new(e) as Box<dyn Error + Send + Sync>))
+                            .await;
                         return;
+                    }
+                };
+                buf.push_str(&String::from_utf8_lossy(&chunk));
+                while let Some(pos) = buf.find('\n') {
+                    let line = buf[..pos].trim().to_string();
+                    buf.drain(..=pos);
+                    if line.is_empty() {
+                        continue;
+                    }
+                    if let Ok(data) = serde_json::from_str::<PullProgressResponse>(&line) {
+                        let status = data.status.clone();
+                        if tx.send(Ok(data)).await.is_err() {
+                            return; // receiver dropped, stop reading
+                        }
+                        if status == "success" || status == "error" {
+                            return;
+                        }
                     }
                 }
             }

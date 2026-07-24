@@ -3921,6 +3921,76 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         }
     }
 
+    /// Records a finished generation's metrics/session bookkeeping (request
+    /// counter, `inference_metrics`, dashboard session record) and returns
+    /// `(request_id, session_id, metrics_json)` for the caller's response body.
+    /// Extracted out of `finish_chat_response` so the real-streaming path
+    /// (`handle_gui_chat_stream`) can share the exact same side effects
+    /// instead of a second, divergence-prone copy of this bookkeeping.
+    fn record_generation_metrics(
+        state: &Arc<Mutex<BackendState>>,
+        current_model: &str,
+        latency_ms: f32,
+        tokens_out: u32,
+        tokens_per_sec: Option<f32>,
+        real_inference: bool,
+    ) -> (u64, String, serde_json::Value) {
+        let mut backend = lock_state(state);
+        backend.chat_requests = backend.chat_requests.saturating_add(1);
+        let request_seq = backend.chat_requests;
+
+        backend.last_latency_ms = latency_ms;
+        if let Some(tps) = tokens_per_sec {
+            backend.last_tokens_per_sec = tps;
+        }
+        backend
+            .inference_metrics
+            .record(latency_ms, tokens_out, tokens_per_sec, real_inference);
+        let snap = backend.inference_metrics.snapshot();
+
+        let latency_u = latency_ms.round() as u32;
+        let throughput_u = tokens_per_sec.unwrap_or(0.0).round().max(0.0) as usize;
+
+        let maybe_session = backend.sessions.first_mut();
+        let session_id = if let Some(session) = maybe_session {
+            session.tokens = session.tokens.saturating_add(tokens_out as usize);
+            session.throughput = throughput_u;
+            session.latency = latency_u;
+            session.model = current_model.to_string();
+            session.status = if real_inference {
+                "Running".to_string()
+            } else {
+                "Degraded".to_string()
+            };
+            session.id.clone()
+        } else {
+            let session_id = "sess_local_001".to_string();
+            backend.sessions.push(SessionRecord {
+                id: session_id.clone(),
+                model: current_model.to_string(),
+                status: if real_inference {
+                    "Running".to_string()
+                } else {
+                    "Degraded".to_string()
+                },
+                throughput: throughput_u,
+                latency: latency_u,
+                tokens: tokens_out as usize,
+            });
+            session_id
+        };
+
+        let metrics_json = serde_json::json!({
+            "throughput": snap.tokens_per_sec,
+            "p50_ms": snap.latency_p50_ms,
+            "p95_ms": snap.latency_p95_ms,
+            "latency_ms": latency_ms,
+            "tokens": tokens_out,
+            "real_inference": real_inference,
+        });
+        (request_seq, session_id, metrics_json)
+    }
+
     /// Shared response assembly (metrics recording, session bookkeeping, streaming
     /// vs. plain JSON) for a finished chat turn — used both by a fresh request and
     /// by one resumed after a tool-confirmation round-trip.
@@ -3960,65 +4030,14 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             }
         });
 
-        let (request_id, session_id, metrics_json) = {
-            let mut backend = lock_state(state);
-            backend.chat_requests = backend.chat_requests.saturating_add(1);
-            let request_seq = backend.chat_requests;
-
-            backend.last_latency_ms = latency_ms;
-            if let Some(tps) = tokens_per_sec {
-                backend.last_tokens_per_sec = tps;
-            }
-            backend.inference_metrics.record(
-                latency_ms,
-                tokens_out,
-                tokens_per_sec,
-                real_inference,
-            );
-            let snap = backend.inference_metrics.snapshot();
-
-            let latency_u = latency_ms.round() as u32;
-            let throughput_u = tokens_per_sec.unwrap_or(0.0).round().max(0.0) as usize;
-
-            let maybe_session = backend.sessions.first_mut();
-            let session_id = if let Some(session) = maybe_session {
-                session.tokens = session.tokens.saturating_add(tokens_out as usize);
-                session.throughput = throughput_u;
-                session.latency = latency_u;
-                session.model = current_model.to_string();
-                session.status = if real_inference {
-                    "Running".to_string()
-                } else {
-                    "Degraded".to_string()
-                };
-                session.id.clone()
-            } else {
-                let session_id = "sess_local_001".to_string();
-                backend.sessions.push(SessionRecord {
-                    id: session_id.clone(),
-                    model: current_model.to_string(),
-                    status: if real_inference {
-                        "Running".to_string()
-                    } else {
-                        "Degraded".to_string()
-                    },
-                    throughput: throughput_u,
-                    latency: latency_u,
-                    tokens: tokens_out as usize,
-                });
-                session_id
-            };
-
-            let metrics_json = serde_json::json!({
-                "throughput": snap.tokens_per_sec,
-                "p50_ms": snap.latency_p50_ms,
-                "p95_ms": snap.latency_p95_ms,
-                "latency_ms": latency_ms,
-                "tokens": tokens_out,
-                "real_inference": real_inference,
-            });
-            (request_seq, session_id, metrics_json)
-        };
+        let (request_id, session_id, metrics_json) = record_generation_metrics(
+            state,
+            current_model,
+            latency_ms,
+            tokens_out,
+            tokens_per_sec,
+            real_inference,
+        );
 
         let mut final_response = response_text;
         if !tool_results.is_empty() {
@@ -4102,6 +4121,171 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             "outcome": outcome,
         }))
         .into_response()
+    }
+
+    /// Real incremental streaming path for `handle_gui_chat`, used when the
+    /// caller requested `stream: true` and no MCP tools are enabled for this
+    /// turn (tool-call detection needs the complete text, so that case keeps
+    /// using the existing buffer-then-chunk path via `run_tool_loop` — see
+    /// the call site). Forwards text deltas to the client as the backend
+    /// produces them, instead of `handle_gui_chat`'s other path, which waits
+    /// for the entire generation to finish and then fakes streaming by
+    /// splitting the already-complete text into word chunks — meaning a
+    /// client saw zero output for the whole generation time before
+    /// (measured: tens of seconds for a longer response), regardless of the
+    /// `stream: true` request.
+    async fn handle_gui_chat_stream(
+        state: Arc<Mutex<BackendState>>,
+        ollama_available: Arc<tokio::sync::Mutex<bool>>,
+        started: Instant,
+        current_model: String,
+        gen: GenerationParams,
+        prompt: String,
+        request_tracker: runtime_switcher::RequestTracker,
+    ) -> axum::response::Response {
+        use axum::response::sse::{Event, Sse};
+
+        // Snapshot a session id to embed in each streamed chunk up front —
+        // the authoritative bookkeeping (record_generation_metrics) only runs
+        // once the full text is known, at stream end, and may create a new
+        // session if this is the very first request. That's a cosmetic
+        // identifier mismatch for that one request on a single-user desktop
+        // deployment, not a correctness issue worth blocking real streaming on.
+        let request_id = rand::random::<u32>();
+        let session_id = {
+            let backend = lock_state(&state);
+            backend
+                .sessions
+                .first()
+                .map(|s| s.id.clone())
+                .unwrap_or_else(|| "sess_local_001".to_string())
+        };
+
+        let backend_stream: Result<native_engine::NativeChatStream, String> =
+            match gen.inference_backend {
+                InferenceBackend::Native => {
+                    gen.native_engine_client
+                        .generate_chat_stream(
+                            &gen.current_model,
+                            &prompt,
+                            gen.exec_tokens,
+                            gen.temperature,
+                            gen.top_p,
+                            gen.top_k,
+                            gen.repeat_penalty,
+                        )
+                        .await
+                }
+                InferenceBackend::Ollama => gen
+                    .ollama_client
+                    .generate_stream(
+                        &gen.current_model,
+                        &prompt,
+                        gen.temperature,
+                        gen.top_p,
+                        gen.top_k,
+                        gen.repeat_penalty,
+                        gen.exec_tokens,
+                    )
+                    .await
+                    .map(|s| -> native_engine::NativeChatStream {
+                        Box::pin(StreamExt::map(s, |r| r.map_err(|e| e.to_string())))
+                    })
+                    .map_err(|e| e.to_string()),
+            };
+
+        let mut backend_stream = match backend_stream {
+            Ok(s) => s,
+            Err(err) => {
+                request_tracker.decrement().await;
+                let chunk = serde_json::json!({
+                    "token": format!("[stream error: {err}] "),
+                    "request_id": format!("req-{}", request_id),
+                    "session_id": session_id,
+                    "error": true,
+                });
+                let err_stream = futures::stream::once(async move {
+                    Ok::<Event, Infallible>(Event::default().data(chunk.to_string()))
+                });
+                return Sse::new(err_stream).into_response();
+            }
+        };
+
+        let (tx, rx) = tokio::sync::mpsc::channel::<Result<Event, Infallible>>(100);
+        tokio::spawn(async move {
+            let mut accumulated = String::new();
+            let mut real_inference = true;
+            let mut client_disconnected = false;
+            while let Some(item) = backend_stream.next().await {
+                match item {
+                    Ok(text) => {
+                        accumulated.push_str(&text);
+                        let chunk = serde_json::json!({
+                            "token": text,
+                            "request_id": format!("req-{}", request_id),
+                            "session_id": session_id,
+                        });
+                        if tx
+                            .send(Ok(Event::default().data(chunk.to_string())))
+                            .await
+                            .is_err()
+                        {
+                            client_disconnected = true;
+                            break;
+                        }
+                    }
+                    Err(err) => {
+                        real_inference = false;
+                        let chunk = serde_json::json!({
+                            "token": format!("[stream error: {err}] "),
+                            "request_id": format!("req-{}", request_id),
+                            "session_id": session_id,
+                            "error": true,
+                        });
+                        let _ = tx.send(Ok(Event::default().data(chunk.to_string()))).await;
+                        break;
+                    }
+                }
+            }
+
+            // Runs exactly once regardless of how the loop above ended
+            // (normal completion, backend error, or client disconnect) so
+            // metrics/tracker release can't be skipped by an early exit.
+            {
+                let mut available_flag = ollama_available.lock().await;
+                *available_flag = real_inference;
+            }
+
+            let wall_ms = (started.elapsed().as_secs_f32() * 1000.0).max(0.1);
+            let tokens_out = (accumulated.split_whitespace().count() as u32).max(1);
+            let tokens_per_sec = if real_inference && wall_ms > 0.0 {
+                Some(tokens_out as f32 / (wall_ms / 1000.0))
+            } else {
+                None
+            };
+            record_generation_metrics(
+                &state,
+                &current_model,
+                wall_ms,
+                tokens_out,
+                tokens_per_sec,
+                real_inference,
+            );
+            request_tracker.decrement().await;
+
+            if client_disconnected {
+                return;
+            }
+
+            let done = serde_json::json!({
+                "done": true,
+                "request_id": format!("req-{}", request_id),
+                "session_id": session_id,
+            });
+            let _ = tx.send(Ok(Event::default().data(done.to_string()))).await;
+        });
+
+        Sse::new(tokio_stream::wrappers::ReceiverStream::new(rx)).into_response()
     }
 
     async fn handle_gui_chat(
@@ -4198,6 +4382,29 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             exec_tokens,
             tool_schemas: enabled_schemas.clone(),
         };
+
+        // Real incremental streaming only when there's no tool-call text to
+        // detect in the model's raw output (tool-call marker parsing needs
+        // the complete generation, so that case keeps the existing
+        // buffer-then-fake-stream path below via run_tool_loop).
+        if req.stream.unwrap_or(false) && enabled_schemas.is_empty() {
+            // Held for the generation's full duration (released inside the
+            // spawned streaming task once it finishes), matching how the
+            // non-streaming path below tracks in-flight work for graceful
+            // backend-switch draining.
+            let request_tracker = active_runtime_switcher().request_tracker().clone();
+            request_tracker.increment().await;
+            return handle_gui_chat_stream(
+                state,
+                ollama_available,
+                started,
+                current_model,
+                gen,
+                req.message.clone(),
+                request_tracker,
+            )
+            .await;
+        }
 
         let tool_instructions = mcp::toolcall::build_tool_instructions(&enabled_schemas);
         let effective_prompt = if tool_instructions.is_empty() {
