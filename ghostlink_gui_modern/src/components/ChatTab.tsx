@@ -47,6 +47,14 @@ interface Tool {
   enabled: boolean;
 }
 
+// Mirrors the backend's chars/4 heuristic (main.rs `estimate_tokens`) so the
+// chip's number and the server's actual truncation point roughly agree —
+// exact agreement isn't the point, just not being wildly off from each other.
+function estimateTokens(text: string): number {
+  const chars = text.trim().length;
+  return chars === 0 ? 0 : Math.max(1, Math.floor(text.length / 4));
+}
+
 function getNodeText(node: React.ReactNode): string {
   if (typeof node === 'string' || typeof node === 'number') return String(node);
   if (Array.isArray(node)) return node.map(getNodeText).join('');
@@ -173,6 +181,13 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
   const [maxTokens] = useState(2048);
   const [systemPrompt] = useState('You are a production-grade, kernel-bypass-aware system orchestration co-pilot.');
 
+  // Mirrors the Settings tab's Conversation Token Limit so the header chip
+  // below can warn before the server has to start dropping history, not
+  // just after. Loaded once — if it's changed in Settings mid-session the
+  // chip catches up next time this tab mounts, which is fine for a
+  // best-effort heads-up rather than an exact accounting.
+  const [conversationTokenLimit, setConversationTokenLimit] = useState(3072);
+
   // UI State
   const [showTools, setShowTools] = useState(false);
   const [showModelSelector, setShowModelSelector] = useState(false);
@@ -216,6 +231,14 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
     return Array.from(bySlot.values());
   }, [mcpServers]);
 
+  // Live estimate of the conversation's token footprint, draft included, so
+  // the header chip below ticks up as the user types — a heads-up before a
+  // send actually trips server-side truncation, not just an after-the-fact report.
+  const historyTokens = useMemo(
+    () => messages.reduce((sum, m) => sum + estimateTokens(m.content), 0) + estimateTokens(input),
+    [messages, input]
+  );
+
   // Pre-compute a map for O(1) partner lookup during Compare Mode rendering,
   // avoiding O(n^2) nested find scans over the message list.
   const compareGroupBMap = useMemo(() => {
@@ -238,6 +261,15 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
   useEffect(() => {
     api.listMcpServers().then((result) => {
       if (!result.error) setMcpServers(result.servers);
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [api]);
+
+  useEffect(() => {
+    api.getSettings().then((result) => {
+      if (!result.error && result.settings?.conversation_token_limit) {
+        setConversationTokenLimit(result.settings.conversation_token_limit);
+      }
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [api]);
@@ -353,6 +385,15 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
 
   const usableModels = models.filter((m) => m.status === 'Loaded' || m.status === 'Ready');
 
+  // Builds the transcript sent to the model: existing history (`messages`,
+  // read from the closure — stale by one turn since setMessages hasn't
+  // flushed yet) plus the turn currently being sent, with any blank/failed
+  // placeholder entries dropped so they don't waste conversation-token budget.
+  const buildHistoryPayload = (latestUserText: string) =>
+    [...messages, { role: 'user' as const, content: latestUserText }]
+      .filter((m) => m.content.trim().length > 0)
+      .map((m) => ({ role: m.role, content: m.content }));
+
   // The backend serves exactly one model at a time — /api/inference/chat's
   // `model` field is dead code there (it always uses whichever model was
   // last explicitly loaded via /api/models/load), so two "concurrent"
@@ -401,6 +442,7 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
 
       const result = await api.sendMessage({
         message: messageText,
+        messages: buildHistoryPayload(messageText),
         temperature,
         top_p: 0.9,
         top_k: 40,
@@ -426,6 +468,7 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
           ? {
               ...m,
               content: useStreaming ? m.content : (data.response ?? m.content),
+              truncatedBefore: !!data.truncated,
               timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
             }
           : m)));
@@ -487,6 +530,7 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
 
     const result = await api.sendMessage({
       message: messageText,
+      messages: buildHistoryPayload(messageText),
       temperature,
       top_p: 0.9,
       top_k: 40,
@@ -516,6 +560,7 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
               content: useStreaming ? m.content : (data.response ?? m.content),
               toolCalls: data.tool_results,
               pendingToolCall: data.pending_tool_call,
+              truncatedBefore: !!data.truncated,
               timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
             }
           : m
@@ -824,6 +869,25 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
             </div>
           </div>
         <div className="flex items-center gap-2">
+            {(() => {
+                const ratio = conversationTokenLimit > 0 ? historyTokens / conversationTokenLimit : 0;
+                const tone = ratio >= 0.9
+                    ? 'bg-red-500/10 border-red-500/30 text-red-400'
+                    : ratio >= 0.7
+                    ? 'bg-amber-500/10 border-amber-500/30 text-amber-400'
+                    : 'bg-slate-900/60 border-slate-800 text-slate-500';
+                const dotTone = ratio >= 0.9 ? 'bg-red-400 animate-pulse' : ratio >= 0.7 ? 'bg-amber-400' : 'bg-slate-600';
+                const fmt = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n));
+                return (
+                    <div
+                        className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-[11px] font-mono ${tone}`}
+                        title={`~${historyTokens} of ${conversationTokenLimit} conversation-memory tokens used. Oldest turns are dropped first once this fills up — adjust in Settings → Conversation Token Limit.`}
+                    >
+                        <span className={`w-1.5 h-1.5 rounded-full ${dotTone}`} aria-hidden="true" />
+                        {fmt(historyTokens)}/{fmt(conversationTokenLimit)}
+                    </div>
+                );
+            })()}
             <div className="w-8 h-8 rounded-full bg-orange-500 flex items-center justify-center text-xs font-bold text-white shadow-lg shadow-orange-500/20" aria-hidden="true">R</div>
         </div>
       </div>
@@ -859,7 +923,15 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                     );
                 }
                 return (
-                <div key={msg.id} className={`flex gap-4 ${msg.role === 'user' ? 'justify-end' : 'justify-start'} group animate-in fade-in slide-in-from-bottom-2 duration-300`}>
+                <React.Fragment key={msg.id}>
+                {msg.truncatedBefore && (
+                    <div role="separator" aria-label="Earlier messages were trimmed to stay within the conversation token limit" className="flex items-center gap-3 py-1">
+                        <div className="flex-1 h-px bg-slate-800" />
+                        <span className="text-[10px] text-slate-600 whitespace-nowrap">earlier messages trimmed to fit memory</span>
+                        <div className="flex-1 h-px bg-slate-800" />
+                    </div>
+                )}
+                <div className={`flex gap-4 ${msg.role === 'user' ? 'justify-end' : 'justify-start'} group animate-in fade-in slide-in-from-bottom-2 duration-300`}>
                     {msg.role === 'assistant' && (
                         <div className="flex-shrink-0 w-8 h-8 rounded-lg bg-slate-900 border border-slate-800 flex items-center justify-center mt-1">
                             <div className="w-5 h-5 bg-blue-600 rounded-sm flex items-center justify-center text-[10px] font-bold text-white uppercase">
@@ -1024,6 +1096,7 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                         </div>
                     )}
                 </div>
+                </React.Fragment>
                 );
             })}
 

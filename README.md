@@ -1,16 +1,56 @@
-# Ghostlink
+<div align="center">
 
-[![GitHub Repo](https://img.shields.io/badge/GitHub-Ghostlink-181717?logo=github)](https://github.com/rwilliamspbg-ops/Ghostlink)
-[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](https://github.com/rwilliamspbg-ops/Ghostlink/blob/main/LICENSE)
-[![Docs](https://img.shields.io/badge/Docs-GitHub%20Pages-0ea5e9)](https://rwilliamspbg-ops.github.io/Ghostlink/)
+# 👻 Ghostlink
+
+**Distributed inference fabric for custom LLM systems.**
+Route workloads across CPU, GPU, and NPU resources with explicit scheduling, hardware-aware placement, and a self-hosted open-source stack.
+
 [![CI](https://github.com/rwilliamspbg-ops/Ghostlink/actions/workflows/ci.yml/badge.svg)](https://github.com/rwilliamspbg-ops/Ghostlink/actions/workflows/ci.yml)
+[![Tests](https://github.com/rwilliamspbg-ops/Ghostlink/actions/workflows/tests.yml/badge.svg)](https://github.com/rwilliamspbg-ops/Ghostlink/actions/workflows/tests.yml)
+[![Security](https://github.com/rwilliamspbg-ops/Ghostlink/actions/workflows/security.yml/badge.svg)](https://github.com/rwilliamspbg-ops/Ghostlink/actions/workflows/security.yml)
+[![MSRV](https://github.com/rwilliamspbg-ops/Ghostlink/actions/workflows/msrv.yml/badge.svg)](https://github.com/rwilliamspbg-ops/Ghostlink/actions/workflows/msrv.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![Docs](https://img.shields.io/badge/Docs-GitHub%20Pages-0ea5e9)](https://rwilliamspbg-ops.github.io/Ghostlink/)
+[![Version](https://img.shields.io/badge/version-1.6.0-blueviolet)](CHANGELOG.md)
+[![Rust](https://img.shields.io/badge/Rust-2021-orange?logo=rust)](Cargo.toml)
+[![Platforms](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey)](#quick-start)
+[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
+[![GitHub Stars](https://img.shields.io/github/stars/rwilliamspbg-ops/Ghostlink?style=social)](https://github.com/rwilliamspbg-ops/Ghostlink)
 
-> Distributed inference fabric for custom LLM systems.
-> Route workloads across CPU, GPU, and NPU resources with explicit scheduling, hardware-aware placement, and a self-hosted open-source stack.
+[Quick Start](#quick-start) · [Demo](#demo) · [Architecture](#architecture) · [API](#api-endpoints) · [Docs](https://rwilliamspbg-ops.github.io/Ghostlink/) · [Contributing](CONTRIBUTING.md)
 
-Ghostlink is a high-performance distributed inference fabric for teams building custom LLM systems. It combines hardware-aware planning, flexible routing, and model-management workflows so inference workloads can be distributed across heterogeneous devices with more explicit control than generic orchestration layers.
+</div>
+
+---
+
+## Demo
+
+**Install → load a model → chat**, end to end, running [Llama 3.2 1B](https://huggingface.co/meta-llama/Llama-3.2-1B-Instruct) locally through Ghostlink Studio's native llama.cpp backend.
+
+![Ghostlink Studio walkthrough — loading Llama 3.2 1B and chatting with it](docs/assets/demo/ghostlink-walkthrough.gif)
+
+> The full-length recording (with audio) lives in the gitignored `demo/` folder for local viewing — it's not part of the pushed repo, so there's no link to it here.
+
+## Table of Contents
+
+- [What Ghostlink brings](#what-ghostlink-brings)
+- [Why Ghostlink](#why-ghostlink)
+- [Quick Start](#quick-start)
+- [Hardware Detection](#hardware-detection)
+- [Performance](#performance)
+- [Launch Scripts](#launch-scripts)
+- [Usage (Developer)](#usage-developer)
+- [MCP Tools](#mcp-tools-model-context-protocol)
+- [Troubleshooting](#troubleshooting)
+- [Environment Variables](#environment-variables)
+- [Architecture](#architecture)
+- [Testing](#testing)
+- [Project Status](#project-status)
+- [Contributing](#contributing)
+- [License](#license)
 
 ## What Ghostlink brings
+
 - Clear routing and scheduling for custom inference topologies
 - Hardware-aware placement across mixed compute environments (CPU, GPU, NPU)
 - SPSC ring-buffer transport with spin-wait for sub-microsecond handoff
@@ -20,6 +60,7 @@ Ghostlink is a high-performance distributed inference fabric for teams building 
 - A strong open-source foundation with a commercial support path
 
 ## Why Ghostlink
+
 Ghostlink is designed for teams that want lower-latency planning, more control over distributed inference topologies, and a simpler path to custom LLM serving than generic orchestration stacks.
 
 Use Ghostlink when you need:
@@ -27,28 +68,11 @@ Use Ghostlink when you need:
 - a self-hosted inference fabric with open-source flexibility,
 - a platform that can be extended into a paid commercial offering with support and enterprise deployment services.
 
-## Public launch assets
-A polished landing page and launch collateral are now available for the project:
-- Live site: https://rwilliamspbg-ops.github.io/Ghostlink/
-- Comparison sheet: [docs/archive/comparison_sheet.md](docs/archive/comparison_sheet.md)
-- Demo flow: [docs/archive/launch_demo.md](docs/archive/launch_demo.md)
+## Quick Start
 
-## Project status
-Ghostlink is positioned as a launch-ready open-source foundation with a strong demo story and public-facing collateral.
+### Windows
 
-Current strengths:
-- a working local launch path for experimentation and demos,
-- a clear positioning around distributed inference scheduling and routing,
-- public assets for comparison, demo flow, and product storytelling.
-
-Current focus areas:
-- strengthening the end-to-end demo experience,
-- improving documentation for deployment and production use,
-- expanding real-world validation across more hardware and runtime setups.
-
-## Quick Start (Windows)
-
-### Prerequisites
+**Prerequisites**
 
 | Tool | Required | How to Install |
 |------|----------|---------------|
@@ -57,7 +81,7 @@ Current focus areas:
 | **CMake** | For llama.cpp | `winget install Kitware.CMake` or https://cmake.org/download/ |
 | **Git** | For llama.cpp | `winget install Git.Git` |
 
-### Launch
+**Launch**
 
 ```powershell
 cd C:\Users\rwill\Ghostlink
@@ -88,7 +112,7 @@ Open http://127.0.0.1:5173 → **Models** → load a model → **Chat**.
 
 > **405 on chat/models?** The GUI was pointed at the wrong port (e.g. ghost-link `:8003` directly, or llama-server `:8080`). Always use API base `http://127.0.0.1:8000` (the control-plane gateway).
 
-## Quick Start (Linux / macOS)
+### Linux / macOS
 
 ```bash
 # Prerequisites: Rust, Node.js, curl; cmake optional (prebuilt llama-server fallback)
@@ -227,6 +251,36 @@ cargo run -p ghost-link -- dashboard
 | `/api/models/partial` | GET | List interrupted downloads (`.gguf.part` files) |
 | `/api/models/partial/discard` | POST | Delete an interrupted download |
 
+## MCP Tools (Model Context Protocol)
+
+Ghostlink chat can call real tools via [MCP](https://modelcontextprotocol.io) servers,
+configured in `mcp_servers.toml` (a gitignored, per-install copy of
+`mcp_servers.example.toml`, auto-created on first run — same pattern as
+`ghostlink.toml`/`ghostlink.example.toml`).
+
+Default servers:
+
+| Chat tool slot | Backing server | Enabled by default |
+|---|---|---|
+| `file_operations` | `@modelcontextprotocol/server-filesystem` (npx) | ✅ |
+| `api_call` | `mcp-server-fetch` (uvx) | ✅ |
+| `calculator` | `mcp-calculator` (this repo, `evalexpr`-backed) | ✅ |
+| `database_query` | `mcp-server-sqlite` (uvx) | ✅ |
+| `web_search` | `@modelcontextprotocol/server-brave-search` (npx) | needs `BRAVE_API_KEY` |
+| `code_execution` / `terminal` | Docker MCP Toolkit gateway | needs Docker Desktop running |
+| `image_generation` | *(not yet configured — no default backend picked)* | ❌ |
+| — | `sequential-thinking` (npx) | ✅ |
+| — | `vision` (this repo, wraps local Ollama) | needs a pulled vision model |
+
+The model decides whether and which tool to call (a ReAct-style prompt works
+with any local GGUF/Ollama model; Ollama models whose chat template declares
+native tool-calling support use that automatically instead). Tools marked
+`requires_confirmation` in `mcp_servers.toml` (terminal, code_execution) pause
+for explicit user approval before executing — see the MCP tab in the GUI.
+
+Requires `npx`/`node` (bundled MCP servers) and `uvx`/`python` (Python-distributed
+ones) on `PATH`; Docker Desktop for the terminal/code_execution slots.
+
 ## Troubleshooting
 
 ### Ollama 404 on /api/generate
@@ -293,36 +347,6 @@ crates/
 ghostlink_gui_modern/        # React frontend (Vite + Tailwind)
 ```
 
-## MCP Tools (Model Context Protocol)
-
-Ghostlink chat can call real tools via [MCP](https://modelcontextprotocol.io) servers,
-configured in `mcp_servers.toml` (a gitignored, per-install copy of
-`mcp_servers.example.toml`, auto-created on first run — same pattern as
-`ghostlink.toml`/`ghostlink.example.toml`).
-
-Default servers:
-
-| Chat tool slot | Backing server | Enabled by default |
-|---|---|---|
-| `file_operations` | `@modelcontextprotocol/server-filesystem` (npx) | ✅ |
-| `api_call` | `mcp-server-fetch` (uvx) | ✅ |
-| `calculator` | `mcp-calculator` (this repo, `evalexpr`-backed) | ✅ |
-| `database_query` | `mcp-server-sqlite` (uvx) | ✅ |
-| `web_search` | `@modelcontextprotocol/server-brave-search` (npx) | needs `BRAVE_API_KEY` |
-| `code_execution` / `terminal` | Docker MCP Toolkit gateway | needs Docker Desktop running |
-| `image_generation` | *(not yet configured — no default backend picked)* | ❌ |
-| — | `sequential-thinking` (npx) | ✅ |
-| — | `vision` (this repo, wraps local Ollama) | needs a pulled vision model |
-
-The model decides whether and which tool to call (a ReAct-style prompt works
-with any local GGUF/Ollama model; Ollama models whose chat template declares
-native tool-calling support use that automatically instead). Tools marked
-`requires_confirmation` in `mcp_servers.toml` (terminal, code_execution) pause
-for explicit user approval before executing — see the MCP tab in the GUI.
-
-Requires `npx`/`node` (bundled MCP servers) and `uvx`/`python` (Python-distributed
-ones) on `PATH`; Docker Desktop for the terminal/code_execution slots.
-
 ## Testing
 
 ```bash
@@ -346,6 +370,25 @@ cargo test --workspace
 ```
 
 CI enforces the same checks across Ubuntu, Windows, and macOS.
+
+## Project Status
+
+Ghostlink is positioned as a launch-ready open-source foundation with a strong demo story and public-facing collateral.
+
+Current strengths:
+- a working local launch path for experimentation and demos,
+- a clear positioning around distributed inference scheduling and routing,
+- public assets for comparison, demo flow, and product storytelling.
+
+Current focus areas:
+- strengthening the end-to-end demo experience,
+- improving documentation for deployment and production use,
+- expanding real-world validation across more hardware and runtime setups.
+
+**Public launch assets:**
+- Live site: https://rwilliamspbg-ops.github.io/Ghostlink/
+- Comparison sheet: [docs/archive/comparison_sheet.md](docs/archive/comparison_sheet.md)
+- Demo flow: [docs/archive/launch_demo.md](docs/archive/launch_demo.md)
 
 ## Contributing
 See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, PR expectations, and release rubric.

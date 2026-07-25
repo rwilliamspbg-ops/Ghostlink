@@ -445,6 +445,22 @@ export const SettingsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                 min={16} max={8192} step={16}
                 onChange={(v) => update('max_tokens', v)}
               />
+              <SliderField
+                label="Conversation Token Limit"
+                desc="How much chat history the model remembers — separate from Max Tokens, which only caps the reply. Oldest turns are dropped first once a conversation outgrows this."
+                value={settings.conversation_token_limit}
+                min={256} max={16384} step={128}
+                onChange={(v) => update('conversation_token_limit', v)}
+              />
+              {settings.conversation_token_limit + settings.max_tokens > 4096 && (
+                <div role="alert" className="flex items-start gap-2 text-xs text-orange-400 bg-orange-500/10 px-3 py-2 rounded-xl">
+                  <AlertTriangle size={14} className="mt-0.5 shrink-0" aria-hidden="true" />
+                  <span>
+                    History ({settings.conversation_token_limit}) + Max Tokens ({settings.max_tokens}) exceeds the
+                    default 4096-token context window. If your model runs with a larger <code className="text-orange-300 bg-slate-800 px-1 rounded font-mono">GHOSTLINK_CTX_SIZE</code>, this is fine — otherwise the server-side truncation still protects you.
+                  </span>
+                </div>
+              )}
             </Section>
 
             {/* Model Section */}

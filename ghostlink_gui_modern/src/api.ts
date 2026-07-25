@@ -239,6 +239,10 @@ export class GhostlinkAPI {
   async sendMessage(
     payload: {
       message: string;
+      /** Full transcript (oldest first, including the latest turn) so the
+       *  model has memory of the conversation instead of seeing `message`
+       *  alone. Optional only for older callers — always pass it in new code. */
+      messages?: { role: string; content: string }[];
       model?: string;
       temperature: number;
       top_p: number;
@@ -276,6 +280,7 @@ export class GhostlinkAPI {
 
         const decoder = new TextDecoder();
         let fullText = '';
+        let truncated = false;
 
         while (true) {
           const { done, value } = await reader.read();
@@ -292,6 +297,10 @@ export class GhostlinkAPI {
                   fullText += data.token;
                   if (onToken) onToken(data.token);
                 }
+                // Carried on the final "done" chunk — see handle_gui_chat_stream.
+                if (typeof data.truncated === 'boolean') {
+                  truncated = data.truncated;
+                }
               } catch (e) {
                 // Ignore incomplete JSON
               }
@@ -299,7 +308,7 @@ export class GhostlinkAPI {
           }
         }
 
-        return { success: true, data: { response: fullText } };
+        return { success: true, data: { response: fullText, truncated } };
       } else {
         const response = await this.http.post('/api/inference/chat', payload);
         return { success: true, data: response.data };

@@ -399,7 +399,7 @@ describe('GhostlinkAPI', () => {
   describe('Chat Streaming', () => {
     it('should handle non-streaming response', async () => {
       mockAxiosInstance.post.mockResolvedValue({ data: { response: 'Hello World' } });
-      
+
       const result = await api.sendMessage({
         message: 'test',
         temperature: 0.7,
@@ -410,9 +410,80 @@ describe('GhostlinkAPI', () => {
         system_prompt: '',
         stream: false,
       });
-      
+
       expect(result.success).toBe(true);
       expect(result.data?.response).toBe('Hello World');
+    });
+
+    it('forwards the conversation history so the model has memory of prior turns', async () => {
+      mockAxiosInstance.post.mockResolvedValue({ data: { response: 'ok' } });
+
+      await api.sendMessage({
+        message: 'and then?',
+        messages: [
+          { role: 'user', content: 'hi' },
+          { role: 'assistant', content: 'hello' },
+          { role: 'user', content: 'and then?' },
+        ],
+        temperature: 0.7,
+        top_p: 0.9,
+        top_k: 40,
+        penalty: 1.1,
+        max_tokens: 100,
+        system_prompt: '',
+        stream: false,
+      });
+
+      expect(mockAxiosInstance.post).toHaveBeenCalledWith(
+        '/api/inference/chat',
+        expect.objectContaining({
+          messages: [
+            { role: 'user', content: 'hi' },
+            { role: 'assistant', content: 'hello' },
+            { role: 'user', content: 'and then?' },
+          ],
+        })
+      );
+    });
+
+    it('surfaces the truncated flag from the streamed done-chunk', async () => {
+      const encoder = new TextEncoder();
+      const sseChunks = [
+        `data: ${JSON.stringify({ token: 'Hel' })}\n`,
+        `data: ${JSON.stringify({ token: 'lo' })}\n`,
+        `data: ${JSON.stringify({ done: true, truncated: true })}\n`,
+      ];
+      let chunkIndex = 0;
+      const reader = {
+        read: vi.fn(async () => {
+          if (chunkIndex < sseChunks.length) {
+            return { done: false, value: encoder.encode(sseChunks[chunkIndex++]) };
+          }
+          return { done: true, value: undefined };
+        }),
+      };
+      const fetchMock = vi.fn().mockResolvedValue({
+        ok: true,
+        body: { getReader: () => reader },
+      });
+      vi.stubGlobal('fetch', fetchMock);
+
+      const result = await api.sendMessage({
+        message: 'test',
+        temperature: 0.7,
+        top_p: 0.9,
+        top_k: 40,
+        penalty: 1.1,
+        max_tokens: 100,
+        system_prompt: '',
+        stream: true,
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.data?.response).toBe('Hello');
+      expect(result.data?.truncated).toBe(true);
+
+      vi.unstubAllGlobals();
     });
   });
 

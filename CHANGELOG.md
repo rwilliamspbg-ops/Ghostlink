@@ -4,6 +4,74 @@ All notable changes to Ghostlink Studio are documented here.
 
 ---
 
+## [1.7.0] - 2026-07-25 (Chat gains conversation memory; README overhaul with live demo)
+
+Chat turns previously carried zero history — every request to the model was
+built from the single latest message, so a second turn had no memory of the
+first. This release wires the GUI's full transcript through to the backend,
+adds a configurable token budget for that history (separate from the
+per-response `max_tokens`), and gives the GUI live feedback on how close a
+conversation is to that budget. Also includes a full README reorganization
+with a real recorded GUI walkthrough (Llama 3.2 1B) embedded as an inline demo.
+
+### ✨ Features
+
+- **Chat now sends full conversation history, not just the latest turn.**
+  `GuiChatRequest` gains a `messages: Vec<{role, content}>` field (the old
+  single `message` string is kept only as a fallback for un-upgraded
+  clients). `handle_gui_chat` builds the model prompt from the whole
+  (windowed) transcript via a new `build_conversation_prompt` helper instead
+  of `req.message` alone.
+- **New `conversation_token_limit` setting** — a token budget for chat
+  history, distinct from `max_tokens` (which only caps the response length).
+  Default derives from `ctx_size − max_tokens − margin` (currently 1920 on
+  stock settings) via shared constants, rather than a flat guess, so the
+  default doesn't immediately exceed the model's context window. The
+  effective limit is additionally clamped to `ctx_size` at request time, so a
+  manually-raised or stale `settings.json` value can't overflow the context
+  window — it just truncates history harder instead.
+- **Newest-first truncation**: once history + the reserved response budget
+  would exceed the limit, oldest turns are dropped first; the single newest
+  turn is always kept even if it alone exceeds the budget. The server reports
+  `truncated: true` back to the GUI (both streaming and non-streaming) so a
+  shortened memory is visible instead of silently looking like the model
+  forgot something.
+
+### 🐛 Correctness
+
+- **The system prompt was silently dropped on any turn with no tools
+  enabled.** The old prompt-building branch only spliced in `system_prompt`
+  when tool instructions were non-empty. `build_conversation_prompt` always
+  includes it now.
+
+### 🎨 UI / Accessibility
+
+- Chat header gains a live token-budget chip (`~N/limit`, color escalates
+  blue → amber → red as it fills), computed client-side from the same
+  chars/4 heuristic the backend uses, updating as the user types.
+- A subtle "earlier messages trimmed to fit memory" divider renders above a
+  reply when the server actually had to truncate history.
+- Settings tab gains a **Conversation Token Limit** slider next to Max
+  Tokens, with an inline warning if history + Max Tokens would exceed a
+  4096-token window.
+
+### 📚 Documentation
+
+- `README.md` reorganized: hero section with a full badge row (CI, Tests,
+  Security, MSRV, License, Docs, Version, Rust, Platforms, PRs-welcome,
+  Stars), a Table of Contents, and a **Demo** section with an inline-playing
+  GIF (`docs/assets/demo/ghostlink-walkthrough.gif`) captured from a real
+  install → load Llama 3.2 1B → chat walkthrough. All prior content
+  preserved, just regrouped.
+
+### ✅ Validation
+
+- `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D
+  warnings`, `cargo test --workspace` (281 passed, 0 failed, 6 ignored).
+- Frontend: `tsc --noEmit` clean, `vitest run` (106 passed, 0 failed),
+  including new coverage for truncation, the system-prompt regression,
+  history forwarding, and the streamed `truncated` flag.
+
 ## [1.6.0] - 2026-07-25 (Go control-plane becomes the real gateway; session benchmark pass)
 
 The Go control-plane moves from an underused, partially-duplicate component to
