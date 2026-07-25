@@ -2456,7 +2456,9 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                             last_report = std::time::Instant::now();
                         }
                     }
-                    file.flush().await.map_err(|e| format!("Write error: {}", e))?;
+                    file.flush()
+                        .await
+                        .map_err(|e| format!("Write error: {}", e))?;
                     drop(file);
 
                     // The connection can also be dropped mid-transfer (client
@@ -4417,7 +4419,10 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         // by unrelated live-inference bookkeeping the next time any chat
         // request completed.
         let live_session_id = "sess_local_001";
-        let maybe_session = backend.sessions.iter_mut().find(|s| s.id == live_session_id);
+        let maybe_session = backend
+            .sessions
+            .iter_mut()
+            .find(|s| s.id == live_session_id);
         let session_id = if let Some(session) = maybe_session {
             session.tokens = session.tokens.saturating_add(tokens_out as usize);
             session.throughput = throughput_u;

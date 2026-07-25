@@ -4,6 +4,125 @@ All notable changes to Ghostlink Studio are documented here.
 
 ---
 
+## [1.5.0] - 2026-07-25 (GUI overhaul: command palette, compare mode, real session persistence; two backend correctness fixes)
+
+A broad GUI improvement pass (command palette, accessibility, chat/metrics
+depth, multi-model comparison) plus two backend bugs found and fixed along
+the way: saved chat sessions silently discarded their content, and
+interrupted HuggingFace downloads could leave a corrupt `.gguf` on disk
+that the UI then offered as a normal model.
+
+### 🐛 Correctness
+
+- **`download_hf_model` could leave a corrupt `.gguf` at the trusted
+  filename.** A dropped connection mid-transfer returned an `Err` from
+  `stream.chunk()` that propagated via `?` immediately, skipping the
+  cleanup that only ran for the other failure mode (a short byte count on
+  a clean-looking EOF). `scan_local_models_dir` has no integrity check of
+  its own — any `.gguf` file it finds is listed as `"Ready"` — so a
+  truncated file was then offered to the user as a working model. Now
+  streams into a `<name>.gguf.part` sibling and only renames it into place
+  after the byte count is verified; no interruption, of any kind, can
+  produce a file at the trusted name anymore.
+- **Saved chat sessions never stored their messages.** `SessionRecord` had
+  no `messages` field — `handle_gui_session_save` received the full
+  conversation from the frontend and discarded it after computing a token
+  count, so `handle_gui_session_load` had nothing to return. The frontend
+  compounded this: `handleLoadSession` didn't apply anything from a
+  successful response either. Added `name`/`messages` to `SessionRecord`,
+  `sessions.json` persistence (mirroring the existing `models.json`
+  pattern — sessions were pure in-memory before this and never survived a
+  restart), and wired the frontend to actually restore `messages` on load.
+- **Live-inference metrics could corrupt a saved session's metadata.** The
+  tracker matched via `backend.sessions.first_mut()` — whichever session
+  happened to be first — so a saved chat landing at index 0 would have its
+  `tokens`/`model`/`status` silently overwritten by unrelated chat
+  activity. Now matched by its own well-known id.
+- Chat markdown (paragraphs, lists, headings) rendered with zero spacing —
+  `@tailwindcss/typography` was never installed despite the `prose`
+  classes already being applied, so they were dead no-ops; combined with
+  the app's global CSS reset, every markdown element collapsed to zero
+  margin.
+
+### ✨ Features
+
+- **Command palette (Ctrl/Cmd+K).** The shortcut previously had no
+  listener behind it — real fuzzy search, arrow-key navigation, and a
+  registry of actions (jump to any tab, new chat).
+- **Compare Mode.** Send one message to two models and see both replies
+  side by side. The backend serves exactly one model at a time
+  (`GuiChatRequest.model` is dead code server-side — chat always uses
+  whichever model was last explicitly loaded), so this runs the two
+  halves sequentially with an explicit `/api/models/load` between them
+  and visible "Loading model…" feedback, then reloads the user's original
+  model afterward so the turn doesn't silently strand the app on whichever
+  model ran last.
+- Syntax-highlighted, copyable code blocks in chat (`rehype-highlight`,
+  themed from the app's own token palette).
+- Metrics: rolling sparklines on throughput/latency stat cards, plus a
+  full CPU/Memory/GPU utilization history chart (recharts, ~6 minutes of
+  rolling history).
+- Message delete and edit-and-resend (truncates history back to the
+  edited turn and reloads it into the composer).
+- Interrupted-download cleanup: stray `.gguf.part` files are now listed
+  with size/age and can be discarded from the Models tab, via two new
+  endpoints (`GET /api/models/partial`, `POST /api/models/partial/discard`).
+- Shared toast notifications, replacing two banners that had no dismiss
+  affordance at all (ChatTab's error toast's "X" was decorative; ModelsTab's
+  status banner just accumulated the latest string forever).
+- Keyboard shortcuts: Ctrl/Cmd+Shift+O for new chat (Ctrl+N is reserved by
+  most browsers for "new window" and isn't reliably interceptable), Escape
+  blurs the chat composer, Arrow Up/Down moves through the sessions list.
+
+### 🎨 UI / Accessibility
+
+- Full accessibility pass: roles/`aria-*` on every custom dropdown, modal,
+  and toggle; Escape-to-close on all popups; `aria-live` regions for
+  streaming/error/status text; labels on icon-only buttons that had none.
+- Semantic color tokens (`success`/`warning`/`danger`/`info`/`accent`)
+  added to `tailwind.config.js` as the status-color API going forward.
+- Mobile: the sidebar was permanently open at 256px on a 375px viewport,
+  leaving ~119px for actual content. Now starts collapsed below the `md`
+  breakpoint and renders as a fixed overlay with a backdrop instead of
+  pushing content.
+- Removed the "Grid view" / "Cloud sync" / "Voice input" buttons — none
+  had an `onClick` at all; no backend exists for any of them.
+- Removed 8 unused PNGs in `/assets/icons` (the live UI has used
+  `lucide-react` exclusively) and a ~60-line dead, unreachable duplicate
+  JSX branch in `ModelsTab.tsx`.
+- Fixed a real CSS bug found in passing: the sidebar-collapse button used
+  `-translate_y-1/2` (underscore instead of hyphen), silently breaking its
+  vertical centering.
+
+### ✅ Validation
+
+- `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D
+  warnings` (zero warnings), `cargo test --workspace` (134+7+28+19, all
+  passing), `cargo audit` (0 vulnerabilities; 3 pre-existing unmaintained/
+  unsound advisories on transitive deps, none introduced by this change)
+  — all clean.
+- Frontend: `tsc --noEmit` clean, all 104 Vitest tests passing.
+- Every feature above was verified live against the running backend, not
+  just unit-tested: Compare Mode with two genuinely different local
+  models producing genuinely different output; Load Session round-tripped
+  through a real save/clear/load cycle; the partial-download UI against a
+  real interrupted-download file (created, listed, discarded, confirmed
+  removed from disk); the mobile sidebar at both 375px and the 768px `md`
+  boundary; keyboard shortcuts via dispatched `KeyboardEvent`s.
+
+### ⚠️ Operational caveats
+
+- This fix does not retroactively clean up any `.gguf` files that are
+  already corrupt from before it — those still need a manual look (or use
+  the new "Interrupted Downloads" UI if a matching `.gguf.part` happens to
+  still be present, which it won't be for a download that "completed"
+  under the old bug).
+- Compare Mode's sequential model-swap costs real time per turn (a model
+  load spawns a fresh `llama-server` subprocess) — it is not, and cannot
+  currently be, two simultaneous generations.
+
+---
+
 ## [1.4.5] - 2026-07-24 (HuggingFace downloads: hardware-aware quantization, complete shard downloads)
 
 A user-reported issue ("downloads doesn't work properly and completely for my
