@@ -216,6 +216,18 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
     return Array.from(bySlot.values());
   }, [mcpServers]);
 
+  // Pre-compute a map for O(1) partner lookup during Compare Mode rendering,
+  // avoiding O(n^2) nested find scans over the message list.
+  const compareGroupBMap = useMemo(() => {
+    const map = new Map<string, Message>();
+    for (const m of messages) {
+      if (m.compareGroupId && m.id.endsWith('-b')) {
+        map.set(m.compareGroupId, m);
+      }
+    }
+    return map;
+  }, [messages]);
+
   useEffect(() => {
     setTools((prev) => {
       const prevEnabled = new Map(prev.map((t) => [t.name, t.enabled]));
@@ -834,7 +846,7 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                 // partner below, not on its own.
                 if (msg.compareGroupId && msg.id.endsWith('-b')) return null;
                 if (msg.compareGroupId && msg.id.endsWith('-a')) {
-                    const partner = messages.find((m) => m.compareGroupId === msg.compareGroupId && m.id !== msg.id);
+                    const partner = compareGroupBMap.get(msg.compareGroupId);
                     return (
                         <CompareRow
                             key={msg.compareGroupId}
