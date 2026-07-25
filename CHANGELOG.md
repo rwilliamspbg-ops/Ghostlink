@@ -4,6 +4,60 @@ All notable changes to Ghostlink Studio are documented here.
 
 ---
 
+## [1.6.0] - 2026-07-25 (Go control-plane becomes the real gateway; session benchmark pass)
+
+The Go control-plane moves from an underused, partially-duplicate component to
+the actual front door for both native dev and docker-compose: it now owns
+CORS, request logging, and rate limiting, proxies everything through to
+ghost-link (which keeps all cluster/inference state — UDP discovery was
+deliberately not ported to Go), and streams SSE chat responses correctly
+instead of silently buffering them. Also includes a full-spectrum performance
+benchmark pass documented in `docs/BENCHMARKS.md`.
+
+### 🐛 Correctness
+
+- **Go's reverse proxy silently broke SSE token streaming.** `forward()` used
+  a single buffered `io.Copy`, so real-time chat streaming (and the Ollama
+  pull-progress stream) sat in Go's write buffer until it filled or the
+  response ended — turning streaming into a long wait-then-dump for anything
+  routed through the gateway. Rewritten to read/write/flush per chunk.
+- **Duplicate `Access-Control-Allow-Origin` headers broke every proxied `/api/*`
+  call in the browser.** The gateway's own CORS middleware set the header via
+  `Set()`, but `forward()` then copied ghost-link's own permissive CORS
+  headers on top via `Add()`, producing two values for the same header —
+  invalid per the Fetch spec, so browsers silently failed the request
+  (`net::ERR_FAILED`) even though curl/server-to-server callers never noticed.
+  `/health` (no backend hop) worked throughout, which is what made this easy
+  to miss. Fixed by having `forward()` skip headers the gateway middleware
+  already owns.
+- **`public/env-config.js` silently pinned the GUI to ghost-link's port,
+  overriding every other config layer.** This static file (loaded before any
+  app JS runs) had first priority in `resolveApiBase()` and was hardcoded to
+  `:8003` with a comment claiming a launch script regenerates it — but no
+  launch script actually did. Updated the committed default to `:8000` and
+  added regeneration to `launch-native.ps1` (mirroring the pattern the GUI's
+  `Dockerfile` already used for the containerized deploy).
+- Removed Go's local in-memory worker registry (`pkg/registry`) — it had no
+  knowledge of ghost-link's real UDP peer discovery / cluster state, so it was
+  a second, disconnected source of truth. Worker routes now always defer to
+  ghost-link's actual implementation.
+
+### ✨ Features
+
+- Request logging and a stdlib-only sliding-window rate limiter
+  (`pkg/ratelimit`) on the Go gateway.
+- `docker-compose.yml`'s `ghostlink-gui` service now points at
+  `ghostlink-control-plane:8000` instead of `ghostlink-api:8003` directly.
+
+### 📊 Performance
+
+- Full-spectrum benchmark session (Criterion primitives, `flow_perf_snapshot.py`
+  full-pipeline runs, TCP autotune investigation, llama-server flag tuning) —
+  see `docs/BENCHMARKS.md` for hardware, methodology, and results. No
+  regressions found; all drift/stage-tail/canary/schema-contract gates passed.
+
+---
+
 ## [1.5.0] - 2026-07-25 (GUI overhaul: command palette, compare mode, real session persistence; two backend correctness fixes)
 
 A broad GUI improvement pass (command palette, accessibility, chat/metrics

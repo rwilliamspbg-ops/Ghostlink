@@ -71,7 +71,8 @@ cargo build --release -p ghost-link
 
 This starts:
 - **llama-server** (inference, port **8080**)
-- **Ghostlink API** (chat / models / settings, port **8003**) — GUI must use this port
+- **Ghostlink API** (chat / models / settings, port **8003**) — internal; the GUI does not call this directly
+- **Control-plane** (Go gateway: CORS, request logging, rate limiting, streaming-safe proxy, port **8000**) — GUI must use this port
 - **React frontend** at http://127.0.0.1:5173
 
 Optional:
@@ -85,7 +86,7 @@ $env:GHOSTLINK_USE_WSL="1"; .\launch.bat
 
 Open http://127.0.0.1:5173 → **Models** → load a model → **Chat**.
 
-> **405 on chat/models?** The GUI was pointed at the wrong port (e.g. control-plane `:8000` or llama-server `:8080`). Always use API base `http://127.0.0.1:8003`.
+> **405 on chat/models?** The GUI was pointed at the wrong port (e.g. ghost-link `:8003` directly, or llama-server `:8080`). Always use API base `http://127.0.0.1:8000` (the control-plane gateway).
 
 ## Quick Start (Linux / macOS)
 
@@ -173,7 +174,7 @@ Release builds use `lto = "thin"` and `codegen-units = 1` (`[profile.release]` i
 
 | Script | Description |
 |--------|-------------|
-| `launch.bat` | **Windows** — native launcher (llama-server + API :8003 + GUI :5173, no WSL). Set `GHOSTLINK_USE_WSL=1` to use `launch.sh` inside WSL instead. |
+| `launch.bat` | **Windows** — native launcher (llama-server + API :8003 + control-plane gateway :8000 + GUI :5173, no WSL). Set `GHOSTLINK_USE_WSL=1` to use `launch.sh` inside WSL instead. |
 | `launch-native.ps1` | The actual native-Windows implementation `launch.bat` calls into |
 | `launch.sh` | **Linux/macOS** — same stack with hardware detection |
 | `launch-complete.bat` / `launch-complete.sh` | Compatibility wrappers → `launch.bat` / `launch.sh` |
@@ -241,7 +242,7 @@ If Ollama logs show `POST /api/generate` returning `404`:
 
 ### Port Conflicts
 
-Launch scripts check for port conflicts before binding. If you see "address already in use", ensure no stale processes are holding ports 8003 or 8080.
+Launch scripts check for port conflicts before binding. If you see "address already in use", ensure no stale processes are holding ports 8000, 8003, or 8080.
 
 ## Environment Variables
 

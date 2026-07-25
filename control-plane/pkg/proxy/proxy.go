@@ -12,6 +12,16 @@ type ChatProxy struct {
 	Client     *http.Client
 }
 
+// corsHeaders are owned by the gateway's corsMiddleware, not the upstream
+// backend — see the skip in forward() below.
+var corsHeaders = map[string]bool{
+	http.CanonicalHeaderKey("Access-Control-Allow-Origin"):      true,
+	http.CanonicalHeaderKey("Access-Control-Allow-Methods"):     true,
+	http.CanonicalHeaderKey("Access-Control-Allow-Headers"):     true,
+	http.CanonicalHeaderKey("Access-Control-Allow-Credentials"): true,
+	http.CanonicalHeaderKey("Access-Control-Expose-Headers"):    true,
+}
+
 func NewChatProxy(backendURL string) *ChatProxy {
 	return &ChatProxy{
 		BackendURL: strings.TrimRight(backendURL, "/"),
@@ -65,10 +75,42 @@ func (p *ChatProxy) forward(w http.ResponseWriter, r *http.Request, path string)
 	defer resp.Body.Close()
 
 	for k, v := range resp.Header {
+		if corsHeaders[k] {
+			// The gateway's own corsMiddleware already set these on w via
+			// Set() before we got here. ghost-link sets its own permissive
+			// CORS headers too (same-origin callers hitting it directly
+			// still need them), so blindly copying would Add() a second
+			// value onto an already-Set() header — e.g. two
+			// Access-Control-Allow-Origin values, which browsers treat as
+			// an invalid CORS response and hard-fail the request even
+			// though curl/server-to-server callers don't care.
+			continue
+		}
 		for _, vv := range v {
 			w.Header().Add(k, vv)
 		}
 	}
 	w.WriteHeader(resp.StatusCode)
-	_, _ = io.Copy(w, resp.Body)
+
+	// Flush after every chunk instead of a single buffered io.Copy. Without
+	// this, SSE token-by-token chat streaming (and the Ollama pull-progress
+	// stream) would sit in Go's default write buffer until it filled or the
+	// response ended — silently turning real-time streaming back into a
+	// long wait-then-dump for anything routed through this proxy.
+	flusher, canFlush := w.(http.Flusher)
+	buf := make([]byte, 4096)
+	for {
+		n, readErr := resp.Body.Read(buf)
+		if n > 0 {
+			if _, writeErr := w.Write(buf[:n]); writeErr != nil {
+				return
+			}
+			if canFlush {
+				flusher.Flush()
+			}
+		}
+		if readErr != nil {
+			return
+		}
+	}
 }

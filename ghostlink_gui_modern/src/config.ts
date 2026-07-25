@@ -96,7 +96,12 @@ export function resolveApiBase(env?: Record<string, string>): string {
     }
   }
 
-  return 'http://127.0.0.1:8003';
+  // The control-plane gateway (Go), not ghost-link directly — it proxies
+  // everything through to ghost-link (and, going forward, is where new
+  // non-performance-critical control-plane features get built: request
+  // logging, rate limiting). Any explicit env var above still wins, so a
+  // deployment that genuinely wants to talk to ghost-link directly can.
+  return 'http://127.0.0.1:8000';
 }
 
 export const RuntimeSettingsSchema = z.object({
