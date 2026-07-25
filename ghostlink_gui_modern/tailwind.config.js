@@ -1,3 +1,5 @@
+import typography from '@tailwindcss/typography';
+
 export default {
   content: [
     './index.html',
@@ -5,6 +7,30 @@ export default {
   ],
   theme: {
     extend: {
+      typography: ({ theme }) => ({
+        // prose-invert theme, retuned to the app's actual slate/blue palette
+        // instead of the plugin's generic gray defaults — this is what chat
+        // markdown (paragraphs, lists, headings, tables) renders through.
+        invert: {
+          css: {
+            '--tw-prose-body': theme('colors.slate.300'),
+            '--tw-prose-headings': theme('colors.slate.100'),
+            '--tw-prose-links': theme('colors.blue.400'),
+            '--tw-prose-bold': theme('colors.slate.100'),
+            '--tw-prose-counters': theme('colors.slate.500'),
+            '--tw-prose-bullets': theme('colors.slate.600'),
+            '--tw-prose-hr': theme('colors.slate.800'),
+            '--tw-prose-quotes': theme('colors.slate.300'),
+            '--tw-prose-quote-borders': theme('colors.slate.700'),
+            '--tw-prose-captions': theme('colors.slate.500'),
+            '--tw-prose-code': theme('colors.slate.200'),
+            '--tw-prose-pre-code': theme('colors.slate.300'),
+            '--tw-prose-pre-bg': 'transparent',
+            '--tw-prose-th-borders': theme('colors.slate.700'),
+            '--tw-prose-td-borders': theme('colors.slate.800'),
+          },
+        },
+      }),
       colors: {
         slate: {
           950: '#030712',
@@ -30,5 +56,5 @@ export default {
       },
     },
   },
-  plugins: [],
+  plugins: [typography],
 };
