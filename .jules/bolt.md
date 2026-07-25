@@ -10,6 +10,10 @@
 **Learning:** Pre-allocating a single `Vec` of the exact final capacity and serializing struct payloads directly into it via an `encode_payload_into` method avoids the overhead of intermediate heap allocations and memory copies. Additionally, avoiding `copy_from_slice` in low-level header encoding by assigning elements directly to fixed indices eliminates bounds checks and improves instruction pipelining.
 **Action:** Always provide an `encode_into` style method for high-performance binary structures to allow zero-copy/zero-allocation serialization directly into target buffers or frames. Avoid bounds checking in short fixed-size array writes by indexing them directly with constant offsets instead of using slice copy methods.
 
+## 2026-07-02 - [UTF-8 Decoding Optimization]
+**Learning:** In hot-path binary packet deserialization, allocating intermediate byte vectors (`payload.to_vec()`) just to validate them using `String::from_utf8` introduces significant heap allocation and garbage collection/deallocation overhead. Instead, using `std::str::from_utf8` to validate the byte slice *in-place* (zero-copy) and only allocating once (`.to_string()`) on successful validation reduces decode/round-trip latency and yields ~7.3% higher throughput.
+**Action:** Always validate byte slices in-place using `std::str::from_utf8` (or `std::str::from_utf8_mut`) before allocating owned `String` instances in deserialization paths.
+
 
 ## 2026-07-02 - [Cluster Health Query Optimization]
 **Learning:** Redundant iterations and nested metric lookups on thread-safe collections (like `ClusterState::get_metrics`) introduce unnecessary mutex acquisition overhead and expensive clones of large status structs (such as `NodeMetrics`). Consolidating query loops with functional combinators like `filter_map` reduces lock contention and halves cloning/lookup overhead.

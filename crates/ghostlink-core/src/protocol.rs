@@ -251,8 +251,11 @@ impl NodeResources {
         if id_end > len {
             return Err("payload truncated".into());
         }
-        let id = String::from_utf8(payload[cursor..id_end].to_vec())
-            .map_err(|_| "invalid UTF-8 in ID".to_string())?;
+        // Optimize: Avoid allocating and copying to a temporary Vec first.
+        // Direct zero-copy slice validation using std::str::from_utf8, then allocating only on success.
+        let id = std::str::from_utf8(&payload[cursor..id_end])
+            .map_err(|_| "invalid UTF-8 in ID".to_string())?
+            .to_string();
         cursor = id_end;
 
         let vram_end = cursor + 8;
@@ -282,8 +285,10 @@ impl NodeResources {
         if cc_end > len {
             return Err("payload truncated".into());
         }
-        let compute_capability = String::from_utf8(payload[cursor..cc_end].to_vec())
-            .map_err(|_| "invalid UTF-8 in CC".to_string())?;
+        // Optimize: Zero-copy validation followed by direct to_string allocation on success.
+        let compute_capability = std::str::from_utf8(&payload[cursor..cc_end])
+            .map_err(|_| "invalid UTF-8 in CC".to_string())?
+            .to_string();
         cursor = cc_end;
 
         if cursor >= len {
@@ -302,9 +307,11 @@ impl NodeResources {
             if gpu_end > len {
                 return Err("payload truncated".into());
             }
+            // Optimize: Zero-copy validation followed by direct to_string allocation on success.
             Some(
-                String::from_utf8(payload[cursor..gpu_end].to_vec())
-                    .map_err(|_| "invalid UTF-8 in GPU name".to_string())?,
+                std::str::from_utf8(&payload[cursor..gpu_end])
+                    .map_err(|_| "invalid UTF-8 in GPU name".to_string())?
+                    .to_string(),
             )
         } else {
             None
