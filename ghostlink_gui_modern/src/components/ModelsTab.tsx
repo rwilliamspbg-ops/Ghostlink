@@ -38,6 +38,15 @@ function progressLabel(entry: DownloadProgressEntry | undefined): string {
   return pct;
 }
 
+function formatAge(seconds: number): string {
+  if (seconds < 60) return 'just now';
+  const mins = Math.floor(seconds / 60);
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.floor(hours / 24)}d ago`;
+}
+
 const POPULAR_MODELS = [
   { id: 'llama3.2:3b', name: 'Llama 3.2 3B Instruct', downloads: 2500000, likes: 120000 },
   { id: 'llama3.2:1b', name: 'Llama 3.2 1B Instruct', downloads: 1800000, likes: 90000 },
@@ -54,6 +63,7 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
     currentModel, setModels, setCurrentModel,
     pendingModelActions: pendingActions, setPendingModelActions: setPendingActions,
     downloadProgress, setDownloadProgress,
+    addToast,
   } = useAppStore();
   const [activeTab, setActiveTab] = useState<'local' | 'huggingface' | 'recommended'>('local');
   const [loading, setLoading] = useState(false);
@@ -67,6 +77,24 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
   const [recommendedLoading, setRecommendedLoading] = useState(false);
   const [detectedRuntime, setDetectedRuntime] = useState<string>('cpu');
   const [availableMemoryGb, setAvailableMemoryGb] = useState<number>(0);
+  const [partialDownloads, setPartialDownloads] = useState<{ filename: string; size_bytes: number; age_secs: number }[]>([]);
+  const [discardingPartial, setDiscardingPartial] = useState<string | null>(null);
+
+  // `message` used to render as a permanent inline banner with no way to
+  // dismiss it — forwarding to the shared toast queue instead gives every
+  // one of these status strings (in-progress and completed/error alike)
+  // a lifecycle that actually ends.
+  useEffect(() => {
+    if (!message) return;
+    const type = /error|failed|timed out/i.test(message)
+      ? 'error'
+      : message.endsWith('...')
+        ? 'info'
+        : 'success';
+    addToast({ type, message });
+    setMessage(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [message]);
 
   const searchHF = useCallback(async (query: string) => {
     setHfLoading(true);
@@ -125,6 +153,11 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
   // so no further client-side filtering is applied here.
   const filteredHfResults = hfResults;
 
+  const refreshPartialDownloads = useCallback(async () => {
+    const result = await api.listPartialDownloads();
+    if (!result.error) setPartialDownloads(result.partials);
+  }, [api]);
+
   const refreshModels = useCallback(async () => {
     setLoading(true);
     try {
@@ -152,11 +185,24 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
       console.error('Failed to refresh models:', e);
     }
     setLoading(false);
-  }, [api, setCurrentModel, setModels]);
+    refreshPartialDownloads();
+  }, [api, setCurrentModel, setModels, refreshPartialDownloads]);
 
   useEffect(() => {
     refreshModels();
   }, [refreshModels]);
+
+  const handleDiscardPartial = async (filename: string) => {
+    setDiscardingPartial(filename);
+    const result = await api.discardPartialDownload(filename);
+    if (result.success) {
+      setPartialDownloads((prev) => prev.filter((p) => p.filename !== filename));
+      addToast({ type: 'success', message: `Discarded ${filename}` });
+    } else {
+      addToast({ type: 'error', message: result.error || `Failed to discard ${filename}` });
+    }
+    setDiscardingPartial(null);
+  };
 
   const handleSetModel = async (name: string) => {
     setPendingActions(prev => ({ ...prev, [name]: 'setting' }));
@@ -431,11 +477,6 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
         </div>
       </div>
       <div className="flex-1 overflow-y-auto p-6">
-        {message && (
-          <div role="status" aria-live="polite" className="mb-4 px-4 py-2 bg-slate-800 border-l-4 border-blue-500 text-sm">
-            {message}
-          </div>
-        )}
         {activeTab === 'local' ? (
           <div className="space-y-4">
             <div className="flex items-center justify-between px-4 py-3 bg-slate-800 rounded-lg">
@@ -543,6 +584,42 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                 ))
               )}
             </div>
+
+            {partialDownloads.length > 0 && (
+              <div className="mt-6 p-4 bg-amber-500/5 rounded-lg border border-amber-500/20">
+                <div className="flex items-center gap-2 mb-2">
+                  <AlertCircle size={16} className="text-amber-500" aria-hidden="true" />
+                  <h3 className="text-sm font-bold text-amber-400">Interrupted Downloads</h3>
+                </div>
+                <p className="text-xs text-slate-500 mb-3">
+                  These downloads didn't finish and aren't used by anything — discard to reclaim disk space, or re-download from the Hugging Face tab.
+                </p>
+                <div className="space-y-2">
+                  {partialDownloads.map((p) => (
+                    <div key={p.filename} className="flex items-center justify-between px-3 py-2 bg-slate-900/50 rounded-lg border border-slate-800">
+                      <div className="min-w-0">
+                        <div className="font-mono text-xs text-slate-300 truncate">{p.filename}</div>
+                        <div className="text-[10px] text-slate-500">{formatBytes(p.size_bytes)} partial • {formatAge(p.age_secs)}</div>
+                      </div>
+                      <button
+                        onClick={() => handleDiscardPartial(p.filename)}
+                        disabled={discardingPartial === p.filename}
+                        className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-red-600 text-slate-300 hover:text-white text-xs font-bold rounded-lg transition disabled:opacity-50 shrink-0"
+                        aria-label={`Discard interrupted download ${p.filename}`}
+                      >
+                        {discardingPartial === p.filename ? (
+                          <Loader size={12} className="animate-spin" aria-hidden="true" />
+                        ) : (
+                          <Trash2 size={12} aria-hidden="true" />
+                        )}
+                        Discard
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
             <div className="mt-6 p-4 bg-slate-800/50 rounded-lg border border-slate-800">
               <h3 className="text-lg font-bold text-white mb-3">Popular Ollama Models</h3>
               <div className="grid grid-cols-2 md:grid-cols-4 gap-2">

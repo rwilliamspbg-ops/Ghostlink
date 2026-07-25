@@ -183,6 +183,27 @@ export class GhostlinkAPI {
     }
   }
 
+  async listPartialDownloads(): Promise<{ partials: { filename: string; size_bytes: number; age_secs: number }[]; error?: string }> {
+    try {
+      const response = await this.http.get('/api/models/partial');
+      return { partials: response.data.partial_downloads || [] };
+    } catch (error: any) {
+      return { partials: [], error: error.response?.data?.error || error.message };
+    }
+  }
+
+  async discardPartialDownload(filename: string): Promise<{ success: boolean; error?: string }> {
+    try {
+      const response = await this.http.post('/api/models/partial/discard', { filename });
+      if (response.data?.error) {
+        return { success: false, error: response.data.error };
+      }
+      return { success: true };
+    } catch (error: any) {
+      return { success: false, error: error.response?.data?.error || error.message };
+    }
+  }
+
   async searchHuggingFace(query: string) {
     try {
       const response = await this.http.get('/api/models/search/huggingface', { params: { q: query } });

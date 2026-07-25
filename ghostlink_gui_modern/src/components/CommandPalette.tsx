@@ -55,7 +55,7 @@ export const CommandPalette: React.FC = () => {
       {
         id: 'new-chat',
         label: 'New Chat',
-        hint: 'Clear the conversation and start fresh',
+        hint: 'Clear the conversation and start fresh · Ctrl+Shift+O',
         icon: MessageSquare,
         action: () => {
           setChatMessages([]);
@@ -82,7 +82,7 @@ export const CommandPalette: React.FC = () => {
     setHighlight(0);
   }, [query, open]);
 
-  // Global Ctrl/Cmd+K toggle — the only place this shortcut is wired up.
+  // Global keyboard shortcuts — the only place any of these are wired up.
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
@@ -95,11 +95,20 @@ export const CommandPalette: React.FC = () => {
       }
       if (e.key === 'Escape') {
         setOpen((o) => (o ? false : o));
+        return;
+      }
+      // Ctrl/Cmd+N is reserved by most browsers for "new window" and can't
+      // reliably be intercepted — Ctrl/Cmd+Shift+O is the same convention
+      // ChatGPT uses for "new chat" and is actually interceptable.
+      if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === 'o') {
+        e.preventDefault();
+        setChatMessages([]);
+        setActiveTab(0);
       }
     };
     document.addEventListener('keydown', handleKeyDown);
     return () => document.removeEventListener('keydown', handleKeyDown);
-  }, []);
+  }, [setActiveTab, setChatMessages]);
 
   useEffect(() => {
     if (open) {

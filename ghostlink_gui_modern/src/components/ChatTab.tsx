@@ -16,9 +16,6 @@ import {
   ThumbsDown,
   RotateCcw,
   Volume2,
-  Mic,
-  Cloud,
-  LayoutGrid,
   Check,
   Save,
   FolderOpen,
@@ -27,6 +24,7 @@ import {
   Wrench,
   ShieldAlert,
   GitCompare,
+  Pencil,
 } from 'lucide-react';
 import { useAppStore, ChatMessage } from '../store';
 import { GhostlinkAPI } from '../api';
@@ -35,6 +33,7 @@ type Message = ChatMessage;
 
 interface Session {
   id: string;
+  name?: string;
   model: string;
   status: string;
   throughput: number;
@@ -164,6 +163,7 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
     chatLoading: loading, setChatLoading: setLoading,
     chatStreamingId: streamingId, setChatStreamingId: setStreamingId,
     chatError: error, setChatError: setError,
+    addToast,
   } = useAppStore();
   const [input, setInput] = useState('');
   const [copiedId, setCopiedId] = useState<string | null>(null);
@@ -230,6 +230,16 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [api]);
 
+  // chatError is store-level (survives tab unmount) but display is now the
+  // shared toast queue, which owns its own auto-dismiss/close lifecycle —
+  // the previous inline banner here had no way to dismiss it at all.
+  useEffect(() => {
+    if (error) {
+      addToast({ type: 'error', message: error });
+      setError(null);
+    }
+  }, [error, addToast, setError]);
+
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const modelSelectorRef = useRef<HTMLDivElement>(null);
   const sessionsRef = useRef<HTMLDivElement>(null);
@@ -295,6 +305,7 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
     if (result.success) {
       loadSessions();
       setShowSessions(false);
+      addToast({ type: 'success', message: `Saved "${sessionName}"` });
       setSessionName(`Session ${new Date().toLocaleDateString()}`);
     } else {
       setError(result.error || 'Failed to save session');
@@ -302,11 +313,17 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
   };
 
   const handleLoadSession = async (sessionId: string) => {
+    if (loading) return;
     const result = await api.loadSession(sessionId);
     if (result.success && result.session) {
-      // The backend only returns basic session info, we'd need to store full messages
-      // For now, we'll load from localStorage as a fallback
+      const session = result.session;
+      setMessages(Array.isArray(session.messages) ? session.messages : []);
+      if (session.model && session.model !== 'unknown') {
+        setCurrentModel(session.model);
+      }
+      setError(null);
       setShowSessions(false);
+      addToast({ type: 'success', message: `Loaded "${session.name || session.id}"` });
     } else {
       setError(result.error || 'Failed to load session');
     }
@@ -539,6 +556,22 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
     }
   };
 
+  const handleDeleteMessage = (id: string) => {
+    if (loading) return;
+    setMessages((prev) => prev.filter((m) => m.id !== id));
+  };
+
+  // Truncates history back to (and including) the edited message, then
+  // drops its text into the composer so the user can tweak and resend —
+  // a linear "replace this turn onward" edit, not a branching history.
+  const handleEditMessage = (msg: Message) => {
+    if (loading) return;
+    const idx = messages.findIndex((m) => m.id === msg.id);
+    if (idx === -1) return;
+    setMessages((prev) => prev.slice(0, idx));
+    setInput(msg.content);
+  };
+
   const selectModel = async (name: string) => {
     setShowModelSelector(false);
     // With Ollama, just set current model - no load/unload needed
@@ -671,7 +704,19 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
             <div
                 className="relative"
                 ref={sessionsRef}
-                onKeyDown={(e) => { if (e.key === 'Escape') setShowSessions(false); }}
+                onKeyDown={(e) => {
+                    if (e.key === 'Escape') { setShowSessions(false); return; }
+                    if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+                    const container = e.currentTarget;
+                    const rows = Array.from(container.querySelectorAll<HTMLButtonElement>('button[aria-label^="Load session "]'));
+                    if (rows.length === 0) return;
+                    e.preventDefault();
+                    const current = rows.indexOf(document.activeElement as HTMLButtonElement);
+                    const next = current === -1
+                        ? (e.key === 'ArrowDown' ? 0 : rows.length - 1)
+                        : (e.key === 'ArrowDown' ? (current + 1) % rows.length : (current - 1 + rows.length) % rows.length);
+                    rows[next].focus();
+                }}
             >
               <div className="flex items-center gap-1">
                 <button
@@ -717,25 +762,25 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                       </div>
                     ) : (
                       sessions.map((s: Session) => (
-                        <div key={s.id} className="flex items-center justify-between px-3 py-2.5 rounded-xl text-left transition text-sm">
+                        <div key={s.id} className="flex items-center justify-between px-3 py-2.5 rounded-xl text-left transition text-sm hover:bg-slate-800/50">
                           <div className="flex flex-col min-w-0">
-                            <span className="font-bold truncate">{s.id}</span>
+                            <span className="font-bold truncate">{s.name || s.id}</span>
                             <span className="text-[10px] text-slate-500 truncate">{s.model} • {s.tokens} messages</span>
                           </div>
                           <div className="flex items-center gap-1">
                             <button
                               onClick={() => handleLoadSession(s.id)}
-                              className="p-1.5 hover:bg-slate-800 rounded-lg text-slate-400 hover:text-white transition"
+                              className="p-1.5 hover:bg-slate-700 rounded-lg text-slate-400 hover:text-white transition"
                               title="Load"
-                              aria-label={`Load session ${s.id}`}
+                              aria-label={`Load session ${s.name || s.id}`}
                             >
                               <FolderOpen size={12} aria-hidden="true" />
                             </button>
                             <button
                               onClick={() => handleDeleteSession(s.id)}
-                              className="p-1.5 hover:bg-slate-800 rounded-lg text-slate-400 hover:text-red-400 transition"
+                              className="p-1.5 hover:bg-slate-700 rounded-lg text-slate-400 hover:text-red-400 transition"
                               title="Delete"
-                              aria-label={`Delete session ${s.id}`}
+                              aria-label={`Delete session ${s.name || s.id}`}
                             >
                               <Trash2 size={12} aria-hidden="true" />
                             </button>
@@ -767,9 +812,6 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
             </div>
           </div>
         <div className="flex items-center gap-2">
-            <button className="p-2 rounded-lg hover:bg-slate-900 text-slate-400 hover:text-white transition" aria-label="Grid view">
-                <LayoutGrid size={18} aria-hidden="true" />
-            </button>
             <div className="w-8 h-8 rounded-full bg-orange-500 flex items-center justify-center text-xs font-bold text-white shadow-lg shadow-orange-500/20" aria-hidden="true">R</div>
         </div>
       </div>
@@ -928,6 +970,38 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                                 >
                                     <Volume2 size={14} aria-hidden="true" />
                                 </button>
+                                <button
+                                  onClick={() => handleDeleteMessage(msg.id)}
+                                  disabled={loading}
+                                  className="p-1.5 rounded-lg hover:bg-slate-900 text-slate-500 hover:text-red-400 transition disabled:opacity-40"
+                                  title="Delete"
+                                  aria-label="Delete response"
+                                >
+                                    <Trash2 size={14} aria-hidden="true" />
+                                </button>
+                            </div>
+                        )}
+
+                        {msg.role === 'user' && (
+                            <div className="flex items-center gap-1 mt-1 opacity-0 group-hover:opacity-100 transition-opacity focus-within:opacity-100">
+                                <button
+                                  onClick={() => handleEditMessage(msg)}
+                                  disabled={loading}
+                                  className="p-1.5 rounded-lg hover:bg-slate-900 text-slate-500 hover:text-slate-300 transition disabled:opacity-40"
+                                  title="Edit and resend"
+                                  aria-label="Edit and resend message"
+                                >
+                                    <Pencil size={14} aria-hidden="true" />
+                                </button>
+                                <button
+                                  onClick={() => handleDeleteMessage(msg.id)}
+                                  disabled={loading}
+                                  className="p-1.5 rounded-lg hover:bg-slate-900 text-slate-500 hover:text-red-400 transition disabled:opacity-40"
+                                  title="Delete"
+                                  aria-label="Delete message"
+                                >
+                                    <Trash2 size={14} aria-hidden="true" />
+                                </button>
                             </div>
                         )}
                     </div>
@@ -991,6 +1065,8 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                   if (e.key === 'Enter' && !e.shiftKey) {
                       e.preventDefault();
                       handleSend();
+                  } else if (e.key === 'Escape') {
+                      (e.target as HTMLTextAreaElement).blur();
                   }
               }}
               placeholder="Send a Message"
@@ -1009,18 +1085,9 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                 >
                     <Plus size={20} aria-hidden="true" />
                 </button>
-                <button className="p-2 rounded-xl text-slate-500 hover:text-slate-300 hover:bg-slate-800 transition" aria-label="Grid view">
-                    <LayoutGrid size={20} aria-hidden="true" />
-                </button>
             </div>
 
             <div className="absolute right-3 bottom-3 flex items-center gap-1">
-                <button className="p-2 rounded-xl text-slate-500 hover:text-slate-300 hover:bg-slate-800 transition" aria-label="Cloud sync">
-                    <Cloud size={18} aria-hidden="true" />
-                </button>
-                <button className="p-2 rounded-xl text-slate-500 hover:text-slate-300 hover:bg-slate-800 transition" aria-label="Voice input">
-                    <Mic size={18} aria-hidden="true" />
-                </button>
                 <button
                     onClick={handleSend}
                     disabled={!input.trim() || loading}
@@ -1070,18 +1137,6 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
           </div>
         </div>
       </div>
-
-      {error && (
-          <div role="alert" aria-live="assertive" className="fixed bottom-24 right-4 max-w-sm p-4 bg-red-950 border border-red-900 rounded-2xl text-red-200 text-sm shadow-2xl animate-in fade-in slide-in-from-right-4 z-50">
-              <div className="flex gap-3">
-                  <X className="flex-shrink-0 text-red-500" size={18} aria-hidden="true" />
-                  <div>
-                      <p className="font-bold">Execution Error</p>
-                      <p className="text-red-400/80">{error}</p>
-                  </div>
-              </div>
-          </div>
-      )}
     </div>
   );
 };

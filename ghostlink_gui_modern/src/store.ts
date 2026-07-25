@@ -133,6 +133,12 @@ export interface DownloadProgressEntry {
   totalBytes?: number;
 }
 
+export interface Toast {
+  id: string;
+  type: 'success' | 'error' | 'info';
+  message: string;
+}
+
 type Updater<T> = T | ((prev: T) => T);
 function resolveUpdater<T>(updater: Updater<T>, prev: T): T {
   return typeof updater === 'function' ? (updater as (prev: T) => T)(prev) : updater;
@@ -172,6 +178,15 @@ interface AppState {
   chatError: string | null;
   pendingModelActions: Record<string, string>;
   downloadProgress: Record<string, DownloadProgressEntry>;
+
+  // App-wide transient notifications (rendered by <Toaster/> in App.tsx).
+  // Distinct from the persistent inline error/empty-state banners each tab
+  // already has for context-tied validation/connection errors — this is for
+  // one-off action feedback ("Saved", "Deleted", a background failure) that
+  // should fade on its own rather than occupy permanent screen space.
+  toasts: Toast[];
+  addToast: (toast: Omit<Toast, 'id'>) => string;
+  removeToast: (id: string) => void;
 
   setApiBase: (base: string) => void;
   setBackendOnline: (online: boolean) => void;
@@ -227,6 +242,7 @@ export const useAppStore = create<AppState>((set) => ({
   chatError: null,
   pendingModelActions: {},
   downloadProgress: {},
+  toasts: [],
 
   setApiBase: (base) => set({ apiBase: base }),
   setBackendOnline: (online) => set({ backendOnline: online }),
@@ -265,4 +281,12 @@ export const useAppStore = create<AppState>((set) => ({
     set((state) => ({ pendingModelActions: resolveUpdater(updater, state.pendingModelActions) })),
   setDownloadProgress: (updater) =>
     set((state) => ({ downloadProgress: resolveUpdater(updater, state.downloadProgress) })),
+  addToast: (toast) => {
+    const id = typeof crypto !== 'undefined' && crypto.randomUUID
+      ? crypto.randomUUID()
+      : `toast-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    set((state) => ({ toasts: [...state.toasts, { ...toast, id }] }));
+    return id;
+  },
+  removeToast: (id) => set((state) => ({ toasts: state.toasts.filter((t) => t.id !== id) })),
 }));

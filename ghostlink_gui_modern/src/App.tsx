@@ -12,6 +12,7 @@ import { SettingsTab } from './components/SettingsTab';
 import { McpTab } from './components/McpTab';
 import { ErrorBoundary, OfflineBanner, useOnlineStatus } from './components/ErrorBoundary';
 import { CommandPalette, NAV_TABS } from './components/CommandPalette';
+import { Toaster } from './components/Toaster';
 import { resolveApiBase } from './config';
 
 const LOADING_STEPS = [
@@ -106,7 +107,17 @@ function SplashScreen() {
 function App() {
   const { currentModel, activeTab, setActiveTab, setModels, setApiBase, setMetrics, setWorkers, setSessions, setBackendOnline, setChatMessages } = useAppStore();
   const [api, setApi] = useState<GhostlinkAPI | null>(null);
-  const [sidebarOpen, setSidebarOpen] = useState(true);
+  // Starts collapsed on phone-width viewports — at 375px a permanently
+  // open 256px sidebar left only ~119px for actual content, which is
+  // unusable. Below `md` the sidebar renders as a fixed overlay (see
+  // className below) rather than pushing content, so opening it on mobile
+  // never squeezes the tab content again.
+  const [sidebarOpen, setSidebarOpen] = useState(() =>
+    typeof window === 'undefined' ? true : window.innerWidth >= 768
+  );
+  const closeSidebarOnMobile = () => {
+    if (window.innerWidth < 768) setSidebarOpen(false);
+  };
   const isOnline = useOnlineStatus();
 
   // CRITICAL FIX: Initialize API base on app load
@@ -219,10 +230,19 @@ function App() {
       <div className="flex h-screen bg-slate-950 text-slate-100 font-sans overflow-hidden relative">
         <OfflineBanner isOnline={isOnline} />
         <CommandPalette />
+        <Toaster />
+        {/* Backdrop — mobile-only, closes the sidebar overlay on tap outside it */}
+        {sidebarOpen && (
+          <div
+            className="fixed inset-0 bg-black/50 z-30 md:hidden"
+            onClick={() => setSidebarOpen(false)}
+            aria-hidden="true"
+          />
+        )}
         {/* Sidebar */}
       <div
         className={`${
-          sidebarOpen ? 'w-64' : 'w-0'
+          sidebarOpen ? 'w-64 max-md:fixed max-md:inset-y-0 max-md:left-0 max-md:z-40 max-md:shadow-2xl' : 'w-0'
         } transition-all duration-300 bg-slate-900 border-r border-slate-800 flex flex-col overflow-hidden relative`}
       >
         <div className="p-4 flex flex-col h-full">
@@ -232,7 +252,7 @@ function App() {
           </div>
 
           <button
-            onClick={() => { setChatMessages([]); setActiveTab(0); }}
+            onClick={() => { setChatMessages([]); setActiveTab(0); closeSidebarOnMobile(); }}
             className="flex items-center justify-between w-full p-3 bg-slate-800 hover:bg-slate-700 rounded-xl transition mb-6 group"
           >
             <div className="flex items-center gap-3">
@@ -249,7 +269,7 @@ function App() {
               return (
                 <button
                   key={tab.id}
-                  onClick={() => setActiveTab(tab.id)}
+                  onClick={() => { setActiveTab(tab.id); closeSidebarOnMobile(); }}
                   aria-current={isActive ? 'page' : undefined}
                   className={`flex items-center gap-3 w-full px-3 py-2.5 rounded-xl transition text-sm font-medium ${
                     isActive
