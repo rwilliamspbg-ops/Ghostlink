@@ -1,3 +1,7 @@
+## 2026-07-20 - [Compare Mode O(n) rendering optimization]
+**Learning:** Performing nested array scans like `messages.find(...)` inside React list mapping (`messages.map(...)`) causes $O(n^2)$ time complexity for list rendering on the main thread. This is especially problematic in fast-paced streaming interfaces where the list is re-rendered with every incoming token. Pre-computing a `Map` of partners/related messages outside the map via `useMemo` reduces the rendering lookup cost to $O(1)$ and the overall render loop complexity to $O(n)$.
+**Action:** Always pre-compute lookup maps/objects for related messages or group keys in lists to avoid nested $O(n^2)$ iterations during React rendering loops.
+
 ## 2026-07-02 - [SPSC Ring Buffer Optimization]
 **Learning:** Shared atomic counters in SPSC (Single-Producer Single-Consumer) structures cause significant cache line contention (false sharing or simply bouncing) even if the rest of the structure is properly padded. The length of a ring buffer can be derived from head/tail pointers, making an explicit shared 'count' or 'empty_count' redundant and slow.
 **Action:** Always derive length/fullness from head and tail pointers in SPSC buffers instead of using a shared atomic counter. Ensure power-of-two capacities to allow bitwise masking for wrapping.
