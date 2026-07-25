@@ -2365,52 +2365,92 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                     "https://huggingface.co/{}/resolve/main/{}",
                     model_id, filename
                 );
-                let resp = client
-                    .get(&file_url)
-                    .send()
-                    .await
-                    .map_err(|e| format!("Download error: {}", e))?;
-
-                if !resp.status().is_success() {
-                    return Err(format!("Failed to download file (HTTP {})", resp.status()));
-                }
 
                 if let Some(parent) = dest_path.parent() {
                     fs::create_dir_all(parent).map_err(|e| format!("Dir error: {}", e))?;
                 }
-                let mut file = tokio::fs::File::create(dest_path)
-                    .await
-                    .map_err(|e| format!("File error: {}", e))?;
-                let mut stream = resp;
-                let mut file_bytes: u64 = 0;
-                while let Some(chunk) = stream
-                    .chunk()
-                    .await
-                    .map_err(|e| format!("Stream error: {}", e))?
-                {
-                    file.write_all(&chunk)
-                        .await
-                        .map_err(|e| format!("Write error: {}", e))?;
-                    file_bytes += chunk.len() as u64;
-                    if last_report.elapsed() >= std::time::Duration::from_millis(200) {
-                        on_progress(downloaded_bytes + file_bytes, total_bytes);
-                        last_report = std::time::Instant::now();
-                    }
-                }
-                file.flush().await.ok();
-                drop(file);
 
-                // The connection can be dropped mid-transfer (client timeout,
-                // network blip) without `chunk()` ever returning an `Err` — the
-                // stream just ends early. Compare against the size HuggingFace
-                // actually advertised instead of trusting an early EOF.
-                if expected_len > 0 && file_bytes != expected_len {
-                    let _ = tokio::fs::remove_file(dest_path).await;
-                    return Err(format!(
-                        "Download incomplete for {}: got {} of {} bytes",
-                        filename, file_bytes, expected_len
-                    ));
+                // Stream into a `.part` sibling instead of the real `.gguf`
+                // name. Previously a hard network error partway through
+                // (`stream.chunk()` returning `Err`, e.g. a dropped
+                // connection) propagated via `?` immediately, skipping the
+                // cleanup that only ran for the "clean EOF but short byte
+                // count" case below — leaving a truncated file sitting at
+                // the final filename. `scan_local_models_dir` only looks for
+                // `.gguf` files and has no integrity check of its own, so
+                // that truncated file was then listed as a normal "Ready"
+                // model and would fail or crash whenever actually loaded.
+                // Writing to `.part` and only renaming into place after a
+                // verified-complete download means an interrupted transfer
+                // — for any reason, not just this one error path — can never
+                // produce a corrupt file at the name the rest of the app
+                // trusts.
+                let mut tmp_os = dest_path.clone().into_os_string();
+                tmp_os.push(".part");
+                let tmp_path = std::path::PathBuf::from(tmp_os);
+
+                let download_result: Result<u64, String> = async {
+                    let resp = client
+                        .get(&file_url)
+                        .send()
+                        .await
+                        .map_err(|e| format!("Download error: {}", e))?;
+
+                    if !resp.status().is_success() {
+                        return Err(format!("Failed to download file (HTTP {})", resp.status()));
+                    }
+
+                    let mut file = tokio::fs::File::create(&tmp_path)
+                        .await
+                        .map_err(|e| format!("File error: {}", e))?;
+                    let mut stream = resp;
+                    let mut file_bytes: u64 = 0;
+                    while let Some(chunk) = stream
+                        .chunk()
+                        .await
+                        .map_err(|e| format!("Stream error: {}", e))?
+                    {
+                        file.write_all(&chunk)
+                            .await
+                            .map_err(|e| format!("Write error: {}", e))?;
+                        file_bytes += chunk.len() as u64;
+                        if last_report.elapsed() >= std::time::Duration::from_millis(200) {
+                            on_progress(downloaded_bytes + file_bytes, total_bytes);
+                            last_report = std::time::Instant::now();
+                        }
+                    }
+                    file.flush().await.map_err(|e| format!("Write error: {}", e))?;
+                    drop(file);
+
+                    // The connection can also be dropped mid-transfer (client
+                    // timeout, network blip) without `chunk()` ever returning
+                    // an `Err` — the stream just ends early. Compare against
+                    // the size HuggingFace actually advertised instead of
+                    // trusting an early EOF.
+                    if expected_len > 0 && file_bytes != expected_len {
+                        return Err(format!(
+                            "Download incomplete for {}: got {} of {} bytes",
+                            filename, file_bytes, expected_len
+                        ));
+                    }
+                    Ok(file_bytes)
                 }
+                .await;
+
+                let file_bytes = match download_result {
+                    Ok(bytes) => bytes,
+                    Err(e) => {
+                        let _ = tokio::fs::remove_file(&tmp_path).await;
+                        return Err(e);
+                    }
+                };
+
+                // Only now — a fully-verified file on disk — does it become
+                // visible at the real `.gguf` name.
+                tokio::fs::rename(&tmp_path, dest_path)
+                    .await
+                    .map_err(|e| format!("Finalize error: {}", e))?;
+
                 downloaded_bytes += file_bytes;
             } else {
                 downloaded_bytes += existing_len;
