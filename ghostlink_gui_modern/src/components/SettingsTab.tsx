@@ -258,13 +258,13 @@ export const SettingsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
         </div>
         <div className="flex items-center gap-2">
           {Object.keys(validationErrors).length > 0 && (
-            <span className="flex items-center gap-1 text-xs text-orange-400 bg-orange-500/10 px-2 py-1 rounded-lg">
-              <AlertTriangle size={14} /> Fix validation errors
+            <span role="alert" className="flex items-center gap-1 text-xs text-orange-400 bg-orange-500/10 px-2 py-1 rounded-lg">
+              <AlertTriangle size={14} aria-hidden="true" /> Fix validation errors
             </span>
           )}
           {saved && (
-            <span className="flex items-center gap-1 text-xs text-green-400 bg-green-500/10 px-2 py-1 rounded-lg">
-              <CheckCircle2 size={14} /> Saved
+            <span role="status" className="flex items-center gap-1 text-xs text-green-400 bg-green-500/10 px-2 py-1 rounded-lg">
+              <CheckCircle2 size={14} aria-hidden="true" /> Saved
             </span>
           )}
           <button
@@ -272,14 +272,14 @@ export const SettingsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
             disabled={saving}
             className="flex items-center gap-2 px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl text-sm transition disabled:opacity-50"
           >
-            <RotateCcw size={14} /> Reset
+            <RotateCcw size={14} aria-hidden="true" /> Reset
           </button>
           <button
             onClick={handleSave}
             disabled={saving}
             className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-sm font-bold transition shadow-lg shadow-blue-500/20 disabled:opacity-50"
           >
-            <Save size={14} /> {saving ? 'Saving...' : 'Save'}
+            <Save size={14} aria-hidden="true" /> {saving ? 'Saving...' : 'Save'}
           </button>
         </div>
       </div>
@@ -317,10 +317,12 @@ export const SettingsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                         </button>
                       </div>
 
-                      <div className="space-y-2">
+                      <div className="space-y-2" role="radiogroup" aria-label="Compute backend">
                         {backends.map((backend) => (
                           <button
                             key={backend.name}
+                            role="radio"
+                            aria-checked={backend.name === currentBackend}
                             onClick={() => handleSwitchBackend(backend.name)}
                             disabled={switchingBackend !== null || backend.name === currentBackend}
                             className={`flex items-center justify-between w-full px-3 py-2.5 rounded-xl text-left transition text-sm ${
@@ -368,8 +370,8 @@ export const SettingsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                     </div>
 
                     {restartRequired && (
-                      <div className="flex items-center gap-2 px-4 py-3 bg-orange-500/10 border border-orange-500/30 rounded-xl text-orange-400">
-                        <AlertTriangle size={20} />
+                      <div role="alert" className="flex items-center gap-2 px-4 py-3 bg-orange-500/10 border border-orange-500/30 rounded-xl text-orange-400">
+                        <AlertTriangle size={20} aria-hidden="true" />
                         <div>
                           <p className="font-medium">Restart Required</p>
                           <p className="text-sm text-slate-400">The backend has been switched but requires a server restart to take full effect.</p>

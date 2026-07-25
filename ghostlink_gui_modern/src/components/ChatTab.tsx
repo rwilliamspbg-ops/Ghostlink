@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import rehypeHighlight from 'rehype-highlight';
 import {
   Send,
   Loader,
@@ -46,6 +47,52 @@ interface Tool {
   enabled: boolean;
 }
 
+function getNodeText(node: React.ReactNode): string {
+  if (typeof node === 'string' || typeof node === 'number') return String(node);
+  if (Array.isArray(node)) return node.map(getNodeText).join('');
+  if (React.isValidElement(node)) return getNodeText((node.props as { children?: React.ReactNode }).children);
+  return '';
+}
+
+// react-markdown maps a fenced code block to <pre><code class="language-x hljs">...
+// rehype-highlight already syntax-colors the children by the time this renders,
+// so this only adds the language label + copy button chrome around it.
+const CodeBlock: React.FC<{ children?: React.ReactNode }> = ({ children, ...rest }) => {
+  const [copied, setCopied] = useState(false);
+  const codeEl = Array.isArray(children) ? children[0] : children;
+  const lang = React.isValidElement(codeEl)
+    ? /language-(\w+)/.exec((codeEl.props as { className?: string }).className || '')?.[1]
+    : undefined;
+
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(getNodeText(children));
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch { /* noop */ }
+  };
+
+  return (
+    <div className="relative group/code my-2">
+      {lang && (
+        <div className="absolute top-0 left-3 -translate-y-1/2 px-2 py-0.5 bg-slate-800 border border-slate-700 rounded text-[10px] font-mono text-slate-400 uppercase tracking-wider">
+          {lang}
+        </div>
+      )}
+      <button
+        onClick={handleCopy}
+        aria-label="Copy code"
+        className="absolute top-2 right-2 p-1.5 rounded-lg bg-slate-800/80 border border-slate-700 text-slate-400 hover:text-white hover:bg-slate-700 opacity-0 group-hover/code:opacity-100 focus:opacity-100 transition"
+      >
+        {copied ? <Check size={13} className="text-green-400" aria-hidden="true" /> : <Copy size={13} aria-hidden="true" />}
+      </button>
+      <pre {...rest} className="!bg-slate-950 !border !border-slate-800 !rounded-xl !p-4 overflow-x-auto text-xs">
+        {children}
+      </pre>
+    </div>
+  );
+};
+
 export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
   const {
     currentModel, models, setCurrentModel, mcpServers, setMcpServers,
@@ -71,6 +118,12 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [sessionsLoading, setSessionsLoading] = useState(false);
   const [confirmingId, setConfirmingId] = useState<string | null>(null);
+
+  // Live generation feedback: how long we've been waiting / how fast tokens
+  // are arriving, so a slow prompt-eval phase doesn't look like a hang.
+  const genStartRef = useRef<number | null>(null);
+  const genTokenCountRef = useRef(0);
+  const [genTick, setGenTick] = useState(0);
 
   // One checkbox per legacy "tool slot" (calculator, file_operations, ...) that
   // has a real MCP server configured for it — replaces the old hardcoded
@@ -114,6 +167,12 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
   useEffect(() => {
     scrollToBottom();
   }, [messages, loading]);
+
+  useEffect(() => {
+    if (!loading) return;
+    const interval = setInterval(() => setGenTick((t) => t + 1), 150);
+    return () => clearInterval(interval);
+  }, [loading]);
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -209,6 +268,9 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
     setStreamingId(assistantId);
     setMessages((prev) => [...prev, { role: 'assistant', content: '', id: assistantId, timestamp: '', model: currentModel || undefined }]);
 
+    genStartRef.current = Date.now();
+    genTokenCountRef.current = 0;
+
     const enabledTools = tools.filter((t) => t.enabled).map((t) => t.name);
     // Tool calls, their real results, and any pending-confirmation card only ever
     // arrive on the plain JSON response — the token-streaming SSE path only ever
@@ -228,6 +290,7 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
       stream: useStreaming,
       model: currentModel === 'none' ? undefined : currentModel,
     }, (token: string) => {
+      genTokenCountRef.current += 1;
       setMessages((prev) => prev.map(m =>
         m.id === assistantId ? { ...m, content: m.content + token } : m
       ));
@@ -235,6 +298,7 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
 
     setLoading(false);
     setStreamingId(null);
+    genStartRef.current = null;
 
     if (result.success) {
       const data = result.data || {};
@@ -307,24 +371,37 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
     setTools(tools.map(t => t.name === name ? { ...t, enabled: !t.enabled } : t));
   };
 
+  // genTick just forces a re-render on the interval; the real read happens here.
+  void genTick;
+  const genElapsedSec = genStartRef.current ? (Date.now() - genStartRef.current) / 1000 : 0;
+  const genTokPerSec = genElapsedSec > 0 ? genTokenCountRef.current / genElapsedSec : 0;
+  const streamingMsg = streamingId ? messages.find((m) => m.id === streamingId) : undefined;
+  const awaitingFirstToken = loading && !!streamingMsg && streamingMsg.content === '';
+
   return (
     <div className="flex flex-col h-full bg-slate-950 relative">
       {/* Header / Model Selector */}
       <div className="flex items-center justify-between px-6 py-3 border-b border-slate-900 bg-slate-950/50 backdrop-blur-md sticky top-0 z-10">
         <div className="flex items-center gap-2">
-            <div className="relative" ref={modelSelectorRef}>
+            <div
+                className="relative"
+                ref={modelSelectorRef}
+                onKeyDown={(e) => { if (e.key === 'Escape') setShowModelSelector(false); }}
+            >
                 <button
                     onClick={() => setShowModelSelector(!showModelSelector)}
+                    aria-haspopup="listbox"
+                    aria-expanded={showModelSelector}
                     className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg hover:bg-slate-900 transition text-sm font-semibold group"
                 >
                     <span className="text-slate-200 group-hover:text-white max-w-[200px] truncate">
                         {currentModel === 'none' ? 'Select Model' : currentModel.split('/').pop()}
                     </span>
-                    <ChevronDown size={14} className={`text-slate-500 transition-transform ${showModelSelector ? 'rotate-180' : ''}`} />
+                    <ChevronDown size={14} className={`text-slate-500 transition-transform ${showModelSelector ? 'rotate-180' : ''}`} aria-hidden="true" />
                 </button>
 
                 {showModelSelector && (
-                    <div className="absolute left-0 mt-2 w-72 bg-slate-900 border border-slate-800 rounded-2xl shadow-2xl z-50 overflow-hidden animate-in fade-in zoom-in-95 duration-100">
+                    <div role="listbox" aria-label="Available models" className="absolute left-0 mt-2 w-72 bg-slate-900 border border-slate-800 rounded-2xl shadow-2xl z-50 overflow-hidden animate-in fade-in zoom-in-95 duration-100">
                         <div className="p-2 max-h-[400px] overflow-y-auto">
                             {usableModels.length === 0 ? (
                                 <div className="p-4 text-center text-slate-500 text-sm">No models available</div>
@@ -332,6 +409,8 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                                 usableModels.map(m => (
                                     <button
                                         key={m.name}
+                                        role="option"
+                                        aria-selected={currentModel === m.name}
                                         onClick={() => selectModel(m.name)}
                                         className={`flex items-center justify-between w-full px-3 py-2.5 rounded-xl text-left transition text-sm ${
                                             currentModel === m.name ? 'bg-blue-600/10 text-blue-400' : 'text-slate-300 hover:bg-slate-800'
@@ -341,45 +420,55 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                                             <span className="font-bold truncate">{m.name.split('/').pop()}</span>
                                             <span className="text-[10px] text-slate-500 truncate">{m.name}</span>
                                         </div>
-                                        {currentModel === m.name && <Check size={14} />}
+                                        {currentModel === m.name && <Check size={14} aria-hidden="true" />}
                                     </button>
                                 ))
                             )}
                         </div>
                         <div className="p-2 border-t border-slate-800 bg-slate-900/50">
                             <button className="flex items-center gap-2 w-full px-3 py-2 rounded-xl text-xs font-bold text-slate-400 hover:text-white hover:bg-slate-800 transition">
-                                <Plus size={14} /> Download Models
+                                <Plus size={14} aria-hidden="true" /> Download Models
                             </button>
                         </div>
                     </div>
                 )}
             </div>
-            <div className="relative" ref={sessionsRef}>
+            <div
+                className="relative"
+                ref={sessionsRef}
+                onKeyDown={(e) => { if (e.key === 'Escape') setShowSessions(false); }}
+            >
               <div className="flex items-center gap-1">
                 <button
                   onClick={() => { if (!loading) { setSessionName(`Session ${new Date().toLocaleDateString()}`); setShowSessions(true); }}}
                   className="p-1.5 rounded-lg hover:bg-slate-900 text-slate-500 hover:text-white transition"
                   title="Save Session"
+                  aria-label="Save session"
+                  aria-haspopup="dialog"
+                  aria-expanded={showSessions}
                 >
-                  <Save size={16} />
+                  <Save size={16} aria-hidden="true" />
                 </button>
                 <button
                   onClick={() => { loadSessions(); setShowSessions(true); }}
                   className="p-1.5 rounded-lg hover:bg-slate-900 text-slate-500 hover:text-white transition"
                   title="Load Session"
+                  aria-label="Load session"
+                  aria-haspopup="dialog"
+                  aria-expanded={showSessions}
                 >
-                  <FolderOpen size={16} />
+                  <FolderOpen size={16} aria-hidden="true" />
                 </button>
-                <button onClick={() => { if (!loading) setMessages([]); }} className="p-1.5 rounded-lg hover:bg-slate-900 text-slate-500 hover:text-white transition">
-                    <Plus size={16} />
+                <button onClick={() => { if (!loading) setMessages([]); }} className="p-1.5 rounded-lg hover:bg-slate-900 text-slate-500 hover:text-white transition" aria-label="Clear chat">
+                    <Plus size={16} aria-hidden="true" />
                 </button>
               </div>
 
               {showSessions && (
-                <div className="absolute right-0 mt-2 w-80 bg-slate-900 border border-slate-800 rounded-2xl shadow-2xl z-50 overflow-hidden animate-in fade-in zoom-in-95 duration-100">
+                <div role="dialog" aria-label="Sessions" className="absolute right-0 mt-2 w-80 bg-slate-900 border border-slate-800 rounded-2xl shadow-2xl z-50 overflow-hidden animate-in fade-in zoom-in-95 duration-100">
                   <div className="p-2 border-b border-slate-800 flex items-center justify-between">
                     <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider">Sessions</h4>
-                    <button onClick={() => setShowSessions(false)} className="text-slate-500 hover:text-white"><X size={14} /></button>
+                    <button onClick={() => setShowSessions(false)} className="text-slate-500 hover:text-white" aria-label="Close sessions panel"><X size={14} aria-hidden="true" /></button>
                   </div>
                   <div className="p-2 max-h-[400px] overflow-y-auto">
                     {sessionsLoading ? (
@@ -403,15 +492,17 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                               onClick={() => handleLoadSession(s.id)}
                               className="p-1.5 hover:bg-slate-800 rounded-lg text-slate-400 hover:text-white transition"
                               title="Load"
+                              aria-label={`Load session ${s.id}`}
                             >
-                              <FolderOpen size={12} />
+                              <FolderOpen size={12} aria-hidden="true" />
                             </button>
                             <button
                               onClick={() => handleDeleteSession(s.id)}
                               className="p-1.5 hover:bg-slate-800 rounded-lg text-slate-400 hover:text-red-400 transition"
                               title="Delete"
+                              aria-label={`Delete session ${s.id}`}
                             >
-                              <Trash2 size={12} />
+                              <Trash2 size={12} aria-hidden="true" />
                             </button>
                           </div>
                         </div>
@@ -441,10 +532,10 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
             </div>
           </div>
         <div className="flex items-center gap-2">
-            <button className="p-2 rounded-lg hover:bg-slate-900 text-slate-400 hover:text-white transition">
-                <LayoutGrid size={18} />
+            <button className="p-2 rounded-lg hover:bg-slate-900 text-slate-400 hover:text-white transition" aria-label="Grid view">
+                <LayoutGrid size={18} aria-hidden="true" />
             </button>
-            <div className="w-8 h-8 rounded-full bg-orange-500 flex items-center justify-center text-xs font-bold text-white shadow-lg shadow-orange-500/20">R</div>
+            <div className="w-8 h-8 rounded-full bg-orange-500 flex items-center justify-center text-xs font-bold text-white shadow-lg shadow-orange-500/20" aria-hidden="true">R</div>
         </div>
       </div>
 
@@ -505,7 +596,7 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                         {msg.pendingToolCall && (
                             <div className="flex flex-col gap-2 px-4 py-3 rounded-2xl border border-amber-500/30 bg-amber-500/10 w-full max-w-md">
                                 <div className="flex items-center gap-2 text-amber-400 text-xs font-bold">
-                                    <ShieldAlert size={14} />
+                                    <ShieldAlert size={14} aria-hidden="true" />
                                     Approval needed
                                 </div>
                                 <p className="text-xs text-slate-300">
@@ -541,33 +632,49 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                         }`}>
                             {msg.role === 'assistant' ? (
                               <div className="prose prose-invert prose-sm max-w-none break-words">
-                                <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
+                                <ReactMarkdown
+                                  remarkPlugins={[remarkGfm]}
+                                  rehypePlugins={[rehypeHighlight]}
+                                  components={{ pre: CodeBlock }}
+                                >
+                                  {msg.content}
+                                </ReactMarkdown>
+                                {msg.id === streamingId && msg.content !== '' && (
+                                  <span className="inline-block w-[7px] h-[1em] bg-blue-400 align-text-bottom ml-0.5 animate-pulse" />
+                                )}
                               </div>
                             ) : (
                               <div className="whitespace-pre-wrap break-words">{msg.content}</div>
                             )}
                         </div>
 
+                        {msg.id === streamingId && msg.content !== '' && loading && (
+                            <div className="px-1 -mt-1 text-[10px] text-slate-600 font-mono">
+                                Generating · {genElapsedSec.toFixed(1)}s · {genTokPerSec.toFixed(1)} tok/s
+                            </div>
+                        )}
+
                         {msg.role === 'assistant' && (
-                            <div className="flex items-center gap-1 mt-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                                <button onClick={() => handleCopy(msg.content, msg.id)} className="p-1.5 rounded-lg hover:bg-slate-900 text-slate-500 hover:text-slate-300 transition" title="Copy">
-                                  {copiedId === msg.id ? <Check size={14} className="text-green-400" /> : <Copy size={14} />}
+                            <div className="flex items-center gap-1 mt-1 opacity-0 group-hover:opacity-100 transition-opacity focus-within:opacity-100">
+                                <button onClick={() => handleCopy(msg.content, msg.id)} className="p-1.5 rounded-lg hover:bg-slate-900 text-slate-500 hover:text-slate-300 transition" title="Copy" aria-label="Copy response">
+                                  {copiedId === msg.id ? <Check size={14} className="text-green-400" aria-hidden="true" /> : <Copy size={14} aria-hidden="true" />}
                                 </button>
-                                <button className="p-1.5 rounded-lg hover:bg-slate-900 text-slate-500 hover:text-slate-300 transition" title="Good response">
-                                    <ThumbsUp size={14} />
+                                <button className="p-1.5 rounded-lg hover:bg-slate-900 text-slate-500 hover:text-slate-300 transition" title="Good response" aria-label="Good response">
+                                    <ThumbsUp size={14} aria-hidden="true" />
                                 </button>
-                                <button className="p-1.5 rounded-lg hover:bg-slate-900 text-slate-500 hover:text-slate-300 transition" title="Bad response">
-                                    <ThumbsDown size={14} />
+                                <button className="p-1.5 rounded-lg hover:bg-slate-900 text-slate-500 hover:text-slate-300 transition" title="Bad response" aria-label="Bad response">
+                                    <ThumbsDown size={14} aria-hidden="true" />
                                 </button>
-                                <button onClick={handleRegenerate} className="p-1.5 rounded-lg hover:bg-slate-900 text-slate-500 hover:text-slate-300 transition" title="Regenerate">
-                                    <RotateCcw size={14} />
+                                <button onClick={handleRegenerate} className="p-1.5 rounded-lg hover:bg-slate-900 text-slate-500 hover:text-slate-300 transition" title="Regenerate" aria-label="Regenerate response">
+                                    <RotateCcw size={14} aria-hidden="true" />
                                 </button>
                                 <button
                                   onClick={() => { try { speechSynthesis.speak(new SpeechSynthesisUtterance(msg.content)); } catch {} }}
                                   className="p-1.5 rounded-lg hover:bg-slate-900 text-slate-500 hover:text-slate-300 transition"
                                   title="Read aloud"
+                                  aria-label="Read response aloud"
                                 >
-                                    <Volume2 size={14} />
+                                    <Volume2 size={14} aria-hidden="true" />
                                 </button>
                             </div>
                         )}
@@ -581,14 +688,23 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                 </div>
             ))}
 
-            {loading && (
-                <div className="flex gap-4 justify-start animate-pulse">
+            {awaitingFirstToken && (
+                <div className="flex gap-4 justify-start" role="status" aria-live="polite">
                     <div className="flex-shrink-0 w-8 h-8 rounded-lg bg-slate-900 border border-slate-800 flex items-center justify-center mt-1">
-                        <Loader size={14} className="text-blue-500 animate-spin" />
+                        <Loader size={14} className="text-blue-500 animate-spin" aria-hidden="true" />
                     </div>
-                    <div className="flex flex-col gap-2">
-                        <div className="h-4 w-20 bg-slate-900 rounded"></div>
-                        <div className="h-12 w-64 bg-slate-900/50 rounded-2xl"></div>
+                    <div className="flex flex-col gap-1.5 justify-center">
+                        <div className="flex items-center gap-1.5 text-xs text-slate-400">
+                            <span className="flex gap-0.5" aria-hidden="true">
+                                <span className="w-1.5 h-1.5 rounded-full bg-blue-500 animate-bounce [animation-delay:-0.3s]" />
+                                <span className="w-1.5 h-1.5 rounded-full bg-blue-500 animate-bounce [animation-delay:-0.15s]" />
+                                <span className="w-1.5 h-1.5 rounded-full bg-blue-500 animate-bounce" />
+                            </span>
+                            <span>
+                                {currentModel && currentModel !== 'none' ? `${currentModel.split('/').pop()} is thinking` : 'Thinking'}
+                                {' · '}{genElapsedSec.toFixed(1)}s
+                            </span>
+                        </div>
                     </div>
                 </div>
             )}
@@ -604,14 +720,17 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
           <div className="flex flex-wrap gap-2 mb-2 px-1">
               {tools.filter(t => t.enabled).map(t => (
                   <div key={t.name} className="flex items-center gap-1.5 px-2 py-1 rounded-full bg-purple-500/10 border border-purple-500/20 text-[10px] text-purple-400 font-medium">
-                      <Wand2 size={10} />
+                      <Wand2 size={10} aria-hidden="true" />
                       {t.name}
-                      <button onClick={() => toggleTool(t.name)} className="hover:text-white"><X size={10} /></button>
+                      <button onClick={() => toggleTool(t.name)} className="hover:text-white" aria-label={`Disable ${t.name} tool`}><X size={10} aria-hidden="true" /></button>
                   </div>
               ))}
           </div>
 
-          <div className="relative bg-slate-900 border border-slate-800 rounded-3xl p-2 shadow-2xl focus-within:border-slate-700 transition-all duration-300">
+          <div
+            className="relative bg-slate-900 border border-slate-800 rounded-3xl p-2 shadow-2xl focus-within:border-slate-700 transition-all duration-300"
+            onKeyDown={(e) => { if (e.key === 'Escape') setShowTools(false); }}
+          >
             <textarea
               value={input}
               onChange={(e) => setInput(e.target.value)}
@@ -622,6 +741,7 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                   }
               }}
               placeholder="Send a Message"
+              aria-label="Chat message"
               className="w-full bg-transparent border-none text-slate-100 placeholder-slate-500 focus:ring-0 resize-none px-4 pt-3 pb-12 text-sm min-h-[56px] max-h-48"
               rows={1}
             />
@@ -629,56 +749,62 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
             <div className="absolute left-3 bottom-3 flex items-center gap-1">
                 <button
                     onClick={() => setShowTools(!showTools)}
+                    aria-haspopup="menu"
+                    aria-expanded={showTools}
+                    aria-label="Capabilities"
                     className={`p-2 rounded-xl transition ${showTools ? 'bg-slate-800 text-blue-400' : 'text-slate-500 hover:text-slate-300 hover:bg-slate-800'}`}
                 >
-                    <Plus size={20} />
+                    <Plus size={20} aria-hidden="true" />
                 </button>
-                <button className="p-2 rounded-xl text-slate-500 hover:text-slate-300 hover:bg-slate-800 transition">
-                    <LayoutGrid size={20} />
+                <button className="p-2 rounded-xl text-slate-500 hover:text-slate-300 hover:bg-slate-800 transition" aria-label="Grid view">
+                    <LayoutGrid size={20} aria-hidden="true" />
                 </button>
             </div>
 
             <div className="absolute right-3 bottom-3 flex items-center gap-1">
-                <button className="p-2 rounded-xl text-slate-500 hover:text-slate-300 hover:bg-slate-800 transition">
-                    <Cloud size={18} />
+                <button className="p-2 rounded-xl text-slate-500 hover:text-slate-300 hover:bg-slate-800 transition" aria-label="Cloud sync">
+                    <Cloud size={18} aria-hidden="true" />
                 </button>
-                <button className="p-2 rounded-xl text-slate-500 hover:text-slate-300 hover:bg-slate-800 transition">
-                    <Mic size={18} />
+                <button className="p-2 rounded-xl text-slate-500 hover:text-slate-300 hover:bg-slate-800 transition" aria-label="Voice input">
+                    <Mic size={18} aria-hidden="true" />
                 </button>
                 <button
                     onClick={handleSend}
                     disabled={!input.trim() || loading}
+                    aria-label="Send message"
                     className={`p-2 rounded-full transition shadow-lg ${
                         !input.trim() || loading
                             ? 'bg-slate-800 text-slate-600'
                             : 'bg-white text-black hover:bg-slate-200'
                     }`}
                 >
-                    {loading ? <Loader size={18} className="animate-spin" /> : <Send size={18} fill="currentColor" />}
+                    {loading ? <Loader size={18} className="animate-spin" aria-hidden="true" /> : <Send size={18} fill="currentColor" aria-hidden="true" />}
                 </button>
             </div>
 
             {/* Tool Selection Popup */}
             {showTools && (
-                <div className="absolute left-0 bottom-16 w-64 bg-slate-900 border border-slate-800 rounded-2xl p-4 shadow-2xl z-20 animate-in fade-in slide-in-from-bottom-2">
+                <div role="menu" aria-label="Capabilities" className="absolute left-0 bottom-16 w-64 bg-slate-900 border border-slate-800 rounded-2xl p-4 shadow-2xl z-20 animate-in fade-in slide-in-from-bottom-2">
                     <div className="flex items-center justify-between mb-3 px-1">
                         <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider">Capabilities</h4>
-                        <button onClick={() => setShowTools(false)} className="text-slate-500 hover:text-white"><X size={14} /></button>
+                        <button onClick={() => setShowTools(false)} className="text-slate-500 hover:text-white" aria-label="Close capabilities menu"><X size={14} aria-hidden="true" /></button>
                     </div>
                     <div className="grid grid-cols-1 gap-1">
                         {tools.map(tool => (
                             <button
                                 key={tool.name}
+                                role="menuitemcheckbox"
+                                aria-checked={tool.enabled}
                                 onClick={() => toggleTool(tool.name)}
                                 className={`flex items-center justify-between w-full px-3 py-2 rounded-xl transition text-xs ${
                                     tool.enabled ? 'bg-blue-600/20 text-blue-400' : 'text-slate-400 hover:bg-slate-800'
                                 }`}
                             >
                                 <div className="flex items-center gap-2">
-                                    <Wand2 size={14} className={tool.enabled ? 'text-blue-400' : 'text-slate-600'} />
+                                    <Wand2 size={14} className={tool.enabled ? 'text-blue-400' : 'text-slate-600'} aria-hidden="true" />
                                     <span>{tool.name.replace('_', ' ')}</span>
                                 </div>
-                                {tool.enabled && <div className="w-1.5 h-1.5 bg-blue-400 rounded-full shadow-[0_0_8px_rgba(96,165,250,0.5)]"></div>}
+                                {tool.enabled && <div className="w-1.5 h-1.5 bg-blue-400 rounded-full shadow-[0_0_8px_rgba(96,165,250,0.5)]" aria-hidden="true"></div>}
                             </button>
                         ))}
                     </div>
@@ -693,9 +819,9 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
       </div>
 
       {error && (
-          <div className="fixed bottom-24 right-4 max-w-sm p-4 bg-red-950 border border-red-900 rounded-2xl text-red-200 text-sm shadow-2xl animate-in fade-in slide-in-from-right-4 z-50">
+          <div role="alert" aria-live="assertive" className="fixed bottom-24 right-4 max-w-sm p-4 bg-red-950 border border-red-900 rounded-2xl text-red-200 text-sm shadow-2xl animate-in fade-in slide-in-from-right-4 z-50">
               <div className="flex gap-3">
-                  <X className="flex-shrink-0 text-red-500" size={18} />
+                  <X className="flex-shrink-0 text-red-500" size={18} aria-hidden="true" />
                   <div>
                       <p className="font-bold">Execution Error</p>
                       <p className="text-red-400/80">{error}</p>

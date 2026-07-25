@@ -3,7 +3,7 @@ import { RefreshCw, Activity, Cpu, Database, Zap, Clock, ShieldCheck, Server } f
 import { useAppStore } from '../store';
 
 export const MetricsTab: React.FC<{ api: any }> = React.memo(({ api }) => {
-  const { metrics, setMetrics } = useAppStore();
+  const { metrics, setMetrics, metricsHistory } = useAppStore();
   const [loading, setLoading] = React.useState(false);
 
   // App.tsx already polls metrics every 5s — only manual refresh here.
@@ -18,6 +18,10 @@ export const MetricsTab: React.FC<{ api: any }> = React.memo(({ api }) => {
       setLoading(false);
     }
   };
+
+  const throughputHistory = useMemo(() => metricsHistory.map((m) => m.throughput ?? 0), [metricsHistory]);
+  const latP50History = useMemo(() => metricsHistory.map((m) => m.latency_p50 ?? 0), [metricsHistory]);
+  const latP95History = useMemo(() => metricsHistory.map((m) => m.latency_p95 ?? 0), [metricsHistory]);
 
   const throughputScale = useMemo(() => {
     const t = metrics?.throughput ?? 0;
@@ -56,8 +60,9 @@ export const MetricsTab: React.FC<{ api: any }> = React.memo(({ api }) => {
           onClick={refreshMetrics}
           className="p-2 rounded-lg hover:bg-slate-900 text-slate-400 hover:text-white transition"
           title="Refresh metrics"
+          aria-label="Refresh metrics"
         >
-          <RefreshCw size={18} className={loading ? 'animate-spin' : ''} />
+          <RefreshCw size={18} className={loading ? 'animate-spin' : ''} aria-hidden="true" />
         </button>
       </div>
 
@@ -72,6 +77,8 @@ export const MetricsTab: React.FC<{ api: any }> = React.memo(({ api }) => {
               color="text-cyan-400"
               bg="bg-cyan-500/10"
               progress={throughputScale}
+              history={throughputHistory}
+              sparkColor="#22d3ee"
             />
             <StatCard
               label="Latency p50"
@@ -82,6 +89,8 @@ export const MetricsTab: React.FC<{ api: any }> = React.memo(({ api }) => {
               bg="bg-orange-500/10"
               progress={latP50Scale}
               inverse
+              history={latP50History}
+              sparkColor="#fb923c"
             />
             <StatCard
               label="Latency p95"
@@ -92,6 +101,8 @@ export const MetricsTab: React.FC<{ api: any }> = React.memo(({ api }) => {
               bg="bg-red-500/10"
               progress={latP95Scale}
               inverse
+              history={latP95History}
+              sparkColor="#f87171"
             />
           </div>
 
@@ -198,6 +209,27 @@ const StatusRow = ({
   </div>
 );
 
+// Minimal inline trend line — no charting library needed for a glance-sized
+// sparkline. Renders nothing meaningful until a couple of samples exist.
+const Sparkline: React.FC<{ data: number[]; color: string }> = ({ data, color }) => {
+  if (data.length < 2) {
+    return <div className="h-8 flex items-center text-[10px] text-slate-600">Collecting samples…</div>;
+  }
+  const width = 100;
+  const height = 28;
+  const max = Math.max(...data);
+  const min = Math.min(...data);
+  const range = max - min || 1;
+  const points = data
+    .map((v, i) => `${(i / (data.length - 1)) * width},${height - ((v - min) / range) * height}`)
+    .join(' ');
+  return (
+    <svg viewBox={`0 0 ${width} ${height}`} className="w-full h-8" preserveAspectRatio="none" aria-hidden="true">
+      <polyline points={points} fill="none" stroke={color} strokeWidth="1.5" vectorEffect="non-scaling-stroke" />
+    </svg>
+  );
+};
+
 const StatCard = ({
   label,
   value,
@@ -207,11 +239,13 @@ const StatCard = ({
   bg,
   progress,
   inverse = false,
+  history,
+  sparkColor,
 }: any) => (
   <div className="bg-slate-900/50 border border-slate-800 rounded-3xl p-6 hover:border-slate-700 transition-all group">
     <div className="flex items-center justify-between mb-4">
       <div className={`p-3 rounded-2xl ${bg} ${color}`}>
-        <Icon size={24} />
+        <Icon size={24} aria-hidden="true" />
       </div>
       <div className="text-right">
         <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">{label}</p>
@@ -221,7 +255,14 @@ const StatCard = ({
         </p>
       </div>
     </div>
-    <div className="h-1.5 bg-slate-800 rounded-full overflow-hidden">
+    <div
+      role="progressbar"
+      aria-label={label}
+      aria-valuenow={Math.round(progress || 0)}
+      aria-valuemin={0}
+      aria-valuemax={100}
+      className="h-1.5 bg-slate-800 rounded-full overflow-hidden"
+    >
       <div
         className={`h-full transition-all duration-1000 ${
           inverse
@@ -239,6 +280,11 @@ const StatCard = ({
         style={{ width: `${Math.min(100, Math.max(2, progress || 0))}%` }}
       />
     </div>
+    {history && (
+      <div className="mt-3 pt-3 border-t border-slate-800/50">
+        <Sparkline data={history} color={sparkColor} />
+      </div>
+    )}
   </div>
 );
 
@@ -255,8 +301,15 @@ const GaugeCard = ({
   color: string;
   subtitle?: string;
 }) => (
-  <div className="bg-slate-900/50 border border-slate-800 rounded-3xl p-6 flex flex-col items-center text-center">
-    <div className="relative w-24 h-24 mb-4">
+  <div
+    className="bg-slate-900/50 border border-slate-800 rounded-3xl p-6 flex flex-col items-center text-center"
+    role="progressbar"
+    aria-label={label}
+    aria-valuenow={Math.round(value)}
+    aria-valuemin={0}
+    aria-valuemax={100}
+  >
+    <div className="relative w-24 h-24 mb-4" aria-hidden="true">
       <svg className="w-full h-full transform -rotate-90">
         <circle
           cx="48"

@@ -1,10 +1,15 @@
-import React, { useState, useEffect } from 'react';
-import { RefreshCw, Server, Shield, Cpu, Activity, Power, Plus } from 'lucide-react';
+import React, { useState, useEffect, useMemo } from 'react';
+import { RefreshCw, Server, Shield, Cpu, Activity, Power, Plus, HeartPulse } from 'lucide-react';
 import { useAppStore } from '../store';
+import { EmptyState } from './StatusViews';
 
 export const WorkersTab: React.FC<{ api: any }> = ({ api }) => {
   const { workers, setWorkers } = useAppStore();
   const [loading, setLoading] = useState(false);
+  const healthyCount = useMemo(
+    () => workers.filter((w) => w.status?.toLowerCase() === 'connected').length,
+    [workers]
+  );
   const [showAddForm, setShowAddForm] = useState(false);
   const [addHost, setAddHost] = useState('');
   const [addPort, setAddPort] = useState('8003');
@@ -68,35 +73,56 @@ export const WorkersTab: React.FC<{ api: any }> = ({ api }) => {
             <div className="px-2 py-0.5 bg-blue-600/20 text-blue-400 rounded text-[10px] font-bold uppercase tracking-wider">
                 {workers.length} Nodes
             </div>
+            {workers.length > 0 && (
+                <div
+                    className={`flex items-center gap-1.5 px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider ${
+                        healthyCount === workers.length
+                            ? 'bg-green-500/10 text-green-400'
+                            : healthyCount === 0
+                            ? 'bg-red-500/10 text-red-400'
+                            : 'bg-amber-500/10 text-amber-400'
+                    }`}
+                    title="Nodes reporting a Connected status"
+                >
+                    <HeartPulse size={11} aria-hidden="true" />
+                    {healthyCount}/{workers.length} healthy
+                </div>
+            )}
         </div>
         <div className="flex items-center gap-2">
             <button
                 onClick={() => { setShowAddForm(!showAddForm); setAddError(''); }}
+                aria-haspopup="true"
+                aria-expanded={showAddForm}
                 className="flex items-center gap-2 px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold rounded-lg transition"
             >
-                <Plus size={14} /> Add Worker
+                <Plus size={14} aria-hidden="true" /> Add Worker
             </button>
             <button
                 onClick={async () => { const r = await api.discoverPeers(); if (r.success) refreshWorkers(); }}
                 className="flex items-center gap-2 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-white text-xs font-bold rounded-lg transition"
                 title="Discover peers on network"
             >
-                <RefreshCw size={14} /> Discover
+                <RefreshCw size={14} aria-hidden="true" /> Discover
             </button>
             <button
                 onClick={refreshWorkers}
+                aria-label="Refresh workers"
                 className="p-2 rounded-lg hover:bg-slate-900 text-slate-400 hover:text-white transition"
             >
-                <RefreshCw size={18} className={loading ? 'animate-spin' : ''} />
+                <RefreshCw size={18} className={loading ? 'animate-spin' : ''} aria-hidden="true" />
             </button>
         </div>
       </div>
 
       {showAddForm && (
-        <div className="px-6 py-4 border-b border-slate-800 bg-slate-900/30">
+        <div
+          className="px-6 py-4 border-b border-slate-800 bg-slate-900/30"
+          onKeyDown={(e) => { if (e.key === 'Escape') setShowAddForm(false); }}
+        >
           <div className="flex items-end gap-3 max-w-lg">
             <div className="flex-1">
-              <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1">Host</label>
+              <label htmlFor="host" className="block text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1">Host</label>
               <input
                 type="text"
                 value={addHost}
@@ -108,7 +134,7 @@ export const WorkersTab: React.FC<{ api: any }> = ({ api }) => {
               />
             </div>
             <div className="w-24">
-              <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1">Port</label>
+              <label htmlFor="port" className="block text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1">Port</label>
               <input
                 type="number"
                 value={addPort}
@@ -126,12 +152,19 @@ export const WorkersTab: React.FC<{ api: any }> = ({ api }) => {
               Connect
             </button>
           </div>
-          {addError && <p className="text-red-400 text-xs mt-2">{addError}</p>}
+          {addError && <p role="alert" className="text-red-400 text-xs mt-2">{addError}</p>}
         </div>
       )}
 
       <div className="flex-1 overflow-y-auto p-6">
         <div className="max-w-5xl mx-auto">
+            {workers.length === 0 ? (
+              <EmptyState
+                icon={Server}
+                title="No workers connected"
+                description="Add a worker by host/port, or discover peers on the local network."
+              />
+            ) : (
             <div className="grid grid-cols-1 gap-4">
               {workers.map((worker) => (
                 <div key={worker.id} className="bg-slate-900/50 border border-slate-800 rounded-3xl p-6 hover:border-slate-700 transition-all relative overflow-hidden group">
@@ -184,12 +217,13 @@ export const WorkersTab: React.FC<{ api: any }> = ({ api }) => {
                                 <p className="text-sm font-bold text-slate-200 truncate">{worker.model}</p>
                             </div>
                             <div className="flex items-end justify-end">
-                                <button 
+                                <button
                                   onClick={() => handleDisconnectWorker(worker.id)}
                                   className="p-2 text-slate-500 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition"
                                   title="Disconnect worker"
+                                  aria-label={`Disconnect worker ${worker.host}`}
                                 >
-                                    <Power size={20} />
+                                    <Power size={20} aria-hidden="true" />
                                 </button>
                             </div>
                         </div>
@@ -198,6 +232,7 @@ export const WorkersTab: React.FC<{ api: any }> = ({ api }) => {
                 </div>
               ))}
             </div>
+            )}
         </div>
       </div>
     </div>

@@ -138,6 +138,11 @@ interface AppState {
   uptime: number;
   models: Model[];
   metrics: Metric | null;
+  // Bounded trailing history of metrics samples, appended alongside setMetrics
+  // (App.tsx polls every 3s) — powers the Metrics tab's sparklines so trends
+  // are visible instead of just a current-value snapshot. Capped so it never
+  // grows unbounded across a long session.
+  metricsHistory: Metric[];
   sessions: Session[];
   workers: Worker[];
   backends: BackendInfo[];
@@ -200,6 +205,7 @@ export const useAppStore = create<AppState>((set) => ({
   uptime: 0,
   models: [],
   metrics: null,
+  metricsHistory: [],
   sessions: [],
   workers: [],
   backends: [],
@@ -220,7 +226,11 @@ export const useAppStore = create<AppState>((set) => ({
   setCurrentModel: (model) => set({ currentModel: model }),
   setUptime: (uptime) => set({ uptime }),
   setModels: (models) => set({ models }),
-  setMetrics: (metrics) => set({ metrics }),
+  setMetrics: (metrics) =>
+    set((state) => ({
+      metrics,
+      metricsHistory: [...state.metricsHistory, metrics].slice(-40),
+    })),
   setSessions: (sessions) => set({ sessions }),
   setWorkers: (workers) => set({ workers }),
   setBackends: (backends) => set({ backends }),

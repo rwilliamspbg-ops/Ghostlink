@@ -123,8 +123,8 @@ describe('SettingsTab', () => {
       expect(screen.getByText('cpu')).toBeInTheDocument();
     });
 
-    // Click the cpu backend button (which has the backend name in its accessible name)
-    fireEvent.click(screen.getByRole('button', { name: /cpu/i }));
+    // Click the cpu backend option (radiogroup entry; has the backend name in its accessible name)
+    fireEvent.click(screen.getByRole('radio', { name: /cpu/i }));
 
     await waitFor(() => {
       expect(api.switchBackend).toHaveBeenCalledWith('cpu');
