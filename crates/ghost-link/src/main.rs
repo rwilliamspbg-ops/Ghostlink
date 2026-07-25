@@ -1598,6 +1598,30 @@ fn save_persistent_models(models: &[ModelRecord]) {
     }
 }
 
+fn sessions_path() -> PathBuf {
+    std::env::var("GHOSTLINK_SESSIONS_PATH")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("sessions.json"))
+}
+
+fn load_persistent_sessions() -> Vec<SessionRecord> {
+    let path = sessions_path();
+    if path.exists() {
+        if let Ok(data) = fs::read_to_string(path) {
+            if let Ok(sessions) = serde_json::from_str::<Vec<SessionRecord>>(&data) {
+                return sessions;
+            }
+        }
+    }
+    vec![]
+}
+
+fn save_persistent_sessions(sessions: &[SessionRecord]) {
+    if let Ok(data) = serde_json::to_string_pretty(sessions) {
+        let _ = fs::write(sessions_path(), data);
+    }
+}
+
 fn load_settings() -> RuntimeSettings {
     let path = settings_path();
     let mut settings = if path.exists() {
@@ -1721,6 +1745,10 @@ struct ModelDeleteRequest {
     model: String,
 }
 #[derive(Debug, Deserialize)]
+struct DiscardPartialRequest {
+    filename: String,
+}
+#[derive(Debug, Deserialize)]
 struct OllamaModelRequest {
     model: String,
 }
@@ -1785,14 +1813,23 @@ struct WorkerRecord {
     threads: usize,
     load: u8,
 }
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 struct SessionRecord {
     id: String,
+    #[serde(default)]
+    name: String,
     model: String,
     status: String,
     throughput: usize,
     latency: u32,
     tokens: usize,
+    // Only returned by the single-session load endpoint — the list endpoint
+    // (`/api/sessions`, shared with SessionsTab's active-session view)
+    // builds its own trimmed JSON rather than serializing this field, so
+    // listing saved chats doesn't ship every message body over the wire
+    // just to render a summary card.
+    #[serde(default)]
+    messages: Vec<serde_json::Value>,
 }
 #[derive(Debug, Serialize)]
 struct ChatCompletionResponse {
@@ -3026,6 +3063,69 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         }))
     }
 
+    // Surfaces `.gguf.part` files left behind by an interrupted download
+    // (see download_hf_model's atomic-rename fix) — previously invisible
+    // dead weight sitting in the models directory with no way to see or
+    // reclaim it from the GUI.
+    async fn handle_gui_models_partial(
+        State(state): State<Arc<Mutex<BackendState>>>,
+    ) -> Json<serde_json::Value> {
+        let models_dir = {
+            let backend = lock_state(&state);
+            backend.settings.models_dir.clone()
+        };
+        let dir = std::path::Path::new(&models_dir);
+        let mut partials = Vec::new();
+        if let Ok(entries) = fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let filename = path.file_name().map(|f| f.to_string_lossy().to_string());
+                let Some(filename) = filename else { continue };
+                if !filename.ends_with(".gguf.part") {
+                    continue;
+                }
+                let metadata = fs::metadata(&path).ok();
+                let size_bytes = metadata.as_ref().map(|m| m.len()).unwrap_or(0);
+                let age_secs = metadata
+                    .and_then(|m| m.modified().ok())
+                    .and_then(|m| m.elapsed().ok())
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                partials.push(serde_json::json!({
+                    "filename": filename,
+                    "size_bytes": size_bytes,
+                    "age_secs": age_secs,
+                }));
+            }
+        }
+        Json(serde_json::json!({ "partial_downloads": partials }))
+    }
+
+    async fn handle_gui_models_partial_discard(
+        State(state): State<Arc<Mutex<BackendState>>>,
+        Json(req): Json<DiscardPartialRequest>,
+    ) -> Json<serde_json::Value> {
+        let models_dir = {
+            let backend = lock_state(&state);
+            backend.settings.models_dir.clone()
+        };
+        // Same defensive stance as the downloader's own filename handling —
+        // only a bare, well-formed `.gguf.part` basename is ever accepted,
+        // never a path that could escape models_dir.
+        let safe_name = std::path::Path::new(&req.filename)
+            .file_name()
+            .map(|f| f.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        if safe_name.is_empty() || !safe_name.ends_with(".gguf.part") {
+            return Json(serde_json::json!({ "status": "error", "error": "invalid filename" }));
+        }
+        let path = std::path::Path::new(&models_dir).join(&safe_name);
+        match fs::remove_file(&path) {
+            Ok(()) => Json(serde_json::json!({ "status": "ok" })),
+            Err(e) => Json(serde_json::json!({ "status": "error", "error": e.to_string() })),
+        }
+    }
+
     async fn handle_gui_model_unload(
         State(state): State<Arc<Mutex<BackendState>>>,
         Path(model_name): Path<String>,
@@ -3326,7 +3426,24 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         State(state): State<Arc<Mutex<BackendState>>>,
     ) -> Json<serde_json::Value> {
         let backend = lock_state(&state);
-        Json(serde_json::json!({ "sessions": backend.sessions }))
+        // Summary only — omits `messages` so listing saved chats doesn't ship
+        // every message body over the wire just to render a summary card.
+        let sessions: Vec<serde_json::Value> = backend
+            .sessions
+            .iter()
+            .map(|s| {
+                serde_json::json!({
+                    "id": s.id,
+                    "name": s.name,
+                    "model": s.model,
+                    "status": s.status,
+                    "throughput": s.throughput,
+                    "latency": s.latency,
+                    "tokens": s.tokens,
+                })
+            })
+            .collect();
+        Json(serde_json::json!({ "sessions": sessions }))
     }
 
     async fn handle_gui_session_cancel(Path(session_id): Path<String>) -> Json<serde_json::Value> {
@@ -3338,7 +3455,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         Json(req): Json<serde_json::Value>,
     ) -> Json<serde_json::Value> {
         let session_id = req.get("id").and_then(|v| v.as_str()).unwrap_or("");
-        let _name = req
+        let name = req
             .get("name")
             .and_then(|v| v.as_str())
             .unwrap_or("Unnamed Session");
@@ -3361,16 +3478,19 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         let mut backend = lock_state(&state);
         let session = SessionRecord {
             id: session_id.to_string(),
+            name: name.to_string(),
             model: model.to_string(),
             status: "saved".to_string(),
             throughput: 0,
             latency: 0,
             tokens: messages.len(),
+            messages,
         };
 
         // Remove existing session with same id
         backend.sessions.retain(|s| s.id != session_id);
         backend.sessions.push(session);
+        save_persistent_sessions(&backend.sessions);
 
         Json(serde_json::json!({ "status": "ok", "session_id": session_id }))
     }
@@ -3385,11 +3505,13 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                 "status": "ok",
                 "session": {
                     "id": session.id,
+                    "name": session.name,
                     "model": session.model,
                     "status": session.status,
                     "throughput": session.throughput,
                     "latency": session.latency,
                     "tokens": session.tokens,
+                    "messages": session.messages,
                 }
             }))
         } else {
@@ -3405,6 +3527,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         let len_before = backend.sessions.len();
         backend.sessions.retain(|s| s.id != session_id);
         if backend.sessions.len() < len_before {
+            save_persistent_sessions(&backend.sessions);
             Json(serde_json::json!({ "status": "ok", "deleted": true }))
         } else {
             Json(serde_json::json!({ "status": "error", "error": "session not found" }))
@@ -4288,7 +4411,13 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         let latency_u = latency_ms.round() as u32;
         let throughput_u = tokens_per_sec.unwrap_or(0.0).round().max(0.0) as usize;
 
-        let maybe_session = backend.sessions.first_mut();
+        // Matched by its own well-known id, not just "whichever session is
+        // first" — that used to mean any saved chat session that happened to
+        // land at index 0 got its tokens/model/status silently overwritten
+        // by unrelated live-inference bookkeeping the next time any chat
+        // request completed.
+        let live_session_id = "sess_local_001";
+        let maybe_session = backend.sessions.iter_mut().find(|s| s.id == live_session_id);
         let session_id = if let Some(session) = maybe_session {
             session.tokens = session.tokens.saturating_add(tokens_out as usize);
             session.throughput = throughput_u;
@@ -4301,9 +4430,10 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             };
             session.id.clone()
         } else {
-            let session_id = "sess_local_001".to_string();
+            let session_id = live_session_id.to_string();
             backend.sessions.push(SessionRecord {
                 id: session_id.clone(),
+                name: String::new(),
                 model: current_model.to_string(),
                 status: if real_inference {
                     "Running".to_string()
@@ -4313,6 +4443,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                 throughput: throughput_u,
                 latency: latency_u,
                 tokens: tokens_out as usize,
+                messages: vec![],
             });
             session_id
         };
@@ -5577,7 +5708,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             threads: profile.recommended_workers.max(1),
             load: 35,
         }],
-        sessions: vec![],
+        sessions: load_persistent_sessions(),
         queue_depth: 0,
         chat_requests: 0,
         last_latency_ms: 0.0,
@@ -5625,6 +5756,11 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             .route("/api/models/load", post(handle_gui_model_load))
             .route("/api/models/download", post(handle_gui_model_download))
             .route("/api/models/delete", post(handle_gui_model_delete))
+            .route("/api/models/partial", get(handle_gui_models_partial))
+            .route(
+                "/api/models/partial/discard",
+                post(handle_gui_models_partial_discard),
+            )
             .route(
                 "/api/models/search/huggingface",
                 get(handle_gui_models_search_hf),
