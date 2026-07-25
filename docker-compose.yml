@@ -58,7 +58,9 @@ services:
       start_period: 10s
     restart: unless-stopped
 
-  # ─── Ghostlink Control Plane (Go Worker Registry + Proxy) ───
+  # ─── Ghostlink Control Plane (Go gateway: streaming-safe proxy, CORS,
+  #     request logging, rate limiting — worker/model/session state all
+  #     stays owned by ghostlink-api, this just fronts it) ───
   control-plane:
     build:
       context: .
@@ -91,11 +93,13 @@ services:
     ports:
       - "5173:3000"
     environment:
-      GHOSTLINK_API_BASE: http://ghostlink-api:8003
+      # The gateway, not ghostlink-api directly — see config.ts's
+      # resolveApiBase. control-plane proxies everything through.
+      GHOSTLINK_API_BASE: http://ghostlink-control-plane:8000
     networks:
       - ghostlink-network
     depends_on:
-      ghostlink-api:
+      control-plane:
         condition: service_healthy
     restart: unless-stopped
 
