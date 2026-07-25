@@ -9,6 +9,11 @@ export interface Model {
   usable: boolean;
 }
 
+export interface MetricSample extends Metric {
+  /** Client-side capture time (ms epoch) — the backend metrics payload has no timestamp of its own. */
+  t: number;
+}
+
 export interface Metric {
   throughput: number;
   cpu: number;
@@ -118,6 +123,8 @@ export interface ChatMessage {
   model?: string;
   toolCalls?: ToolCallTrace[];
   pendingToolCall?: PendingToolCall;
+  /** Set on both assistant replies from a single Compare Mode turn so the UI can render them side-by-side. */
+  compareGroupId?: string;
 }
 
 export interface DownloadProgressEntry {
@@ -142,7 +149,7 @@ interface AppState {
   // (App.tsx polls every 3s) — powers the Metrics tab's sparklines so trends
   // are visible instead of just a current-value snapshot. Capped so it never
   // grows unbounded across a long session.
-  metricsHistory: Metric[];
+  metricsHistory: MetricSample[];
   sessions: Session[];
   workers: Worker[];
   backends: BackendInfo[];
@@ -229,7 +236,9 @@ export const useAppStore = create<AppState>((set) => ({
   setMetrics: (metrics) =>
     set((state) => ({
       metrics,
-      metricsHistory: [...state.metricsHistory, metrics].slice(-40),
+      // ~6 minutes of history at the 3s poll interval App.tsx uses — enough
+      // for a meaningful trend chart without growing unbounded.
+      metricsHistory: [...state.metricsHistory, { ...metrics, t: Date.now() }].slice(-120),
     })),
   setSessions: (sessions) => set({ sessions }),
   setWorkers: (workers) => set({ workers }),

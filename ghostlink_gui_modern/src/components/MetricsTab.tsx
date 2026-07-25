@@ -1,6 +1,17 @@
 import React, { useMemo } from 'react';
-import { RefreshCw, Activity, Cpu, Database, Zap, Clock, ShieldCheck, Server } from 'lucide-react';
+import { RefreshCw, Activity, Cpu, Database, Zap, Clock, ShieldCheck, Server, TrendingUp } from 'lucide-react';
+import {
+  ResponsiveContainer,
+  LineChart,
+  Line,
+  CartesianGrid,
+  XAxis,
+  YAxis,
+  Tooltip,
+  Legend,
+} from 'recharts';
 import { useAppStore } from '../store';
+import { EmptyState } from './StatusViews';
 
 export const MetricsTab: React.FC<{ api: any }> = React.memo(({ api }) => {
   const { metrics, setMetrics, metricsHistory } = useAppStore();
@@ -44,6 +55,17 @@ export const MetricsTab: React.FC<{ api: any }> = React.memo(({ api }) => {
   const gpuLabel = metrics?.gpu_available
     ? `${(metrics?.gpu ?? 0).toFixed(0)}% utilized`
     : 'probe unavailable';
+
+  const utilizationHistory = useMemo(
+    () =>
+      metricsHistory.map((m) => ({
+        time: new Date(m.t).toLocaleTimeString([], { minute: '2-digit', second: '2-digit' }),
+        CPU: Number((m.cpu ?? 0).toFixed(1)),
+        Memory: Number((m.memory ?? 0).toFixed(1)),
+        GPU: Number((m.gpu ?? 0).toFixed(1)),
+      })),
+    [metricsHistory]
+  );
 
   return (
     <div className="flex flex-col h-full bg-slate-950">
@@ -118,6 +140,48 @@ export const MetricsTab: React.FC<{ api: any }> = React.memo(({ api }) => {
             />
           </div>
 
+          <div className="bg-slate-900/50 border border-slate-800 rounded-3xl p-6">
+            <div className="flex items-baseline justify-between mb-4">
+              <h3 className="text-lg font-bold text-white flex items-center gap-2">
+                <TrendingUp size={20} className="text-blue-500" aria-hidden="true" />
+                Resource Utilization History
+              </h3>
+              <span className="text-[10px] text-slate-500">last {utilizationHistory.length} samples</span>
+            </div>
+            {utilizationHistory.length < 2 ? (
+              <EmptyState
+                icon={TrendingUp}
+                title="Collecting samples…"
+                description="The chart fills in as metrics poll every 3 seconds."
+              />
+            ) : (
+              <ResponsiveContainer width="100%" height={220}>
+                <LineChart data={utilizationHistory} margin={{ top: 4, right: 8, left: -20, bottom: 0 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" vertical={false} />
+                  <XAxis
+                    dataKey="time"
+                    tick={{ fill: '#64748b', fontSize: 10 }}
+                    axisLine={{ stroke: '#1e293b' }}
+                    tickLine={false}
+                    minTickGap={40}
+                  />
+                  <YAxis
+                    domain={[0, 100]}
+                    tick={{ fill: '#64748b', fontSize: 10 }}
+                    axisLine={{ stroke: '#1e293b' }}
+                    tickLine={false}
+                    unit="%"
+                  />
+                  <Tooltip content={<UtilizationTooltip />} />
+                  <Legend wrapperStyle={{ fontSize: 11, color: '#94a3b8' }} iconType="line" iconSize={10} />
+                  <Line type="monotone" dataKey="CPU" stroke="#4ade80" strokeWidth={2} dot={false} isAnimationActive={false} />
+                  <Line type="monotone" dataKey="Memory" stroke="#c084fc" strokeWidth={2} dot={false} isAnimationActive={false} />
+                  <Line type="monotone" dataKey="GPU" stroke="#60a5fa" strokeWidth={2} dot={false} isAnimationActive={false} />
+                </LineChart>
+              </ResponsiveContainer>
+            )}
+          </div>
+
           <div className="bg-slate-900/50 border border-slate-800 rounded-3xl p-8 relative overflow-hidden">
             <div className="absolute top-0 right-0 p-8 opacity-5">
               <Zap size={120} />
@@ -184,6 +248,35 @@ export const MetricsTab: React.FC<{ api: any }> = React.memo(({ api }) => {
     </div>
   );
 });
+
+interface TooltipPayloadEntry {
+  dataKey: string;
+  name: string;
+  value: number;
+  color: string;
+}
+
+const UtilizationTooltip = ({
+  active,
+  payload,
+  label,
+}: {
+  active?: boolean;
+  payload?: TooltipPayloadEntry[];
+  label?: string;
+}) => {
+  if (!active || !payload?.length) return null;
+  return (
+    <div className="bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs shadow-2xl">
+      <p className="text-slate-500 mb-1">{label}</p>
+      {payload.map((p) => (
+        <p key={p.dataKey} style={{ color: p.color }} className="font-mono">
+          {p.name}: {p.value.toFixed(1)}%
+        </p>
+      ))}
+    </div>
+  );
+};
 
 const StatusRow = ({
   ok,

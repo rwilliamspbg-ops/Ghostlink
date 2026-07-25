@@ -26,6 +26,7 @@ import {
   Database,
   Wrench,
   ShieldAlert,
+  GitCompare,
 } from 'lucide-react';
 import { useAppStore, ChatMessage } from '../store';
 import { GhostlinkAPI } from '../api';
@@ -93,6 +94,69 @@ const CodeBlock: React.FC<{ children?: React.ReactNode }> = ({ children, ...rest
   );
 };
 
+// One column of a Compare Mode turn — a deliberately trimmed-down sibling of
+// the full message bubble below (no tool-call cards, no pending-confirmation
+// UI, no regenerate/thumbs actions) since compare turns don't use tools and
+// keeping the column compact matters more than parity with the single-model
+// bubble's full action set.
+const CompareColumn: React.FC<{
+  msg: Message;
+  isLoading: boolean;
+  copiedId: string | null;
+  onCopy: (content: string, id: string) => void;
+}> = ({ msg, isLoading, copiedId, onCopy }) => (
+  <div className="flex flex-col gap-2 bg-slate-900/40 border border-slate-800 rounded-2xl p-4 min-w-0">
+    <div className="flex items-center gap-2 px-1">
+      <div className="w-5 h-5 bg-blue-600 rounded-sm flex items-center justify-center text-[10px] font-bold text-white uppercase shrink-0">
+        {msg.model ? msg.model.substring(0, 1) : 'G'}
+      </div>
+      <span className="text-xs font-bold text-slate-200 truncate">
+        {msg.model ? msg.model.split('/').pop() : 'Ghostlink'}
+      </span>
+      {isLoading && <Loader size={12} className="text-blue-500 animate-spin ml-auto shrink-0" aria-hidden="true" />}
+    </div>
+    <div className="text-sm leading-relaxed text-slate-200 min-h-[1.5em]">
+      {msg.content ? (
+        <div className="prose prose-invert prose-sm max-w-none break-words">
+          <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]} components={{ pre: CodeBlock }}>
+            {msg.content}
+          </ReactMarkdown>
+          {isLoading && <span className="inline-block w-[7px] h-[1em] bg-blue-400 align-text-bottom ml-0.5 animate-pulse" />}
+        </div>
+      ) : (
+        <span className="text-slate-600 text-xs">{isLoading ? 'Thinking…' : ''}</span>
+      )}
+    </div>
+    {msg.content && !isLoading && (
+      <button
+        onClick={() => onCopy(msg.content, msg.id)}
+        className="self-start p-1.5 rounded-lg hover:bg-slate-800 text-slate-500 hover:text-slate-300 transition"
+        aria-label="Copy response"
+      >
+        {copiedId === msg.id ? <Check size={12} className="text-green-400" aria-hidden="true" /> : <Copy size={12} aria-hidden="true" />}
+      </button>
+    )}
+  </div>
+);
+
+const CompareRow: React.FC<{
+  a: Message;
+  b?: Message;
+  compareLoadingIds: Set<string>;
+  copiedId: string | null;
+  onCopy: (content: string, id: string) => void;
+}> = ({ a, b, compareLoadingIds, copiedId, onCopy }) => (
+  <div className="flex gap-4 justify-start animate-in fade-in slide-in-from-bottom-2 duration-300 w-full">
+    <div className="flex-shrink-0 w-8 h-8 rounded-lg bg-purple-500/10 border border-purple-500/20 flex items-center justify-center mt-1">
+      <GitCompare size={14} className="text-purple-400" aria-hidden="true" />
+    </div>
+    <div className="flex-1 grid grid-cols-1 md:grid-cols-2 gap-3 min-w-0">
+      <CompareColumn msg={a} isLoading={compareLoadingIds.has(a.id)} copiedId={copiedId} onCopy={onCopy} />
+      {b && <CompareColumn msg={b} isLoading={compareLoadingIds.has(b.id)} copiedId={copiedId} onCopy={onCopy} />}
+    </div>
+  </div>
+);
+
 export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
   const {
     currentModel, models, setCurrentModel, mcpServers, setMcpServers,
@@ -118,6 +182,16 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [sessionsLoading, setSessionsLoading] = useState(false);
   const [confirmingId, setConfirmingId] = useState<string | null>(null);
+
+  // Compare Mode: send one turn to two models at once and render the
+  // replies side-by-side. Deliberately scoped down from full conversation
+  // branching (a tree data model + branch-navigation UI) to something
+  // tractable — same idea the original spec floated ("comparison or
+  // branching, if feasible"), picking the lower-cost half.
+  const [compareModel, setCompareModel] = useState<string | null>(null);
+  const [showCompareSelector, setShowCompareSelector] = useState(false);
+  const [compareLoadingIds, setCompareLoadingIds] = useState<Set<string>>(new Set());
+  const compareSelectorRef = useRef<HTMLDivElement>(null);
 
   // Live generation feedback: how long we've been waiting / how fast tokens
   // are arriving, so a slow prompt-eval phase doesn't look like a hang.
@@ -181,6 +255,9 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
       }
       if (sessionsRef.current && !sessionsRef.current.contains(event.target as Node)) {
         setShowSessions(false);
+      }
+      if (compareSelectorRef.current && !compareSelectorRef.current.contains(event.target as Node)) {
+        setShowCompareSelector(false);
       }
     };
     document.addEventListener('mousedown', handleClickOutside);
@@ -247,6 +324,101 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
 
   const usableModels = models.filter((m) => m.status === 'Loaded' || m.status === 'Ready');
 
+  // The backend serves exactly one model at a time — /api/inference/chat's
+  // `model` field is dead code there (it always uses whichever model was
+  // last explicitly loaded via /api/models/load), so two "concurrent"
+  // requests with different models would silently both hit the same loaded
+  // model. A genuine comparison has to actually swap the loaded model
+  // between the two halves, sequentially — there's no way to run both at
+  // once without the backend gaining real multi-model serving.
+  const handleCompareSend = async (messageText: string) => {
+    setLoading(true);
+    const groupId = `cmp-${Date.now()}`;
+    const idA = `${groupId}-a`;
+    const idB = `${groupId}-b`;
+    const originalModel = currentModel === 'none' ? null : currentModel;
+    const modelA = originalModel;
+    const modelB = compareModel as string;
+
+    setMessages((prev) => [
+      ...prev,
+      { role: 'assistant', content: '', id: idA, timestamp: '', model: modelA ?? 'default', compareGroupId: groupId },
+      { role: 'assistant', content: '', id: idB, timestamp: '', model: modelB, compareGroupId: groupId },
+    ]);
+    setCompareLoadingIds(new Set([idA, idB]));
+
+    const enabledTools = tools.filter((t) => t.enabled).map((t) => t.name);
+    const useStreaming = enabledTools.length === 0;
+
+    const setContent = (id: string, content: string) => {
+      setMessages((prev) => prev.map((m) => (m.id === id ? { ...m, content } : m)));
+    };
+
+    const runOne = async (id: string, model: string | null) => {
+      if (model) {
+        setContent(id, 'Loading model…');
+        const loadResult = await api.loadModel(model);
+        if (!loadResult.success) {
+          setContent(id, `[failed to load ${model}: ${loadResult.error}]`);
+          setCompareLoadingIds((prev) => {
+            const next = new Set(prev);
+            next.delete(id);
+            return next;
+          });
+          return;
+        }
+      }
+      setContent(id, '');
+
+      const result = await api.sendMessage({
+        message: messageText,
+        temperature,
+        top_p: 0.9,
+        top_k: 40,
+        penalty: 1.1,
+        max_tokens: maxTokens,
+        system_prompt: systemPrompt,
+        mcp: { tools: enabledTools },
+        stream: useStreaming,
+        model: model ?? undefined,
+      }, (token: string) => {
+        setMessages((prev) => prev.map((m) => (m.id === id ? { ...m, content: m.content + token } : m)));
+      });
+
+      setCompareLoadingIds((prev) => {
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
+
+      if (result.success) {
+        const data = result.data || {};
+        setMessages((prev) => prev.map((m) => (m.id === id
+          ? {
+              ...m,
+              content: useStreaming ? m.content : (data.response ?? m.content),
+              timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+            }
+          : m)));
+      } else {
+        setMessages((prev) => prev.map((m) => (m.id === id
+          ? { ...m, content: `[error: ${result.error || 'Failed to send message'}]` }
+          : m)));
+      }
+    };
+
+    // Sequential, not parallel — see note above.
+    await runOne(idA, modelA);
+    await runOne(idB, modelB);
+    setLoading(false);
+
+    // Leave the app back on the model the user actually had selected,
+    // rather than silently stranding it on whichever one ran last.
+    if (originalModel) {
+      api.loadModel(originalModel);
+    }
+  };
+
   const handleSend = async () => {
     // CRITICAL FIX #1: Capture input BEFORE clearing
     const messageText = input.trim();
@@ -261,8 +433,14 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
 
     setMessages((prev) => [...prev, userMessage]);
     setInput('');
-    setLoading(true);
     setError(null);
+
+    if (compareModel) {
+      await handleCompareSend(messageText);
+      return;
+    }
+
+    setLoading(true);
 
     const assistantId = (Date.now() + 1).toString();
     setStreamingId(assistantId);
@@ -433,6 +611,63 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                     </div>
                 )}
             </div>
+
+            <div
+                className="relative"
+                ref={compareSelectorRef}
+                onKeyDown={(e) => { if (e.key === 'Escape') setShowCompareSelector(false); }}
+            >
+                {compareModel ? (
+                    <div className="flex items-center gap-1.5 pl-2 pr-1 py-1 rounded-lg bg-purple-500/10 border border-purple-500/20 text-xs text-purple-300 font-medium">
+                        <GitCompare size={12} aria-hidden="true" />
+                        <span className="max-w-[120px] truncate">vs {compareModel.split('/').pop()}</span>
+                        <button
+                            onClick={() => setCompareModel(null)}
+                            className="p-0.5 rounded hover:bg-purple-500/20 hover:text-white transition"
+                            aria-label="Exit compare mode"
+                        >
+                            <X size={12} aria-hidden="true" />
+                        </button>
+                    </div>
+                ) : (
+                    <button
+                        onClick={() => setShowCompareSelector(!showCompareSelector)}
+                        aria-haspopup="listbox"
+                        aria-expanded={showCompareSelector}
+                        title="Compare against a second model"
+                        className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg hover:bg-slate-900 text-slate-500 hover:text-slate-300 transition text-xs font-semibold"
+                    >
+                        <GitCompare size={14} aria-hidden="true" />
+                        Compare
+                    </button>
+                )}
+
+                {showCompareSelector && (
+                    <div role="listbox" aria-label="Compare against" className="absolute left-0 mt-2 w-64 bg-slate-900 border border-slate-800 rounded-2xl shadow-2xl z-50 overflow-hidden animate-in fade-in zoom-in-95 duration-100">
+                        <div className="p-2 max-h-[320px] overflow-y-auto">
+                            {usableModels.filter((m) => m.name !== currentModel).length === 0 ? (
+                                <div className="p-4 text-center text-slate-500 text-sm">No other models available</div>
+                            ) : (
+                                usableModels.filter((m) => m.name !== currentModel).map((m) => (
+                                    <button
+                                        key={m.name}
+                                        role="option"
+                                        aria-selected={false}
+                                        onClick={() => { setCompareModel(m.name); setShowCompareSelector(false); }}
+                                        className="flex items-center justify-between w-full px-3 py-2.5 rounded-xl text-left transition text-sm text-slate-300 hover:bg-slate-800"
+                                    >
+                                        <div className="flex flex-col min-w-0">
+                                            <span className="font-bold truncate">{m.name.split('/').pop()}</span>
+                                            <span className="text-[10px] text-slate-500 truncate">{m.name}</span>
+                                        </div>
+                                    </button>
+                                ))
+                            )}
+                        </div>
+                    </div>
+                )}
+            </div>
+
             <div
                 className="relative"
                 ref={sessionsRef}
@@ -552,7 +787,24 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                 </div>
             )}
 
-            {messages.map((msg) => (
+            {messages.map((msg) => {
+                // The "-b" half of a compare pair renders as part of its "-a"
+                // partner below, not on its own.
+                if (msg.compareGroupId && msg.id.endsWith('-b')) return null;
+                if (msg.compareGroupId && msg.id.endsWith('-a')) {
+                    const partner = messages.find((m) => m.compareGroupId === msg.compareGroupId && m.id !== msg.id);
+                    return (
+                        <CompareRow
+                            key={msg.compareGroupId}
+                            a={msg}
+                            b={partner}
+                            compareLoadingIds={compareLoadingIds}
+                            copiedId={copiedId}
+                            onCopy={handleCopy}
+                        />
+                    );
+                }
+                return (
                 <div key={msg.id} className={`flex gap-4 ${msg.role === 'user' ? 'justify-end' : 'justify-start'} group animate-in fade-in slide-in-from-bottom-2 duration-300`}>
                     {msg.role === 'assistant' && (
                         <div className="flex-shrink-0 w-8 h-8 rounded-lg bg-slate-900 border border-slate-800 flex items-center justify-center mt-1">
@@ -686,7 +938,8 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                         </div>
                     )}
                 </div>
-            ))}
+                );
+            })}
 
             {awaitingFirstToken && (
                 <div className="flex gap-4 justify-start" role="status" aria-live="polite">
