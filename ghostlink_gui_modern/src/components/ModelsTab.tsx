@@ -17,6 +17,7 @@ import {
 } from 'lucide-react';
 import { useAppStore, DownloadProgressEntry } from '../store';
 import { GhostlinkAPI } from '../api';
+import { EmptyState, LoadingState } from './StatusViews';
 
 function formatBytes(bytes?: number): string {
   if (!bytes || bytes <= 0) return '';
@@ -37,6 +38,15 @@ function progressLabel(entry: DownloadProgressEntry | undefined): string {
   return pct;
 }
 
+function formatAge(seconds: number): string {
+  if (seconds < 60) return 'just now';
+  const mins = Math.floor(seconds / 60);
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.floor(hours / 24)}d ago`;
+}
+
 const POPULAR_MODELS = [
   { id: 'llama3.2:3b', name: 'Llama 3.2 3B Instruct', downloads: 2500000, likes: 120000 },
   { id: 'llama3.2:1b', name: 'Llama 3.2 1B Instruct', downloads: 1800000, likes: 90000 },
@@ -53,6 +63,7 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
     currentModel, setModels, setCurrentModel,
     pendingModelActions: pendingActions, setPendingModelActions: setPendingActions,
     downloadProgress, setDownloadProgress,
+    addToast,
   } = useAppStore();
   const [activeTab, setActiveTab] = useState<'local' | 'huggingface' | 'recommended'>('local');
   const [loading, setLoading] = useState(false);
@@ -66,6 +77,24 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
   const [recommendedLoading, setRecommendedLoading] = useState(false);
   const [detectedRuntime, setDetectedRuntime] = useState<string>('cpu');
   const [availableMemoryGb, setAvailableMemoryGb] = useState<number>(0);
+  const [partialDownloads, setPartialDownloads] = useState<{ filename: string; size_bytes: number; age_secs: number }[]>([]);
+  const [discardingPartial, setDiscardingPartial] = useState<string | null>(null);
+
+  // `message` used to render as a permanent inline banner with no way to
+  // dismiss it — forwarding to the shared toast queue instead gives every
+  // one of these status strings (in-progress and completed/error alike)
+  // a lifecycle that actually ends.
+  useEffect(() => {
+    if (!message) return;
+    const type = /error|failed|timed out/i.test(message)
+      ? 'error'
+      : message.endsWith('...')
+        ? 'info'
+        : 'success';
+    addToast({ type, message });
+    setMessage(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [message]);
 
   const searchHF = useCallback(async (query: string) => {
     setHfLoading(true);
@@ -124,6 +153,11 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
   // so no further client-side filtering is applied here.
   const filteredHfResults = hfResults;
 
+  const refreshPartialDownloads = useCallback(async () => {
+    const result = await api.listPartialDownloads();
+    if (!result.error) setPartialDownloads(result.partials);
+  }, [api]);
+
   const refreshModels = useCallback(async () => {
     setLoading(true);
     try {
@@ -151,11 +185,24 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
       console.error('Failed to refresh models:', e);
     }
     setLoading(false);
-  }, [api, setCurrentModel, setModels]);
+    refreshPartialDownloads();
+  }, [api, setCurrentModel, setModels, refreshPartialDownloads]);
 
   useEffect(() => {
     refreshModels();
   }, [refreshModels]);
+
+  const handleDiscardPartial = async (filename: string) => {
+    setDiscardingPartial(filename);
+    const result = await api.discardPartialDownload(filename);
+    if (result.success) {
+      setPartialDownloads((prev) => prev.filter((p) => p.filename !== filename));
+      addToast({ type: 'success', message: `Discarded ${filename}` });
+    } else {
+      addToast({ type: 'error', message: result.error || `Failed to discard ${filename}` });
+    }
+    setDiscardingPartial(null);
+  };
 
   const handleSetModel = async (name: string) => {
     setPendingActions(prev => ({ ...prev, [name]: 'setting' }));
@@ -359,11 +406,24 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
     }
   };
 
+  const modelfileCloseRef = React.useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (!showModelfile) return;
+    const handleKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setShowModelfile(null);
+    };
+    document.addEventListener('keydown', handleKey);
+    modelfileCloseRef.current?.focus();
+    return () => document.removeEventListener('keydown', handleKey);
+  }, [showModelfile]);
+
   return (
     <div className="flex flex-col h-full bg-slate-950">
       <div className="flex items-center justify-between px-6 py-4 border-b border-slate-900 sticky top-0 bg-slate-950/50 backdrop-blur-md z-10">
-        <div className="flex items-center gap-4">
+        <div className="flex items-center gap-4" role="tablist" aria-label="Model source">
           <button
+            role="tab"
+            aria-selected={activeTab === 'local'}
             onClick={() => setActiveTab('local')}
             className={`px-3 py-1.5 rounded-lg text-sm font-bold transition ${
               activeTab === 'local' ? 'bg-blue-600 text-white shadow-lg shadow-blue-500/20' : 'text-slate-400 hover:bg-slate-900'
@@ -372,6 +432,8 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
             My Models
           </button>
           <button
+            role="tab"
+            aria-selected={activeTab === 'recommended'}
             onClick={() => setActiveTab('recommended')}
             className={`px-3 py-1.5 rounded-lg text-sm font-bold transition ${
               activeTab === 'recommended' ? 'bg-blue-600 text-white shadow-lg shadow-blue-500/20' : 'text-slate-400 hover:bg-slate-900'
@@ -380,6 +442,8 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
             Recommended
           </button>
           <button
+            role="tab"
+            aria-selected={activeTab === 'huggingface'}
             onClick={() => setActiveTab('huggingface')}
             className={`px-3 py-1.5 rounded-lg text-sm font-bold transition ${
               activeTab === 'huggingface' ? 'bg-blue-600 text-white shadow-lg shadow-blue-500/20' : 'text-slate-400 hover:bg-slate-900'
@@ -391,7 +455,8 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
         <div className="flex items-center gap-4">
           {activeTab === 'huggingface' && (
             <div className="relative">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-400" />
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-400" aria-hidden="true" />
+              <label htmlFor="hf-search" className="sr-only">Search Hugging Face models</label>
               <input
                 type="text"
                 value={hfSearch}
@@ -407,16 +472,11 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
             onClick={refreshModels}
             className="flex items-center gap-2 px-4 py-2 bg-slate-800 hover:bg-blue-600 text-white rounded-xl text-xs font-bold transition group-hover:shadow-lg group-hover:shadow-blue-500/20"
           >
-            <RefreshCw size={16} /> Refresh
+            <RefreshCw size={16} aria-hidden="true" /> Refresh
           </button>
         </div>
       </div>
       <div className="flex-1 overflow-y-auto p-6">
-        {message && (
-          <div className="mb-4 px-4 py-2 bg-slate-800 border-l-4 border-blue-500 text-sm">
-            {message}
-          </div>
-        )}
         {activeTab === 'local' ? (
           <div className="space-y-4">
             <div className="flex items-center justify-between px-4 py-3 bg-slate-800 rounded-lg">
@@ -430,10 +490,11 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
             </div>
             <div className="space-y-2">
               {ollamaModels.length === 0 ? (
-                <div className="text-center py-12 text-slate-500">
-                  <Database size={48} className="mx-auto mb-4 text-slate-700" />
-                  <p>No models found. Drop a .gguf into <code>models/</code>, or pull one from the list below</p>
-                </div>
+                <EmptyState
+                  icon={Database}
+                  title="No models found"
+                  description={<>Drop a .gguf into <code>models/</code>, or pull one from the list below.</>}
+                />
               ) : (
                 ollamaModels.map((model: any) => (
                   <div key={model.name} className="flex flex-col px-4 py-3 bg-slate-800/50 rounded-lg border border-slate-800 hover:border-slate-700 transition">
@@ -500,19 +561,21 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                           onClick={() => handleShowModelfile(model.name)}
                           className="p-1 hover:bg-slate-700 rounded-lg transition text-slate-400 hover:text-white"
                           title="View Modelfile"
+                          aria-label={`View Modelfile for ${model.name}`}
                         >
-                          <Copy size={16} />
+                          <Copy size={16} aria-hidden="true" />
                         </button>
                         <button
                           onClick={() => handleDeleteModel(model.name)}
                           disabled={pendingActions[model.name] === 'deleting' || loading}
                           className="p-1 hover:bg-slate-700 rounded-lg transition text-slate-400 hover:text-red-400"
                           title="Delete from Ollama"
+                          aria-label={`Delete ${model.name} from Ollama`}
                         >
                           {pendingActions[model.name] === 'deleting' ? (
-                            <Loader size={16} className="mr-1" />
+                            <Loader size={16} className="mr-1" aria-hidden="true" />
                           ) : (
-                            <Trash2 size={16} />
+                            <Trash2 size={16} aria-hidden="true" />
                           )}
                         </button>
                       </div>
@@ -521,6 +584,42 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                 ))
               )}
             </div>
+
+            {partialDownloads.length > 0 && (
+              <div className="mt-6 p-4 bg-amber-500/5 rounded-lg border border-amber-500/20">
+                <div className="flex items-center gap-2 mb-2">
+                  <AlertCircle size={16} className="text-amber-500" aria-hidden="true" />
+                  <h3 className="text-sm font-bold text-amber-400">Interrupted Downloads</h3>
+                </div>
+                <p className="text-xs text-slate-500 mb-3">
+                  These downloads didn't finish and aren't used by anything — discard to reclaim disk space, or re-download from the Hugging Face tab.
+                </p>
+                <div className="space-y-2">
+                  {partialDownloads.map((p) => (
+                    <div key={p.filename} className="flex items-center justify-between px-3 py-2 bg-slate-900/50 rounded-lg border border-slate-800">
+                      <div className="min-w-0">
+                        <div className="font-mono text-xs text-slate-300 truncate">{p.filename}</div>
+                        <div className="text-[10px] text-slate-500">{formatBytes(p.size_bytes)} partial • {formatAge(p.age_secs)}</div>
+                      </div>
+                      <button
+                        onClick={() => handleDiscardPartial(p.filename)}
+                        disabled={discardingPartial === p.filename}
+                        className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-red-600 text-slate-300 hover:text-white text-xs font-bold rounded-lg transition disabled:opacity-50 shrink-0"
+                        aria-label={`Discard interrupted download ${p.filename}`}
+                      >
+                        {discardingPartial === p.filename ? (
+                          <Loader size={12} className="animate-spin" aria-hidden="true" />
+                        ) : (
+                          <Trash2 size={12} aria-hidden="true" />
+                        )}
+                        Discard
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
             <div className="mt-6 p-4 bg-slate-800/50 rounded-lg border border-slate-800">
               <h3 className="text-lg font-bold text-white mb-3">Popular Ollama Models</h3>
               <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
@@ -592,76 +691,13 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
               </div>
             </div>
             {recommendedLoading ? (
-              <div className="text-center py-12 text-slate-500">
-                <Loader size={48} className="mx-auto mb-4 text-slate-700 animate-spin" />
-                <p>Analyzing hardware & finding best models...</p>
-              </div>
+              <LoadingState label="Analyzing hardware & finding best models..." />
             ) : recommendedModels.length === 0 ? (
-              <div className="text-center py-12 text-slate-500">
-                <Cpu size={48} className="mx-auto mb-4 text-slate-700" />
-                <p>No model recommendations available.</p>
-                <p className="text-xs text-slate-400 mt-1">Try refreshing or check if runtime detection is working.</p>
-              </div>
-            ) : (
-              <div className="space-y-2">
-                {recommendedModels.map((model: any) => (
-                  <div key={model.name} className="flex items-center justify-between px-4 py-3 hover:bg-slate-800/50 rounded-lg transition">
-                    <div className="flex items-center gap-3 min-w-0">
-                      <div className="flex items-center justify-center text-blue-500 bg-blue-500/10 h-10 w-10 rounded-lg shrink-0">
-                        <CheckCircle2 size={14} />
-                      </div>
-                      <div className="min-w-0">
-                        <div className="font-bold text-slate-200 truncate">{model.name}</div>
-                        <div className="text-[10px] text-slate-500 font-mono truncate">{model.parameters} • {model.size_gb > 0 ? `${model.size_gb} GB` : 'size unknown'} • {model.quality_tier} • {model.inference_speed}</div>
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-4 shrink-0">
-                      <div className="text-xs text-slate-400">
-                        {model.reason}
-                      </div>
-                      <button
-                        onClick={() => handlePullModel(model.name)}
-                        disabled={pendingActions[model.name] === 'downloading' || loading}
-                        className="inline-flex items-center gap-2 px-4 py-2 bg-slate-800 hover:bg-blue-600 text-white rounded-xl text-xs font-bold transition group-hover:shadow-lg group-hover:shadow-blue-500/20"
-                      >
-                        {pendingActions[model.name] === 'downloading' ? (
-                          <>
-                            <Loader size={14} className="mr-2" />
-                            {progressLabel(downloadProgress[model.name])}
-                          </>
-                        ) : (
-                          <Download size={14} />
-                        )}
-                        {pendingActions[model.name] === 'downloading' ? '' : 'Pull'}
-                      </button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        ) : (activeTab as 'local' | 'huggingface' | 'recommended') === 'recommended' ? (
-          <div className="space-y-4">
-            <div className="flex items-center justify-between px-4 py-3 bg-slate-800 rounded-lg">
-              <div className="flex items-center gap-3">
-                <Cpu size={20} className="text-blue-400" />
-                <h2 className="text-lg font-bold text-white">Recommended for Your Hardware</h2>
-              </div>
-              <div className="text-sm text-slate-400">
-                Runtime: <span className="font-mono text-blue-400 capitalize">{detectedRuntime}</span> • {availableMemoryGb > 0 ? `${availableMemoryGb.toFixed(1)} GB available` : 'Unknown memory'}
-              </div>
-            </div>
-            {recommendedLoading ? (
-              <div className="text-center py-12 text-slate-500">
-                <Loader size={48} className="mx-auto mb-4 text-slate-700 animate-spin" />
-                <p>Analyzing hardware & finding best models...</p>
-              </div>
-            ) : recommendedModels.length === 0 ? (
-              <div className="text-center py-12 text-slate-500">
-                <Cpu size={48} className="mx-auto mb-4 text-slate-700" />
-                <p>No model recommendations available.</p>
-                <p className="text-xs text-slate-400 mt-1">Try refreshing or check if runtime detection is working.</p>
-              </div>
+              <EmptyState
+                icon={Cpu}
+                title="No model recommendations available"
+                description="Try refreshing or check if runtime detection is working."
+              />
             ) : (
               <div className="space-y-2">
                 {recommendedModels.map((model: any) => (
@@ -710,15 +746,9 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
             </div>
             <div className="space-y-2">
               {hfLoading && filteredHfResults.length === 0 ? (
-                <div className="text-center py-12 text-slate-500">
-                  <Loader size={48} className="mx-auto mb-4 text-slate-700 animate-spin" />
-                  <p>Searching Hugging Face...</p>
-                </div>
+                <LoadingState label="Searching Hugging Face..." />
               ) : filteredHfResults.length === 0 ? (
-                <div className="text-center py-12 text-slate-500">
-                  <Layers size={48} className="mx-auto mb-4 text-slate-700" />
-                  <p>No models found.</p>
-                </div>
+                <EmptyState icon={Layers} title="No models found" />
               ) : (
               filteredHfResults.map((m) => (
                 <div key={m.id} className="flex items-center justify-between px-4 py-3 hover:bg-slate-800/50 rounded-lg transition">
@@ -762,12 +792,18 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
 
       {/* Modelfile Modal */}
       {showModelfile && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-          <div className="bg-slate-900 border border-slate-800 rounded-2xl max-w-2xl w-full mx-4 max-h-[80vh] overflow-hidden">
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={() => setShowModelfile(null)}>
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="modelfile-modal-title"
+            onClick={(e) => e.stopPropagation()}
+            className="bg-slate-900 border border-slate-800 rounded-2xl max-w-2xl w-full mx-4 max-h-[80vh] overflow-hidden"
+          >
             <div className="flex items-center justify-between p-4 border-b border-slate-800">
-              <h3 className="text-lg font-bold text-white">Modelfile</h3>
-              <button onClick={() => setShowModelfile(null)} className="text-slate-400 hover:text-white">
-                <X size={20} />
+              <h3 id="modelfile-modal-title" className="text-lg font-bold text-white">Modelfile</h3>
+              <button ref={modelfileCloseRef} onClick={() => setShowModelfile(null)} className="text-slate-400 hover:text-white" aria-label="Close">
+                <X size={20} aria-hidden="true" />
               </button>
             </div>
             <div className="p-4 overflow-y-auto max-h-[60vh]">

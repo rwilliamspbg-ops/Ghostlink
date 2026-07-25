@@ -9,6 +9,11 @@ export interface Model {
   usable: boolean;
 }
 
+export interface MetricSample extends Metric {
+  /** Client-side capture time (ms epoch) — the backend metrics payload has no timestamp of its own. */
+  t: number;
+}
+
 export interface Metric {
   throughput: number;
   cpu: number;
@@ -118,12 +123,20 @@ export interface ChatMessage {
   model?: string;
   toolCalls?: ToolCallTrace[];
   pendingToolCall?: PendingToolCall;
+  /** Set on both assistant replies from a single Compare Mode turn so the UI can render them side-by-side. */
+  compareGroupId?: string;
 }
 
 export interface DownloadProgressEntry {
   progress: number;
   bytesDownloaded?: number;
   totalBytes?: number;
+}
+
+export interface Toast {
+  id: string;
+  type: 'success' | 'error' | 'info';
+  message: string;
 }
 
 type Updater<T> = T | ((prev: T) => T);
@@ -138,6 +151,11 @@ interface AppState {
   uptime: number;
   models: Model[];
   metrics: Metric | null;
+  // Bounded trailing history of metrics samples, appended alongside setMetrics
+  // (App.tsx polls every 3s) — powers the Metrics tab's sparklines so trends
+  // are visible instead of just a current-value snapshot. Capped so it never
+  // grows unbounded across a long session.
+  metricsHistory: MetricSample[];
   sessions: Session[];
   workers: Worker[];
   backends: BackendInfo[];
@@ -160,6 +178,15 @@ interface AppState {
   chatError: string | null;
   pendingModelActions: Record<string, string>;
   downloadProgress: Record<string, DownloadProgressEntry>;
+
+  // App-wide transient notifications (rendered by <Toaster/> in App.tsx).
+  // Distinct from the persistent inline error/empty-state banners each tab
+  // already has for context-tied validation/connection errors — this is for
+  // one-off action feedback ("Saved", "Deleted", a background failure) that
+  // should fade on its own rather than occupy permanent screen space.
+  toasts: Toast[];
+  addToast: (toast: Omit<Toast, 'id'>) => string;
+  removeToast: (id: string) => void;
 
   setApiBase: (base: string) => void;
   setBackendOnline: (online: boolean) => void;
@@ -200,6 +227,7 @@ export const useAppStore = create<AppState>((set) => ({
   uptime: 0,
   models: [],
   metrics: null,
+  metricsHistory: [],
   sessions: [],
   workers: [],
   backends: [],
@@ -214,13 +242,20 @@ export const useAppStore = create<AppState>((set) => ({
   chatError: null,
   pendingModelActions: {},
   downloadProgress: {},
+  toasts: [],
 
   setApiBase: (base) => set({ apiBase: base }),
   setBackendOnline: (online) => set({ backendOnline: online }),
   setCurrentModel: (model) => set({ currentModel: model }),
   setUptime: (uptime) => set({ uptime }),
   setModels: (models) => set({ models }),
-  setMetrics: (metrics) => set({ metrics }),
+  setMetrics: (metrics) =>
+    set((state) => ({
+      metrics,
+      // ~6 minutes of history at the 3s poll interval App.tsx uses — enough
+      // for a meaningful trend chart without growing unbounded.
+      metricsHistory: [...state.metricsHistory, { ...metrics, t: Date.now() }].slice(-120),
+    })),
   setSessions: (sessions) => set({ sessions }),
   setWorkers: (workers) => set({ workers }),
   setBackends: (backends) => set({ backends }),
@@ -246,4 +281,12 @@ export const useAppStore = create<AppState>((set) => ({
     set((state) => ({ pendingModelActions: resolveUpdater(updater, state.pendingModelActions) })),
   setDownloadProgress: (updater) =>
     set((state) => ({ downloadProgress: resolveUpdater(updater, state.downloadProgress) })),
+  addToast: (toast) => {
+    const id = typeof crypto !== 'undefined' && crypto.randomUUID
+      ? crypto.randomUUID()
+      : `toast-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    set((state) => ({ toasts: [...state.toasts, { ...toast, id }] }));
+    return id;
+  },
+  removeToast: (id) => set((state) => ({ toasts: state.toasts.filter((t) => t.id !== id) })),
 }));

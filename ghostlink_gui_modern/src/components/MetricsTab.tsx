@@ -1,9 +1,20 @@
 import React, { useMemo } from 'react';
-import { RefreshCw, Activity, Cpu, Database, Zap, Clock, ShieldCheck, Server } from 'lucide-react';
+import { RefreshCw, Activity, Cpu, Database, Zap, Clock, ShieldCheck, Server, TrendingUp } from 'lucide-react';
+import {
+  ResponsiveContainer,
+  LineChart,
+  Line,
+  CartesianGrid,
+  XAxis,
+  YAxis,
+  Tooltip,
+  Legend,
+} from 'recharts';
 import { useAppStore } from '../store';
+import { EmptyState } from './StatusViews';
 
 export const MetricsTab: React.FC<{ api: any }> = React.memo(({ api }) => {
-  const { metrics, setMetrics } = useAppStore();
+  const { metrics, setMetrics, metricsHistory } = useAppStore();
   const [loading, setLoading] = React.useState(false);
 
   // App.tsx already polls metrics every 5s — only manual refresh here.
@@ -18,6 +29,10 @@ export const MetricsTab: React.FC<{ api: any }> = React.memo(({ api }) => {
       setLoading(false);
     }
   };
+
+  const throughputHistory = useMemo(() => metricsHistory.map((m) => m.throughput ?? 0), [metricsHistory]);
+  const latP50History = useMemo(() => metricsHistory.map((m) => m.latency_p50 ?? 0), [metricsHistory]);
+  const latP95History = useMemo(() => metricsHistory.map((m) => m.latency_p95 ?? 0), [metricsHistory]);
 
   const throughputScale = useMemo(() => {
     const t = metrics?.throughput ?? 0;
@@ -41,6 +56,17 @@ export const MetricsTab: React.FC<{ api: any }> = React.memo(({ api }) => {
     ? `${(metrics?.gpu ?? 0).toFixed(0)}% utilized`
     : 'probe unavailable';
 
+  const utilizationHistory = useMemo(
+    () =>
+      metricsHistory.map((m) => ({
+        time: new Date(m.t).toLocaleTimeString([], { minute: '2-digit', second: '2-digit' }),
+        CPU: Number((m.cpu ?? 0).toFixed(1)),
+        Memory: Number((m.memory ?? 0).toFixed(1)),
+        GPU: Number((m.gpu ?? 0).toFixed(1)),
+      })),
+    [metricsHistory]
+  );
+
   return (
     <div className="flex flex-col h-full bg-slate-950">
       <div className="flex items-center justify-between px-6 py-4 border-b border-slate-900 sticky top-0 bg-slate-950/50 backdrop-blur-md z-10">
@@ -56,8 +82,9 @@ export const MetricsTab: React.FC<{ api: any }> = React.memo(({ api }) => {
           onClick={refreshMetrics}
           className="p-2 rounded-lg hover:bg-slate-900 text-slate-400 hover:text-white transition"
           title="Refresh metrics"
+          aria-label="Refresh metrics"
         >
-          <RefreshCw size={18} className={loading ? 'animate-spin' : ''} />
+          <RefreshCw size={18} className={loading ? 'animate-spin' : ''} aria-hidden="true" />
         </button>
       </div>
 
@@ -72,6 +99,8 @@ export const MetricsTab: React.FC<{ api: any }> = React.memo(({ api }) => {
               color="text-cyan-400"
               bg="bg-cyan-500/10"
               progress={throughputScale}
+              history={throughputHistory}
+              sparkColor="#22d3ee"
             />
             <StatCard
               label="Latency p50"
@@ -82,6 +111,8 @@ export const MetricsTab: React.FC<{ api: any }> = React.memo(({ api }) => {
               bg="bg-orange-500/10"
               progress={latP50Scale}
               inverse
+              history={latP50History}
+              sparkColor="#fb923c"
             />
             <StatCard
               label="Latency p95"
@@ -92,6 +123,8 @@ export const MetricsTab: React.FC<{ api: any }> = React.memo(({ api }) => {
               bg="bg-red-500/10"
               progress={latP95Scale}
               inverse
+              history={latP95History}
+              sparkColor="#f87171"
             />
           </div>
 
@@ -105,6 +138,48 @@ export const MetricsTab: React.FC<{ api: any }> = React.memo(({ api }) => {
               color="text-blue-400"
               subtitle={gpuLabel}
             />
+          </div>
+
+          <div className="bg-slate-900/50 border border-slate-800 rounded-3xl p-6">
+            <div className="flex items-baseline justify-between mb-4">
+              <h3 className="text-lg font-bold text-white flex items-center gap-2">
+                <TrendingUp size={20} className="text-blue-500" aria-hidden="true" />
+                Resource Utilization History
+              </h3>
+              <span className="text-[10px] text-slate-500">last {utilizationHistory.length} samples</span>
+            </div>
+            {utilizationHistory.length < 2 ? (
+              <EmptyState
+                icon={TrendingUp}
+                title="Collecting samples…"
+                description="The chart fills in as metrics poll every 3 seconds."
+              />
+            ) : (
+              <ResponsiveContainer width="100%" height={220}>
+                <LineChart data={utilizationHistory} margin={{ top: 4, right: 8, left: -20, bottom: 0 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" vertical={false} />
+                  <XAxis
+                    dataKey="time"
+                    tick={{ fill: '#64748b', fontSize: 10 }}
+                    axisLine={{ stroke: '#1e293b' }}
+                    tickLine={false}
+                    minTickGap={40}
+                  />
+                  <YAxis
+                    domain={[0, 100]}
+                    tick={{ fill: '#64748b', fontSize: 10 }}
+                    axisLine={{ stroke: '#1e293b' }}
+                    tickLine={false}
+                    unit="%"
+                  />
+                  <Tooltip content={<UtilizationTooltip />} />
+                  <Legend wrapperStyle={{ fontSize: 11, color: '#94a3b8' }} iconType="line" iconSize={10} />
+                  <Line type="monotone" dataKey="CPU" stroke="#4ade80" strokeWidth={2} dot={false} isAnimationActive={false} />
+                  <Line type="monotone" dataKey="Memory" stroke="#c084fc" strokeWidth={2} dot={false} isAnimationActive={false} />
+                  <Line type="monotone" dataKey="GPU" stroke="#60a5fa" strokeWidth={2} dot={false} isAnimationActive={false} />
+                </LineChart>
+              </ResponsiveContainer>
+            )}
           </div>
 
           <div className="bg-slate-900/50 border border-slate-800 rounded-3xl p-8 relative overflow-hidden">
@@ -174,6 +249,35 @@ export const MetricsTab: React.FC<{ api: any }> = React.memo(({ api }) => {
   );
 });
 
+interface TooltipPayloadEntry {
+  dataKey: string;
+  name: string;
+  value: number;
+  color: string;
+}
+
+const UtilizationTooltip = ({
+  active,
+  payload,
+  label,
+}: {
+  active?: boolean;
+  payload?: TooltipPayloadEntry[];
+  label?: string;
+}) => {
+  if (!active || !payload?.length) return null;
+  return (
+    <div className="bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs shadow-2xl">
+      <p className="text-slate-500 mb-1">{label}</p>
+      {payload.map((p) => (
+        <p key={p.dataKey} style={{ color: p.color }} className="font-mono">
+          {p.name}: {p.value.toFixed(1)}%
+        </p>
+      ))}
+    </div>
+  );
+};
+
 const StatusRow = ({
   ok,
   label,
@@ -198,6 +302,27 @@ const StatusRow = ({
   </div>
 );
 
+// Minimal inline trend line — no charting library needed for a glance-sized
+// sparkline. Renders nothing meaningful until a couple of samples exist.
+const Sparkline: React.FC<{ data: number[]; color: string }> = ({ data, color }) => {
+  if (data.length < 2) {
+    return <div className="h-8 flex items-center text-[10px] text-slate-600">Collecting samples…</div>;
+  }
+  const width = 100;
+  const height = 28;
+  const max = Math.max(...data);
+  const min = Math.min(...data);
+  const range = max - min || 1;
+  const points = data
+    .map((v, i) => `${(i / (data.length - 1)) * width},${height - ((v - min) / range) * height}`)
+    .join(' ');
+  return (
+    <svg viewBox={`0 0 ${width} ${height}`} className="w-full h-8" preserveAspectRatio="none" aria-hidden="true">
+      <polyline points={points} fill="none" stroke={color} strokeWidth="1.5" vectorEffect="non-scaling-stroke" />
+    </svg>
+  );
+};
+
 const StatCard = ({
   label,
   value,
@@ -207,11 +332,13 @@ const StatCard = ({
   bg,
   progress,
   inverse = false,
+  history,
+  sparkColor,
 }: any) => (
   <div className="bg-slate-900/50 border border-slate-800 rounded-3xl p-6 hover:border-slate-700 transition-all group">
     <div className="flex items-center justify-between mb-4">
       <div className={`p-3 rounded-2xl ${bg} ${color}`}>
-        <Icon size={24} />
+        <Icon size={24} aria-hidden="true" />
       </div>
       <div className="text-right">
         <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">{label}</p>
@@ -221,7 +348,14 @@ const StatCard = ({
         </p>
       </div>
     </div>
-    <div className="h-1.5 bg-slate-800 rounded-full overflow-hidden">
+    <div
+      role="progressbar"
+      aria-label={label}
+      aria-valuenow={Math.round(progress || 0)}
+      aria-valuemin={0}
+      aria-valuemax={100}
+      className="h-1.5 bg-slate-800 rounded-full overflow-hidden"
+    >
       <div
         className={`h-full transition-all duration-1000 ${
           inverse
@@ -239,6 +373,11 @@ const StatCard = ({
         style={{ width: `${Math.min(100, Math.max(2, progress || 0))}%` }}
       />
     </div>
+    {history && (
+      <div className="mt-3 pt-3 border-t border-slate-800/50">
+        <Sparkline data={history} color={sparkColor} />
+      </div>
+    )}
   </div>
 );
 
@@ -255,8 +394,15 @@ const GaugeCard = ({
   color: string;
   subtitle?: string;
 }) => (
-  <div className="bg-slate-900/50 border border-slate-800 rounded-3xl p-6 flex flex-col items-center text-center">
-    <div className="relative w-24 h-24 mb-4">
+  <div
+    className="bg-slate-900/50 border border-slate-800 rounded-3xl p-6 flex flex-col items-center text-center"
+    role="progressbar"
+    aria-label={label}
+    aria-valuenow={Math.round(value)}
+    aria-valuemin={0}
+    aria-valuemax={100}
+  >
+    <div className="relative w-24 h-24 mb-4" aria-hidden="true">
       <svg className="w-full h-full transform -rotate-90">
         <circle
           cx="48"

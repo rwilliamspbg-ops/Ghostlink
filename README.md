@@ -223,6 +223,8 @@ cargo run -p ghost-link -- dashboard
 | `/api/backend/switch` | POST | Switch inference backend |
 | `/api/metrics` | GET | Performance metrics |
 | `/api/inference/chat` | POST | Chat completion |
+| `/api/models/partial` | GET | List interrupted downloads (`.gguf.part` files) |
+| `/api/models/partial/discard` | POST | Delete an interrupted download |
 
 ## Troubleshooting
 

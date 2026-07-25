@@ -80,8 +80,13 @@ export const SecurityTab: React.FC<{ api: any }> = ({ api }) => {
               <div className="bg-slate-950 border border-slate-800 rounded-2xl p-4 relative group">
                 <div className="flex items-center justify-between mb-2">
                   <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Active Session Token</span>
-                  <button onClick={() => setShowShowToken(!showToken)} className="text-slate-500 hover:text-white transition">
-                    {showToken ? <EyeOff size={14} /> : <Eye size={14} />}
+                  <button
+                    onClick={() => setShowShowToken(!showToken)}
+                    className="text-slate-500 hover:text-white transition"
+                    aria-label={showToken ? 'Hide token' : 'Show token'}
+                    aria-pressed={showToken}
+                  >
+                    {showToken ? <EyeOff size={14} aria-hidden="true" /> : <Eye size={14} aria-hidden="true" />}
                   </button>
                 </div>
                 <div className="font-mono text-xs break-all text-slate-400 pr-8">
@@ -94,7 +99,7 @@ export const SecurityTab: React.FC<{ api: any }> = ({ api }) => {
                 disabled={loading}
                 className="w-full flex items-center justify-center gap-2 py-3 bg-slate-800 hover:bg-slate-700 text-white rounded-xl text-sm font-bold transition"
               >
-                <RefreshCw size={16} className={loading ? 'animate-spin' : ''} />
+                <RefreshCw size={16} className={loading ? 'animate-spin' : ''} aria-hidden="true" />
                 Refresh Token
               </button>
             </div>
@@ -152,8 +157,9 @@ export const SecurityTab: React.FC<{ api: any }> = ({ api }) => {
                 <button
                   onClick={async () => { const result = await api.getAuditLog(); if (result.entries) setAuditLog(result.entries); }}
                   className="p-2 hover:bg-slate-800 rounded-lg transition text-slate-500 hover:text-white"
+                  aria-label="Refresh audit log"
                 >
-                  <RefreshCw size={14} />
+                  <RefreshCw size={14} aria-hidden="true" />
                 </button>
             </div>
             <div className="divide-y divide-slate-800/50 font-mono text-[10px]">

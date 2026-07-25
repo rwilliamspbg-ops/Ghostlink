@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { RefreshCw, Plug, ShieldAlert } from 'lucide-react';
 import { useAppStore } from '../store';
 import { GhostlinkAPI } from '../api';
+import { EmptyState } from './StatusViews';
 
 export const McpTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
   const { mcpServers, setMcpServers } = useAppStore();
@@ -51,25 +52,27 @@ export const McpTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
         </div>
         <button
           onClick={refresh}
+          aria-label="Refresh MCP servers"
           className="p-2 rounded-lg hover:bg-slate-900 text-slate-400 hover:text-white transition"
         >
-          <RefreshCw size={18} className={loading ? 'animate-spin' : ''} />
+          <RefreshCw size={18} className={loading ? 'animate-spin' : ''} aria-hidden="true" />
         </button>
       </div>
 
       <div className="flex-1 overflow-y-auto p-6">
         <div className="max-w-4xl mx-auto">
           {error && (
-            <div className="mb-4 px-4 py-3 bg-red-500/10 border border-red-500/30 rounded-xl text-sm text-red-400">
+            <div role="alert" className="mb-4 px-4 py-3 bg-red-500/10 border border-red-500/30 rounded-xl text-sm text-red-400">
               {error}
             </div>
           )}
 
           {mcpServers.length === 0 && !loading && (
-            <div className="text-center py-16 text-slate-500 text-sm">
-              No MCP servers configured. Add entries to{' '}
-              <code className="text-slate-400">mcp_servers.toml</code> and refresh.
-            </div>
+            <EmptyState
+              icon={Plug}
+              title="No MCP servers configured"
+              description={<>Add entries to <code className="text-slate-400">mcp_servers.toml</code> and refresh.</>}
+            />
           )}
 
           <div className="grid grid-cols-1 gap-3">
@@ -132,12 +135,16 @@ export const McpTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                 <button
                   onClick={() => handleToggle(server.name, !server.enabled)}
                   disabled={toggling === server.name}
+                  role="switch"
+                  aria-checked={server.enabled}
+                  aria-label={`${server.enabled ? 'Disable' : 'Enable'} ${server.name}`}
                   className={`relative w-11 h-6 rounded-full transition-colors shrink-0 ${
                     server.enabled ? 'bg-blue-600' : 'bg-slate-700'
                   } ${toggling === server.name ? 'opacity-50' : ''}`}
                   title={server.enabled ? 'Disable server' : 'Enable server'}
                 >
                   <div
+                    aria-hidden="true"
                     className={`absolute top-0.5 w-5 h-5 bg-white rounded-full transition-transform ${
                       server.enabled ? 'translate-x-5' : 'translate-x-0.5'
                     }`}

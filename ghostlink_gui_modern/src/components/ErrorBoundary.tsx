@@ -40,10 +40,10 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
       }
 
       return (
-        <div className="flex flex-col items-center justify-center h-full p-8 bg-slate-950">
+        <div role="alert" className="flex flex-col items-center justify-center h-full p-8 bg-slate-950">
           <div className="text-center max-w-md">
             <div className="mb-6 p-4 bg-red-500/10 border border-red-500/20 rounded-2xl">
-              <AlertTriangle className="mx-auto mb-3 h-12 w-12 text-red-500" />
+              <AlertTriangle className="mx-auto mb-3 h-12 w-12 text-red-500" aria-hidden="true" />
             </div>
             <h2 className="text-xl font-bold text-white mb-2">Something went wrong</h2>
             <p className="text-slate-400 mb-6">
@@ -61,7 +61,7 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
               onClick={this.handleRetry}
               className="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-sm font-medium transition"
             >
-              <RefreshCw size={16} /> Try Again
+              <RefreshCw size={16} aria-hidden="true" /> Try Again
             </button>
           </div>
         </div>
@@ -83,10 +83,10 @@ export const ConnectionErrorBoundary: React.FC<ConnectionErrorBoundaryProps> = (
 }) => {
   if (!isOnline) {
     return (
-      <div className="flex flex-col items-center justify-center h-full p-8 bg-slate-950">
+      <div role="alert" className="flex flex-col items-center justify-center h-full p-8 bg-slate-950">
         <div className="text-center max-w-md">
           <div className="mb-6 p-4 bg-amber-500/10 border border-amber-500/20 rounded-2xl">
-            <WifiOff className="mx-auto mb-3 h-12 w-12 text-amber-500" />
+            <WifiOff className="mx-auto mb-3 h-12 w-12 text-amber-500" aria-hidden="true" />
           </div>
           <h2 className="text-xl font-bold text-white mb-2">Connection Lost</h2>
           <p className="text-slate-400 mb-6">
@@ -96,7 +96,7 @@ export const ConnectionErrorBoundary: React.FC<ConnectionErrorBoundaryProps> = (
             onClick={() => window.location.reload()}
             className="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-sm font-medium transition"
           >
-            <RefreshCw size={16} /> Reconnect
+            <RefreshCw size={16} aria-hidden="true" /> Reconnect
           </button>
         </div>
       </div>
@@ -114,10 +114,10 @@ export const OfflineBanner: React.FC<OfflineBannerProps> = ({ isOnline }) => {
   if (isOnline) return null;
 
   return (
-    <div className="fixed bottom-4 right-4 z-50 animate-slide-up">
+    <div role="status" aria-live="polite" className="fixed bottom-4 right-4 z-50 animate-slide-up">
       <div className="flex items-center gap-3 px-4 py-3 bg-slate-900 border border-amber-500/30 rounded-xl shadow-lg">
         <div className="p-2 bg-amber-500/10 rounded-lg">
-          <WifiOff className="h-5 w-5 text-amber-500" />
+          <WifiOff className="h-5 w-5 text-amber-500" aria-hidden="true" />
         </div>
         <div>
           <p className="text-sm font-medium text-white">Connection Lost</p>

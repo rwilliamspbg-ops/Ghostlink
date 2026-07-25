@@ -63,6 +63,7 @@ launch-fast.sh
 models/*.gguf
 models/
 models.json
+sessions.json
 ghostlink_gui_modern/dist/
 .ghostlink-npm-platform
 
@@ -73,3 +74,6 @@ mcp_servers.toml
 
 # Runtime data created by MCP servers (see mcp_servers.toml) — not source
 mcp_workspace/ghostlink.db
+
+# Local demo recordings (large binaries, not source)
+/demo/
