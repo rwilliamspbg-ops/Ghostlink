@@ -1509,6 +1509,35 @@ struct RuntimeSettings {
     discovery_auth_token: String,
     tcp_auth_token: String,
     xdp_interface: String,
+    /// Token budget for conversation history sent to the model, distinct from
+    /// `max_tokens` (per-response length). `#[serde(default)]` so settings.json
+    /// files saved before this field existed still deserialize instead of
+    /// falling back to `RuntimeSettings::default()` in its entirety.
+    #[serde(default = "default_conversation_token_limit")]
+    conversation_token_limit: usize,
+}
+
+// Kept as named constants (rather than inlined in both `RuntimeSettings::default()`
+// and `default_conversation_token_limit()`) so the two defaults can't drift out
+// of sync — see the derivation below.
+const DEFAULT_CTX_SIZE: usize = 4096;
+const DEFAULT_MAX_TOKENS: usize = 2048;
+/// Slack reserved on top of `max_tokens` for role/formatting overhead —
+/// mirrors the per-message `+ 4` in `build_conversation_prompt`, just applied
+/// once at the whole-budget level here.
+const CONVERSATION_TOKEN_MARGIN: usize = 128;
+
+/// Derived from the *default* `ctx_size`/`max_tokens`, not a flat guess — a
+/// flat number here previously left the stock settings.json tripping the
+/// Settings tab's own "history + max_tokens > ctx_size" warning out of the
+/// box. Still just the *default*: `handle_gui_chat` separately clamps
+/// whatever value ends up in `conversation_token_limit` (default or
+/// user-edited) to `ctx_size` before using it, so a manually misconfigured
+/// value can't overflow the context window either.
+fn default_conversation_token_limit() -> usize {
+    DEFAULT_CTX_SIZE
+        .saturating_sub(DEFAULT_MAX_TOKENS)
+        .saturating_sub(CONVERSATION_TOKEN_MARGIN)
 }
 
 impl Default for RuntimeSettings {
@@ -1525,12 +1554,12 @@ impl Default for RuntimeSettings {
             api_port: 8003,
             gui_port: 5173,
             threads: 4,
-            ctx_size: 4096,
+            ctx_size: DEFAULT_CTX_SIZE,
             temperature: 0.7,
             top_p: 0.9,
             top_k: 40,
             repeat_penalty: 1.1,
-            max_tokens: 2048,
+            max_tokens: DEFAULT_MAX_TOKENS,
             chat_exec_tokens: 1024,
             chat_micro_batch: 4,
             tcp_max_inflight: 256,
@@ -1539,6 +1568,7 @@ impl Default for RuntimeSettings {
             discovery_auth_token: String::new(),
             tcp_auth_token: String::new(),
             xdp_interface: "eth0".to_string(),
+            conversation_token_limit: default_conversation_token_limit(),
         }
     }
 }
@@ -1705,9 +1735,21 @@ struct ChatCompletionRequest {
     #[allow(dead_code)]
     max_tokens: Option<usize>,
 }
+#[derive(Debug, Deserialize, Clone)]
+struct GuiChatMessage {
+    role: String,
+    content: String,
+}
 #[derive(Debug, Deserialize)]
 struct GuiChatRequest {
+    /// Latest turn's text. Kept for older GUI builds that haven't picked up
+    /// `messages` yet — used only when `messages` is absent.
     message: String,
+    /// Full conversation transcript (oldest first, including the latest
+    /// turn). Preferred over `message` when present — without it the model
+    /// never sees anything before the current turn.
+    #[serde(default)]
+    messages: Option<Vec<GuiChatMessage>>,
     #[allow(dead_code)]
     model: Option<String>,
     #[allow(dead_code)]
@@ -1728,6 +1770,75 @@ struct GuiChatRequest {
     #[allow(dead_code)]
     mcp: Option<serde_json::Value>,
 }
+
+/// Cheap chars/4 heuristic — no tokenizer wired in, but good enough to
+/// budget conversation history against `conversation_token_limit` without
+/// pulling in a model-specific vocab.
+fn estimate_tokens(text: &str) -> usize {
+    (text.chars().count() / 4).max(if text.trim().is_empty() { 0 } else { 1 })
+}
+
+/// Formats conversation history into a plain-text transcript the raw
+/// completion endpoint (llama-server `/completion`, Ollama `/generate`)
+/// expects, keeping as many of the newest turns as fit under `token_limit`
+/// once `reserved_response_tokens` is set aside for the reply. Walks
+/// newest-first so a long conversation loses its oldest turns first, never
+/// its most recent ones — and always keeps at least the single newest
+/// message even if it alone blows the budget.
+///
+/// Returns `(prompt, was_truncated)`; the caller surfaces `was_truncated`
+/// back to the GUI so a dropped-history turn doesn't look like the model
+/// silently forgot something.
+fn build_conversation_prompt(
+    system_prompt: Option<&str>,
+    history: &[GuiChatMessage],
+    token_limit: usize,
+    reserved_response_tokens: usize,
+) -> (String, bool) {
+    let budget = token_limit
+        .saturating_sub(reserved_response_tokens)
+        .max(256);
+
+    let mut kept: Vec<&GuiChatMessage> = Vec::new();
+    let mut used = 0usize;
+    let mut truncated = false;
+
+    for msg in history.iter().rev() {
+        // +4 covers the "Role: " / newline formatting overhead below.
+        let cost = estimate_tokens(&msg.content) + 4;
+        if !kept.is_empty() && used + cost > budget {
+            truncated = true;
+            break;
+        }
+        used += cost;
+        kept.push(msg);
+    }
+    kept.reverse();
+
+    let mut prompt = String::new();
+    if let Some(sys) = system_prompt {
+        let sys = sys.trim();
+        if !sys.is_empty() {
+            prompt.push_str("System: ");
+            prompt.push_str(sys);
+            prompt.push_str("\n\n");
+        }
+    }
+    for msg in &kept {
+        let role_label = match msg.role.as_str() {
+            "assistant" => "Assistant",
+            "system" => "System",
+            _ => "User",
+        };
+        prompt.push_str(role_label);
+        prompt.push_str(": ");
+        prompt.push_str(&msg.content);
+        prompt.push('\n');
+    }
+    prompt.push_str("Assistant:");
+    (prompt, truncated)
+}
+
 #[derive(Debug, Deserialize)]
 struct ModelLoadRequest {
     model: String,
@@ -4485,6 +4596,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         gen_tps: Option<f32>,
         gen_latency_ms: Option<f32>,
         tool_results: Vec<ToolResult>,
+        truncated: bool,
     ) -> axum::response::Response {
         {
             let mut available_flag = ollama_available.lock().await;
@@ -4535,6 +4647,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             "exec_tokens": exec_tokens,
             "exec_micro_batch": exec_micro_batch,
             "real_inference": real_inference,
+            "truncated": truncated,
             "metrics": metrics_json
         });
 
@@ -4607,6 +4720,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
     /// client saw zero output for the whole generation time before
     /// (measured: tens of seconds for a longer response), regardless of the
     /// `stream: true` request.
+    #[allow(clippy::too_many_arguments)]
     async fn handle_gui_chat_stream(
         state: Arc<Mutex<BackendState>>,
         ollama_available: Arc<tokio::sync::Mutex<bool>>,
@@ -4615,6 +4729,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         gen: GenerationParams,
         prompt: String,
         request_tracker: runtime_switcher::RequestTracker,
+        truncated: bool,
     ) -> axum::response::Response {
         use axum::response::sse::{Event, Sse};
 
@@ -4754,6 +4869,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                 "done": true,
                 "request_id": format!("req-{}", request_id),
                 "session_id": session_id,
+                "truncated": truncated,
             });
             let _ = tx.send(Ok(Event::default().data(done.to_string()))).await;
         });
@@ -4791,7 +4907,6 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             )
         };
 
-        let token_estimate = req.message.split_whitespace().count().clamp(1, 1024);
         let temp = req.temperature.unwrap_or(settings.temperature);
         let top_p = req.top_p.unwrap_or(settings.top_p);
         let top_k = req.top_k.unwrap_or(settings.top_k);
@@ -4802,6 +4917,29 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             .clamp(16, 4096);
         let exec_tokens = chat_exec_token_budget(requested_exec_tokens);
         let exec_micro_batch = chat_exec_micro_batch();
+
+        // `messages` (the full transcript) is what current GUI builds send;
+        // `message` alone is the older single-turn shape, kept as a fallback
+        // so an un-upgraded client still gets a response instead of a 400.
+        let history: Vec<GuiChatMessage> = req.messages.clone().unwrap_or_else(|| {
+            vec![GuiChatMessage {
+                role: "user".to_string(),
+                content: req.message.clone(),
+            }]
+        });
+        // Clamped to `ctx_size` regardless of what's configured — a
+        // `conversation_token_limit` set higher than the model's actual
+        // context window (manually, or via a stale settings.json) would
+        // otherwise let history overflow the window instead of just being
+        // truncated harder.
+        let effective_token_limit = settings.conversation_token_limit.min(settings.ctx_size);
+        let (transcript, history_truncated) = build_conversation_prompt(
+            req.system_prompt.as_deref(),
+            &history,
+            effective_token_limit,
+            exec_tokens,
+        );
+        let token_estimate = estimate_tokens(&transcript).clamp(1, 1_000_000);
 
         // Gather real tool schemas for every enabled tool identifier — a legacy
         // "slot" name (calculator, file_operations, ...) or, for standalone
@@ -4873,21 +5011,20 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                 started,
                 current_model,
                 gen,
-                req.message.clone(),
+                transcript,
                 request_tracker,
+                history_truncated,
             )
             .await;
         }
 
         let tool_instructions = mcp::toolcall::build_tool_instructions(&enabled_schemas);
         let effective_prompt = if tool_instructions.is_empty() {
-            req.message.clone()
+            transcript
         } else {
-            let user_system_prompt = req.system_prompt.clone().unwrap_or_default();
-            format!(
-                "{tool_instructions}\n{user_system_prompt}\n\nUser: {}",
-                req.message
-            )
+            // `transcript` already carries the system prompt (if any) and the
+            // full windowed history — tool instructions just go in front of it.
+            format!("{tool_instructions}\n\n{transcript}")
         };
 
         let request_tracker = active_runtime_switcher().request_tracker().clone();
@@ -4934,6 +5071,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                     gen_tps,
                     gen_latency_ms,
                     tool_results,
+                    history_truncated,
                 )
                 .await
             }
@@ -5091,6 +5229,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                     gen_tps,
                     gen_latency_ms,
                     tool_results,
+                    false,
                 )
                 .await
             }
@@ -5356,6 +5495,11 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                     "ctx_size" => {
                         if let Some(v) = value.as_u64() {
                             current.ctx_size = v as usize;
+                        }
+                    }
+                    "conversation_token_limit" => {
+                        if let Some(v) = value.as_u64() {
+                            current.conversation_token_limit = v as usize;
                         }
                     }
                     "temperature" => {
@@ -8248,5 +8392,86 @@ mod tests {
     fn bootstrap_rejects_missing_config_value() {
         let result = extract_bootstrap_args(vec!["--config".to_string()]);
         assert!(result.is_err());
+    }
+
+    fn gcm(role: &str, content: &str) -> GuiChatMessage {
+        GuiChatMessage {
+            role: role.to_string(),
+            content: content.to_string(),
+        }
+    }
+
+    #[test]
+    fn estimate_tokens_treats_blank_as_zero_and_scales_with_length() {
+        assert_eq!(estimate_tokens(""), 0);
+        assert_eq!(estimate_tokens("   "), 0);
+        assert_eq!(estimate_tokens("hi"), 1);
+        assert!(estimate_tokens(&"word ".repeat(100)) > estimate_tokens("word"));
+    }
+
+    #[test]
+    fn build_conversation_prompt_keeps_newest_turns_and_flags_truncation() {
+        let history = vec![
+            gcm("user", &"oldest turn ".repeat(200)),
+            gcm("assistant", &"middle turn ".repeat(200)),
+            gcm("user", "newest turn"),
+        ];
+        // Budget far too small to hold all three, comfortably fits the last.
+        let (prompt, truncated) = build_conversation_prompt(None, &history, 64, 16);
+
+        assert!(
+            truncated,
+            "dropping the oldest turns should report truncated=true"
+        );
+        assert!(prompt.contains("newest turn"));
+        assert!(!prompt.contains("oldest turn"));
+    }
+
+    #[test]
+    fn build_conversation_prompt_always_keeps_the_latest_turn_even_if_oversized() {
+        let history = vec![gcm("user", &"way too long ".repeat(1000))];
+        let (prompt, truncated) = build_conversation_prompt(None, &history, 64, 16);
+
+        // A single turn can't be "the oldest we dropped" — there's nothing
+        // else to fall back to, so it must survive and truncated stays false.
+        assert!(!truncated);
+        assert!(prompt.contains("way too long"));
+    }
+
+    #[test]
+    fn build_conversation_prompt_includes_system_prompt_without_tool_instructions() {
+        // Regression check: the old code path only spliced `system_prompt` in
+        // when tool instructions were non-empty, silently dropping it on any
+        // plain (no-tools) turn.
+        let history = vec![gcm("user", "hello")];
+        let (prompt, _) = build_conversation_prompt(Some("Be concise."), &history, 4096, 512);
+
+        assert!(prompt.starts_with("System: Be concise."));
+        assert!(prompt.contains("User: hello"));
+    }
+
+    #[test]
+    fn default_conversation_token_limit_fits_under_default_ctx_size_with_default_max_tokens() {
+        // Regression guard for the bug this was derived to fix: a flat
+        // default (3072) + the default max_tokens (2048) exceeded the
+        // default ctx_size (4096), tripping the Settings tab's own overflow
+        // warning out of the box. This must never be true again.
+        let limit = default_conversation_token_limit();
+        assert!(
+            limit + DEFAULT_MAX_TOKENS <= DEFAULT_CTX_SIZE,
+            "default conversation_token_limit ({limit}) + default max_tokens ({DEFAULT_MAX_TOKENS}) \
+             must fit within default ctx_size ({DEFAULT_CTX_SIZE})"
+        );
+    }
+
+    #[test]
+    fn runtime_settings_default_uses_the_same_constants() {
+        let settings = RuntimeSettings::default();
+        assert_eq!(settings.ctx_size, DEFAULT_CTX_SIZE);
+        assert_eq!(settings.max_tokens, DEFAULT_MAX_TOKENS);
+        assert_eq!(
+            settings.conversation_token_limit,
+            default_conversation_token_limit()
+        );
     }
 }

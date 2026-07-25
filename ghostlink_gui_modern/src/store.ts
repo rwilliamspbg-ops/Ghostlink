@@ -53,6 +53,7 @@ export interface Settings {
   top_k: number;
   repeat_penalty: number;
   max_tokens: number;
+  conversation_token_limit: number;
   chat_exec_tokens: number;
   chat_micro_batch: number;
   tcp_max_inflight: number;
@@ -125,6 +126,8 @@ export interface ChatMessage {
   pendingToolCall?: PendingToolCall;
   /** Set on both assistant replies from a single Compare Mode turn so the UI can render them side-by-side. */
   compareGroupId?: string;
+  /** Server dropped some earlier history to fit conversation_token_limit before generating this reply — renders a divider above it so the gap is visible instead of looking like the model forgot on its own. */
+  truncatedBefore?: boolean;
 }
 
 export interface DownloadProgressEntry {

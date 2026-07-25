@@ -16,6 +16,7 @@ function createMockApi() {
         top_k: 40,
         repeat_penalty: 1.1,
         max_tokens: 1024,
+        conversation_token_limit: 3072,
         chat_exec_tokens: 512,
         chat_micro_batch: 4,
         tcp_max_inflight: 64,
