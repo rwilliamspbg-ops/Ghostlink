@@ -1918,6 +1918,22 @@ fn estimate_tokens(text: &str) -> usize {
     (text.chars().count() / 4).max(if text.trim().is_empty() { 0 } else { 1 })
 }
 
+/// `/v1/embeddings`'s `input` field accepts either a single string or an
+/// array of strings per the OpenAI spec — normalizes both into one list so
+/// the handler has a single code path. Non-string array entries are
+/// dropped rather than erroring the whole batch; an all-invalid or empty
+/// input yields an empty `Vec`, which the caller turns into a 400.
+fn normalize_embeddings_input(input: &serde_json::Value) -> Vec<String> {
+    match input {
+        serde_json::Value::String(s) => vec![s.clone()],
+        serde_json::Value::Array(items) => items
+            .iter()
+            .filter_map(|v| v.as_str().map(str::to_owned))
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
 /// Formats conversation history into a plain-text transcript the raw
 /// completion endpoint (llama-server `/completion`, Ollama `/generate`)
 /// expects, keeping as many of the newest turns as fit under `token_limit`
@@ -2096,6 +2112,66 @@ struct Choice {
     message: serde_json::Value,
     finish_reason: String,
 }
+
+/// OpenAI's legacy (non-chat) completions request: a plain `prompt` string
+/// rather than a `messages` array. `handle_completions` mirrors
+/// `handle_chat_completions` almost exactly, just skipping the
+/// last-message extraction step since there's nothing to extract from.
+#[derive(Debug, Deserialize)]
+struct CompletionRequest {
+    model: String,
+    prompt: String,
+    #[allow(dead_code)]
+    stream: Option<bool>,
+    temperature: Option<f32>,
+    top_p: Option<f32>,
+    top_k: Option<usize>,
+    penalty: Option<f32>,
+    max_tokens: Option<usize>,
+}
+#[derive(Debug, Serialize)]
+struct CompletionResponse {
+    id: String,
+    object: String,
+    created: u64,
+    model: String,
+    choices: Vec<CompletionChoice>,
+}
+#[derive(Debug, Serialize)]
+struct CompletionChoice {
+    text: String,
+    index: usize,
+    finish_reason: String,
+}
+
+/// OpenAI's `/v1/embeddings` request. `input` is `Value` rather than
+/// `String`/`Vec<String>` because the real API accepts either a single
+/// string or an array of strings — `handle_embeddings` normalizes both
+/// into the same code path rather than needing two request types.
+#[derive(Debug, Deserialize)]
+struct EmbeddingsRequest {
+    model: String,
+    input: serde_json::Value,
+}
+#[derive(Debug, Serialize)]
+struct EmbeddingsResponse {
+    object: String,
+    data: Vec<EmbeddingData>,
+    model: String,
+    usage: EmbeddingsUsage,
+}
+#[derive(Debug, Serialize)]
+struct EmbeddingData {
+    object: String,
+    embedding: Vec<f32>,
+    index: usize,
+}
+#[derive(Debug, Serialize)]
+struct EmbeddingsUsage {
+    prompt_tokens: usize,
+    total_tokens: usize,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ToolResult {
     tool: String,
@@ -2542,6 +2618,173 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
 
         request_tracker.decrement().await;
         response
+    }
+
+    /// OpenAI's legacy `/v1/completions` endpoint: same backend dispatch as
+    /// `handle_chat_completions`, just reading a plain `prompt` string
+    /// instead of extracting one from a `messages` array. No session
+    /// context here (this is the stateless REST surface, not the GUI's
+    /// conversation), so no slot/cache-prompt reuse — matches
+    /// `handle_chat_completions`'s existing behavior.
+    async fn handle_completions(
+        State(state): State<Arc<Mutex<BackendState>>>,
+        Json(req): Json<CompletionRequest>,
+    ) -> Json<CompletionResponse> {
+        let prompt = req.prompt;
+
+        let request_tracker = active_runtime_switcher().request_tracker().clone();
+        request_tracker.increment().await;
+
+        let temp = req.temperature.unwrap_or(0.7);
+        let top_p = req.top_p.unwrap_or(0.9);
+        let top_k = req.top_k.unwrap_or(40);
+        let penalty = req.penalty.unwrap_or(1.1);
+        let max_tokens = req.max_tokens.unwrap_or(1024).clamp(16, 4096);
+
+        let (model, inference_backend, native_engine_client, ollama_client, settings) = {
+            let mut backend = lock_state(&state);
+            backend.chat_requests = backend.chat_requests.saturating_add(1);
+            let model = if req.model.trim().is_empty() {
+                backend.current_model.clone()
+            } else {
+                req.model.clone()
+            };
+            (
+                model,
+                backend.inference_backend,
+                backend.native_engine_client.clone(),
+                backend.ollama_client.clone(),
+                backend.settings.clone(),
+            )
+        };
+
+        let exec_tokens = chat_exec_token_budget(32);
+
+        let response_text = match inference_backend {
+            InferenceBackend::Ollama => ollama_client
+                .generate(&model, &prompt, temp, top_p, top_k, penalty, max_tokens)
+                .await
+                .unwrap_or_else(|err| {
+                    format!("Ollama generation failed for model '{}': {}", model, err)
+                }),
+            InferenceBackend::Native => native_engine_client
+                .generate(
+                    &model,
+                    &prompt,
+                    exec_tokens,
+                    temp,
+                    top_p,
+                    top_k,
+                    penalty,
+                    &settings.native_engine,
+                    // Stateless endpoint, no session to pin a slot to —
+                    // matches handle_chat_completions' same behavior.
+                    None,
+                    false,
+                )
+                .await
+                .map(|gen| gen.text)
+                .unwrap_or_else(|err| {
+                    format!(
+                        "Ghostlink native backend error on model '{}': {}",
+                        model, err
+                    )
+                }),
+        };
+
+        let response = Json(CompletionResponse {
+            id: format!("cmpl-{}", rand::random::<u32>()),
+            object: "text_completion".to_string(),
+            created: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs(),
+            model,
+            choices: vec![CompletionChoice {
+                text: response_text,
+                index: 0,
+                finish_reason: "stop".to_string(),
+            }],
+        });
+
+        request_tracker.decrement().await;
+        response
+    }
+
+    /// OpenAI's `/v1/embeddings` endpoint, backed by
+    /// `OllamaClient::embeddings()` (already used internally by
+    /// `/api/ollama/embeddings`). The native engine has no embedding
+    /// support today — that would need a second llama-server instance
+    /// launched with `--embedding`, out of scope here — so a native-backend
+    /// request gets a real 501 explaining that, rather than a silent
+    /// failure or a faked response.
+    async fn handle_embeddings(
+        State(state): State<Arc<Mutex<BackendState>>>,
+        Json(req): Json<EmbeddingsRequest>,
+    ) -> axum::response::Response {
+        let inputs = normalize_embeddings_input(&req.input);
+        if inputs.is_empty() {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "error": { "message": "input must be a non-empty string or array of strings", "type": "invalid_request_error" }
+                })),
+            )
+                .into_response();
+        }
+
+        let (inference_backend, ollama_client) = {
+            let backend = lock_state(&state);
+            (backend.inference_backend, backend.ollama_client.clone())
+        };
+
+        if inference_backend != InferenceBackend::Ollama {
+            return (
+                StatusCode::NOT_IMPLEMENTED,
+                Json(serde_json::json!({
+                    "error": {
+                        "message": "embeddings are only available with the Ollama backend today — the native llama-server engine has no embedding support wired in",
+                        "type": "not_implemented"
+                    }
+                })),
+            )
+                .into_response();
+        }
+
+        let mut data = Vec::with_capacity(inputs.len());
+        let mut prompt_tokens = 0usize;
+        for (index, text) in inputs.iter().enumerate() {
+            match ollama_client.embeddings(&req.model, text).await {
+                Ok(embedding) => {
+                    prompt_tokens += estimate_tokens(text);
+                    data.push(EmbeddingData {
+                        object: "embedding".to_string(),
+                        embedding,
+                        index,
+                    });
+                }
+                Err(err) => {
+                    return (
+                        StatusCode::BAD_GATEWAY,
+                        Json(serde_json::json!({
+                            "error": { "message": format!("embedding generation failed: {err}"), "type": "upstream_error" }
+                        })),
+                    )
+                        .into_response();
+                }
+            }
+        }
+
+        Json(EmbeddingsResponse {
+            object: "list".to_string(),
+            data,
+            model: req.model,
+            usage: EmbeddingsUsage {
+                prompt_tokens,
+                total_tokens: prompt_tokens,
+            },
+        })
+        .into_response()
     }
 
     fn detect_quantization(filename: &str) -> String {
@@ -5922,6 +6165,8 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
     println!("Listening on http://{}:{}", host, port);
     println!("Routes:");
     println!("  - POST /v1/chat/completions");
+    println!("  - POST /v1/completions");
+    println!("  - POST /v1/embeddings");
     println!("  - GET  /v1/models");
     println!("  - GET  /health");
     println!("  - GET  /api/models");
@@ -6213,6 +6458,8 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
 
         let app = Router::new()
             .route("/v1/chat/completions", post(handle_chat_completions))
+            .route("/v1/completions", post(handle_completions))
+            .route("/v1/embeddings", post(handle_embeddings))
             .route("/v1/models", get(handle_models))
             .route("/health", get(handle_health))
             .route("/api/health", get(handle_health))
@@ -8845,6 +9092,41 @@ mod tests {
         assert_eq!(estimate_tokens("   "), 0);
         assert_eq!(estimate_tokens("hi"), 1);
         assert!(estimate_tokens(&"word ".repeat(100)) > estimate_tokens("word"));
+    }
+
+    #[test]
+    fn normalize_embeddings_input_accepts_a_single_string() {
+        let input = serde_json::json!("hello world");
+        assert_eq!(
+            normalize_embeddings_input(&input),
+            vec!["hello world".to_string()]
+        );
+    }
+
+    #[test]
+    fn normalize_embeddings_input_accepts_an_array_of_strings() {
+        let input = serde_json::json!(["a", "b", "c"]);
+        assert_eq!(
+            normalize_embeddings_input(&input),
+            vec!["a".to_string(), "b".to_string(), "c".to_string()]
+        );
+    }
+
+    #[test]
+    fn normalize_embeddings_input_drops_non_string_array_entries_rather_than_erroring() {
+        let input = serde_json::json!(["a", 42, null, "b"]);
+        assert_eq!(
+            normalize_embeddings_input(&input),
+            vec!["a".to_string(), "b".to_string()]
+        );
+    }
+
+    #[test]
+    fn normalize_embeddings_input_returns_empty_for_unsupported_shapes() {
+        assert!(normalize_embeddings_input(&serde_json::json!(42)).is_empty());
+        assert!(normalize_embeddings_input(&serde_json::json!(null)).is_empty());
+        assert!(normalize_embeddings_input(&serde_json::json!({"not": "a list"})).is_empty());
+        assert!(normalize_embeddings_input(&serde_json::json!([])).is_empty());
     }
 
     #[test]
