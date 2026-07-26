@@ -1,7 +1,12 @@
 version: '3.9'
 
 services:
-  # Worker node 1: 16GB GPU equivalent
+  # Worker node 1: 16GB GPU equivalent. NOT dialed by the coordinator's
+  # `flow` command below — `flow` is a local+one-remote model, and its
+  # "local" stage always runs inside the coordinator's own process
+  # regardless of which node id labels it. This container stays as an
+  # independent OpenAI-API-compatible server for standalone manual testing
+  # of the fabric network, not as part of the flow demo path.
   ghostlink-worker-1:
     build:
       context: .
@@ -27,7 +32,10 @@ services:
     cpus: '2'
     mem_limit: 2g
 
-  # Worker node 2: 32GB GPU equivalent
+  # Worker node 2: 32GB GPU equivalent. This is the node the coordinator's
+  # `flow --remote-addr` actually connects out to — a real stage-worker
+  # process on its own container, not the same-process simulation the
+  # `flow` command falls back to when --remote-addr is omitted.
   ghostlink-worker-2:
     build:
       context: .
@@ -42,11 +50,11 @@ services:
       GHOSTLINK_TCP_MAX_INFLIGHT: "512"
       GHOSTLINK_DISTRIBUTED_SMOKE: "true"
       RUST_LOG: info
-    command: ["serve", "--port", "8002"]
+    command: ["stage-worker", "172.20.0.3:9500"]
     ports:
-      - "8002:8002"
+      - "9500:9500"
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
+      test: ["CMD", "sh", "-c", "netstat -an | grep 9500 | grep -q LISTEN"]
       interval: 5s
       timeout: 3s
       retries: 3
@@ -73,7 +81,7 @@ services:
         condition: service_healthy
       ghostlink-worker-2:
         condition: service_healthy
-    command: ["flow", "iprada-16gb", "zenbook-32gb", "32", "32", "256", "8", "tcp"]
+    command: ["flow", "iprada-16gb", "zenbook-32gb", "32", "32", "256", "8", "tcp", "--remote-addr", "172.20.0.3:9500"]
     cpus: '1'
     mem_limit: 1g
 

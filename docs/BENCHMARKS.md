@@ -157,19 +157,71 @@ Tested default vs. this host's documented 4GB-VRAM-tier recommendation
 
 ## Multi-Node Performance
 
-### LAN Performance (1 Gbps Ethernet)
+### LAN Performance (1 Gbps Ethernet) — UNVERIFIED, pending a real multi-host run
+
+The table below predates this session's investigation and cannot be traced
+to any real run: no date, no host inventory, no methodology, and — more
+fundamentally — until the `stage-worker`/`flow --remote-addr` work landed
+(see [DEPLOYMENT.md's Stage 3b](DEPLOYMENT.md#stage-3b-real-cross-machine-flow-execution)),
+`flow` never actually reached a second machine at all, so no version of
+Ghost-Link could have produced these particular numbers. Leaving it here
+with this label rather than deleting it, so it's clear this is a
+placeholder to replace, not evidence of past measurement:
 
 | Node Count | Throughput | Latency | Notes |
 |------------|------------|---------|-------|
-| 2 nodes | ~580K tokens/s | 2.5ms | TCP transport |
-| 3 nodes | ~550K tokens/s | 3.2ms | TCP transport |
-| 4 nodes | ~520K tokens/s | 4.1ms | TCP transport |
+| 2 nodes | ~580K tokens/s | 2.5ms | TCP transport — **unverified placeholder** |
+| 3 nodes | ~550K tokens/s | 3.2ms | TCP transport — **unverified placeholder** |
+| 4 nodes | ~520K tokens/s | 4.1ms | TCP transport — **unverified placeholder** |
+
+Do not cite this table. To get real numbers, run
+[`scripts/remote_flow_benchmark.py`](../scripts/remote_flow_benchmark.py)
+across two physical machines on your own network (see below).
+
+### Real cross-process benchmark harness
+
+`scripts/remote_flow_benchmark.py` drives the genuine `stage-worker` /
+`flow --remote-addr` path repeatedly and summarizes real measured
+throughput and remote round-trip time (`avg_bridge_write_ms`) — not
+placeholder constants. Real two-machine LAN numbers require hardware this
+session doesn't have access to (one dev machine, not a two-node LAN), so
+none are published here yet; running it is the way to replace the
+placeholder table above with real data.
+
+What *was* verified on this single machine — a same-host loopback smoke
+test, proving the harness and the underlying transport work end-to-end,
+explicitly **not** a network benchmark (no real NIC, no real latency):
+
+```bash
+python scripts/remote_flow_benchmark.py --spawn-local-worker \
+  --remote-addr 127.0.0.1:19748 --runs 3 --exec-tokens 32 --micro-batch 4
+```
+
+| Runs | Throughput (avg) | P95 | Remote bridge-write (avg) |
+|---|---|---|---|
+| 3 | 21,621 tok/s | 0.38 ms | 0.19 ms |
+
+Low run count and tiny `exec-tokens` (32) — this is a smoke test
+confirming the path works, not a tuned performance number; don't compare it
+against the Full-Spectrum session's in-process numbers above, which use a
+much larger token count and a different code path entirely.
+
+For a real LAN run: on a second machine, run
+`GHOSTLINK_TCP_AUTH_TOKEN=<token> ghost-link stage-worker <bind-addr>`,
+then on the coordinator run the script without `--spawn-local-worker`,
+pointing `--remote-addr` at that machine. The script pauses between runs
+so you can restart the (one-shot) worker each time.
 
 ### Notes on Multi-Node Performance
 
 - Throughput decreases slightly with more nodes due to network overhead
 - Latency increases linearly with node count
 - Network bandwidth is the primary bottleneck for multi-node setups
+
+These three notes above are inherited from the same placeholder as the
+table and are directional assumptions, not measurements — treat them as
+hypotheses to check once real multi-host numbers exist, not established
+fact.
 
 ---
 

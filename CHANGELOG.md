@@ -4,6 +4,84 @@ All notable changes to Ghostlink Studio are documented here.
 
 ---
 
+## [1.9.0] - 2026-07-26 (Multi-node: real cross-process execution, replacing the fabricated flow demo)
+
+### 🐛 Fixed (fabrication)
+
+- **`ghost-link flow` never actually reached a second machine, even when
+  given a `--remote-addr`-shaped setup** (it had no such flag at all). It
+  registered a fake "remote" node and hand-seeded its metrics
+  (`record_latency(3.2)`, `record_delivery_ratio(0.95)`) — the entire
+  "distributed" demo ran in one process. `docker-compose.test-fabric.yml`
+  stood up real worker containers whose IPs were never dialed.
+
+### ✨ Features
+
+- **New `ghost-link stage-worker --bind <addr>` process**: binds a TCP
+  listener, accepts exactly one coordinator connection, reads a handshake
+  describing its assigned stage, then loops real batch exchange
+  (`read_transport_batch` → compute → `write_transport_batch`) until the
+  coordinator disconnects — a genuine one-shot worker, not a simulation.
+- **New `flow --remote-addr <host:port>` flag**: when given, the
+  coordinator does a real outbound `TcpStream::connect` to a running
+  `stage-worker` and executes that node's stage(s) across the real
+  socket, deriving the remote node's health metrics from the actual
+  measured round-trip time instead of placeholder constants. Because real
+  layer assignment splits one node's range into multiple raw pipeline
+  stages (verified: 60 layers / 2 nodes → 11 raw stages), a new
+  `merge_stages_for_node` helper collapses all of a node's stages into one
+  logical placement before executing it remotely.
+  Omitting `--remote-addr` keeps today's single-process behavior exactly
+  as before, but now prints `SIMULATED execution: ...` instead of
+  silently implying a second machine was involved.
+- **`docker-compose.test-fabric.yml` fixed to match its own apparent
+  intent**: `ghostlink-worker-2` now runs `stage-worker` and the
+  coordinator's `flow` command connects to it via `--remote-addr` across
+  the compose network, instead of both sides running unrelated commands
+  that never talked to each other.
+- **New benchmark harness** (`scripts/remote_flow_benchmark.py`) drives
+  the real `stage-worker`/`flow --remote-addr` path repeatedly and reports
+  measured throughput and real remote round-trip time — for use across
+  two physical machines to get honest multi-host numbers.
+
+### 🐛 Fixed (latent, found while building the harness)
+
+- `ghost-link stage-worker` ignored `GHOSTLINK_TCP_AUTH_TOKEN` and other
+  TCP transport env vars entirely, always using
+  `TcpTransportConfig::default()` — meaning a coordinator configured with
+  a non-default auth token (exactly what the docker-compose fix above
+  does) would have its connection reset by the worker. Now reads the same
+  `tcp_transport_config_from_env()` the coordinator already uses.
+
+### 📝 Docs
+
+- `docs/DEPLOYMENT.md` gained a "Stage 3b: Real Cross-Machine Flow
+  Execution" section documenting `stage-worker`/`flow --remote-addr`, with
+  an explicit callout that the transport is genuinely cross-process but
+  `run_stage_compute` remains a synthetic timing proxy, not real
+  distributed LLM inference.
+- `docs/BENCHMARKS.md`'s "Multi-Node Performance / LAN Performance" table
+  — untraceable to any real run, and impossible to have produced before
+  this PR since `flow` couldn't reach a second machine — is now explicitly
+  labeled "unverified, pending a real multi-host run" instead of presented
+  as measured. A real (loopback smoke-test) run of the new harness is
+  documented alongside it.
+
+### ✅ Validation
+
+- New `crates/ghost-link/tests/stage_worker_integration.rs`: spawns the
+  real `ghost-link` binary as two separate OS processes (not threads, not
+  in-process calls) via `CARGO_BIN_EXE_ghost-link`, and asserts the `flow`
+  process actually took the `REAL execution` path and the `stage-worker`
+  process actually processed a nonzero batch count.
+- 4 new `ghostlink-core` unit tests for the handshake, remote-stage
+  rejection on missing stages, stage-merging, and a real (non-loopback
+  simulation) TCP round trip.
+- `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D
+  warnings`, and `cargo test --workspace` all pass: 138 `ghostlink-core`
+  tests, 99 `ghost-link` unit tests, 1 new integration test, 10 `mcp-rag`
+  tests — all green.
+
 ## [1.8.0] - 2026-07-25 (Voice input in chat)
 
 ### ✨ Features
