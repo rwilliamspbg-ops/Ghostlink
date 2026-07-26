@@ -2,9 +2,10 @@
 //! Implements graceful backend switching with request draining, environment updates, and process restart
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
 use tokio::time::sleep;
 
 use crate::backend_registry::{BackendRegistry, ComputeBackend};
@@ -53,17 +54,42 @@ impl Default for SwitchingConfig {
     }
 }
 
-/// Request tracking for draining
-#[derive(Debug, Clone, Default)]
+/// Request tracking for draining, plus admission control matching however
+/// many concurrent slots the currently-running llama-server actually has.
+#[derive(Debug, Clone)]
 pub struct RequestTracker {
     in_flight: Arc<Mutex<usize>>,
+    slot_semaphore: Arc<Semaphore>,
+    /// `Semaphore` only exposes *currently free* permits
+    /// (`available_permits()`), not the configured total — tracked
+    /// separately so `resize_slots` can compute a correct delta even while
+    /// permits are checked out by in-flight requests.
+    slot_capacity: Arc<AtomicUsize>,
+}
+
+impl Default for RequestTracker {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl RequestTracker {
-    /// Create a new request tracker
+    /// Create a new request tracker. Slot capacity starts at whatever
+    /// `GHOSTLINK_PARALLEL_SLOTS` currently says (same env var
+    /// `native_engine::get_parallel_slots()` reads for llama-server's `-np`,
+    /// defaulting to `1` — today's exact prior behavior — when unset), so a
+    /// tracker constructed after `load_settings()` mirrors persisted
+    /// settings into that env var starts in sync without an extra call.
     pub fn new() -> Self {
+        let initial_slots = std::env::var("GHOSTLINK_PARALLEL_SLOTS")
+            .ok()
+            .and_then(|v| v.trim().parse::<usize>().ok())
+            .map(|n| n.clamp(1, 64))
+            .unwrap_or(1);
         Self {
             in_flight: Arc::new(Mutex::new(0)),
+            slot_semaphore: Arc::new(Semaphore::new(initial_slots)),
+            slot_capacity: Arc::new(AtomicUsize::new(initial_slots)),
         }
     }
 
@@ -84,6 +110,59 @@ impl RequestTracker {
     /// Get current in-flight request count
     pub async fn get_count(&self) -> usize {
         *self.in_flight.lock().await
+    }
+
+    /// Wait for a free llama-server slot before admitting a new generation
+    /// request — bounds real concurrent calls into llama-server to whatever
+    /// `resize_slots`/construction last configured, instead of firing
+    /// unbounded concurrent HTTP requests at a process that may only have
+    /// one real inference slot. The returned permit releases automatically
+    /// when dropped; callers just need to keep it alive for the duration of
+    /// the generation call.
+    pub async fn acquire_slot(&self) -> OwnedSemaphorePermit {
+        self.slot_semaphore
+            .clone()
+            .acquire_owned()
+            .await
+            .expect("slot semaphore is never closed")
+    }
+
+    /// Real `/api/queue` depth: requests already admitted into ghost-link
+    /// (counted via `increment`, called before `acquire_slot`) but still
+    /// waiting for a free llama-server slot — `tokio::sync::Semaphore`
+    /// doesn't expose a waiter count directly, so this derives it as
+    /// `in_flight - requests_actively_holding_a_slot`, both of which are
+    /// real, already-tracked numbers rather than an estimate.
+    pub async fn queue_depth(&self) -> usize {
+        let in_flight = self.get_count().await;
+        let active_in_slot = self
+            .slot_capacity()
+            .saturating_sub(self.slot_semaphore.available_permits());
+        in_flight.saturating_sub(active_in_slot)
+    }
+
+    /// Current configured slot capacity.
+    pub fn slot_capacity(&self) -> usize {
+        self.slot_capacity.load(Ordering::SeqCst)
+    }
+
+    /// Resize the slot semaphore to match a new `parallel_slots` setting.
+    /// Safe to call at any time, including while permits are checked out —
+    /// a shrink below what's currently available only fully applies once
+    /// enough in-flight requests finish and return their permits.
+    pub fn resize_slots(&self, new_capacity: usize) {
+        let new_capacity = new_capacity.clamp(1, 64);
+        let old_capacity = self.slot_capacity.swap(new_capacity, Ordering::SeqCst);
+        match new_capacity.cmp(&old_capacity) {
+            std::cmp::Ordering::Greater => {
+                self.slot_semaphore.add_permits(new_capacity - old_capacity);
+            }
+            std::cmp::Ordering::Less => {
+                self.slot_semaphore
+                    .forget_permits(old_capacity - new_capacity);
+            }
+            std::cmp::Ordering::Equal => {}
+        }
     }
 
     /// Wait for all in-flight requests to complete (with timeout)
@@ -410,6 +489,79 @@ mod tests {
         // Should drain after waiting
         let result = tracker.drain(Duration::from_secs(5)).await;
         assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_request_tracker_default_slot_capacity_is_one() {
+        let _guard = env_test_lock().lock().await;
+        std::env::remove_var("GHOSTLINK_PARALLEL_SLOTS");
+
+        let tracker = RequestTracker::new();
+        assert_eq!(tracker.slot_capacity(), 1);
+
+        let _permit = tracker.acquire_slot().await;
+        // A second concurrent acquire on a 1-slot tracker must not resolve
+        // immediately — proven by racing it against a short timeout.
+        let second = tokio::time::timeout(Duration::from_millis(50), tracker.acquire_slot()).await;
+        assert!(
+            second.is_err(),
+            "second acquire should block while the only slot is held"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_request_tracker_reads_initial_capacity_from_env() {
+        let _guard = env_test_lock().lock().await;
+        std::env::set_var("GHOSTLINK_PARALLEL_SLOTS", "3");
+
+        let tracker = RequestTracker::new();
+        assert_eq!(tracker.slot_capacity(), 3);
+
+        std::env::remove_var("GHOSTLINK_PARALLEL_SLOTS");
+    }
+
+    #[tokio::test]
+    async fn test_request_tracker_resize_slots_grows_and_shrinks() {
+        let _guard = env_test_lock().lock().await;
+        std::env::remove_var("GHOSTLINK_PARALLEL_SLOTS");
+
+        let tracker = RequestTracker::new();
+        assert_eq!(tracker.slot_capacity(), 1);
+
+        tracker.resize_slots(4);
+        assert_eq!(tracker.slot_capacity(), 4);
+
+        // All 4 slots should now be independently acquirable without blocking.
+        let permits: Vec<_> =
+            futures::future::join_all((0..4).map(|_| tracker.acquire_slot())).await;
+        assert_eq!(permits.len(), 4);
+
+        // Shrinking below what's currently held doesn't panic or under/overflow;
+        // it takes effect once permits are returned.
+        tracker.resize_slots(1);
+        assert_eq!(tracker.slot_capacity(), 1);
+        drop(permits);
+    }
+
+    #[tokio::test]
+    async fn test_request_tracker_queue_depth_reflects_admitted_but_unslotted_requests() {
+        let _guard = env_test_lock().lock().await;
+        std::env::remove_var("GHOSTLINK_PARALLEL_SLOTS");
+
+        let tracker = RequestTracker::new(); // 1 slot
+        assert_eq!(tracker.queue_depth().await, 0);
+
+        tracker.increment().await;
+        let _permit = tracker.acquire_slot().await;
+        // Admitted and holding the only slot: not queued.
+        assert_eq!(tracker.queue_depth().await, 0);
+
+        // A second request is admitted but the slot is taken — it's queued.
+        tracker.increment().await;
+        assert_eq!(tracker.queue_depth().await, 1);
+
+        tracker.decrement().await;
+        tracker.decrement().await;
     }
 
     #[test]

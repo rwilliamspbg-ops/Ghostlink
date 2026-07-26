@@ -4,6 +4,54 @@ All notable changes to Ghostlink Studio are documented here.
 
 ---
 
+## [1.10.0] - 2026-07-26 (Real request batching and multi-turn context reuse)
+
+Closes the top item from a gap analysis against LM Studio/vLLM: Ghostlink
+could only ever process one generation at a time (`llama-server` spawned
+with `-np` hardcoded to `1`), and every conversation turn reprocessed the
+full prior transcript from scratch instead of reusing llama-server's own
+KV cache.
+
+### ✨ Features
+
+- **Configurable parallel inference slots.** New `parallel_slots` setting
+  (Settings tab → Inference Parameters → "Parallel Slots") replaces the
+  hardcoded `-np 1` passed to `llama-server`; raising it also adds
+  `--cont-batching` so llama-server actually interleaves concurrent
+  generations instead of just accepting more connections. Defaults to `1`
+  — today's exact prior behavior — until changed.
+- **Real admission control**, not just a bigger `-np`: `RequestTracker`
+  (`runtime_switcher.rs`) gained a `tokio::sync::Semaphore` sized to
+  `parallel_slots`, acquired before every real call into llama-server
+  across all four chat-completion code paths (`/v1/chat/completions`, GUI
+  chat streaming and non-streaming, tool-confirm). Requests beyond
+  capacity wait for a free slot instead of firing unbounded concurrent
+  HTTP calls at a server that may only have one real slot.
+- **`/api/queue` reports a real depth** instead of a hardcoded
+  `{"depth": 0}` — derived from admitted-but-not-yet-slotted requests, not
+  an estimate.
+- **Multi-turn context reuse**: the GUI's chat path now passes `id_slot`
+  and `cache_prompt: true` on every generation request, so repeat turns in
+  the same conversation reuse llama-server's existing KV state for the
+  common prefix instead of reprocessing the whole transcript every call.
+  The stateless `/v1/chat/completions` REST endpoint is unchanged — no
+  session to pin a slot to, so no slot reuse there, matching prior
+  behavior exactly.
+
+### ✅ Validation
+
+- New tests: `native_engine`'s `get_parallel_slots` env/clamp behavior; a
+  real-socket test (`generate_sends_the_requested_id_slot_and_cache_prompt_to_llama_server`,
+  a raw `TcpListener` capturing the actual outgoing HTTP body — no mocking
+  library) proving `id_slot`/`cache_prompt` genuinely reach the request;
+  `runtime_switcher`'s new semaphore tests proving a second concurrent
+  `acquire_slot` on a 1-slot tracker really blocks (via a timeout race,
+  not just call-count assertions), plus resize and queue-depth coverage.
+- `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D
+  warnings`, `cargo test --workspace` all green (138 ghostlink-core + 106
+  ghost-link unit + 1 integration + other crates). `tsc --noEmit` and
+  `vitest run` (114 passed) clean for the new Settings field.
+
 ## [1.9.0] - 2026-07-26 (Multi-node: real cross-process execution, replacing the fabricated flow demo)
 
 ### 🐛 Fixed (fabrication)

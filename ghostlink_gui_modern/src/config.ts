@@ -20,6 +20,7 @@ export const AppConfigSchema = z.object({
   /** Token budget for conversation *history* sent to the model — distinct
    *  from `max_tokens`, which caps the length of a single response. */
   conversation_token_limit: z.number().int().min(256).max(16384).step(128).default(3072),
+  parallel_slots: z.number().int().min(1).max(64).default(1),
   chat_exec_tokens: z.number().int().min(64).max(8192).step(64).default(512),
   chat_micro_batch: z.number().int().min(1).max(32).default(1),
   tcp_max_inflight: z.number().int().min(16).max(4096).step(16).default(256),
@@ -43,6 +44,7 @@ export const defaultConfig: AppConfig = {
   repeat_penalty: 1.1,
   max_tokens: 2048,
   conversation_token_limit: 3072,
+  parallel_slots: 1,
   chat_exec_tokens: 512,
   chat_micro_batch: 1,
   tcp_max_inflight: 256,
@@ -119,6 +121,7 @@ export const RuntimeSettingsSchema = z.object({
   repeat_penalty: z.number(),
   max_tokens: z.number(),
   conversation_token_limit: z.number(),
+  parallel_slots: z.number(),
   chat_exec_tokens: z.number(),
   chat_micro_batch: z.number(),
   tcp_max_inflight: z.number(),

@@ -466,6 +466,13 @@ export const SettingsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
             {/* Model Section */}
             <Section title="Inference Parameters" icon={Server}>
               <SliderField
+                label="Parallel Slots"
+                desc="Concurrent llama-server inference slots. 1 processes one generation at a time (today's default); raising it lets the server handle multiple requests concurrently instead of queueing them, at the cost of splitting VRAM/context across slots. Takes effect on the next model load."
+                value={settings.parallel_slots}
+                min={1} max={16} step={1}
+                onChange={(v) => update('parallel_slots', v)}
+              />
+              <SliderField
                 label="Chat Exec Tokens"
                 desc="Execution token budget per chat request"
                 value={settings.chat_exec_tokens}

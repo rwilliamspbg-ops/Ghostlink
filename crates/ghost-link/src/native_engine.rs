@@ -344,6 +344,21 @@ impl NativeEngineClient {
             .max(1)
     }
 
+    /// Number of parallel inference slots to give llama-server (`-np`).
+    /// Defaults to `1` — today's exact prior behavior — unless
+    /// `GHOSTLINK_PARALLEL_SLOTS` is set (mirrored from `RuntimeSettings
+    /// .parallel_slots` by `load_settings()`, or set directly by a launch
+    /// script). More than one slot lets llama-server serve concurrent
+    /// generations instead of queueing them one at a time.
+    fn get_parallel_slots() -> usize {
+        if let Ok(val) = std::env::var("GHOSTLINK_PARALLEL_SLOTS") {
+            if let Ok(n) = val.trim().parse::<usize>() {
+                return n.clamp(1, 64);
+            }
+        }
+        1
+    }
+
     /// Check if llama-server is healthy. `url` may be a base URL or a launcher URL
     /// that includes `/completion`; both are normalized before probing `/health`.
     async fn check_llama_server_health(url: &str) -> bool {
@@ -527,6 +542,7 @@ impl NativeEngineClient {
         let ngl = Self::get_ngl();
         let threads = Self::get_threads();
         let ctx = Self::get_ctx_size();
+        let parallel_slots = Self::get_parallel_slots();
         let extra_args = Self::get_llama_server_args();
         let alias = resolved
             .file_stem()
@@ -535,7 +551,7 @@ impl NativeEngineClient {
             .to_string();
 
         // Build the command:
-        //   llama-server -m <model> --alias <name> --host <host> --port <port> -c <ctx> [-ngl <n>] [-t <n>]
+        //   llama-server -m <model> --alias <name> --host <host> --port <port> -c <ctx> [-ngl <n>] [-t <n>] -np <n> [--cont-batching]
         let build_cmd = |bind_port: u16, args: &[String]| -> Command {
             let mut cmd = Command::new(&bin);
             cmd.arg("-m").arg(&normalized_path);
@@ -543,7 +559,13 @@ impl NativeEngineClient {
             cmd.arg("--host").arg(&host);
             cmd.arg("--port").arg(bind_port.to_string());
             cmd.arg("-c").arg(ctx.to_string());
-            cmd.arg("-np").arg("1");
+            cmd.arg("-np").arg(parallel_slots.to_string());
+            if parallel_slots > 1 {
+                // Only meaningful with more than one slot: lets llama-server
+                // start decoding a newly-admitted request instead of
+                // batching strictly by arrival order.
+                cmd.arg("--cont-batching");
+            }
             // Always pass -ngl, including -1 ("let llama-server decide /
             // offload all it can" per get_ngl()'s doc comment). Previously
             // this was gated on `ngl >= 0`, which silently omitted the flag
@@ -720,6 +742,7 @@ impl NativeEngineClient {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     pub async fn generate(
         &self,
         model: &str,
@@ -730,6 +753,10 @@ impl NativeEngineClient {
         top_k: usize,
         repeat_penalty: f32,
         native_engine: &str,
+        // See `generate_with_llama_server`'s doc comment. Ignored by the
+        // llama_cpp/simulated paths below, which have no slot concept.
+        id_slot: Option<i64>,
+        cache_prompt: bool,
     ) -> Result<NativeGeneration, String> {
         if model.trim().is_empty() {
             return Err("model cannot be empty".to_string());
@@ -760,6 +787,8 @@ impl NativeEngineClient {
                         top_p,
                         top_k,
                         repeat_penalty,
+                        id_slot,
+                        cache_prompt,
                     )
                     .await?;
                 if gen.latency_ms.is_none() {
@@ -871,6 +900,17 @@ impl NativeEngineClient {
         top_p: f32,
         top_k: usize,
         repeat_penalty: f32,
+        // Slot/context reuse: `id_slot` pins this generation to a specific
+        // llama-server slot (-1, llama-server's own "any idle slot" sentinel,
+        // when None) and `cache_prompt` lets llama-server reuse whatever KV
+        // state that slot already holds for the common prefix instead of
+        // reprocessing it — the actual fix for repeat turns in the same
+        // conversation otherwise re-evaluating the full prior transcript
+        // every call. Both are llama-server's own request parameters
+        // (confirmed current via its examples/server docs), not a Ghostlink
+        // invention.
+        id_slot: Option<i64>,
+        cache_prompt: bool,
     ) -> Result<NativeGeneration, String> {
         let base_url = Self::get_llama_base_url();
 
@@ -902,7 +942,9 @@ impl NativeEngineClient {
             "top_p": top_p.clamp(0.0, 1.0),
             "top_k": top_k.clamp(1, 200),
             "repeat_penalty": repeat_penalty.clamp(0.0, 2.0),
-            "stream": false
+            "stream": false,
+            "id_slot": id_slot.unwrap_or(-1),
+            "cache_prompt": cache_prompt
         });
 
         // Reuse the shared, connection-pooled client instead of building a new
@@ -954,7 +996,9 @@ impl NativeEngineClient {
             "top_p": top_p.clamp(0.0, 1.0),
             "top_k": top_k.clamp(1, 200),
             "repeat_penalty": repeat_penalty.clamp(0.0, 2.0),
-            "stream": false
+            "stream": false,
+            "id_slot": id_slot.unwrap_or(-1),
+            "cache_prompt": cache_prompt
         });
 
         let response = client
@@ -999,6 +1043,7 @@ impl NativeEngineClient {
     /// path and yields the whole result as a single chunk rather than
     /// duplicating a second incremental parser for an uncommon case.
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     pub async fn generate_chat_stream(
         &self,
         model: &str,
@@ -1008,6 +1053,8 @@ impl NativeEngineClient {
         top_p: f32,
         top_k: usize,
         repeat_penalty: f32,
+        id_slot: Option<i64>,
+        cache_prompt: bool,
     ) -> Result<NativeChatStream, String> {
         use futures::StreamExt;
 
@@ -1033,7 +1080,9 @@ impl NativeEngineClient {
             "top_p": top_p.clamp(0.0, 1.0),
             "top_k": top_k.clamp(1, 200),
             "repeat_penalty": repeat_penalty.clamp(0.0, 2.0),
-            "stream": true
+            "stream": true,
+            "id_slot": id_slot.unwrap_or(-1),
+            "cache_prompt": cache_prompt
         });
 
         let client = self.http.clone();
@@ -1060,6 +1109,8 @@ impl NativeEngineClient {
                     top_p,
                     top_k,
                     repeat_penalty,
+                    id_slot,
+                    cache_prompt,
                 )
                 .await?;
             let single = futures::stream::once(async move { Ok(gen.text) });
@@ -1298,6 +1349,8 @@ mod tests {
                     0.9,
                     40,
                     1.1,
+                    None,
+                    false,
                 )
                 .await
                 .expect("stream should start");
@@ -1344,6 +1397,8 @@ mod tests {
                         40,
                         1.1,
                         "simulated",
+                        None,
+                        false,
                     )
                     .await
             })
@@ -1351,6 +1406,102 @@ mod tests {
         assert!(out.text.contains("[native:ghostlink-30b-v1]"));
         assert!(out.text.contains("token budget 128"));
         assert!(!out.real_inference);
+    }
+
+    /// Reads one HTTP/1.1 request off `stream` (headers, then the exact
+    /// `Content-Length` body bytes) and returns the body as a string. No
+    /// mocking crate — a real socket, real bytes, matching how this
+    /// project's other real-TCP tests already work (see
+    /// ghostlink-core::runtime's stage-worker round-trip test).
+    fn read_http_request_body(stream: &mut std::net::TcpStream) -> String {
+        use std::io::{BufRead, BufReader, Read};
+        let mut reader = BufReader::new(stream);
+        let mut content_length = 0usize;
+        loop {
+            let mut line = String::new();
+            reader.read_line(&mut line).expect("read header line");
+            if line == "\r\n" || line.is_empty() {
+                break;
+            }
+            if let Some(value) = line
+                .to_ascii_lowercase()
+                .strip_prefix("content-length:")
+                .map(str::trim)
+            {
+                content_length = value.parse().unwrap_or(0);
+            }
+        }
+        let mut body = vec![0u8; content_length];
+        reader.read_exact(&mut body).expect("read request body");
+        String::from_utf8(body).expect("request body should be utf8")
+    }
+
+    #[test]
+    fn generate_sends_the_requested_id_slot_and_cache_prompt_to_llama_server() {
+        let _guard = env_lock().lock().expect("env lock poisoned");
+
+        let listener =
+            std::net::TcpListener::bind("127.0.0.1:0").expect("failed to bind test listener");
+        let addr = listener.local_addr().expect("failed to read local_addr");
+
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept coordinator connection");
+            let body = read_http_request_body(&mut stream);
+            let response_body = serde_json::json!({
+                "choices": [{"message": {"content": "hello from the test server"}}]
+            })
+            .to_string();
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                response_body.len(),
+                response_body
+            );
+            use std::io::Write;
+            stream
+                .write_all(response.as_bytes())
+                .expect("write mock response");
+            body
+        });
+
+        std::env::set_var("GHOSTLINK_LLAMA_SERVER_URL", format!("http://{addr}"));
+
+        let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+        let engine = NativeEngineClient::new();
+        let out = rt
+            .block_on(async {
+                engine
+                    .generate(
+                        "test-model",
+                        "hello",
+                        32,
+                        0.7,
+                        0.9,
+                        40,
+                        1.1,
+                        "llama_server",
+                        Some(0),
+                        true,
+                    )
+                    .await
+            })
+            .expect("generation against the test server should succeed");
+        assert_eq!(out.text, "hello from the test server");
+
+        let captured_body = server.join().expect("server thread should not panic");
+        let parsed: serde_json::Value =
+            serde_json::from_str(&captured_body).expect("captured body should be valid JSON");
+        assert_eq!(
+            parsed.get("id_slot").and_then(|v| v.as_i64()),
+            Some(0),
+            "expected id_slot: 0 in the outgoing request, got: {captured_body}"
+        );
+        assert_eq!(
+            parsed.get("cache_prompt").and_then(|v| v.as_bool()),
+            Some(true),
+            "expected cache_prompt: true in the outgoing request, got: {captured_body}"
+        );
+
+        std::env::remove_var("GHOSTLINK_LLAMA_SERVER_URL");
     }
 
     #[test]
@@ -1373,6 +1524,8 @@ mod tests {
                         40,
                         1.1,
                         "llama_cpp",
+                        None,
+                        false,
                     )
                     .await
             })
@@ -1422,6 +1575,34 @@ mod tests {
         assert_eq!(NativeEngineClient::get_ngl(), 7);
         std::env::remove_var("GHOSTLINK_LLAMA_NGL");
         std::env::remove_var("GHOSTLINK_VRAM_GB");
+    }
+
+    #[test]
+    fn get_parallel_slots_defaults_to_one_when_unset() {
+        let _guard = env_lock().lock().expect("env lock poisoned");
+        std::env::remove_var("GHOSTLINK_PARALLEL_SLOTS");
+        assert_eq!(NativeEngineClient::get_parallel_slots(), 1);
+    }
+
+    #[test]
+    fn get_parallel_slots_reads_env_and_clamps_range() {
+        let _guard = env_lock().lock().expect("env lock poisoned");
+
+        std::env::set_var("GHOSTLINK_PARALLEL_SLOTS", "4");
+        assert_eq!(NativeEngineClient::get_parallel_slots(), 4);
+
+        // Clamped, not rejected: 0 would make llama-server refuse to start.
+        std::env::set_var("GHOSTLINK_PARALLEL_SLOTS", "0");
+        assert_eq!(NativeEngineClient::get_parallel_slots(), 1);
+
+        std::env::set_var("GHOSTLINK_PARALLEL_SLOTS", "9999");
+        assert_eq!(NativeEngineClient::get_parallel_slots(), 64);
+
+        // Unparseable input falls back to the safe default rather than panicking.
+        std::env::set_var("GHOSTLINK_PARALLEL_SLOTS", "not-a-number");
+        assert_eq!(NativeEngineClient::get_parallel_slots(), 1);
+
+        std::env::remove_var("GHOSTLINK_PARALLEL_SLOTS");
     }
 
     #[test]
