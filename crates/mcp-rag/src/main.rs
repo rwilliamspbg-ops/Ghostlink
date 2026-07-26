@@ -40,6 +40,8 @@ struct IndexEntry {
     source: Option<String>,
     text: String,
     embedding: Vec<f32>,
+    #[serde(default)]
+    norm: f32,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -49,10 +51,16 @@ struct RagIndex {
 
 impl RagIndex {
     fn load(path: &std::path::Path) -> Self {
-        std::fs::read_to_string(path)
+        let mut index: Self = std::fs::read_to_string(path)
             .ok()
             .and_then(|data| serde_json::from_str(&data).ok())
-            .unwrap_or_default()
+            .unwrap_or_default();
+        for entry in &mut index.entries {
+            if entry.norm == 0.0 && !entry.embedding.is_empty() {
+                entry.norm = entry.embedding.iter().map(|x| x * x).sum::<f32>().sqrt();
+            }
+        }
+        index
     }
 
     fn save(&self, path: &std::path::Path) -> std::io::Result<()> {
@@ -93,30 +101,24 @@ fn chunk_text(text: &str, max_chars: usize) -> Vec<String> {
     chunks
 }
 
-/// Helper to calculate cosine similarity using a precomputed query embedding norm.
-/// Also uses a single-pass loop to calculate the dot product and entry's norm square simultaneously,
-/// reducing memory traversals and improving CPU cache locality.
-fn cosine_similarity_precomputed(a: &[f32], b: &[f32], norm_b: f32) -> f32 {
-    if a.len() != b.len() || a.is_empty() || norm_b == 0.0 {
+/// Helper to calculate cosine similarity using precomputed norms for both embeddings.
+/// This reduces the computation to a single-pass dot product loop with absolutely no sqrt or sum of squares.
+fn cosine_similarity_precomputed(a: &[f32], b: &[f32], norm_a: f32, norm_b: f32) -> f32 {
+    if a.len() != b.len() || a.is_empty() || norm_a == 0.0 || norm_b == 0.0 {
         return 0.0;
     }
     let mut dot = 0.0;
-    let mut norm_a_sq = 0.0;
     for (&x, &y) in a.iter().zip(b) {
         dot += x * y;
-        norm_a_sq += x * x;
-    }
-    let norm_a = norm_a_sq.sqrt();
-    if norm_a == 0.0 {
-        return 0.0;
     }
     dot / (norm_a * norm_b)
 }
 
 #[allow(dead_code)]
 fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
+    let norm_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
     let norm_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
-    cosine_similarity_precomputed(a, b, norm_b)
+    cosine_similarity_precomputed(a, b, norm_a, norm_b)
 }
 
 /// Ranks `entries` against `query_embedding`, highest similarity first,
@@ -135,7 +137,7 @@ fn rank<'a>(
         .iter()
         .map(|e| {
             (
-                cosine_similarity_precomputed(&e.embedding, query_embedding, norm_b),
+                cosine_similarity_precomputed(&e.embedding, query_embedding, e.norm, norm_b),
                 e,
             )
         })
@@ -229,12 +231,14 @@ impl Rag {
                 Ok(e) => e,
                 Err(err) => return err,
             };
+            let norm = embedding.iter().map(|x| x * x).sum::<f32>().sqrt();
             let mut index = self.index.lock().await;
             index.entries.push(IndexEntry {
                 id: format!("{doc_id}#{i}"),
                 source: source.clone(),
                 text: chunk.clone(),
                 embedding,
+                norm,
             });
             indexed += 1;
         }
@@ -363,11 +367,13 @@ mod tests {
     }
 
     fn entry(id: &str, embedding: Vec<f32>) -> IndexEntry {
+        let norm = embedding.iter().map(|x| x * x).sum::<f32>().sqrt();
         IndexEntry {
             id: id.to_string(),
             source: Some("test".to_string()),
             text: format!("text for {id}"),
             embedding,
+            norm,
         }
     }
 
