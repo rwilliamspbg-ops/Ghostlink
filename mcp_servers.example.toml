@@ -146,6 +146,24 @@ OLLAMA_URL = "http://127.0.0.1:11434"
 OLLAMA_VISION_MODEL = "llava"
 
 [[mcp_servers]]
+name = "rag"
+slot = ""
+# Local retrieval-augmented generation: chunks + embeds documents via a local
+# Ollama embedding model into a brute-force cosine-similarity index (JSON
+# file, no external vector DB) so chat can look them up later with search().
+# Disabled by default: enable once you've `ollama pull`ed an embedding model.
+enabled = false
+transport = "stdio"
+command = "target/release/mcp-rag.exe"
+args = []
+requires_confirmation = false
+timeout_secs = 30
+
+[mcp_servers.env]
+OLLAMA_URL = "http://127.0.0.1:11434"
+OLLAMA_EMBED_MODEL = "nomic-embed-text"
+
+[[mcp_servers]]
 name = "docker-mcp-gateway"
 slot = ""
 # Aggregates Docker MCP Toolkit's whole catalog behind one connection. Disabled
