@@ -93,17 +93,30 @@ fn chunk_text(text: &str, max_chars: usize) -> Vec<String> {
     chunks
 }
 
-fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
-    if a.len() != b.len() || a.is_empty() {
+/// Helper to calculate cosine similarity using a precomputed query embedding norm.
+/// Also uses a single-pass loop to calculate the dot product and entry's norm square simultaneously,
+/// reducing memory traversals and improving CPU cache locality.
+fn cosine_similarity_precomputed(a: &[f32], b: &[f32], norm_b: f32) -> f32 {
+    if a.len() != b.len() || a.is_empty() || norm_b == 0.0 {
         return 0.0;
     }
-    let dot: f32 = a.iter().zip(b).map(|(x, y)| x * y).sum();
-    let norm_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
-    let norm_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
-    if norm_a == 0.0 || norm_b == 0.0 {
+    let mut dot = 0.0;
+    let mut norm_a_sq = 0.0;
+    for (&x, &y) in a.iter().zip(b) {
+        dot += x * y;
+        norm_a_sq += x * x;
+    }
+    let norm_a = norm_a_sq.sqrt();
+    if norm_a == 0.0 {
         return 0.0;
     }
     dot / (norm_a * norm_b)
+}
+
+#[allow(dead_code)]
+fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
+    let norm_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
+    cosine_similarity_precomputed(a, b, norm_b)
 }
 
 /// Ranks `entries` against `query_embedding`, highest similarity first,
@@ -114,9 +127,18 @@ fn rank<'a>(
     query_embedding: &[f32],
     top_k: usize,
 ) -> Vec<(f32, &'a IndexEntry)> {
+    let norm_b: f32 = query_embedding.iter().map(|x| x * x).sum::<f32>().sqrt();
+    if norm_b == 0.0 {
+        return Vec::new();
+    }
     let mut scored: Vec<(f32, &IndexEntry)> = entries
         .iter()
-        .map(|e| (cosine_similarity(&e.embedding, query_embedding), e))
+        .map(|e| {
+            (
+                cosine_similarity_precomputed(&e.embedding, query_embedding, norm_b),
+                e,
+            )
+        })
         .collect();
     scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
     scored.truncate(top_k);
