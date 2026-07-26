@@ -25,6 +25,11 @@ pub struct HostSnapshot {
     pub total_memory_gb: f32,
     pub used_memory_gb: f32,
     pub total_vram_gb: f32,
+    /// GPU die temperature in °C, when the active probe reports one.
+    /// `None` on the Windows generic-fallback path (`try_windows_gpu_counters`)
+    /// — there's no standard cross-vendor perf counter for GPU temperature the
+    /// way there is for utilization, only nvidia-smi/rocm-smi expose it.
+    pub gpu_temp_c: Option<f32>,
 }
 
 impl Default for HostSnapshot {
@@ -37,6 +42,7 @@ impl Default for HostSnapshot {
             total_memory_gb: 0.0,
             used_memory_gb: 0.0,
             total_vram_gb: 0.0,
+            gpu_temp_c: None,
         }
     }
 }
@@ -167,7 +173,7 @@ fn percentile_sorted(sorted: &[f32], q: f32) -> f32 {
 struct HostSamplerState {
     snap: RwLock<HostSnapshot>,
     started: AtomicBool,
-    gpu_cache: Mutex<(Instant, f32, bool, f32)>, // ts, util, available, vram_gb
+    gpu_cache: Mutex<(Instant, f32, bool, f32, Option<f32>)>, // ts, util, available, vram_gb, temp_c
 }
 
 static HOST: OnceLock<HostSamplerState> = OnceLock::new();
@@ -176,7 +182,13 @@ fn host_state() -> &'static HostSamplerState {
     HOST.get_or_init(|| HostSamplerState {
         snap: RwLock::new(HostSnapshot::default()),
         started: AtomicBool::new(false),
-        gpu_cache: Mutex::new((Instant::now() - Duration::from_secs(60), 0.0, false, 0.0)),
+        gpu_cache: Mutex::new((
+            Instant::now() - Duration::from_secs(60),
+            0.0,
+            false,
+            0.0,
+            None,
+        )),
     })
 }
 
@@ -233,7 +245,7 @@ fn refresh_host_once() {
     let total_memory_gb = (total / (1024.0 * 1024.0 * 1024.0)) as f32;
     let used_memory_gb = (used / (1024.0 * 1024.0 * 1024.0)) as f32;
 
-    let (gpu, gpu_available, total_vram_gb) = sample_gpu_cached();
+    let (gpu, gpu_available, total_vram_gb, gpu_temp_c) = sample_gpu_cached();
 
     if let Ok(mut snap) = host_state().snap.write() {
         *snap = HostSnapshot {
@@ -244,36 +256,37 @@ fn refresh_host_once() {
             total_memory_gb,
             used_memory_gb,
             total_vram_gb,
+            gpu_temp_c,
         };
     }
 }
 
-fn sample_gpu_cached() -> (f32, bool, f32) {
+fn sample_gpu_cached() -> (f32, bool, f32, Option<f32>) {
     let state = host_state();
     if let Ok(cache) = state.gpu_cache.lock() {
         if cache.0.elapsed() < Duration::from_millis(GPU_CACHE_MS) {
-            return (cache.1, cache.2, cache.3);
+            return (cache.1, cache.2, cache.3, cache.4);
         }
     }
-    let (util, available, vram) = sample_gpu_util();
+    let (util, available, vram, temp_c) = sample_gpu_util();
     if let Ok(mut cache) = state.gpu_cache.lock() {
-        *cache = (Instant::now(), util, available, vram);
+        *cache = (Instant::now(), util, available, vram, temp_c);
     }
-    (util, available, vram)
+    (util, available, vram, temp_c)
 }
 
-fn sample_gpu_util() -> (f32, bool, f32) {
-    if let Some((util, vram)) = try_nvidia_smi() {
-        return (util, true, vram);
+fn sample_gpu_util() -> (f32, bool, f32, Option<f32>) {
+    if let Some((util, vram, temp_c)) = try_nvidia_smi() {
+        return (util, true, vram, temp_c);
     }
-    if let Some((util, vram)) = try_rocm_smi() {
-        return (util, true, vram);
+    if let Some((util, vram, temp_c)) = try_rocm_smi() {
+        return (util, true, vram, temp_c);
     }
     #[cfg(target_os = "windows")]
-    if let Some((util, vram)) = try_windows_gpu_counters() {
-        return (util, true, vram);
+    if let Some((util, vram, temp_c)) = try_windows_gpu_counters() {
+        return (util, true, vram, temp_c);
     }
-    (0.0, false, 0.0)
+    (0.0, false, 0.0, None)
 }
 
 /// Windows-native fallback GPU utilization for hosts with no nvidia-smi/rocm-smi
@@ -292,8 +305,13 @@ fn sample_gpu_util() -> (f32, bool, f32) {
 /// picking up). No llama-server process running just means 0% — not a probe
 /// failure — so this still reports gpu_available=true (there IS a GPU here,
 /// it's simply idle).
+/// No temperature: Windows exposes GPU utilization for any vendor via the
+/// "GPU Engine" perf counter category used below, but there's no equivalent
+/// vendor-neutral counter for die temperature — that third tuple element is
+/// always `None` here (nvidia-smi/rocm-smi, tried first in `sample_gpu_util`,
+/// cover the vendors that do expose it).
 #[cfg(target_os = "windows")]
-fn try_windows_gpu_counters() -> Option<(f32, f32)> {
+fn try_windows_gpu_counters() -> Option<(f32, f32, Option<f32>)> {
     let output = Command::new("powershell")
         .args([
             "-NoProfile",
@@ -323,7 +341,7 @@ fn try_windows_gpu_counters() -> Option<(f32, f32)> {
     } else {
         trimmed.parse().ok()?
     };
-    Some((util.clamp(0.0, 100.0), windows_vram_gb_cached()))
+    Some((util.clamp(0.0, 100.0), windows_vram_gb_cached(), None))
 }
 
 /// VRAM (really: usable GPU memory budget) for the Windows fallback path.
@@ -361,10 +379,10 @@ fn windows_vram_from_llama_list_devices() -> Option<f32> {
     None
 }
 
-fn try_nvidia_smi() -> Option<(f32, f32)> {
+fn try_nvidia_smi() -> Option<(f32, f32, Option<f32>)> {
     let output = Command::new("nvidia-smi")
         .args([
-            "--query-gpu=utilization.gpu,memory.total",
+            "--query-gpu=utilization.gpu,memory.total,temperature.gpu",
             "--format=csv,noheader,nounits",
         ])
         .output()
@@ -374,17 +392,19 @@ fn try_nvidia_smi() -> Option<(f32, f32)> {
     }
     let text = String::from_utf8_lossy(&output.stdout);
     let line = text.lines().next()?.trim();
-    // e.g. "12, 8192"
+    // e.g. "12, 8192, 47"
     let mut parts = line.split(',').map(|s| s.trim());
     let util: f32 = parts.next()?.parse().ok()?;
     let mem_mib: f32 = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0.0);
-    Some((util.clamp(0.0, 100.0), mem_mib / 1024.0))
+    let temp_c: Option<f32> = parts.next().and_then(|s| s.parse().ok());
+    Some((util.clamp(0.0, 100.0), mem_mib / 1024.0, temp_c))
 }
 
-fn try_rocm_smi() -> Option<(f32, f32)> {
-    // Best-effort: rocm-smi --showuse prints GPU use %
+fn try_rocm_smi() -> Option<(f32, f32, Option<f32>)> {
+    // Best-effort: rocm-smi --showuse prints GPU use %, --showtemp prints
+    // one or more "Temperature (Sensor ...) (C): NN.N" lines per GPU.
     let output = Command::new("rocm-smi")
-        .args(["--showuse", "--showmeminfo", "vram"])
+        .args(["--showuse", "--showmeminfo", "vram", "--showtemp"])
         .output()
         .ok()?;
     if !output.status.success() {
@@ -393,6 +413,7 @@ fn try_rocm_smi() -> Option<(f32, f32)> {
     let text = String::from_utf8_lossy(&output.stdout);
     let mut util = None;
     let mut vram_gb = 0.0_f32;
+    let mut temp_c = None;
     for line in text.lines() {
         let lower = line.to_ascii_lowercase();
         if lower.contains("gpu use") || lower.contains("gpu%") {
@@ -406,8 +427,13 @@ fn try_rocm_smi() -> Option<(f32, f32)> {
                 vram_gb = if num > 256.0 { num / 1024.0 } else { num };
             }
         }
+        if lower.contains("temperature") {
+            if let Some(num) = extract_first_number(line) {
+                temp_c = Some(num);
+            }
+        }
     }
-    util.map(|u| (u, vram_gb))
+    util.map(|u| (u, vram_gb, temp_c))
 }
 
 fn extract_first_number(s: &str) -> Option<f32> {

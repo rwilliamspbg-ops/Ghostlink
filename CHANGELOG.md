@@ -4,6 +4,67 @@ All notable changes to Ghostlink Studio are documented here.
 
 ---
 
+## [1.10.0] - 2026-07-25 (Dashboard: real backend health, cluster load, CSV export)
+
+Third of four PRs implementing the remaining roadmap items (voice input,
+RAG, dashboard, multi-node — see voice/RAG's own CHANGELOG entries for
+context); this one targeted "live dashboard improvements."
+
+### 🐛 Correctness
+
+- **`BackendRegistry::get_status()` returned hardcoded fake data.**
+  `health` was unconditionally `"healthy"` (even for a backend
+  `available_backends()` doesn't consider available) and
+  `utilization`/`temperature` were always `None` with literal `// TODO`
+  comments, despite `host_metrics.rs` already having working
+  `nvidia-smi`/`rocm-smi` probes it could reuse instead of hardcoding.
+  `health` now reflects real backend availability; `utilization`/
+  `temperature` are populated from the same host-wide GPU probe
+  `/api/metrics` already uses, but only when the queried backend is both
+  the *active* one and GPU-backed — attaching a live reading to an inactive
+  or CPU backend would be presenting a number nothing actually measured
+  for it.
+- **`host_metrics.rs` gains GPU temperature probing** (previously not
+  captured anywhere): `try_nvidia_smi`/`try_rocm_smi` now also query
+  `temperature.gpu`/`--showtemp` in the same CLI call. The Windows
+  generic-fallback path (DirectML/Vulkan iGPUs with no nvidia-smi/rocm-smi)
+  still returns `None` for temperature — there's no vendor-neutral Windows
+  perf counter for it the way there is for utilization — documented in
+  code rather than left as a silent gap.
+
+### ✨ Features
+
+- **New "Backend Health" panel** in the Metrics tab surfacing the
+  now-real utilization/temperature — previously dead data (the
+  `/api/backends/:name/status` endpoint existed but nothing in the UI ever
+  called it).
+- **New "Cluster Load" gauge**, shown only when more than one worker is
+  connected — the average of each worker's `load` figure from
+  `/api/workers` (already centrally polled by `App.tsx`). Note this is a
+  load-percentage aggregate, not a throughput one: `/api/workers` has no
+  per-worker tok/s figure to sum, so "Cluster Throughput" would have been
+  a fabricated label for data that doesn't exist.
+- **CSV export** for the in-memory metrics history — a new header button,
+  disabled when there's no history yet.
+
+### ✅ Validation
+
+- `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D
+  warnings`, `cargo test --workspace` (284 passed, 0 failed, 6 ignored;
+  3 new backend_registry tests constructing a registry directly —
+  bypassing the real hardware probe in `discover()` — so the
+  health/availability and no-fake-GPU-readings assertions are deterministic
+  on any CI runner regardless of what GPU, if any, is present).
+- `tsc --noEmit` clean, `vitest run` (112 passed, 0 failed; 6 new
+  `MetricsTab` tests: Cluster Load gauge visibility and averaging, Backend
+  Health panel rendering real data, "not monitored"/"not available"
+  instead of fake numbers when a backend has no GPU reading, CSV export
+  button's disabled state).
+- Manually verified in a live browser with no backend running: the tab
+  renders cleanly with graceful empty states (no crash), Cluster Load and
+  Backend Health correctly stay hidden with no data to show, and the CSV
+  export button renders correctly disabled.
+
 ## [1.7.1] - 2026-07-25 (Fix: concurrent model load/unload requests corrupted state and could kill llama-server)
 
 Chasing a report of chat suddenly failing with `error sending request for url

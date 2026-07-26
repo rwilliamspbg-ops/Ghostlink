@@ -1,5 +1,5 @@
-import React, { useMemo } from 'react';
-import { RefreshCw, Activity, Cpu, Database, Zap, Clock, ShieldCheck, Server, TrendingUp } from 'lucide-react';
+import React, { useEffect, useMemo, useState } from 'react';
+import { RefreshCw, Activity, Cpu, Database, Zap, Clock, ShieldCheck, Server, TrendingUp, HeartPulse, Thermometer, Download, Network } from 'lucide-react';
 import {
   ResponsiveContainer,
   LineChart,
@@ -13,9 +13,20 @@ import {
 import { useAppStore } from '../store';
 import { EmptyState } from './StatusViews';
 
+interface BackendStatus {
+  backend?: string;
+  device_name?: string;
+  vram_gb?: number | null;
+  status?: string;
+  health?: string;
+  utilization?: number | null;
+  temperature?: number | null;
+}
+
 export const MetricsTab: React.FC<{ api: any }> = React.memo(({ api }) => {
-  const { metrics, setMetrics, metricsHistory } = useAppStore();
+  const { metrics, setMetrics, metricsHistory, workers } = useAppStore();
   const [loading, setLoading] = React.useState(false);
+  const [backendStatus, setBackendStatus] = useState<BackendStatus | null>(null);
 
   // App.tsx already polls metrics every 5s — only manual refresh here.
   const refreshMetrics = async () => {
@@ -28,6 +39,59 @@ export const MetricsTab: React.FC<{ api: any }> = React.memo(({ api }) => {
     } finally {
       setLoading(false);
     }
+  };
+
+  // Backend health/utilization/temperature aren't part of the shared
+  // /api/metrics poll (App.tsx) — a separate, tab-local poll, same 5s
+  // cadence WorkersTab.tsx uses for its own local data.
+  useEffect(() => {
+    let cancelled = false;
+    const refreshBackendStatus = async () => {
+      const backends = await api.getBackends();
+      if (cancelled || backends.error || !backends.current) return;
+      const statusResult = await api.getBackendStatus(backends.current);
+      if (!cancelled && !statusResult.error && statusResult.status) {
+        setBackendStatus(statusResult.status);
+      }
+    };
+    refreshBackendStatus();
+    const interval = setInterval(refreshBackendStatus, 5000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [api]);
+
+  // Average per-worker load — only meaningful once there's more than one
+  // worker to aggregate across; /api/workers has no throughput figure (only
+  // `load` 0-100%), so this is a load aggregate, not a tok/s one.
+  const clusterLoad = useMemo(() => {
+    if (workers.length <= 1) return null;
+    const total = workers.reduce((sum, w) => sum + (w.load ?? 0), 0);
+    return total / workers.length;
+  }, [workers]);
+
+  const exportMetricsCsv = () => {
+    const header = 'time,throughput_tok_s,latency_p50_ms,latency_p95_ms,cpu_pct,memory_pct,gpu_pct';
+    const rows = metricsHistory.map((m) =>
+      [
+        new Date(m.t).toISOString(),
+        m.throughput ?? 0,
+        m.latency_p50 ?? 0,
+        m.latency_p95 ?? 0,
+        m.cpu ?? 0,
+        m.memory ?? 0,
+        m.gpu ?? 0,
+      ].join(',')
+    );
+    const csv = [header, ...rows].join('\n');
+    const blob = new Blob([csv], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `ghostlink-metrics-${new Date().toISOString().replace(/[:.]/g, '-')}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
   };
 
   const throughputHistory = useMemo(() => metricsHistory.map((m) => m.throughput ?? 0), [metricsHistory]);
@@ -78,14 +142,25 @@ export const MetricsTab: React.FC<{ api: any }> = React.memo(({ api }) => {
             {typeof metrics?.samples === 'number' ? ` · ${metrics.samples} samples` : ''}
           </p>
         </div>
-        <button
-          onClick={refreshMetrics}
-          className="p-2 rounded-lg hover:bg-slate-900 text-slate-400 hover:text-white transition"
-          title="Refresh metrics"
-          aria-label="Refresh metrics"
-        >
-          <RefreshCw size={18} className={loading ? 'animate-spin' : ''} aria-hidden="true" />
-        </button>
+        <div className="flex items-center gap-1">
+          <button
+            onClick={exportMetricsCsv}
+            disabled={metricsHistory.length === 0}
+            className="p-2 rounded-lg hover:bg-slate-900 text-slate-400 hover:text-white transition disabled:opacity-30 disabled:hover:bg-transparent"
+            title="Export metrics history as CSV"
+            aria-label="Export metrics history as CSV"
+          >
+            <Download size={18} aria-hidden="true" />
+          </button>
+          <button
+            onClick={refreshMetrics}
+            className="p-2 rounded-lg hover:bg-slate-900 text-slate-400 hover:text-white transition"
+            title="Refresh metrics"
+            aria-label="Refresh metrics"
+          >
+            <RefreshCw size={18} className={loading ? 'animate-spin' : ''} aria-hidden="true" />
+          </button>
+        </div>
       </div>
 
       <div className="flex-1 overflow-y-auto p-6">
@@ -128,7 +203,7 @@ export const MetricsTab: React.FC<{ api: any }> = React.memo(({ api }) => {
             />
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+          <div className={`grid grid-cols-1 md:grid-cols-3 ${clusterLoad !== null ? 'lg:grid-cols-4' : ''} gap-6`}>
             <GaugeCard label="CPU Utilization" value={metrics?.cpu ?? 0} icon={Cpu} color="text-emerald-400" />
             <GaugeCard label="Memory Usage" value={metrics?.memory ?? 0} icon={Database} color="text-purple-400" />
             <GaugeCard
@@ -138,7 +213,53 @@ export const MetricsTab: React.FC<{ api: any }> = React.memo(({ api }) => {
               color="text-blue-400"
               subtitle={gpuLabel}
             />
+            {clusterLoad !== null && (
+              <GaugeCard
+                label="Cluster Load"
+                value={clusterLoad}
+                icon={Network}
+                color="text-amber-400"
+                subtitle={`avg across ${workers.length} workers`}
+              />
+            )}
           </div>
+
+          {backendStatus && (
+            <div className="bg-slate-900/50 border border-slate-800 rounded-3xl p-6">
+              <h3 className="text-lg font-bold text-white mb-4 flex items-center gap-2">
+                <HeartPulse size={20} className="text-pink-500" aria-hidden="true" />
+                Backend Health
+              </h3>
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                <div>
+                  <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1">Device</p>
+                  <p className="text-sm text-slate-200 truncate">{backendStatus.device_name || backendStatus.backend || 'unknown'}</p>
+                </div>
+                <div>
+                  <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1">Health</p>
+                  <p className={`text-sm font-bold ${backendStatus.health === 'healthy' ? 'text-green-400' : 'text-red-400'}`}>
+                    {backendStatus.health ?? 'unknown'}
+                  </p>
+                </div>
+                <div>
+                  <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1 flex items-center gap-1">
+                    <ShieldCheck size={10} aria-hidden="true" /> Utilization
+                  </p>
+                  <p className="text-sm text-slate-200">
+                    {backendStatus.utilization != null ? `${backendStatus.utilization.toFixed(0)}%` : 'not monitored'}
+                  </p>
+                </div>
+                <div>
+                  <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1 flex items-center gap-1">
+                    <Thermometer size={10} aria-hidden="true" /> Temperature
+                  </p>
+                  <p className="text-sm text-slate-200">
+                    {backendStatus.temperature != null ? `${backendStatus.temperature.toFixed(0)}°C` : 'not available'}
+                  </p>
+                </div>
+              </div>
+            </div>
+          )}
 
           <div className="bg-slate-900/50 border border-slate-800 rounded-3xl p-6">
             <div className="flex items-baseline justify-between mb-4">
