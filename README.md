@@ -36,7 +36,7 @@ Route workloads across CPU, GPU, and NPU resources with explicit scheduling, har
 - [What Ghostlink brings](#what-ghostlink-brings)
 - [Why Ghostlink](#why-ghostlink)
 - [Quick Start](#quick-start)
-- [Hardware Detection](#hardware-detection)
+- [Hardware Detection & Compatibility](#hardware-detection--compatibility)
 - [Performance](#performance)
 - [Launch Scripts](#launch-scripts)
 - [Usage (Developer)](#usage-developer)
@@ -70,6 +70,8 @@ Use Ghostlink when you need:
 
 ## Quick Start
 
+Three commands, one launcher, no manual service wiring — `launch.bat` / `launch.sh` builds what's missing, starts every process, and opens the GUI.
+
 ### Windows
 
 **Prerequisites**
@@ -81,10 +83,11 @@ Use Ghostlink when you need:
 | **CMake** | For llama.cpp | `winget install Kitware.CMake` or https://cmake.org/download/ |
 | **Git** | For llama.cpp | `winget install Git.Git` |
 
-**Launch**
+**Clone and launch**
 
 ```powershell
-cd C:\Users\rwill\Ghostlink
+git clone https://github.com/rwilliamspbg-ops/Ghostlink.git
+cd Ghostlink
 
 # One-time backend build (if target\release\ghost-link.exe is missing, launch.bat builds it)
 cargo build --release -p ghost-link
@@ -97,7 +100,16 @@ This starts:
 - **llama-server** (inference, port **8080**)
 - **Ghostlink API** (chat / models / settings, port **8003**) — internal; the GUI does not call this directly
 - **Control-plane** (Go gateway: CORS, request logging, rate limiting, streaming-safe proxy, port **8000**) — GUI must use this port
-- **React frontend** at http://127.0.0.1:5173
+- **React frontend** at http://127.0.0.1:5173, opened automatically in your browser
+
+**Verify it's actually running** (skip if the browser tab already loaded cleanly):
+```powershell
+curl http://127.0.0.1:8000/health   # control-plane — GUI-facing gateway
+curl http://127.0.0.1:8003/health   # ghost-link API — should agree with the line above
+```
+Both should return a JSON body with a healthy status, not a connection error.
+
+Open http://127.0.0.1:5173 → **Models** → load a model (a small one like `Llama-3.2-1B-Instruct` loads in seconds and is a good first check) → **Chat**.
 
 Optional:
 ```powershell
@@ -108,31 +120,44 @@ $env:GHOSTLINK_INFERENCE_BACKEND="ollama"; .\launch.bat
 $env:GHOSTLINK_USE_WSL="1"; .\launch.bat
 ```
 
-Open http://127.0.0.1:5173 → **Models** → load a model → **Chat**.
-
 > **405 on chat/models?** The GUI was pointed at the wrong port (e.g. ghost-link `:8003` directly, or llama-server `:8080`). Always use API base `http://127.0.0.1:8000` (the control-plane gateway).
+>
+> **Chat suddenly errors with "error sending request for url (...8080...)"?** `llama-server` died — usually from two model-load requests overlapping (double-clicking Load, switching models fast). Fixed in 1.7.1+; if you're still seeing it, `Unload` then re-`Load` the model from the Models tab.
 
 ### Linux / macOS
 
+**Prerequisites**: Rust, Node.js, curl; cmake optional (a prebuilt `llama-server` is used as a fallback if cmake isn't available).
+
 ```bash
-# Prerequisites: Rust, Node.js, curl; cmake optional (prebuilt llama-server fallback)
+git clone https://github.com/rwilliamspbg-ops/Ghostlink.git
+cd Ghostlink
 cargo build --release -p ghost-link
 ./launch.sh
 # launch-complete.sh is a thin wrapper around launch.sh
 ```
 
-## Hardware Detection
+Same verification and port layout as Windows above — `curl http://127.0.0.1:8000/health`, then http://127.0.0.1:5173 → **Models** → **Chat**.
 
-Ghostlink auto-detects available accelerators at startup:
+## Hardware Detection & Compatibility
 
-| Runtime | Detection |
-|---------|-----------|
-| **CUDA** (NVIDIA) | `nvidia-smi`, `CUDA_PATH` |
-| **DirectML** (AMD iGPU, Intel ARC, any DX12 GPU) | WMI on Windows |
-| **ROCm** (AMD discrete) | `rocm-smi`, `hipconfig` (requires `--features rocm`) |
-| **Metal** (Apple Silicon) | `sysctl hw.optional.arm64` |
-| **NPU** (AMD XDNA, Intel NPU, Qualcomm) | WMI on Windows, sysfs on Linux |
-| **CPU** | Always available |
+Ghostlink auto-detects available accelerators at startup by probing in this order: `nvidia-smi` (cross-platform), then an OS-specific fallback (Windows WMI / Linux lspci+sysfs / macOS `system_profiler`), then a Vulkan probe as a last resort. What's actually detectable, per OS (grounded in [`system_profile.rs`](crates/ghostlink-core/src/system_profile.rs)):
+
+| Accelerator | Windows | Linux | macOS | Detection |
+|---|:---:|:---:|:---:|---|
+| **CUDA** (NVIDIA) | ✅ | ✅ | ⚠️¹ | `nvidia-smi`, `CUDA_PATH` |
+| **DirectML** (AMD iGPU, Intel ARC, any DX12 GPU) | ✅ | ❌ | ❌ | WMI |
+| **ROCm** (AMD discrete) | ❌ | ✅² | ❌ | `rocm-smi`, `hipconfig` — needs `--features rocm` |
+| **Vulkan** (generic GPU fallback) | ✅ | ✅ | ✅ | Vulkan probe, full-scan mode only |
+| **Metal** (Apple Silicon) | ❌ | ❌ | ✅ | `sysctl hw.optional.arm64` |
+| **NPU** (AMD XDNA, Intel NPU, Qualcomm) | ✅ | ✅ | ✅³ | WMI (Windows), sysfs/`/sys/class/accel` (Linux), Apple Neural Engine (macOS) |
+| **AF_XDP kernel bypass** | ❌ | ✅ | ❌ | Linux-only transport optimization ([`xdp.rs`](crates/ghostlink-core/src/xdp.rs)) |
+| **CPU** | ✅ | ✅ | ✅ | Always available — the guaranteed fallback |
+
+¹ NVIDIA GPU support on macOS has been effectively deprecated by both Apple and NVIDIA for years — the probe runs, but don't expect it to find anything on real hardware.
+² ROCm detection is compiled out entirely unless you build with `cargo build --features rocm`; without it, AMD discrete GPUs on Linux fall through to the Vulkan probe.
+³ Detected as the Apple Neural Engine, not a discrete accelerator — no VRAM/memory figure is reported since it shares system memory.
+
+**Backend support** (native `llama-server` vs. Ollama): both work identically on all three OSes — Ollama just needs the `ollama` binary on `PATH` (`GHOSTLINK_INFERENCE_BACKEND=ollama`), no build changes required.
 
 If your GPU isn't detected, set env vars manually:
 ```powershell
