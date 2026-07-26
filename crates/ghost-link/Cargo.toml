@@ -59,3 +59,7 @@ rmcp = { version = "2", default-features = false, features = [
     "transport-child-process",
     "transport-streamable-http-client-reqwest",
 ] }
+rustls = { version = "0.23.42", features = ["prefer-post-quantum"] }
+axum-server = { version = "0.8.0", features = ["tls-rustls"] }
+jsonwebtoken = { version = "10.3.0", features = ["aws_lc_rs"] }
+rcgen = "0.14.7"

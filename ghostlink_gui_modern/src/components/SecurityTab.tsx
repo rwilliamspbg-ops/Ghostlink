@@ -15,6 +15,20 @@ export const SecurityTab: React.FC<{ api: any }> = ({ api }) => {
   const [pqcEnabled, setPqcEnabled] = useState(false);
   const [token, setToken] = useState('eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...');
   const [auditLog, setAuditLog] = useState<AuditEntry[]>([]);
+  const [apiKeyInput, setApiKeyInput] = useState('');
+  const [apiKeySaved, setApiKeySaved] = useState(false);
+  const [showApiKey, setShowApiKey] = useState(false);
+  const [pqcRestartRequired, setPqcRestartRequired] = useState(false);
+
+  useEffect(() => {
+    setApiKeyInput(api.getApiKey?.() ?? '');
+  }, [api]);
+
+  const handleSaveApiKey = () => {
+    api.setApiKey?.(apiKeyInput.trim());
+    setApiKeySaved(true);
+    setTimeout(() => setApiKeySaved(false), 2000);
+  };
 
   useEffect(() => {
     const fetchPqcState = async () => {
@@ -50,7 +64,14 @@ export const SecurityTab: React.FC<{ api: any }> = ({ api }) => {
     setLoading(true);
     try {
       const result = await api.enablePQC();
-      if (result.success) setPqcEnabled(true);
+      // Saves the enable_tls setting for next restart — the listener is
+      // bound once at server startup, so this isn't live yet. Reflect
+      // that honestly rather than flipping straight to "enabled".
+      if (result.success && result.data?.restart_required) {
+        setPqcRestartRequired(true);
+      } else if (result.success) {
+        setPqcEnabled(true);
+      }
     } finally {
       setLoading(false);
     }
@@ -64,6 +85,47 @@ export const SecurityTab: React.FC<{ api: any }> = ({ api }) => {
 
       <div className="flex-1 overflow-y-auto p-6">
         <div className="max-w-5xl mx-auto space-y-6">
+          {/* API Key Section */}
+          <div className="bg-slate-900/50 border border-slate-800 rounded-3xl p-6 space-y-4">
+            <div className="flex items-center gap-3">
+              <div className="p-3 bg-blue-500/10 rounded-2xl text-blue-400">
+                <Key size={24} />
+              </div>
+              <div>
+                <h3 className="font-bold text-slate-100">API Key</h3>
+                <p className="text-xs text-slate-500">
+                  Required for every request to this server. Printed once in the server's console output
+                  on first run (or check <code className="text-slate-400 bg-slate-800 px-1 rounded font-mono">api_key.txt</code> next
+                  to the running server) — paste it here to authenticate this browser.
+                </p>
+              </div>
+            </div>
+            <div className="flex gap-2">
+              <input
+                type={showApiKey ? 'text' : 'password'}
+                value={apiKeyInput}
+                onChange={(e) => setApiKeyInput(e.target.value)}
+                placeholder="Paste the API key printed at server startup"
+                aria-label="API key"
+                className="flex-1 bg-slate-950 border border-slate-800 rounded-xl px-4 py-2.5 text-sm font-mono text-slate-200 placeholder:text-slate-600 focus:outline-none focus:border-blue-500"
+              />
+              <button
+                onClick={() => setShowApiKey(!showApiKey)}
+                className="px-3 text-slate-500 hover:text-white transition"
+                aria-label={showApiKey ? 'Hide API key' : 'Show API key'}
+                aria-pressed={showApiKey}
+              >
+                {showApiKey ? <EyeOff size={16} aria-hidden="true" /> : <Eye size={16} aria-hidden="true" />}
+              </button>
+              <button
+                onClick={handleSaveApiKey}
+                className="px-5 py-2.5 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-sm font-bold transition"
+              >
+                {apiKeySaved ? 'Saved' : 'Save'}
+              </button>
+            </div>
+          </div>
+
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             {/* JWT Section */}
             <div className="bg-slate-900/50 border border-slate-800 rounded-3xl p-6 space-y-6">
@@ -112,7 +174,7 @@ export const SecurityTab: React.FC<{ api: any }> = ({ api }) => {
                 </div>
                 <div>
                   <h3 className="font-bold text-slate-100">Quantum Hardening</h3>
-                  <p className="text-xs text-slate-500">Post-Quantum Cryptography (PQC)</p>
+                  <p className="text-xs text-slate-500">HTTPS with a real PQC-hybrid key exchange (X25519MLKEM768)</p>
                 </div>
               </div>
 
@@ -127,24 +189,26 @@ export const SecurityTab: React.FC<{ api: any }> = ({ api }) => {
                   )}
                   <div>
                     <p className={`text-sm font-bold ${pqcEnabled ? 'text-green-400' : 'text-orange-400'}`}>
-                      {pqcEnabled ? 'Fabric Hardened' : 'Standard Encryption'}
+                      {pqcEnabled ? 'HTTPS + PQC-hybrid active' : 'Plain HTTP — no transport encryption'}
                     </p>
                     <p className="text-xs text-slate-500 mt-1 leading-relaxed">
                       {pqcEnabled
-                        ? 'Kyber-768/Dilithium key exchange is active across all distributed nodes.'
-                        : 'Currently using standard AES-GCM 256-bit encryption. Enable PQC for future-proof security.'}
+                        ? 'This server is running HTTPS with rustls configured to prefer the X25519MLKEM768 post-quantum hybrid key-exchange group (the same mechanism Chrome/Cloudflare/AWS use). Bearer-token auth on every request is independent of this and always active regardless.'
+                        : pqcRestartRequired
+                          ? 'Saved — restart the server for the HTTPS/PQC-hybrid listener to take effect. Bearer-token auth on every request is already active regardless.'
+                          : 'This server is on plain HTTP — requests aren’t encrypted in transit (bearer-token auth still applies, but a token sent over plain HTTP can be observed). Enabling generates a local self-signed certificate.'}
                     </p>
                   </div>
                 </div>
               </div>
 
-              {!pqcEnabled && (
+              {!pqcEnabled && !pqcRestartRequired && (
                 <button
                   onClick={handlePqc}
                   disabled={loading}
                   className="w-full py-3 bg-purple-600 hover:bg-purple-500 text-white rounded-xl text-sm font-bold transition shadow-lg shadow-purple-500/20"
                 >
-                  Enable Post-Quantum Defense
+                  Enable HTTPS + PQC-Hybrid TLS
                 </button>
               )}
             </div>

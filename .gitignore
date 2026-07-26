@@ -64,6 +64,11 @@ models/*.gguf
 models/
 models.json
 sessions.json
+# Generated on first run — a real per-install secret / self-signed cert,
+# never something to commit or share across installs.
+api_key.txt
+tls_cert.pem
+tls_key.pem
 ghostlink_gui_modern/dist/
 .ghostlink-npm-platform
 

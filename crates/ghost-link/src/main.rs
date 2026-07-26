@@ -1569,6 +1569,13 @@ struct BackendState {
     /// last-writer-wins race with no relation to which process actually
     /// survived the taskkill/spawn collision.
     model_lifecycle_lock: Arc<tokio::sync::Mutex<()>>,
+    /// Whether the *currently running* listener is actually serving HTTPS
+    /// with the PQC-hybrid key exchange preference — set once at server
+    /// startup from the same `use_tls` decision that picked the listener
+    /// branch. Distinct from `settings.enable_tls`, which is the persisted
+    /// setting and only takes effect on next restart; this field is what
+    /// `/api/security/pqc/state` actually reports.
+    enable_tls_active: bool,
 }
 
 /// Real byte-level progress for an in-flight (or just-finished) model download.
@@ -1622,6 +1629,16 @@ struct RuntimeSettings {
     /// falling back to `RuntimeSettings::default()` in its entirety.
     #[serde(default = "default_conversation_token_limit")]
     conversation_token_limit: usize,
+    /// Serve over HTTPS with a self-signed cert and a real PQC-hybrid
+    /// (X25519MLKEM768) key exchange preference (see `tls.rs`), instead of
+    /// plain HTTP. Off by default so today's plain-localhost dev flow sees
+    /// zero disruption; forced on regardless of this setting when the
+    /// server binds a non-loopback address (`tls::is_loopback_host`),
+    /// since that's the LAN/remote scenario PQC-hybrid TLS protects.
+    /// `#[serde(default)]` (false) so settings.json files saved before
+    /// this field existed still deserialize.
+    #[serde(default)]
+    enable_tls: bool,
 }
 
 // Kept as named constants (rather than inlined in both `RuntimeSettings::default()`
@@ -1682,6 +1699,7 @@ impl Default for RuntimeSettings {
             tcp_auth_token: String::new(),
             xdp_interface: "eth0".to_string(),
             conversation_token_limit: default_conversation_token_limit(),
+            enable_tls: false,
         }
     }
 }
@@ -2261,7 +2279,9 @@ fn select_best_gguf_group(groups: &[Vec<String>], vram_gb: f32) -> Option<Vec<St
 
 fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
     use axum::{
-        extract::{Path, Query, State},
+        extract::{Path, Query, Request, State},
+        http::StatusCode,
+        middleware::{self, Next},
         response::{
             sse::{Event, Sse},
             IntoResponse,
@@ -2279,6 +2299,35 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
 
     fn lock_state(state: &Arc<Mutex<BackendState>>) -> std::sync::MutexGuard<'_, BackendState> {
         state.lock().unwrap_or_else(|poison| poison.into_inner())
+    }
+
+    /// Guards every route except `/health` behind a real bearer token
+    /// (the persisted API key itself, or a JWT issued from it — see
+    /// `auth.rs`). Replaces having no auth check anywhere on this server.
+    async fn auth_middleware(req: Request, next: Next) -> axum::response::Response {
+        if req.uri().path() == "/health" {
+            return next.run(req).await;
+        }
+
+        let header = req
+            .headers()
+            .get(axum::http::header::AUTHORIZATION)
+            .and_then(|v| v.to_str().ok());
+        let token = auth::extract_bearer_token(header);
+
+        match token {
+            Some(t) if auth::verify_bearer_token(t) => next.run(req).await,
+            _ => (
+                StatusCode::UNAUTHORIZED,
+                Json(serde_json::json!({
+                    "error": {
+                        "message": "missing or invalid Authorization: Bearer <token> — see the API key printed at server startup, or POST /api/security/jwt/refresh with it to get a short-lived token",
+                        "type": "unauthorized"
+                    }
+                })),
+            )
+                .into_response(),
+        }
     }
 
     /// Waits for Ctrl+C, then force-tears-down every connected MCP server before
@@ -3812,16 +3861,61 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         }))
     }
 
+    /// Real JWT issuance (was a hardcoded `"new-token-123"`). Reaching this
+    /// handler at all already proves the caller presented a valid bearer
+    /// token (`auth_middleware` gates every route but `/health`) — no
+    /// separate credential to check here, just mint a fresh short-lived
+    /// token signed with the same API key that got them past the gate.
     async fn handle_gui_jwt_refresh() -> Json<serde_json::Value> {
-        Json(serde_json::json!({ "status": "ok", "token": "new-token-123" }))
+        match auth::issue_jwt("ghostlink-client") {
+            Ok(token) => Json(serde_json::json!({ "status": "ok", "token": token })),
+            Err(err) => Json(serde_json::json!({ "status": "error", "error": err })),
+        }
     }
 
-    async fn handle_gui_pqc_enable() -> Json<serde_json::Value> {
-        Json(serde_json::json!({ "status": "ok", "enabled": true }))
+    /// Turns on `enable_tls` in persisted settings (was a no-op that always
+    /// reported `enabled: true`). The listener is bound once at server
+    /// startup, so this takes effect on next restart — said plainly in the
+    /// response rather than implying it's already live.
+    async fn handle_gui_pqc_enable(
+        State(state): State<Arc<Mutex<BackendState>>>,
+    ) -> Json<serde_json::Value> {
+        let backend = &mut *lock_state(&state);
+        let mut current = backend.settings.clone();
+        current.enable_tls = true;
+        backend.settings = current.clone();
+        save_settings(&current);
+        Json(serde_json::json!({
+            "status": "ok",
+            "enabled": true,
+            "restart_required": true,
+            "message": "enable_tls saved — restart the server for the HTTPS/PQC-hybrid listener to take effect"
+        }))
     }
 
-    async fn handle_gui_pqc_state() -> Json<serde_json::Value> {
-        Json(serde_json::json!({ "enabled": true, "algorithm": "ml-kem-768" }))
+    /// Reports the real, current server configuration (was hardcoded
+    /// `enabled: true`): whether `enable_tls` is on for THIS running
+    /// process (not just persisted — a setting saved via
+    /// `handle_gui_pqc_enable` doesn't apply until restart, so this
+    /// reflects what's actually serving right now) and the hybrid group
+    /// rustls is configured to prefer whenever TLS is active. This is
+    /// server-level config state, not a genuine per-connection
+    /// introspection of whether a given client actually negotiated the
+    /// hybrid group — independently verifiable via `openssl s_client
+    /// -groups X25519MLKEM768` against a TLS-enabled instance.
+    async fn handle_gui_pqc_state(
+        State(state): State<Arc<Mutex<BackendState>>>,
+    ) -> Json<serde_json::Value> {
+        let active = lock_state(&state).enable_tls_active;
+        Json(serde_json::json!({
+            "enabled": active,
+            "algorithm": "X25519MLKEM768",
+            "note": if active {
+                "TLS is active on this server; rustls is configured to prefer the X25519MLKEM768 post-quantum hybrid key-exchange group (via the prefer-post-quantum feature)."
+            } else {
+                "TLS is not active on this server (plain HTTP) — no key exchange is happening. Enable via POST /api/security/pqc/enable and restart."
+            }
+        }))
     }
 
     async fn handle_gui_audit_log() -> Json<serde_json::Value> {
@@ -5699,6 +5793,15 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                                 .resize_slots(current.parallel_slots);
                         }
                     }
+                    "enable_tls" => {
+                        if let Some(v) = value.as_bool() {
+                            // Takes effect on next server restart — the
+                            // listener is bound once at startup (main.rs's
+                            // `start_openai_api_server`), not re-bound on a
+                            // settings change.
+                            current.enable_tls = v;
+                        }
+                    }
                     "conversation_token_limit" => {
                         if let Some(v) = value.as_u64() {
                             current.conversation_token_limit = v as usize;
@@ -6005,6 +6108,20 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
 
     // Load settings to get initial inference backend
     let settings = load_settings();
+    // Captured before `settings` moves into `BackendState` below — used
+    // once at the very end of this function to pick the TLS vs. plain
+    // listener.
+    // Computed once here (rather than at the final serve call, after
+    // `settings` has moved into `BackendState`) so both the listener
+    // choice below and `BackendState.enable_tls_active` (read by
+    // `/api/security/pqc/state`) share one source of truth.
+    let use_tls = settings.enable_tls || !tls::is_loopback_host(host);
+    // Eagerly generate/load (and, on first run, print) the API key here —
+    // `active_api_key()` is otherwise lazy-initialized on first use, which
+    // would mean the one-time "here's your key" banner never prints at
+    // all unless some request happens to trigger it first, leaving a
+    // fresh install with no way to discover the key it needs.
+    auth::active_api_key();
     let inference_backend = InferenceBackend::parse(&settings.inference_backend);
     let native_engine_client = native_engine::NativeEngineClient::new();
     let ollama_client = ollama::OllamaClient::new(ollama_url);
@@ -6078,6 +6195,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         pending_tool_calls: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
         download_progress: HashMap::new(),
         model_lifecycle_lock: Arc::new(tokio::sync::Mutex::new(())),
+        enable_tls_active: use_tls,
     }));
 
     // Background CPU/RAM/GPU sampler — keeps /api/metrics non-blocking.
@@ -6197,21 +6315,50 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                 post(handle_toggle_mcp_server),
             )
             .with_state(state)
+            // Auth runs inside CORS (added first here = innermost = runs
+            // *after* CORS on the way in), so a browser's CORS preflight
+            // OPTIONS request is still handled without needing a bearer
+            // token — matches how CORS preflight is expected to work.
+            .layer(middleware::from_fn(auth_middleware))
             .layer(CorsLayer::permissive());
 
-        // addr already parsed above
-        let listener = tokio::net::TcpListener::bind(addr)
-            .await
-            .map_err(|err| anyhow::anyhow!("failed to bind API server on {}: {}", addr, err))?;
-        println!(
-            "
+        // addr already parsed above; `use_tls` computed earlier alongside
+        // `BackendState.enable_tls_active`.
+        if use_tls {
+            let tls_config = tls::build_rustls_config(host)
+                .await
+                .map_err(|err| anyhow::anyhow!("failed to prepare TLS: {}", err))?;
+            println!(
+                "
+API Server Online (HTTPS, PQC-hybrid key exchange preferred). Ready for connections."
+            );
+            let shutdown_handle = axum_server::Handle::new();
+            tokio::spawn({
+                let shutdown_handle = shutdown_handle.clone();
+                async move {
+                    mcp_shutdown_on_ctrl_c(mcp_registry).await;
+                    shutdown_handle.graceful_shutdown(None);
+                }
+            });
+            axum_server::bind_rustls(addr, tls_config)
+                .handle(shutdown_handle)
+                .serve(app.into_make_service())
+                .await
+                .map_err(|err| anyhow::anyhow!("HTTPS API server terminated with error: {}", err))
+        } else {
+            let listener = tokio::net::TcpListener::bind(addr)
+                .await
+                .map_err(|err| anyhow::anyhow!("failed to bind API server on {}: {}", addr, err))?;
+            println!(
+                "
 API Server Online. Ready for connections."
-        );
+            );
 
-        axum::serve(listener, app)
-            .with_graceful_shutdown(mcp_shutdown_on_ctrl_c(mcp_registry))
-            .await
-            .map_err(|err| anyhow::anyhow!("API server terminated with error: {}", err))
+            axum::serve(listener, app)
+                .with_graceful_shutdown(mcp_shutdown_on_ctrl_c(mcp_registry))
+                .await
+                .map_err(|err| anyhow::anyhow!("API server terminated with error: {}", err))
+        }
     })?;
 
     Ok(())
@@ -8211,6 +8358,7 @@ fn run_gui_preflight_checks() -> Result<()> {
     Ok(())
 }
 
+mod auth;
 mod backend_api;
 mod backend_config;
 mod backend_registry;
@@ -8220,6 +8368,7 @@ mod native_engine;
 mod ollama;
 mod runtime;
 mod runtime_switcher;
+mod tls;
 
 static ACTIVE_BACKEND_REGISTRY: OnceLock<Arc<backend_registry::BackendRegistry>> = OnceLock::new();
 static ACTIVE_RUNTIME_SWITCHER: OnceLock<runtime_switcher::RuntimeSwitcher> = OnceLock::new();
