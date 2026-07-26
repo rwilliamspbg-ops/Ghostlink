@@ -25,11 +25,26 @@ import {
   ShieldAlert,
   GitCompare,
   Pencil,
+  Mic,
 } from 'lucide-react';
 import { useAppStore, ChatMessage } from '../store';
 import { GhostlinkAPI } from '../api';
 
 type Message = ChatMessage;
+
+// Browser-native speech-to-text (Web Speech API) — not in TS's DOM lib under
+// the vendor-prefixed name Chrome/Edge actually ship it under, and Firefox/
+// Safari don't implement it at all, hence the `any`-typed feature-detect
+// rather than a proper interface. Cloud-backed (needs internet), unlike the
+// rest of this app's local-first inference — a real tradeoff, not hidden:
+// the mic button below simply doesn't render where this is undefined.
+// Resolved lazily (not a module-level constant) so it reflects `window` at
+// call time rather than whatever it was when this module first loaded —
+// also what makes it mockable in tests via `vi.stubGlobal`.
+function getSpeechRecognitionCtor(): any {
+  if (typeof window === 'undefined') return undefined;
+  return (window as any).SpeechRecognition ?? (window as any).webkitSpeechRecognition;
+}
 
 interface Session {
   id: string;
@@ -175,6 +190,14 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
   } = useAppStore();
   const [input, setInput] = useState('');
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [isRecording, setIsRecording] = useState(false);
+  const recognitionRef = useRef<any>(null);
+  // What was already in the input box when recording started, and the
+  // finalized (non-interim) transcript so far — combined with the current
+  // interim chunk on every onresult event to rebuild the full input value
+  // without duplicating text across repeated interim updates.
+  const recordingBaseRef = useRef('');
+  const finalTranscriptRef = useRef('');
 
   // Controls
   const [temperature] = useState(0.7);
@@ -593,6 +616,58 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
       setError(result.error || 'Failed to resolve tool call');
     }
   };
+
+  // Toggles browser speech-to-text. Rebuilds the full input value on every
+  // `onresult` (base text from before recording + finalized transcript +
+  // current interim chunk) rather than appending, since interim results
+  // fire repeatedly for the same in-progress phrase — appending would
+  // duplicate words on every partial update.
+  const toggleRecording = useCallback(() => {
+    const Ctor = getSpeechRecognitionCtor();
+    if (!Ctor) return;
+    if (isRecording) {
+      recognitionRef.current?.stop();
+      return;
+    }
+    const recognition = new Ctor();
+    recognition.continuous = true;
+    recognition.interimResults = true;
+    recognition.lang = 'en-US';
+    recordingBaseRef.current = input;
+    finalTranscriptRef.current = '';
+
+    recognition.onresult = (event: any) => {
+      let interim = '';
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        const transcript = event.results[i][0].transcript;
+        if (event.results[i].isFinal) {
+          finalTranscriptRef.current += transcript;
+        } else {
+          interim += transcript;
+        }
+      }
+      const combined = [recordingBaseRef.current, finalTranscriptRef.current, interim]
+        .map((s) => s.trim())
+        .filter(Boolean)
+        .join(' ');
+      setInput(combined);
+    };
+    recognition.onerror = () => setIsRecording(false);
+    recognition.onend = () => setIsRecording(false);
+
+    recognitionRef.current = recognition;
+    recognition.start();
+    setIsRecording(true);
+  }, [isRecording, input]);
+
+  // Stop any in-flight recognition if the tab unmounts mid-recording —
+  // otherwise the browser keeps listening (and the mic indicator stays on
+  // in the OS) with nothing left to receive the transcript.
+  useEffect(() => {
+    return () => {
+      recognitionRef.current?.stop();
+    };
+  }, []);
 
   const handleCopy = async (content: string, id: string) => {
     try {
@@ -1173,6 +1248,24 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
             </div>
 
             <div className="absolute right-3 bottom-3 flex items-center gap-1">
+                {getSpeechRecognitionCtor() && (
+                    <button
+                        onClick={toggleRecording}
+                        aria-label={isRecording ? 'Stop voice input' : 'Start voice input'}
+                        aria-pressed={isRecording}
+                        title={isRecording ? 'Stop voice input' : 'Voice input (requires internet — browser speech recognition)'}
+                        className={`relative p-2 rounded-full transition ${
+                            isRecording
+                                ? 'bg-red-500/20 text-red-400'
+                                : 'text-slate-500 hover:text-slate-300 hover:bg-slate-800'
+                        }`}
+                    >
+                        <Mic size={18} aria-hidden="true" />
+                        {isRecording && (
+                            <span className="absolute inset-0 rounded-full bg-red-500/30 animate-ping" aria-hidden="true" />
+                        )}
+                    </button>
+                )}
                 <button
                     onClick={handleSend}
                     disabled={!input.trim() || loading}
