@@ -1849,6 +1849,335 @@ pub fn execute_pipeline_tcp_loopback_with_config(
     })
 }
 
+// --- Real remote-worker execution -----------------------------------------
+//
+// Everything above this point (`execute_pipeline_distributed`,
+// `execute_pipeline_tcp_loopback_with_config`, ...) runs entirely within one
+// process: every stage's TCP bridge both binds *and* connects to a local
+// interface, so even in "TCP transport" mode there is no way to reach a
+// genuinely separate machine — `bind()` only ever succeeds for addresses
+// this host actually owns. The two functions below are the real thing: a
+// worker process that binds and accepts on a second machine, and a
+// coordinator function that *connects out* to it (`TcpStream::connect`, not
+// `TcpListener::bind`) instead of simulating both ends locally.
+//
+// Scope is intentionally narrow (exactly one local stage + one remote
+// stage, one connection, one-shot) to match `flow`'s existing local+remote
+// 2-node model rather than building a general N-worker mesh. The "compute"
+// on both ends is still `run_stage_compute`'s synthetic proxy workload
+// (real CPU time, not real LLM inference) — what's genuinely new here is
+// the *transport*: a real socket between two real OS processes, optionally
+// on two real machines, not the numbers `run_stage_compute` produces.
+
+/// A minimal wire handshake sent once when a coordinator connects to a
+/// `run_stage_worker`: just enough for the worker to reconstruct the
+/// `StagePlacement` it needs to call the same `run_stage_compute` the local
+/// path uses, so timing is produced by identical code on both ends.
+fn write_stage_handshake(writer: &mut impl Write, stage: &StagePlacement) -> Result<(), String> {
+    let num_layers = stage.num_layers() as u32;
+    let device_byte: u8 = match stage.device {
+        DeviceKind::Npu => 0,
+        DeviceKind::Gpu => 1,
+        DeviceKind::Cpu => 2,
+    };
+    writer
+        .write_all(&num_layers.to_le_bytes())
+        .and_then(|_| writer.write_all(&[device_byte]))
+        .map_err(|e| format!("failed to write stage handshake: {e}"))
+}
+
+fn read_stage_handshake(reader: &mut impl Read) -> Result<StagePlacement, String> {
+    let mut layers_bytes = [0u8; 4];
+    reader
+        .read_exact(&mut layers_bytes)
+        .map_err(|e| format!("failed to read stage handshake: {e}"))?;
+    let num_layers = u32::from_le_bytes(layers_bytes) as usize;
+
+    let mut device_byte = [0u8; 1];
+    reader
+        .read_exact(&mut device_byte)
+        .map_err(|e| format!("failed to read stage handshake: {e}"))?;
+    let device = match device_byte[0] {
+        0 => DeviceKind::Npu,
+        1 => DeviceKind::Gpu,
+        _ => DeviceKind::Cpu,
+    };
+
+    Ok(StagePlacement {
+        node_id: "remote".to_string(),
+        start_layer: 0,
+        end_layer: num_layers,
+        device,
+        est_latency_ms: 0.0,
+    })
+}
+
+/// Summary a `stage-worker` process reports (to its own stdout, and back to
+/// any caller driving it directly) once its one coordinator connection
+/// closes.
+#[derive(Clone, Debug, PartialEq)]
+pub struct StageWorkerSummary {
+    pub batches_processed: usize,
+    pub avg_compute_ms: f32,
+}
+
+/// Runs as a real, separate OS process (see `ghost-link stage-worker`):
+/// accepts exactly one coordinator connection on `listener`, reads the
+/// stage handshake, then loops read-batch → compute → write-result until
+/// the coordinator closes the connection. One-shot, matching how
+/// `cluster-start`'s child `listen` processes already behave.
+///
+/// Takes an already-bound `TcpListener` rather than binding internally so
+/// the caller controls exactly when/how the port is chosen — the CLI binds
+/// the address the user passed on `--bind`, while tests bind `:0` to get a
+/// real OS-assigned free port and can read it back via `local_addr()`
+/// before this function (which blocks until a peer connects) is called.
+pub fn run_stage_worker(
+    listener: TcpListener,
+    config: &TcpTransportConfig,
+) -> Result<StageWorkerSummary, String> {
+    let (mut stream, peer) = listener
+        .accept()
+        .map_err(|e| format!("failed to accept a connection: {e}"))?;
+    let _ = stream.set_nodelay(true);
+
+    let stage = read_stage_handshake(&mut stream)?;
+    eprintln!(
+        "[stage-worker] connection from {peer}; assigned {} layers on {}",
+        stage.num_layers(),
+        stage.device.as_str()
+    );
+
+    let mut frame_buf = Vec::new();
+    let mut read_buf = Vec::new();
+    let mut batches_processed = 0usize;
+    let mut total_compute_ms = 0.0_f32;
+
+    loop {
+        let batch =
+            match read_transport_batch(&mut stream, 0, config.auth_token.as_deref(), &mut read_buf)
+            {
+                Ok(Some(batch)) => batch,
+                Ok(None) => break, // coordinator closed the connection cleanly
+                Err(e) => return Err(format!("failed to read batch from coordinator: {e}")),
+            };
+
+        let mut payload = batch.payload;
+        let compute_start = Instant::now();
+        run_stage_compute(&mut payload, &stage);
+        total_compute_ms += compute_start.elapsed().as_secs_f32() * 1000.0;
+
+        let result = TransportBatch {
+            batch_id: batch.batch_id,
+            tokens_in_batch: batch.tokens_in_batch,
+            payload,
+        };
+        write_transport_batch(
+            &mut stream,
+            &result,
+            0,
+            config.auth_token.as_deref(),
+            &mut frame_buf,
+        )
+        .map_err(|e| format!("failed to write result batch to coordinator: {e}"))?;
+        batches_processed += 1;
+    }
+
+    let avg_compute_ms = if batches_processed > 0 {
+        total_compute_ms / batches_processed as f32
+    } else {
+        0.0
+    };
+    eprintln!(
+        "[stage-worker] coordinator disconnected after {batches_processed} batch(es), avg compute {avg_compute_ms:.2} ms"
+    );
+    Ok(StageWorkerSummary {
+        batches_processed,
+        avg_compute_ms,
+    })
+}
+
+/// Collapses every stage assigned to one node into a single logical
+/// `StagePlacement` spanning that node's full layer range. The real layer
+/// assignment algorithm doesn't hand each node one contiguous chunk — a
+/// 60-layer/2-node `flow` plan produces ~11 raw stages (verified: 6 small
+/// chunks for the local node, 5 for the remote one, each capped at roughly
+/// 3GB), not the 2 this function originally assumed. The chunks for a given
+/// node ARE always contiguous relative to each other, so merging them into
+/// one placement per node is behaviorally sound: `run_stage_compute`'s
+/// synthetic cost model only depends on total layer count and device kind,
+/// not on how finely a node's range happens to be subdivided.
+fn merge_stages_for_node(
+    node_id: &str,
+    stages: &[StagePlacement],
+) -> Result<StagePlacement, String> {
+    let matching: Vec<&StagePlacement> = stages.iter().filter(|s| s.node_id == node_id).collect();
+    let Some(first) = matching.first() else {
+        return Err(format!("no pipeline stages assigned to node '{node_id}'"));
+    };
+    let start_layer = matching.iter().map(|s| s.start_layer).min().unwrap_or(0);
+    let end_layer = matching.iter().map(|s| s.end_layer).max().unwrap_or(0);
+    Ok(StagePlacement {
+        node_id: node_id.to_string(),
+        start_layer,
+        end_layer,
+        device: first.device,
+        est_latency_ms: matching.iter().map(|s| s.est_latency_ms).sum(),
+    })
+}
+
+/// Coordinator side of real remote execution. `plan` must have at least one
+/// stage assigned to `local_node_id` and at least one assigned to
+/// `remote_node_id` — matching `flow`'s existing local+remote 2-*node*
+/// model, though each node's stages get merged (see `merge_stages_for_node`)
+/// since the real assignment algorithm splits one node's layers into
+/// several raw stages, not necessarily one. The merged local stage runs
+/// in-process as usual; the merged remote stage's batches are sent over a
+/// real outbound connection (`TcpStream::connect(remote_addr)`) to a
+/// separate `run_stage_worker` process, so the round-trip time recorded
+/// here is genuine network + remote-compute time, not a local simulation.
+pub fn execute_pipeline_with_remote_stage(
+    plan: &PipelinePlan,
+    local_node_id: &str,
+    remote_node_id: &str,
+    token_count: usize,
+    micro_batch: usize,
+    config: TcpTransportConfig,
+    remote_addr: SocketAddr,
+) -> Result<ExecutionResult, String> {
+    let local_stage = merge_stages_for_node(local_node_id, &plan.stages)?;
+    let remote_stage = merge_stages_for_node(remote_node_id, &plan.stages)?;
+    let local_stage = &local_stage;
+    let remote_stage = &remote_stage;
+
+    let micro_batch = micro_batch.max(1);
+    let batch_count = token_count.div_ceil(micro_batch);
+    if token_count == 0 {
+        return Ok(ExecutionResult {
+            token_count,
+            micro_batch,
+            batch_count,
+            stage_count: 2,
+            total_time_ms: 0.0,
+            throughput_tokens_per_sec: 0.0,
+            avg_token_latency_ms: 0.0,
+            p95_token_latency_ms: 0.0,
+            stage_stats: Vec::new(),
+        });
+    }
+
+    let mut stream = TcpStream::connect(remote_addr).map_err(|e| {
+        format!(
+            "failed to connect to remote stage worker at {remote_addr}: {e} \
+             (is `ghost-link stage-worker --bind {remote_addr}` running there?)"
+        )
+    })?;
+    let _ = stream.set_nodelay(true);
+    write_stage_handshake(&mut stream, remote_stage)?;
+
+    let mut frame_buf = Vec::new();
+    let mut read_buf = Vec::new();
+    let mut token_latencies = Vec::with_capacity(token_count);
+    let mut local_compute_ms = 0.0_f32;
+    let mut remote_round_trip_ms = 0.0_f32;
+
+    let exec_start = Instant::now();
+    for batch_idx in 0..batch_count {
+        let batch_start_token = batch_idx * micro_batch;
+        let tokens_in_batch = (token_count - batch_start_token).min(micro_batch);
+        let payload_len = (tokens_in_batch.max(1) * 16).max(32);
+        let mut payload: Vec<f32> = (0..payload_len)
+            .map(|idx| (batch_idx as f32 * 0.01) + (idx as f32 * 0.0001))
+            .collect();
+
+        let batch_started = Instant::now();
+
+        let local_start = Instant::now();
+        run_stage_compute(&mut payload, local_stage);
+        local_compute_ms += local_start.elapsed().as_secs_f32() * 1000.0;
+
+        let outgoing = TransportBatch {
+            batch_id: batch_idx,
+            tokens_in_batch,
+            payload,
+        };
+        let rt_start = Instant::now();
+        write_transport_batch(
+            &mut stream,
+            &outgoing,
+            0,
+            config.auth_token.as_deref(),
+            &mut frame_buf,
+        )
+        .map_err(|e| format!("failed to send batch {batch_idx} to remote worker: {e}"))?;
+        let result = read_transport_batch(&mut stream, 0, config.auth_token.as_deref(), &mut read_buf)
+            .map_err(|e| format!("failed to read batch {batch_idx} result from remote worker: {e}"))?
+            .ok_or_else(|| {
+                format!("remote worker at {remote_addr} closed the connection before batch {batch_idx} completed")
+            })?;
+        remote_round_trip_ms += rt_start.elapsed().as_secs_f32() * 1000.0;
+
+        let batch_latency_ms = batch_started.elapsed().as_secs_f32() * 1000.0;
+        for _ in 0..result.tokens_in_batch {
+            token_latencies.push(batch_latency_ms);
+        }
+    }
+    let total_time_ms = exec_start.elapsed().as_secs_f32() * 1000.0;
+    drop(stream); // signals the worker's read loop to exit cleanly
+
+    let divisor = batch_count.max(1) as f32;
+    let throughput_tokens_per_sec = if total_time_ms > 0.0 {
+        token_count as f32 / (total_time_ms / 1000.0)
+    } else {
+        0.0
+    };
+    let avg_token_latency_ms = if token_latencies.is_empty() {
+        0.0
+    } else {
+        token_latencies.iter().sum::<f32>() / token_latencies.len() as f32
+    };
+    let mut sorted = token_latencies.clone();
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let p95_idx = (sorted.len().saturating_sub(1) as f32 * 0.95).round() as usize;
+    let p95_token_latency_ms = sorted.get(p95_idx).copied().unwrap_or(0.0);
+
+    Ok(ExecutionResult {
+        token_count,
+        micro_batch,
+        batch_count,
+        stage_count: 2,
+        total_time_ms,
+        throughput_tokens_per_sec,
+        avg_token_latency_ms,
+        p95_token_latency_ms,
+        stage_stats: vec![
+            StageExecutionStats {
+                stage_idx: 0,
+                processed_batches: batch_count,
+                avg_compute_ms: local_compute_ms / divisor,
+                avg_recv_wait_ms: 0.0,
+                avg_send_wait_ms: 0.0,
+                avg_bridge_write_ms: 0.0,
+                avg_bridge_read_ms: 0.0,
+            },
+            StageExecutionStats {
+                stage_idx: 1,
+                processed_batches: batch_count,
+                // The remote side's own compute time isn't observable from
+                // here without a second telemetry channel — what IS real
+                // and observable is the round trip, reported as bridge
+                // write time so it's visible in `ExecutionResult::summary()`
+                // without inventing a number for compute we didn't measure.
+                avg_compute_ms: 0.0,
+                avg_recv_wait_ms: 0.0,
+                avg_send_wait_ms: 0.0,
+                avg_bridge_write_ms: remote_round_trip_ms / divisor,
+                avg_bridge_read_ms: 0.0,
+            },
+        ],
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2133,5 +2462,154 @@ mod tests {
         assert_eq!(result.stage_stats.len(), 2);
         assert!(result.total_time_ms > 0.0);
         assert!(result.throughput_tokens_per_sec > 0.0);
+    }
+
+    #[test]
+    fn stage_handshake_round_trips_layer_count_and_device() {
+        let stage = StagePlacement {
+            node_id: "coordinator-local".to_string(),
+            start_layer: 5,
+            end_layer: 37,
+            device: DeviceKind::Gpu,
+            est_latency_ms: 12.0,
+        };
+        let mut buf = Vec::new();
+        write_stage_handshake(&mut buf, &stage).expect("handshake write failed");
+
+        let mut cursor = Cursor::new(buf);
+        let decoded = read_stage_handshake(&mut cursor).expect("handshake read failed");
+        assert_eq!(decoded.num_layers(), stage.num_layers());
+        assert_eq!(decoded.device, DeviceKind::Gpu);
+    }
+
+    #[test]
+    fn execute_pipeline_with_remote_stage_rejects_when_remote_node_has_no_stages() {
+        let plan = PipelinePlan {
+            stages: vec![StagePlacement {
+                node_id: "solo".to_string(),
+                start_layer: 0,
+                end_layer: 10,
+                device: DeviceKind::Cpu,
+                est_latency_ms: 1.0,
+            }],
+        };
+        let err = execute_pipeline_with_remote_stage(
+            &plan,
+            "solo",
+            "nowhere",
+            8,
+            2,
+            TcpTransportConfig::default(),
+            "127.0.0.1:1".parse().unwrap(),
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("no pipeline stages assigned to node 'nowhere'"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn merge_stages_for_node_collapses_multiple_chunks_into_one_placement() {
+        // Regression: real layer assignment splits one node's range into
+        // several raw stages (verified manually: 60 layers / 2 nodes
+        // produced 11 raw stages, not 2) — merging must still produce the
+        // node's FULL range, not just its first chunk.
+        let stages = vec![
+            StagePlacement {
+                node_id: "node-remote".to_string(),
+                start_layer: 32,
+                end_layer: 38,
+                device: DeviceKind::Gpu,
+                est_latency_ms: 1.0,
+            },
+            StagePlacement {
+                node_id: "node-remote".to_string(),
+                start_layer: 38,
+                end_layer: 44,
+                device: DeviceKind::Gpu,
+                est_latency_ms: 1.5,
+            },
+            StagePlacement {
+                node_id: "node-local".to_string(),
+                start_layer: 0,
+                end_layer: 32,
+                device: DeviceKind::Cpu,
+                est_latency_ms: 3.0,
+            },
+        ];
+        let merged = merge_stages_for_node("node-remote", &stages).expect("merge failed");
+        assert_eq!(merged.start_layer, 32);
+        assert_eq!(merged.end_layer, 44);
+        assert_eq!(merged.num_layers(), 12);
+        assert_eq!(merged.device, DeviceKind::Gpu);
+        assert!((merged.est_latency_ms - 2.5).abs() < 1e-6);
+    }
+
+    /// The real thing, end to end: a genuine second OS thread (standing in
+    /// for a genuine second OS *process*, which the CLI-level integration
+    /// test in the ghost-link crate covers) binds a real TCP listener on an
+    /// OS-assigned port, and the coordinator function connects out to it —
+    /// not the local-bind-on-both-ends simulation every other function in
+    /// this file uses. Proves the round trip is real by asserting non-zero
+    /// bridge time was actually measured, and that the worker's own
+    /// independently-tracked batch count agrees with the coordinator's.
+    #[test]
+    fn execute_pipeline_with_remote_stage_does_a_real_tcp_round_trip() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("failed to bind test listener");
+        let worker_addr = listener.local_addr().expect("failed to read local_addr");
+
+        let worker_handle =
+            thread::spawn(move || run_stage_worker(listener, &TcpTransportConfig::default()));
+
+        let plan = PipelinePlan {
+            stages: vec![
+                StagePlacement {
+                    node_id: "local".to_string(),
+                    start_layer: 0,
+                    end_layer: 10,
+                    device: DeviceKind::Cpu,
+                    est_latency_ms: 1.0,
+                },
+                StagePlacement {
+                    node_id: "remote".to_string(),
+                    start_layer: 10,
+                    end_layer: 20,
+                    device: DeviceKind::Cpu,
+                    est_latency_ms: 1.0,
+                },
+            ],
+        };
+
+        let result = execute_pipeline_with_remote_stage(
+            &plan,
+            "local",
+            "remote",
+            16,
+            2,
+            TcpTransportConfig::default(),
+            worker_addr,
+        )
+        .expect("real remote-stage execution failed");
+
+        let worker_summary = worker_handle
+            .join()
+            .expect("worker thread panicked")
+            .expect("worker returned an error");
+
+        assert_eq!(result.token_count, 16);
+        assert_eq!(result.batch_count, 8);
+        assert_eq!(result.stage_stats.len(), 2);
+        assert_eq!(worker_summary.batches_processed, 8);
+        assert_eq!(
+            result.stage_stats[1].processed_batches,
+            worker_summary.batches_processed,
+            "coordinator's batch count must agree with what the independent worker process actually processed"
+        );
+        assert!(
+            result.stage_stats[1].avg_bridge_write_ms > 0.0,
+            "remote round-trip time must be non-zero for a real socket hop, got {}",
+            result.stage_stats[1].avg_bridge_write_ms
+        );
     }
 }

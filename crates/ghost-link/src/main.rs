@@ -25,7 +25,8 @@ use ghostlink_core::protocol::NodeResources;
 use ghostlink_core::protocol::{DiscoveryFrame, FrameKind};
 use ghostlink_core::runtime::{
     build_token_schedule, execute_pipeline_tcp_loopback_with_config,
-    execute_pipeline_with_rebalance_and_measured, DeviceKind, PipelinePlan, TcpTransportConfig,
+    execute_pipeline_with_rebalance_and_measured, execute_pipeline_with_remote_stage,
+    run_stage_worker, DeviceKind, PipelinePlan, TcpTransportConfig,
 };
 use ghostlink_core::xdp::probe_xdp_support;
 use serde::{Deserialize, Serialize};
@@ -158,6 +159,13 @@ struct FlowOptions<'a> {
     transport_mode: FlowTransportMode,
     top_k: usize,
     penalty: f32,
+    /// Real cross-process execution when set: `remote_id`'s stage runs on
+    /// a separate `ghost-link stage-worker --bind <this address>` process
+    /// (started ahead of time by the caller) instead of being simulated
+    /// in-process like every other transport mode here. `None` keeps the
+    /// existing local-simulation behavior, now honestly labeled as such in
+    /// the printed output rather than implying a real second node.
+    remote_addr: Option<SocketAddr>,
 }
 
 fn main() -> Result<()> {
@@ -401,6 +409,9 @@ enum CliCommand {
         node_id: String,
         once: bool,
     },
+    StageWorker {
+        bind: String,
+    },
     Gui {
         args: Vec<String>,
     },
@@ -430,6 +441,10 @@ enum CliCommand {
         transport_mode: FlowTransportMode,
         top_k: usize,
         penalty: f32,
+        /// When set, `remote_id`'s stage runs for real on a separate
+        /// `ghost-link stage-worker` process at this address instead of
+        /// being simulated locally. See `FlowOptions::remote_addr`.
+        remote_addr: Option<SocketAddr>,
     },
     Serve {
         port: u16,
@@ -451,6 +466,7 @@ fn execute_command(command: CliCommand) -> Result<()> {
         CliCommand::Plan => print_plan()?,
         CliCommand::Join { node_id } => print_join(&node_id)?,
         CliCommand::Listen { node_id, once } => print_discovery_listener(&node_id, once)?,
+        CliCommand::StageWorker { bind } => print_stage_worker(&bind)?,
         CliCommand::Gui { args } => launch_mohawk_gui(&args)?,
         CliCommand::GuiCheck { strict } => print_gui_readiness(strict)?,
         CliCommand::GuiDiagnose { strict } => print_gui_diagnostics(strict)?,
@@ -471,6 +487,7 @@ fn execute_command(command: CliCommand) -> Result<()> {
             transport_mode,
             top_k,
             penalty,
+            remote_addr,
         } => print_flow(FlowOptions {
             local_id: &local_id,
             remote_id: &remote_id,
@@ -481,6 +498,7 @@ fn execute_command(command: CliCommand) -> Result<()> {
             transport_mode,
             top_k,
             penalty,
+            remote_addr,
         })?,
         CliCommand::Serve { port, host } => start_openai_api_server(port, &host)?,
         CliCommand::Help => print_help(),
@@ -510,6 +528,12 @@ where
             });
             let once = args.any(|arg| arg == "--once");
             Ok(CliCommand::Listen { node_id, once })
+        }
+        "stage-worker" => {
+            let bind = args.next().unwrap_or_else(|| {
+                env_default_string("GHOSTLINK_STAGE_WORKER_DEFAULT_BIND", "0.0.0.0:9500")
+            });
+            Ok(CliCommand::StageWorker { bind })
         }
         "gui" => Ok(CliCommand::Gui {
             args: args.collect(),
@@ -591,6 +615,21 @@ where
             let transport_mode =
                 parse_flow_transport_mode(cli_transport.as_deref().or(env_transport.as_deref()))?;
 
+            // Trailing flag, not positional (unlike everything above it) —
+            // scan whatever's left rather than consuming a fixed slot, so
+            // it can be added/omitted without shifting the existing
+            // positional argument order.
+            let remaining: Vec<String> = args.collect();
+            let remote_addr = remaining
+                .iter()
+                .position(|a| a == "--remote-addr")
+                .and_then(|i| remaining.get(i + 1))
+                .map(|s| {
+                    s.parse::<SocketAddr>()
+                        .map_err(|e| anyhow::anyhow!("invalid --remote-addr '{s}': {e}"))
+                })
+                .transpose()?;
+
             Ok(CliCommand::Flow {
                 local_id,
                 remote_id,
@@ -601,6 +640,7 @@ where
                 transport_mode,
                 top_k: 40,
                 penalty: 1.1,
+                remote_addr,
             })
         }
         "serve" => {
@@ -1187,11 +1227,19 @@ fn print_flow(opts: FlowOptions) -> Result<()> {
         metrics.record_delivery_ratio(0.97);
         metrics.record_throughput(8.0);
     });
-    cluster.get_metrics_mut(opts.remote_id, |metrics| {
-        metrics.record_latency(3.2);
-        metrics.record_delivery_ratio(0.95);
-        metrics.record_throughput(7.4);
-    });
+    // Remote metrics are seeded with placeholder constants ONLY for the
+    // simulated (no --remote-addr) path, where there's no real connection to
+    // measure anything from — the health monitor still needs *some* number
+    // to classify status against. When --remote-addr is given, these get
+    // replaced below with figures derived from the actual execution result
+    // instead of being presented as if they were real from the start.
+    if opts.remote_addr.is_none() {
+        cluster.get_metrics_mut(opts.remote_id, |metrics| {
+            metrics.record_latency(3.2);
+            metrics.record_delivery_ratio(0.95);
+            metrics.record_throughput(7.4);
+        });
+    }
 
     let health_monitor =
         NetworkHealthMonitor::with_runtime_profile(Arc::new(cluster.clone()), &local_profile);
@@ -1220,108 +1268,149 @@ fn print_flow(opts: FlowOptions) -> Result<()> {
     let token_schedule = build_token_schedule(pipeline_plan.stages.len(), schedule_preview_tokens);
     let mut selected_tcp_cfg: Option<TcpTransportConfig> = None;
     let mut effective_transport_mode = opts.transport_mode;
-    let execution = match opts.transport_mode {
-        FlowTransportMode::TcpLoopback => {
-            let base_tcp_cfg = tcp_transport_config_from_env();
-            let tcp_cfg = if is_env_truthy("GHOSTLINK_TCP_AUTOTUNE") {
-                autotune_tcp_transport_config(
+    let execution = if let Some(remote_addr) = opts.remote_addr {
+        // Real path: remote_id's stage(s) run on a separate stage-worker
+        // process — merged into one logical stage internally, since the
+        // real layer-assignment algorithm splits one node's range into
+        // several raw stages rather than exactly one (verified: a 60-layer/
+        // 2-node plan produces ~11 raw stages). See
+        // execute_pipeline_with_remote_stage's doc comment.
+        println!(
+            "REAL execution: {}'s stage runs on a separate process at {remote_addr} \
+             (start it first with `ghost-link stage-worker --bind {remote_addr}`)",
+            opts.remote_id
+        );
+        execute_pipeline_with_remote_stage(
+            &pipeline_plan,
+            opts.local_id,
+            opts.remote_id,
+            opts.execution_tokens,
+            opts.micro_batch,
+            tcp_transport_config_from_env(),
+            remote_addr,
+        )
+    } else {
+        println!(
+            "SIMULATED execution: single process, no second machine involved. \
+             Pass --remote-addr <host:port> (with a `ghost-link stage-worker` \
+             already running there) for real cross-process execution."
+        );
+        match opts.transport_mode {
+            FlowTransportMode::TcpLoopback => {
+                let base_tcp_cfg = tcp_transport_config_from_env();
+                let tcp_cfg = if is_env_truthy("GHOSTLINK_TCP_AUTOTUNE") {
+                    autotune_tcp_transport_config(
+                        &pipeline_plan,
+                        opts.execution_tokens,
+                        opts.micro_batch,
+                        base_tcp_cfg,
+                    )?
+                } else {
+                    base_tcp_cfg
+                };
+                selected_tcp_cfg = Some(tcp_cfg.clone());
+                execute_pipeline_tcp_loopback_with_config(
                     &pipeline_plan,
                     opts.execution_tokens,
                     opts.micro_batch,
-                    base_tcp_cfg,
-                )?
-            } else {
-                base_tcp_cfg
-            };
-            selected_tcp_cfg = Some(tcp_cfg.clone());
-            execute_pipeline_tcp_loopback_with_config(
-                &pipeline_plan,
-                opts.execution_tokens,
-                opts.micro_batch,
-                tcp_cfg,
-            )
-        }
-        FlowTransportMode::InMemory => {
-            let rebalance = if enable_inmem_runtime_feedback {
-                Some(&rebalance_trigger)
-            } else {
-                None
-            };
-            let cluster_feedback = if enable_inmem_runtime_feedback {
-                Some(&cluster)
-            } else {
-                None
-            };
-            let placement_feedback = if enable_inmem_runtime_feedback {
-                Some(&placement_context)
-            } else {
-                None
-            };
+                    tcp_cfg,
+                )
+            }
+            FlowTransportMode::InMemory => {
+                let rebalance = if enable_inmem_runtime_feedback {
+                    Some(&rebalance_trigger)
+                } else {
+                    None
+                };
+                let cluster_feedback = if enable_inmem_runtime_feedback {
+                    Some(&cluster)
+                } else {
+                    None
+                };
+                let placement_feedback = if enable_inmem_runtime_feedback {
+                    Some(&placement_context)
+                } else {
+                    None
+                };
 
-            execute_pipeline_with_rebalance_and_measured(
-                &pipeline_plan,
-                opts.execution_tokens,
-                opts.micro_batch,
-                rebalance,
-                cluster_feedback,
-                placement_feedback,
-            )
-        }
-        FlowTransportMode::Xdp => {
-            let interface = xdp_interface_from_env();
-            match probe_xdp_support(&interface) {
-                Ok(()) => {
-                    println!(
+                execute_pipeline_with_rebalance_and_measured(
+                    &pipeline_plan,
+                    opts.execution_tokens,
+                    opts.micro_batch,
+                    rebalance,
+                    cluster_feedback,
+                    placement_feedback,
+                )
+            }
+            FlowTransportMode::Xdp => {
+                let interface = xdp_interface_from_env();
+                match probe_xdp_support(&interface) {
+                    Ok(()) => {
+                        println!(
                         "AF_XDP probe succeeded on interface '{}'; using xdp-optimized runtime settings.",
                         interface
                     );
-                    let base_tcp_cfg = xdp_optimized_tcp_config();
-                    let tcp_cfg = if xdp_autotune_enabled() {
-                        autotune_tcp_transport_config(
+                        let base_tcp_cfg = xdp_optimized_tcp_config();
+                        let tcp_cfg = if xdp_autotune_enabled() {
+                            autotune_tcp_transport_config(
+                                &pipeline_plan,
+                                opts.execution_tokens,
+                                opts.micro_batch,
+                                base_tcp_cfg,
+                            )?
+                        } else {
+                            base_tcp_cfg
+                        };
+                        selected_tcp_cfg = Some(tcp_cfg.clone());
+                        execute_pipeline_tcp_loopback_with_config(
                             &pipeline_plan,
                             opts.execution_tokens,
                             opts.micro_batch,
-                            base_tcp_cfg,
-                        )?
-                    } else {
-                        base_tcp_cfg
-                    };
-                    selected_tcp_cfg = Some(tcp_cfg.clone());
-                    execute_pipeline_tcp_loopback_with_config(
-                        &pipeline_plan,
-                        opts.execution_tokens,
-                        opts.micro_batch,
-                        tcp_cfg,
-                    )
-                }
-                Err(reason) => {
-                    println!(
-                        "AF_XDP unavailable on '{}': {}. Falling back to TCP transport.",
-                        interface, reason
-                    );
-                    effective_transport_mode = FlowTransportMode::TcpLoopback;
-                    let base_tcp_cfg = tcp_transport_config_from_env();
-                    let tcp_cfg = if is_env_truthy("GHOSTLINK_TCP_AUTOTUNE") {
-                        autotune_tcp_transport_config(
+                            tcp_cfg,
+                        )
+                    }
+                    Err(reason) => {
+                        println!(
+                            "AF_XDP unavailable on '{}': {}. Falling back to TCP transport.",
+                            interface, reason
+                        );
+                        effective_transport_mode = FlowTransportMode::TcpLoopback;
+                        let base_tcp_cfg = tcp_transport_config_from_env();
+                        let tcp_cfg = if is_env_truthy("GHOSTLINK_TCP_AUTOTUNE") {
+                            autotune_tcp_transport_config(
+                                &pipeline_plan,
+                                opts.execution_tokens,
+                                opts.micro_batch,
+                                base_tcp_cfg,
+                            )?
+                        } else {
+                            base_tcp_cfg
+                        };
+                        selected_tcp_cfg = Some(tcp_cfg.clone());
+                        execute_pipeline_tcp_loopback_with_config(
                             &pipeline_plan,
                             opts.execution_tokens,
                             opts.micro_batch,
-                            base_tcp_cfg,
-                        )?
-                    } else {
-                        base_tcp_cfg
-                    };
-                    selected_tcp_cfg = Some(tcp_cfg.clone());
-                    execute_pipeline_tcp_loopback_with_config(
-                        &pipeline_plan,
-                        opts.execution_tokens,
-                        opts.micro_batch,
-                        tcp_cfg,
-                    )
+                            tcp_cfg,
+                        )
+                    }
                 }
             }
         }
     };
+
+    // Replace the remote node's placeholder health-monitor metrics (never
+    // seeded in the first place for this path — see above) with figures
+    // derived from what actually happened, now that it's known.
+    if let (Some(_), Ok(result)) = (opts.remote_addr, &execution) {
+        if let Some(remote_stats) = result.stage_stats.get(1) {
+            cluster.get_metrics_mut(opts.remote_id, |metrics| {
+                metrics.record_latency(remote_stats.avg_bridge_write_ms.max(0.01) * 1000.0);
+                metrics.record_delivery_ratio(1.0);
+                metrics.record_throughput(result.throughput_tokens_per_sec);
+            });
+        }
+    }
 
     let load_balancer =
         LoadBalancer::with_runtime_profile(Arc::new(cluster.clone()), &local_profile);
@@ -6382,6 +6471,36 @@ Auto-tuned local runtime: {} workers, {} acceleration",
     Ok(())
 }
 
+/// Runs one pipeline stage for real on this machine, waiting for a
+/// `ghost-link flow --remote-addr <this bind address>` coordinator to
+/// connect. See `ghostlink_core::runtime::run_stage_worker` for the actual
+/// accept/handshake/compute loop this just binds a listener for and reports
+/// the result of — this function is deliberately thin, matching how
+/// `print_join`/`print_discovery_listener` above are thin wrappers around
+/// `ghostlink_core::discovery`.
+fn print_stage_worker(bind: &str) -> Result<()> {
+    let bind_addr: SocketAddr = bind
+        .parse()
+        .map_err(|e| anyhow::anyhow!("invalid --bind address '{bind}': {e}"))?;
+
+    println!("Ghost-Link Stage Worker\n");
+    println!("=======================\n");
+    println!("Binding: {bind_addr}");
+    println!("Waiting for one coordinator connection (this process handles exactly one, then exits — same one-shot model `cluster-start`'s child processes already use)...");
+
+    let listener = std::net::TcpListener::bind(bind_addr)
+        .map_err(|e| anyhow::anyhow!("failed to bind {bind_addr}: {e}"))?;
+
+    let summary = run_stage_worker(listener, &tcp_transport_config_from_env())
+        .map_err(|e| anyhow::anyhow!("stage worker failed: {e}"))?;
+
+    println!(
+        "Done: processed {} batch(es), avg compute {:.2} ms/batch",
+        summary.batches_processed, summary.avg_compute_ms
+    );
+    Ok(())
+}
+
 fn print_cluster_start(node_count: usize, base_port: u16) -> Result<()> {
     let mut listeners = Vec::new();
     let self_exe = std::env::current_exe()
@@ -8104,11 +8223,13 @@ mod tests {
         if let CliCommand::Flow {
             local_id,
             transport_mode,
+            remote_addr,
             ..
         } = flow
         {
             assert_eq!(local_id, "l1");
             assert_eq!(transport_mode, FlowTransportMode::TcpLoopback);
+            assert_eq!(remote_addr, None);
         } else {
             panic!("Expected Flow");
         }
@@ -8118,6 +8239,61 @@ mod tests {
             CliCommand::Serve {
                 port: 1234,
                 host: "0.0.0.0".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn test_parse_cli_flow_remote_addr() {
+        let flow = parse_cli(args(&[
+            "flow",
+            "l1",
+            "r1",
+            "16",
+            "32",
+            "128",
+            "8",
+            "tcp",
+            "--remote-addr",
+            "192.168.1.50:9500",
+        ]))
+        .unwrap();
+        let CliCommand::Flow { remote_addr, .. } = flow else {
+            panic!("Expected Flow");
+        };
+        assert_eq!(
+            remote_addr,
+            Some("192.168.1.50:9500".parse::<SocketAddr>().unwrap())
+        );
+    }
+
+    #[test]
+    fn test_parse_cli_flow_rejects_invalid_remote_addr() {
+        let err = parse_cli(args(&[
+            "flow",
+            "l1",
+            "r1",
+            "16",
+            "32",
+            "128",
+            "8",
+            "tcp",
+            "--remote-addr",
+            "not-an-addr",
+        ]))
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("invalid --remote-addr"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn test_parse_cli_stage_worker() {
+        assert_eq!(
+            parse_cli(args(&["stage-worker", "127.0.0.1:9500"])).unwrap(),
+            CliCommand::StageWorker {
+                bind: "127.0.0.1:9500".to_string()
             }
         );
     }
