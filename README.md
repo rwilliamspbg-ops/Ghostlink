@@ -262,19 +262,35 @@ cargo run -p ghost-link -- dashboard
 
 ### API Endpoints
 
+Every route below except `/health` requires `Authorization: Bearer <token>` —
+either the API key printed once at server startup (also saved to
+`api_key.txt`), or a short-lived JWT exchanged for it via
+`POST /api/security/jwt/refresh`. See [docs/API_REFERENCE.md](docs/API_REFERENCE.md)
+for full request/response examples and [docs/openapi.yaml](docs/openapi.yaml)
+for a machine-readable spec.
+
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/health` | GET | Health check |
+| `/health` | GET | Health check (no auth required) |
+| `/v1/chat/completions` | POST | OpenAI-compatible chat completion |
+| `/v1/completions` | POST | OpenAI-compatible legacy (prompt-based) completion |
+| `/v1/embeddings` | POST | OpenAI-compatible embeddings (Ollama backend only) |
+| `/v1/models` | GET | OpenAI-compatible model list |
 | `/api/models` | GET | List available models |
 | `/api/models/status` | GET | Loaded model status |
 | `/api/runtime/detect` | GET | Available runtimes (GPU, NPU, CPU) |
 | `/api/runtime/models?runtime=directml` | GET | Models filtered by runtime |
-| `/api/backend/status` | GET | Current backend + available backends |
-| `/api/backend/switch` | POST | Switch inference backend |
+| `/api/backends` | GET | Current backend + available backends |
+| `/api/backends/switch` | POST | Switch inference backend |
+| `/api/backends/:name/status` | GET | Status for one specific backend |
 | `/api/metrics` | GET | Performance metrics |
 | `/api/inference/chat` | POST | Chat completion |
 | `/api/models/partial` | GET | List interrupted downloads (`.gguf.part` files) |
 | `/api/models/partial/discard` | POST | Delete an interrupted download |
+| `/api/security/jwt/refresh` | POST | Exchange the API key for a short-lived JWT |
+| `/api/security/pqc/state` | GET | Whether this running server is serving HTTPS/PQC-hybrid TLS |
+| `/api/security/pqc/enable` | POST | Persist `enable_tls: true` (takes effect on next restart) |
+| `/api/security/audit-log` | GET | Security audit log entries (not yet populated — always empty today) |
 
 ## MCP Tools (Model Context Protocol)
 

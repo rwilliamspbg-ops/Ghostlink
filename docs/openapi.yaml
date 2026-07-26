@@ -1,0 +1,283 @@
+openapi: 3.0.3
+info:
+  title: Ghostlink API
+  description: >
+    OpenAI-compatible inference routes and security/auth routes served by
+    ghost-link. Covers the routes documented in API_REFERENCE.md; the full
+    endpoint list (including GUI-internal routes) is in the README's API
+    Endpoints table.
+  version: "1.12.0"
+  license:
+    name: MIT
+servers:
+  - url: http://127.0.0.1:8080
+    description: Default local listener (plain HTTP)
+security:
+  - bearerAuth: []
+paths:
+  /health:
+    get:
+      summary: Health check
+      description: The only route that does not require authentication.
+      security: []
+      responses:
+        "200":
+          description: Server is up
+  /v1/chat/completions:
+    post:
+      summary: OpenAI-compatible chat completion
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ChatCompletionRequest"
+      responses:
+        "200":
+          description: Chat completion result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ChatCompletionResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /v1/completions:
+    post:
+      summary: OpenAI-compatible legacy (prompt-based) completion
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CompletionRequest"
+      responses:
+        "200":
+          description: Completion result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CompletionResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /v1/embeddings:
+    post:
+      summary: OpenAI-compatible embeddings (Ollama backend only)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EmbeddingsRequest"
+      responses:
+        "200":
+          description: Embeddings result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EmbeddingsResponse"
+        "400":
+          description: Empty or malformed input
+        "501":
+          description: Native (non-Ollama) backend is active; embeddings are not supported on it
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /v1/models:
+    get:
+      summary: OpenAI-compatible model list
+      responses:
+        "200":
+          description: List of available models
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ModelList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /api/security/jwt/refresh:
+    post:
+      summary: Exchange the API key for a short-lived JWT
+      description: Reaching this handler already proves the caller presented a valid bearer token; it mints a fresh 1-hour JWT signed with the same API key.
+      responses:
+        "200":
+          description: Issued token
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: ok }
+                  token: { type: string }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /api/security/pqc/state:
+    get:
+      summary: Whether this running server is actually serving HTTPS/PQC-hybrid TLS
+      responses:
+        "200":
+          description: Current TLS state for this process
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  enabled: { type: boolean }
+                  algorithm: { type: string, example: X25519MLKEM768 }
+                  note: { type: string }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /api/security/pqc/enable:
+    post:
+      summary: Persist enable_tls=true (takes effect on next restart)
+      responses:
+        "200":
+          description: Setting saved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: ok }
+                  enabled: { type: boolean }
+                  restart_required: { type: boolean }
+                  message: { type: string }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /api/security/audit-log:
+    get:
+      summary: Security audit log entries
+      description: Exists but is not yet wired up to record events — always returns an empty list today.
+      responses:
+        "200":
+          description: Audit log entries (currently always empty)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  entries:
+                    type: array
+                    items: {}
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: >
+        The persisted API key (printed once at server startup, saved to
+        api_key.txt), or a JWT issued from it via /api/security/jwt/refresh.
+  responses:
+    Unauthorized:
+      description: Missing or invalid bearer token
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error:
+                type: object
+                properties:
+                  message: { type: string }
+                  type: { type: string, example: unauthorized }
+  schemas:
+    ChatCompletionRequest:
+      type: object
+      required: [model, messages]
+      properties:
+        model: { type: string }
+        messages:
+          type: array
+          items: { type: object, additionalProperties: true }
+        stream: { type: boolean }
+        temperature: { type: number, default: 0.7 }
+        top_p: { type: number, default: 0.9 }
+        top_k: { type: integer, default: 40 }
+        penalty: { type: number, default: 1.1 }
+        max_tokens: { type: integer, default: 1024, minimum: 16, maximum: 4096 }
+    ChatCompletionResponse:
+      type: object
+      properties:
+        id: { type: string }
+        object: { type: string, example: chat.completion }
+        created: { type: integer }
+        model: { type: string }
+        choices:
+          type: array
+          items:
+            type: object
+            properties:
+              index: { type: integer }
+              message: { type: object, additionalProperties: true }
+              finish_reason: { type: string }
+    CompletionRequest:
+      type: object
+      required: [model, prompt]
+      properties:
+        model: { type: string }
+        prompt: { type: string }
+        stream: { type: boolean }
+        temperature: { type: number, default: 0.7 }
+        top_p: { type: number, default: 0.9 }
+        top_k: { type: integer, default: 40 }
+        penalty: { type: number, default: 1.1 }
+        max_tokens: { type: integer, default: 1024, minimum: 16, maximum: 4096 }
+    CompletionResponse:
+      type: object
+      properties:
+        id: { type: string }
+        object: { type: string, example: text_completion }
+        created: { type: integer }
+        model: { type: string }
+        choices:
+          type: array
+          items:
+            type: object
+            properties:
+              text: { type: string }
+              index: { type: integer }
+              finish_reason: { type: string }
+    EmbeddingsRequest:
+      type: object
+      required: [model, input]
+      properties:
+        model: { type: string }
+        input:
+          description: A single string or an array of strings
+          oneOf:
+            - type: string
+            - type: array
+              items: { type: string }
+    EmbeddingsResponse:
+      type: object
+      properties:
+        object: { type: string, example: list }
+        model: { type: string }
+        data:
+          type: array
+          items:
+            type: object
+            properties:
+              object: { type: string, example: embedding }
+              embedding:
+                type: array
+                items: { type: number }
+              index: { type: integer }
+        usage:
+          type: object
+          properties:
+            prompt_tokens: { type: integer }
+            total_tokens: { type: integer }
+    ModelList:
+      type: object
+      properties:
+        object: { type: string, example: list }
+        data:
+          type: array
+          items:
+            type: object
+            properties:
+              id: { type: string }
+              object: { type: string, example: model }
+              created: { type: integer }
+              owned_by: { type: string, example: ghostlink }
