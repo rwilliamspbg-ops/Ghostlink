@@ -11,7 +11,7 @@ Route workloads across CPU, GPU, and NPU resources with explicit scheduling, har
 [![MSRV](https://github.com/rwilliamspbg-ops/Ghostlink/actions/workflows/msrv.yml/badge.svg)](https://github.com/rwilliamspbg-ops/Ghostlink/actions/workflows/msrv.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Docs](https://img.shields.io/badge/Docs-GitHub%20Pages-0ea5e9)](https://rwilliamspbg-ops.github.io/Ghostlink/)
-[![Version](https://img.shields.io/badge/version-1.6.0-blueviolet)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.11.0-blueviolet)](CHANGELOG.md)
 [![Rust](https://img.shields.io/badge/Rust-2021-orange?logo=rust)](Cargo.toml)
 [![Platforms](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey)](#quick-start)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
