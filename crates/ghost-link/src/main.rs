@@ -1542,8 +1542,6 @@ struct BackendState {
     current_model: String,
     workers: Vec<WorkerRecord>,
     sessions: Vec<SessionRecord>,
-    #[allow(dead_code)]
-    queue_depth: usize,
     chat_requests: u64,
     last_latency_ms: f32,
     last_tokens_per_sec: f32,
@@ -1597,6 +1595,14 @@ struct RuntimeSettings {
     gui_port: u16,
     threads: usize,
     ctx_size: usize,
+    /// Concurrent llama-server inference slots (`-np`). `1` matches every
+    /// prior release's behavior exactly; raising it lets ghost-link serve
+    /// more than one generation at a time, bounded by
+    /// `RequestTracker::acquire_slot`. `#[serde(default = "...")]` so
+    /// settings.json files saved before this field existed still
+    /// deserialize instead of falling back to the full default.
+    #[serde(default = "default_parallel_slots")]
+    parallel_slots: usize,
     temperature: f32,
     top_p: f32,
     top_k: usize,
@@ -1623,6 +1629,11 @@ struct RuntimeSettings {
 // of sync — see the derivation below.
 const DEFAULT_CTX_SIZE: usize = 4096;
 const DEFAULT_MAX_TOKENS: usize = 2048;
+const DEFAULT_PARALLEL_SLOTS: usize = 1;
+
+fn default_parallel_slots() -> usize {
+    DEFAULT_PARALLEL_SLOTS
+}
 /// Slack reserved on top of `max_tokens` for role/formatting overhead —
 /// mirrors the per-message `+ 4` in `build_conversation_prompt`, just applied
 /// once at the whole-budget level here.
@@ -1656,6 +1667,7 @@ impl Default for RuntimeSettings {
             gui_port: 5173,
             threads: 4,
             ctx_size: DEFAULT_CTX_SIZE,
+            parallel_slots: DEFAULT_PARALLEL_SLOTS,
             temperature: 0.7,
             top_p: 0.9,
             top_k: 40,
@@ -1783,6 +1795,15 @@ fn load_settings() -> RuntimeSettings {
         && !settings.native_engine.trim().is_empty()
     {
         std::env::set_var("GHOSTLINK_NATIVE_ENGINE", settings.native_engine.trim());
+    }
+    if std::env::var("GHOSTLINK_PARALLEL_SLOTS")
+        .map(|v| v.trim().is_empty())
+        .unwrap_or(true)
+    {
+        std::env::set_var(
+            "GHOSTLINK_PARALLEL_SLOTS",
+            settings.parallel_slots.to_string(),
+        );
     }
 
     if let Ok(val) = std::env::var("GHOSTLINK_INFERENCE_BACKEND") {
@@ -2298,6 +2319,10 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
 
         let request_tracker = active_runtime_switcher().request_tracker().clone();
         request_tracker.increment().await;
+        // Bounds real concurrent llama-server calls to `parallel_slots`
+        // instead of firing every admitted request at it unbounded; dropped
+        // automatically when this function returns.
+        let _slot_permit = request_tracker.acquire_slot().await;
 
         let temp = req.temperature.unwrap_or(0.7);
         let top_p = req.top_p.unwrap_or(0.9);
@@ -2370,7 +2395,20 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                     }
                 }
                 InferenceBackend::Native => match native_engine_client
-                    .generate(&model, &prompt, exec_tokens, 0.7, 0.9, 40, 1.1, &settings.native_engine)
+                    // Stateless OpenAI-compat endpoint: no session to pin a
+                    // slot to, so no slot reuse — matches today's behavior.
+                    .generate(
+                        &model,
+                        &prompt,
+                        exec_tokens,
+                        0.7,
+                        0.9,
+                        40,
+                        1.1,
+                        &settings.native_engine,
+                        None,
+                        false,
+                    )
                     .await
                 {
                     Ok(gen) => (
@@ -3766,7 +3804,12 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
     }
 
     async fn handle_gui_queue() -> Json<serde_json::Value> {
-        Json(serde_json::json!({ "status": "ok", "depth": 0 }))
+        let request_tracker = active_runtime_switcher().request_tracker().clone();
+        Json(serde_json::json!({
+            "status": "ok",
+            "depth": request_tracker.queue_depth().await,
+            "slot_capacity": request_tracker.slot_capacity(),
+        }))
     }
 
     async fn handle_gui_jwt_refresh() -> Json<serde_json::Value> {
@@ -4434,6 +4477,14 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                         gen.top_k,
                         gen.repeat_penalty,
                         &gen.settings.native_engine,
+                        // The GUI's own chat is effectively one active
+                        // conversation at a time (see handle_gui_chat_stream's
+                        // hardcoded session id) — pinning it to slot 0 with
+                        // cache_prompt lets llama-server reuse the prior
+                        // turns' KV state instead of reprocessing the whole
+                        // transcript every call.
+                        Some(0),
+                        true,
                     )
                     .await
                 {
@@ -4847,6 +4898,12 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         gen: GenerationParams,
         prompt: String,
         request_tracker: runtime_switcher::RequestTracker,
+        // Held for the generation's full duration — acquired by the caller
+        // before this function was invoked, released (dropped) either on
+        // the immediate-failure return below or inside the spawned
+        // streaming task once the stream finishes, matching
+        // `request_tracker`'s own release points.
+        slot_permit: tokio::sync::OwnedSemaphorePermit,
         truncated: bool,
     ) -> axum::response::Response {
         use axum::response::sse::{Event, Sse};
@@ -4879,6 +4936,8 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                             gen.top_p,
                             gen.top_k,
                             gen.repeat_penalty,
+                            Some(0),
+                            true,
                         )
                         .await
                 }
@@ -4978,6 +5037,9 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                 real_inference,
             );
             request_tracker.decrement().await;
+            // Explicit for clarity: releases the slot back to the pool now
+            // that streaming is done, on both exit paths below.
+            drop(slot_permit);
 
             if client_disconnected {
                 return;
@@ -5123,6 +5185,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             // backend-switch draining.
             let request_tracker = active_runtime_switcher().request_tracker().clone();
             request_tracker.increment().await;
+            let slot_permit = request_tracker.acquire_slot().await;
             return handle_gui_chat_stream(
                 state,
                 ollama_available,
@@ -5131,6 +5194,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                 gen,
                 transcript,
                 request_tracker,
+                slot_permit,
                 history_truncated,
             )
             .await;
@@ -5147,6 +5211,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
 
         let request_tracker = active_runtime_switcher().request_tracker().clone();
         request_tracker.increment().await;
+        let _slot_permit = request_tracker.acquire_slot().await;
 
         let outcome = run_tool_loop(
             &state,
@@ -5302,6 +5367,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         let started = Instant::now();
         let request_tracker = active_runtime_switcher().request_tracker().clone();
         request_tracker.increment().await;
+        let _slot_permit = request_tracker.acquire_slot().await;
 
         let current_model = gen.current_model.clone();
         let exec_tokens = gen.exec_tokens;
@@ -5613,6 +5679,24 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                     "ctx_size" => {
                         if let Some(v) = value.as_u64() {
                             current.ctx_size = v as usize;
+                        }
+                    }
+                    "parallel_slots" => {
+                        if let Some(v) = value.as_u64() {
+                            current.parallel_slots = (v as usize).clamp(1, 64);
+                            // Mirrors llama_server_url's existing precedent
+                            // below: takes effect on the *next* model load
+                            // for llama-server's own -np flag.
+                            std::env::set_var(
+                                "GHOSTLINK_PARALLEL_SLOTS",
+                                current.parallel_slots.to_string(),
+                            );
+                            // Takes effect immediately for ghost-link's own
+                            // admission control, independent of when the
+                            // model next reloads.
+                            active_runtime_switcher()
+                                .request_tracker()
+                                .resize_slots(current.parallel_slots);
                         }
                     }
                     "conversation_token_limit" => {
@@ -5976,7 +6060,6 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             load: 35,
         }],
         sessions: load_persistent_sessions(),
-        queue_depth: 0,
         chat_requests: 0,
         last_latency_ms: 0.0,
         last_tokens_per_sec: 0.0,

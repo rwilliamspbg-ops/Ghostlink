@@ -54,6 +54,7 @@ export interface Settings {
   repeat_penalty: number;
   max_tokens: number;
   conversation_token_limit: number;
+  parallel_slots: number;
   chat_exec_tokens: number;
   chat_micro_batch: number;
   tcp_max_inflight: number;
