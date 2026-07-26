@@ -284,6 +284,23 @@ pub struct SwitchResult {
     pub message: String,
 }
 
+/// Serializes tests (in this module and in `backend_api`) that mutate
+/// process-global environment variables via `EnvironmentManager`/
+/// `RuntimeSwitcher`. Env vars are process-global, not thread-local, and
+/// `cargo test` runs tests within a binary in parallel by default, so
+/// without this lock two such tests can interleave their `set_var`/
+/// `remove_var` calls and read back each other's values.
+///
+/// A `tokio::sync::Mutex` is used (rather than `std::sync::Mutex`) so async
+/// tests can hold the guard across `.await` points; sync tests use
+/// `blocking_lock()` instead.
+#[cfg(test)]
+pub(crate) fn env_test_lock() -> &'static tokio::sync::Mutex<()> {
+    use std::sync::OnceLock;
+    static LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -312,6 +329,8 @@ mod tests {
 
     #[test]
     fn test_environment_manager_set_env() {
+        let _guard = env_test_lock().blocking_lock();
+
         let config = SwitchingConfig::default();
         let manager = EnvironmentManager::new(config);
 
