@@ -1,3 +1,7 @@
+## 2026-07-20 - [Cosine Similarity Query Norm Cache & Single-Pass Loop]
+**Learning:** In brute-force vector search / RAG interfaces, calculating the query embedding's norm inside a pairwise similarity function causes $O(M)$ redundant computations of the query norm (where $M$ is the number of indexed entries). Pre-calculating the query embedding's norm exactly once before the search loop reduces complexity from $O(M \cdot D)$ to $O(D)$ for query norm overhead. Additionally, fusing dot product and candidate norm square calculations into a single-pass loop reduces candidate embedding memory traversals, significantly improving memory throughput and cache locality.
+**Action:** Always pre-compute query vector norms outside of similarity search loops, and use fused single-pass loops to compute multiple vector metrics concurrently.
+
 ## 2026-07-20 - [Compare Mode O(n) rendering optimization]
 **Learning:** Performing nested array scans like `messages.find(...)` inside React list mapping (`messages.map(...)`) causes $O(n^2)$ time complexity for list rendering on the main thread. This is especially problematic in fast-paced streaming interfaces where the list is re-rendered with every incoming token. Pre-computing a `Map` of partners/related messages outside the map via `useMemo` reduces the rendering lookup cost to $O(1)$ and the overall render loop complexity to $O(n)$.
 **Action:** Always pre-compute lookup maps/objects for related messages or group keys in lists to avoid nested $O(n^2)$ iterations during React rendering loops.
