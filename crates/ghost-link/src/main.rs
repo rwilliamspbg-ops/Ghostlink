@@ -2629,6 +2629,10 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                     top_k,
                     penalty,
                     &settings.native_engine,
+                    // Stateless endpoint, no session to pin a slot to —
+                    // matches handle_chat_completions' same behavior.
+                    None,
+                    false,
                 )
                 .await
                 .map(|gen| gen.text)
