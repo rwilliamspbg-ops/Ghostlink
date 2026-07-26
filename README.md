@@ -296,6 +296,7 @@ Default servers:
 | `image_generation` | *(not yet configured — no default backend picked)* | ❌ |
 | — | `sequential-thinking` (npx) | ✅ |
 | — | `vision` (this repo, wraps local Ollama) | needs a pulled vision model |
+| — | `rag` (this repo — `index_document`/`search`, local Ollama embeddings + brute-force cosine index, no external vector DB) | needs a pulled embedding model (e.g. `nomic-embed-text`) |
 
 The model decides whether and which tool to call (a ReAct-style prompt works
 with any local GGUF/Ollama model; Ollama models whose chat template declares

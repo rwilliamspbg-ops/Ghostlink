@@ -74,6 +74,7 @@ mcp_servers.toml
 
 # Runtime data created by MCP servers (see mcp_servers.toml) — not source
 mcp_workspace/ghostlink.db
+rag_index.json
 
 # Local demo recordings (large binaries, not source)
 /demo/
