@@ -4,6 +4,45 @@ All notable changes to Ghostlink Studio are documented here.
 
 ---
 
+## [1.10.0] - 2026-07-26 (OpenAI API surface: /v1/completions, /v1/embeddings)
+
+Closes another item from a gap analysis against LM Studio/vLLM: Ghostlink's
+OpenAI-compatible surface was `/v1/chat/completions` and `/v1/models`
+only — any tool expecting the full OpenAI-shaped API (legacy completions,
+embeddings) had nowhere to go.
+
+### ✨ Features
+
+- **`POST /v1/completions`**: OpenAI's legacy non-chat completion endpoint.
+  Mirrors `handle_chat_completions`'s existing backend-dispatch pattern
+  almost verbatim, reading a plain `prompt` string instead of extracting
+  one from a `messages` array. Stateless, same as the chat endpoint — no
+  session, so no slot/cache-prompt reuse.
+- **`POST /v1/embeddings`**: backed by `OllamaClient::embeddings()`
+  (already used internally by `/api/ollama/embeddings`, now wrapped in a
+  real OpenAI-shaped `{data: [{embedding, index, object}], model, usage}`
+  envelope). Accepts a single string or an array of strings per the real
+  spec. The native llama-server engine has no embedding support today (it
+  would need a second dedicated process launched with `--embedding`) — a
+  native-backend request gets a real `501 Not Implemented` explaining
+  that, not a silent failure or a faked response. Bad/empty input gets a
+  real `400`; a genuine upstream Ollama failure gets a real `502`.
+
+### ✅ Validation
+
+- New unit tests for `normalize_embeddings_input` (single string, array,
+  mixed-validity array, unsupported shapes).
+- Live manual verification against a real running Ollama instance:
+  `/v1/completions` produced real generated text end-to-end; `/v1/embeddings`
+  correctly returned `400` for empty input and `501` when switched to the
+  native backend. The success path for embeddings couldn't be exercised in
+  this environment (local Ollama isn't running with `--embeddings`
+  enabled) — confirmed via Ollama's own error response, not a Ghostlink
+  bug — but the real `502` upstream-error path it hit instead is itself
+  genuine, correct behavior worth noting rather than glossing over.
+- `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D
+  warnings`, `cargo test --workspace` all green.
+
 ## [1.9.0] - 2026-07-26 (Multi-node: real cross-process execution, replacing the fabricated flow demo)
 
 ### 🐛 Fixed (fabrication)
