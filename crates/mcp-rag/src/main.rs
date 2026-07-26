@@ -113,6 +113,7 @@ fn cosine_similarity_precomputed(a: &[f32], b: &[f32], norm_b: f32) -> f32 {
     dot / (norm_a * norm_b)
 }
 
+#[allow(dead_code)]
 fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
     let norm_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
     cosine_similarity_precomputed(a, b, norm_b)
@@ -132,7 +133,12 @@ fn rank<'a>(
     }
     let mut scored: Vec<(f32, &IndexEntry)> = entries
         .iter()
-        .map(|e| (cosine_similarity_precomputed(&e.embedding, query_embedding, norm_b), e))
+        .map(|e| {
+            (
+                cosine_similarity_precomputed(&e.embedding, query_embedding, norm_b),
+                e,
+            )
+        })
         .collect();
     scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
     scored.truncate(top_k);
