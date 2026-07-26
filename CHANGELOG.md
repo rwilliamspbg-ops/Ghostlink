@@ -4,6 +4,34 @@ All notable changes to Ghostlink Studio are documented here.
 
 ---
 
+## [1.8.0] - 2026-07-25 (Voice input in chat)
+
+### ✨ Features
+
+- **Chat gains browser-native voice input.** A mic toggle button next to
+  Send in `ChatTab.tsx` uses the Web Speech API (`SpeechRecognition` /
+  `webkitSpeechRecognition`) to transcribe speech directly into the message
+  box — interim results update live, final results accumulate, and the
+  button never renders on browsers without support (Firefox/Safari) rather
+  than showing a dead control.
+- Worth being upfront about: this is cloud-backed (the browser's built-in
+  recognizer needs internet), a real tension with the rest of this app's
+  local-first inference story. A local Whisper.cpp integration (mirroring
+  `native_engine.rs`'s process-management pattern) would resolve that but
+  is a substantially bigger lift — left as explicit future work, not
+  silently glossed over.
+
+### ✅ Validation
+
+- `tsc --noEmit` clean, `vitest run` (108 passed, 0 failed) including 2 new
+  tests: mic button absence when `SpeechRecognition` is unavailable, and
+  start/stop/transcript-into-input behavior with a mocked recognizer.
+- Manually verified in a live browser: clicking the mic button triggers a
+  real microphone permission request (confirming the Web Speech API call is
+  wired correctly end to end), and the button correctly resets to its
+  initial state when permission is denied rather than getting stuck
+  "recording."
+
 ## [1.7.1] - 2026-07-25 (Fix: concurrent model load/unload requests corrupted state and could kill llama-server)
 
 Chasing a report of chat suddenly failing with `error sending request for url
