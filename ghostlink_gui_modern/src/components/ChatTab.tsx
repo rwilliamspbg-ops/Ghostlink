@@ -871,8 +871,18 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                 >
                   <FolderOpen size={16} aria-hidden="true" />
                 </button>
-                <button onClick={() => { if (!loading) setMessages([]); }} className="p-1.5 rounded-lg hover:bg-slate-900 text-slate-500 hover:text-white transition" aria-label="Clear chat">
-                    <Plus size={16} aria-hidden="true" />
+                <button
+                  onClick={() => {
+                    if (loading) return;
+                    if (messages.length > 0 && window.confirm('Are you sure you want to clear the current chat? This will permanently delete your active conversation.')) {
+                      setMessages([]);
+                    }
+                  }}
+                  className="p-1.5 rounded-lg hover:bg-slate-900 text-slate-500 hover:text-white transition"
+                  title="Clear chat"
+                  aria-label="Clear chat"
+                >
+                    <Trash2 size={16} aria-hidden="true" />
                 </button>
               </div>
 
