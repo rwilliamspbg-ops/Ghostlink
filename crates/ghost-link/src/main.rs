@@ -1470,6 +1470,18 @@ struct BackendState {
     mcp_registry: Arc<mcp::McpRegistry>,
     pending_tool_calls: Arc<tokio::sync::Mutex<HashMap<String, PendingToolCall>>>,
     download_progress: HashMap<String, DownloadProgressInfo>,
+    /// Serializes the full model load/unload sequence end to end — the
+    /// llama-server stage/kill/spawn dance in `NativeEngineClient::load_model_into_slot`
+    /// plus the `BackendState` updates (`current_model`, model status, settings)
+    /// that follow it. Without this, two overlapping `/api/models/load` (or
+    /// load+unload) requests each independently ran `free_llama_port`'s
+    /// system-wide `taskkill /F /IM llama-server.exe` and raced to bind the
+    /// same port — confirmed by firing concurrent load requests and seeing
+    /// each response report a *different* `current_model`, since the final
+    /// `backend.current_model = selected_model` write was a plain
+    /// last-writer-wins race with no relation to which process actually
+    /// survived the taskkill/spawn collision.
+    model_lifecycle_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 /// Real byte-level progress for an in-flight (or just-finished) model download.
@@ -2713,6 +2725,15 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             return Json(serde_json::json!({ "error": "model cannot be empty" }));
         }
 
+        // Held for the rest of this handler so an overlapping load/unload
+        // request queues up instead of racing it — see the field doc on
+        // `model_lifecycle_lock` for what went wrong without this.
+        let lifecycle_lock = {
+            let backend = lock_state(&state);
+            Arc::clone(&backend.model_lifecycle_lock)
+        };
+        let _lifecycle_guard = lifecycle_lock.lock().await;
+
         let (inference_backend, ollama_client, ollama_available) = {
             let backend = lock_state(&state);
             // Prefer live settings string (updated by Settings UI / runtime select)
@@ -3247,6 +3268,14 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         if requested.is_empty() {
             return Json(serde_json::json!({ "error": "model cannot be empty" }));
         }
+
+        // See `model_lifecycle_lock`'s field doc — same race as the load
+        // handler applies here (an unload racing a concurrent load).
+        let lifecycle_lock = {
+            let backend = lock_state(&state);
+            Arc::clone(&backend.model_lifecycle_lock)
+        };
+        let _lifecycle_guard = lifecycle_lock.lock().await;
 
         let (inference_backend, ollama_client, ollama_available, native_engine_client, settings) = {
             let backend = lock_state(&state);
@@ -5876,6 +5905,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         ))),
         pending_tool_calls: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
         download_progress: HashMap::new(),
+        model_lifecycle_lock: Arc::new(tokio::sync::Mutex::new(())),
     }));
 
     // Background CPU/RAM/GPU sampler — keeps /api/metrics non-blocking.
