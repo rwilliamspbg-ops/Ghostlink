@@ -1,0 +1,8 @@
+title: Ghostlink
+description: Distributed inference fabric for custom LLM systems — route workloads across CPU, GPU, and NPU resources with explicit scheduling, hardware-aware placement, and a self-hosted open-source stack.
+theme: jekyll-theme-midnight
+
+# GitHub Pages is on the legacy "deploy from branch" source (main, path /),
+# so with no root index.html Jekyll auto-renders README.md as the site
+# index — this file just gives that render an actual theme (dark, matches
+# the app's own UI) instead of the unstyled bare-HTML fallback.
