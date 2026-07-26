@@ -4,6 +4,53 @@ All notable changes to Ghostlink Studio are documented here.
 
 ---
 
+## [1.9.0] - 2026-07-25 (RAG: new `mcp-rag` retrieval tool)
+
+### ✨ Features
+
+- **New `crates/mcp-rag` MCP server** exposing `index_document`/`search`
+  retrieval tools — chat can now index text into a local knowledge base and
+  look it up later, closing the "RAG/tooling depth" gap. Structured exactly
+  like `mcp-vision` (its closest precedent: a small standalone `rmcp`
+  server making its own local Ollama HTTP calls rather than depending on
+  ghost-link's private `ollama.rs`), so no registry/toolcall/GUI changes
+  were needed — the MCP architecture is already fully generic over any
+  stdio server.
+- **No external vector database.** A brute-force in-process
+  `Vec<{id, embedding, text, source}>` with cosine-similarity search,
+  persisted to `rag_index.json`. Right-sized for a single local user's
+  corpus (hundreds to low-thousands of chunks) and consistent with this
+  project's "no external services" self-hosted pitch — sqlite-vec/qdrant/
+  faiss would be solving a scale problem this tool doesn't have.
+- `index_document` chunks input at paragraph boundaries (further splitting
+  any paragraph over ~1200 chars at word boundaries, never mid-word) and
+  embeds each chunk via a local Ollama embedding model (default
+  `nomic-embed-text`, overridable via `OLLAMA_EMBED_MODEL`, mirroring
+  `mcp-vision`'s `OLLAMA_VISION_MODEL` env pattern).
+- New `[[mcp_servers]]` entry in `mcp_servers.example.toml` (`slot = ""`,
+  standalone — same treatment as `vision`), disabled by default since it
+  needs Ollama running with an embedding model pulled.
+- `README.md` gains a `retrieval`/`rag` row in the MCP Tools table.
+
+### ✅ Validation
+
+- `cargo build -p mcp-rag`, `cargo fmt --all --check`, `cargo clippy -p
+  mcp-rag --all-targets -- -D warnings`, `cargo test --workspace` (10 new
+  tests in `mcp-rag`: chunking at paragraph/word boundaries, cosine
+  similarity correctness on known vectors, ranking order + `top_k`
+  truncation, index persist/load round-trip including missing/corrupt
+  files — 291 total passed, 0 failed, 6 ignored).
+- Smoke-tested the release binary: starts cleanly, correctly reports a
+  connection-closed error on EOF stdin with no MCP handshake (same failure
+  mode `mcp-vision`/`mcp-calculator` show under the same condition — proves
+  the binary and its stdio serving loop are sound).
+- **Not verified**: a real `index_document` → `search` round-trip against a
+  live Ollama instance — Ollama wasn't running in this environment. The
+  ranking/chunking/persistence logic that round-trip depends on is unit
+  tested against fixed embeddings instead; the actual Ollama HTTP call
+  (`embed()`) is the one path without live coverage. Documented here rather
+  than silently claimed as verified.
+
 ## [1.7.1] - 2026-07-25 (Fix: concurrent model load/unload requests corrupted state and could kill llama-server)
 
 Chasing a report of chat suddenly failing with `error sending request for url
