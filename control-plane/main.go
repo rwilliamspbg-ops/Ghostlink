@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/rwilliamspbg-ops/Ghostlink/control-plane/pkg/auth"
 	"github.com/rwilliamspbg-ops/Ghostlink/control-plane/pkg/proxy"
 	"github.com/rwilliamspbg-ops/Ghostlink/control-plane/pkg/ratelimit"
 )
@@ -72,8 +73,10 @@ func envInt(key string, def int) int {
 
 // buildHandler wires the full route table + middleware chain. Factored out
 // of main() so tests can exercise the exact same routing/middleware setup
-// against a fake backend instead of a hand-rolled subset of it.
-func buildHandler(backendURL string, rateLimit int, rateWindow time.Duration) http.Handler {
+// against a fake backend instead of a hand-rolled subset of it. apiKey may
+// be empty (see auth.Middleware) — auth still applies via the proxy
+// forwarding Authorization through to ghost-link either way.
+func buildHandler(backendURL string, rateLimit int, rateWindow time.Duration, apiKey string) http.Handler {
 	chatProxy := proxy.NewChatProxy(backendURL)
 	limiter := ratelimit.New(rateLimit, rateWindow)
 
@@ -103,7 +106,12 @@ func buildHandler(backendURL string, rateLimit int, rateWindow time.Duration) ht
 	// always deferring to ghost-link's actual implementation.
 	mux.HandleFunc("/api/", chatProxy.HandleBackendProxy)
 
-	return loggingMiddleware(corsMiddleware(limiter.Middleware(mux)))
+	// auth runs inside cors (cors already fully short-circuits OPTIONS
+	// preflight before reaching anything wrapped inside it, so ordering
+	// relative to preflight isn't in question here) and outside the rate
+	// limiter, so an unauthenticated request gets rejected before it
+	// consumes any of a client's rate-limit budget.
+	return loggingMiddleware(corsMiddleware(auth.Middleware(apiKey)(limiter.Middleware(mux))))
 }
 
 func main() {
@@ -124,7 +132,13 @@ func main() {
 	rateLimit := envInt("GHOSTLINK_RATE_LIMIT", 120)
 	rateWindowSec := envInt("GHOSTLINK_RATE_WINDOW_SECONDS", 10)
 
-	handler := buildHandler(backendURL, rateLimit, time.Duration(rateWindowSec)*time.Second)
+	apiKey, err := auth.LoadAPIKey()
+	if err != nil {
+		log.Printf("warning: could not read ghost-link's API key (%v) — the gateway won't reject unauthenticated requests itself; ghost-link's own auth still applies to proxied traffic", err)
+		apiKey = ""
+	}
+
+	handler := buildHandler(backendURL, rateLimit, time.Duration(rateWindowSec)*time.Second, apiKey)
 
 	log.Printf("Ghostlink Control Plane starting on :%s", port)
 	log.Printf("Proxying GUI/API routes to backend: %s", backendURL)

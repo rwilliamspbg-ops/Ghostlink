@@ -4,6 +4,84 @@ All notable changes to Ghostlink Studio are documented here.
 
 ---
 
+## [1.11.0] - 2026-07-26 (Real bearer-token auth + PQC-hybrid TLS)
+
+Closes the last item from a gap analysis against LM Studio/vLLM: the API
+server had no authentication anywhere, and the existing `/api/security/*`
+endpoints were fully mocked — `handle_gui_jwt_refresh` always returned a
+hardcoded `"new-token-123"`, and the PQC endpoints always reported
+`enabled: true` regardless of anything. Both are now real.
+
+### ✨ Features
+
+- **Real bearer-token auth on every route but `/health`.** A 256-bit API
+  key is generated once on first run, persisted to `api_key.txt`, and
+  printed to the console — the only way to learn it, since it's never
+  returned by any API response. Send it directly as
+  `Authorization: Bearer <key>`, or exchange it for a short-lived JWT via
+  `POST /api/security/jwt/refresh` (`jsonwebtoken`, HS256, signed with the
+  same key — genuine issuance/verification, not the old stub).
+- **Real HTTPS with a genuine PQC-hybrid (X25519MLKEM768) key exchange
+  preference**, via `rustls`'s `prefer-post-quantum` feature (aws-lc-rs
+  backend) — the same mechanism Chrome/Cloudflare/AWS use today, not a
+  bespoke handshake. Opt-in via a new `parallel_slots`-style
+  `enable_tls` setting, off by default for today's plain-localhost dev
+  flow, forced on when the server binds a non-loopback address (the
+  LAN/remote scenario this actually protects). A self-signed cert is
+  generated once via `rcgen` and reused across restarts.
+- **`/api/security/pqc/state` and `pqc/enable` are now real**: `state`
+  reports whether *this running process's* listener is actually serving
+  HTTPS (not the persisted setting, which only applies on next restart —
+  tracked separately so the two can't be conflated); `enable` writes the
+  setting and honestly says a restart is required rather than pretending
+  it's already live.
+- **Go control-plane gateway now verifies the same shared secret** before
+  proxying — real JWT signature verification (`golang-jwt/jwt/v5`), not a
+  shape-only check, so it doesn't reject legitimate short-lived tokens the
+  GUI uses. Degrades gracefully (no extra edge rejection, not a lockout)
+  if the key file isn't readable — the proxy already forwarded
+  `Authorization` through to ghost-link's own auth either way.
+- **GUI now sends the token on every request** — an axios interceptor plus
+  the two hand-rolled `fetch` calls that bypassed it, reading a key the
+  user pastes into a new "API Key" field on the Security tab (persisted to
+  `localStorage`). The PQC panel's copy was also corrected — it previously
+  claimed "Kyber-768/Dilithium... across all distributed nodes" and
+  "AES-GCM 256-bit encryption" when disabled, neither of which was ever
+  real; it now accurately describes the actual TLS/PQC-hybrid mechanism
+  and states plainly that disabled means unencrypted plain HTTP.
+
+### 🐛 Fixed
+
+- The API key would only ever have been generated (and its one-time
+  console banner printed) lazily on first *authenticated* request — a
+  fresh install with zero traffic yet would have had no way to discover
+  it at all. Now generated eagerly at server startup.
+
+### ✅ Validation
+
+- **Live, end-to-end manual verification** (not just unit tests): started
+  a real server, confirmed 401 with no token, 200 with the raw key, a real
+  JWT round-trip (issue → use → success), and real `enabled:false` →
+  `enable` → restart → `enabled:true` PQC state transitions. Independently
+  proved the PQC claim using `openssl s_client -tls1_3 -groups
+  X25519MLKEM768` against the running HTTPS listener — output confirmed
+  `Negotiated TLS1.3 group: X25519MLKEM768`, and a normal client with no
+  forced group still connected fine (not a hard requirement, a
+  preference).
+- New Rust tests: `auth.rs` (key generation/persistence, bearer
+  verification, tampered/garbage rejection), `tls.rs` (loopback
+  detection, idempotent cert generation with real file I/O).
+- New Go tests: `pkg/auth` (key loading, bearer/JWT verification including
+  a genuinely expired and a genuinely tampered token, full middleware
+  integration via `httptest`).
+- New frontend tests: `SecurityTab.test.tsx` (API key persistence, and
+  that enabling PQC shows a real "restart required" message rather than
+  falsely claiming it's already active).
+- `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D
+  warnings`, `cargo test --workspace` all green. `go build`, `go vet`,
+  `go test ./...` all green. `tsc --noEmit`, `vitest run` (118 passed)
+  clean.
+
 ## [1.10.0] - 2026-07-26 (Real request batching and multi-turn context reuse)
 
 Closes the top item from a gap analysis against LM Studio/vLLM: Ghostlink

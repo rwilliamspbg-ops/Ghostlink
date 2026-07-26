@@ -9,7 +9,7 @@ import (
 )
 
 func TestHealthEndpoint(t *testing.T) {
-	handler := buildHandler("http://127.0.0.1:19999", 1000, time.Second)
+	handler := buildHandler("http://127.0.0.1:19999", 1000, time.Second, "")
 
 	req := httptest.NewRequest("GET", "/health", nil)
 	w := httptest.NewRecorder()
@@ -32,7 +32,7 @@ func TestHealthEndpoint(t *testing.T) {
 }
 
 func TestHealthRejectsPost(t *testing.T) {
-	handler := buildHandler("http://127.0.0.1:19999", 1000, time.Second)
+	handler := buildHandler("http://127.0.0.1:19999", 1000, time.Second, "")
 
 	req := httptest.NewRequest("POST", "/health", nil)
 	w := httptest.NewRecorder()
@@ -56,7 +56,7 @@ func TestWorkersProxiesToBackend(t *testing.T) {
 	}))
 	defer backend.Close()
 
-	handler := buildHandler(backend.URL, 1000, time.Second)
+	handler := buildHandler(backend.URL, 1000, time.Second, "")
 
 	req := httptest.NewRequest("GET", "/api/workers", nil)
 	w := httptest.NewRecorder()
@@ -76,7 +76,7 @@ func TestWorkersProxiesToBackend(t *testing.T) {
 }
 
 func TestCORSHeaders(t *testing.T) {
-	handler := buildHandler("http://127.0.0.1:19999", 1000, time.Second)
+	handler := buildHandler("http://127.0.0.1:19999", 1000, time.Second, "")
 
 	req := httptest.NewRequest("OPTIONS", "/api/models", nil)
 	w := httptest.NewRecorder()
@@ -96,7 +96,7 @@ func TestRateLimitingBlocksExcessRequests(t *testing.T) {
 	}))
 	defer backend.Close()
 
-	handler := buildHandler(backend.URL, 2, time.Minute)
+	handler := buildHandler(backend.URL, 2, time.Minute, "")
 
 	makeReq := func() int {
 		req := httptest.NewRequest("GET", "/health", nil)
@@ -118,7 +118,7 @@ func TestRateLimitingBlocksExcessRequests(t *testing.T) {
 }
 
 func TestRateLimitingIsolatesByClient(t *testing.T) {
-	handler := buildHandler("http://127.0.0.1:19999", 1, time.Minute)
+	handler := buildHandler("http://127.0.0.1:19999", 1, time.Minute, "")
 
 	req1 := httptest.NewRequest("GET", "/health", nil)
 	req1.RemoteAddr = "10.0.0.1:1111"
@@ -154,7 +154,7 @@ func TestStreamingResponsesAreFlushed(t *testing.T) {
 	}))
 	defer backend.Close()
 
-	handler := buildHandler(backend.URL, 1000, time.Second)
+	handler := buildHandler(backend.URL, 1000, time.Second, "")
 
 	req := httptest.NewRequest("POST", "/api/inference/chat", nil)
 	w := httptest.NewRecorder()

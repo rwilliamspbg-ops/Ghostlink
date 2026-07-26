@@ -10,6 +10,12 @@ export interface CircuitBreakerState {
   lastFailureTime: number;
 }
 
+// The backend has no way to hand this to the GUI automatically — it's
+// printed once in the server's own startup console output (never returned
+// by any API response, on purpose) — so the user pastes it in manually
+// once (see SecurityTab) and it's remembered here across reloads.
+const API_KEY_STORAGE_KEY = 'ghostlink-api-key';
+
 export class GhostlinkAPI {
   private http: AxiosInstance;
   private requestTimeout = [5000, 120000] as const;
@@ -25,6 +31,42 @@ export class GhostlinkAPI {
       baseURL: apiBase.trim(),
       timeout: this.requestTimeout[1],
     });
+
+    this.http.interceptors.request.use((config) => {
+      const apiKey = this.getApiKey();
+      if (apiKey) {
+        config.headers = config.headers ?? {};
+        config.headers.Authorization = `Bearer ${apiKey}`;
+      }
+      return config;
+    });
+  }
+
+  /** Reads the persisted API key/token, if the user has entered one. */
+  getApiKey(): string {
+    try {
+      return localStorage.getItem(API_KEY_STORAGE_KEY) ?? '';
+    } catch {
+      return '';
+    }
+  }
+
+  /** Persists the API key (or JWT) used to authenticate every request from
+   * here on — every call already in flight keeps its old header, but the
+   * interceptor reads fresh on each new request, so this takes effect
+   * immediately. Pass an empty string to clear it. */
+  setApiKey(key: string): void {
+    try {
+      if (key) {
+        localStorage.setItem(API_KEY_STORAGE_KEY, key);
+      } else {
+        localStorage.removeItem(API_KEY_STORAGE_KEY);
+      }
+    } catch {
+      // localStorage unavailable (private browsing, etc.) — the key just
+      // won't survive a reload; not fatal, every other request this
+      // session still works via the in-memory read above failing closed.
+    }
   }
 
   private isNotFound(error: any): boolean {
@@ -262,10 +304,12 @@ export class GhostlinkAPI {
             ? `${this.http.defaults.baseURL}/api/inference/chat`
             : '/api/inference/chat';
 
+        const apiKey = this.getApiKey();
         const response = await fetch(url, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
+            ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
           },
           body: JSON.stringify(payload),
         });
@@ -679,9 +723,13 @@ export class GhostlinkAPI {
 
   async pullOllamaModelStream(modelName: string, onProgress: (progress: any) => void): Promise<{ success: boolean; error?: string }> {
     try {
+      const apiKey = this.getApiKey();
       const response = await fetch(`${this.http.defaults.baseURL}/api/ollama/pull/stream`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+        },
         body: JSON.stringify({ model: modelName }),
       });
 

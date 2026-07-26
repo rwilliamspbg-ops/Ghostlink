@@ -18,18 +18,46 @@ PORT = 18014
 BASE_URL = f"http://{HOST}:{PORT}"
 
 
-def _get(path: str, timeout: float = 5.0) -> dict:
-    req = Request(f"{BASE_URL}{path}", method="GET")
+API_KEY_PATH = ROOT / "api_key.txt"
+
+
+def _wait_for_api_key(max_wait_s: int = 20) -> str:
+    """The server generates and persists a real API key at startup (see
+    crates/ghost-link/src/auth.rs) — every route but /health now requires
+    it as a bearer token. Polls for the file rather than assuming it's
+    already there the instant the process starts."""
+    deadline = time.time() + max_wait_s
+    while time.time() < deadline:
+        try:
+            key = API_KEY_PATH.read_text(encoding="utf-8").strip()
+            if key:
+                return key
+        except FileNotFoundError:
+            pass
+        time.sleep(0.2)
+    raise RuntimeError(f"API key file never appeared at {API_KEY_PATH}")
+
+
+def _auth_headers() -> dict:
+    return {"Authorization": f"Bearer {_wait_for_api_key()}"}
+
+
+def _get(path: str, timeout: float = 5.0, auth: bool = True) -> dict:
+    headers = _auth_headers() if auth else {}
+    req = Request(f"{BASE_URL}{path}", method="GET", headers=headers)
     with urlopen(req, timeout=timeout) as resp:
         return json.loads(resp.read().decode("utf-8"))
 
 
-def _post(path: str, payload: dict, timeout: float = 10.0) -> dict:
+def _post(path: str, payload: dict, timeout: float = 10.0, auth: bool = True) -> dict:
     body = json.dumps(payload).encode("utf-8")
+    headers = {"Content-Type": "application/json"}
+    if auth:
+        headers.update(_auth_headers())
     req = Request(
         f"{BASE_URL}{path}",
         data=body,
-        headers={"Content-Type": "application/json"},
+        headers=headers,
         method="POST",
     )
     with urlopen(req, timeout=timeout) as resp:
@@ -40,7 +68,7 @@ def _wait_ready(max_wait_s: int = 45) -> None:
     deadline = time.time() + max_wait_s
     while time.time() < deadline:
         try:
-            data = _get("/health", timeout=1.5)
+            data = _get("/health", timeout=1.5, auth=False)
             if data.get("status") == "healthy":
                 return
         except (URLError, HTTPError, TimeoutError, OSError, ValueError):
