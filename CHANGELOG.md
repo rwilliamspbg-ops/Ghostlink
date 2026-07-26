@@ -4,6 +4,50 @@ All notable changes to Ghostlink Studio are documented here.
 
 ---
 
+## [1.7.1] - 2026-07-25 (Fix: concurrent model load/unload requests corrupted state and could kill llama-server)
+
+Chasing a report of chat suddenly failing with `error sending request for url
+(http://127.0.0.1:8080/v1/chat/completions)` — llama-server was dead despite
+ghost-link's own log claiming "Successfully loaded model" moments earlier.
+
+### 🐛 Correctness
+
+- **`/api/models/load` and `/api/models/unload` had no mutual exclusion.**
+  `handle_gui_model_load`/`handle_gui_model_unload` deliberately drop the
+  `BackendState` lock before calling the (intentionally blocking)
+  `NativeEngineClient::load_model_into_slot`/`unload_model`, so two
+  overlapping requests (a double-click, a fast model switch before the
+  first request's promise resolved, etc.) could run the whole
+  stage-on-scratch-port → kill-existing → bind-real-port sequence
+  concurrently. `free_llama_port` kills by image name
+  (`taskkill /F /IM llama-server.exe` on Windows) rather than by PID, so one
+  request's cleanup could kill the *other* request's freshly-staged or
+  just-promoted process. Confirmed by firing 3 concurrent `/api/models/load`
+  requests: each response reported a *different*, wrong `current_model`
+  (`backend.current_model = selected_model` was a plain last-writer-wins
+  race with no relation to which underlying process actually survived).
+- Fixed with a new `model_lifecycle_lock` (`Arc<tokio::sync::Mutex<()>>`) on
+  `BackendState`, held for the full duration of both handlers — from model
+  resolution through the `BackendState` updates that follow the load/unload
+  call. Overlapping requests now queue instead of racing.
+
+### ✅ Validation
+
+- Reproduced the corruption pre-fix: 3 concurrent `/api/models/load` calls
+  each returned a different `current_model` field, with the shared
+  `model_path` field also cross-contaminated between requests.
+- Post-fix: the same 3-way concurrent load re-run — each response now
+  correctly reports its own requested model, `/api/models/status` and the
+  actual running `llama-server.exe` process agree, and a follow-up chat
+  request against the settled model succeeds.
+- Single-request stability: model loaded via the real API, then polled the
+  live `llama-server.exe` PID every 250ms for 90s (spanning a real chat
+  turn) — stayed alive the whole time, confirming the earlier crash needed
+  the concurrent-request race, not just normal single-session use.
+- `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D
+  warnings`, `cargo test --workspace` (281 passed, 0 failed, 6 ignored) all
+  clean.
+
 ## [1.7.0] - 2026-07-25 (Chat gains conversation memory; README overhaul with live demo)
 
 Chat turns previously carried zero history — every request to the model was
