@@ -135,9 +135,18 @@ Tested default vs. this host's documented 4GB-VRAM-tier recommendation
 - AF_XDP kernel-bypass — not implemented on Windows, out of scope here.
 
 
-## In-Memory Transport Benchmarks
+## In-Memory Transport Benchmarks — UNVERIFIED, pending a real run on this hardware
 
-### CPU Configuration (8-core Intel/AMD)
+Like the Multi-Node table below, these two tables cannot be traced to any
+real run in this repo: no date, no methodology, and the model list
+(`orca-mini`, `mistral`, `llama2-7b`) and hardware (8-core Intel/AMD,
+RTX 4090) don't match anything actually exercised in the "Full-Spectrum
+Session Benchmark" above, which is real and used `Llama-3.2-1B-Instruct`
+on an AMD integrated GPU. Leaving them here as a placeholder to replace,
+not evidence of past measurement — treat everything below as
+**unverified**:
+
+### CPU Configuration (8-core Intel/AMD) — unverified placeholder
 
 | Model | Throughput | Latency P50 | Latency P95 | Memory Usage |
 |-------|------------|-------------|-------------|--------------|
@@ -145,13 +154,18 @@ Tested default vs. this host's documented 4GB-VRAM-tier recommendation
 | mistral (7B) | ~450K tokens/s | 1.8ms | 5.2ms | 6.0 GB |
 | llama2-7b (7B) | ~420K tokens/s | 2.0ms | 5.8ms | 6.0 GB |
 
-### GPU Configuration (NVIDIA RTX 4090)
+### GPU Configuration (NVIDIA RTX 4090) — unverified placeholder
 
 | Model | Throughput | Latency P50 | Latency P95 | Memory Usage |
 |-------|------------|-------------|-------------|--------------|
 | orca-mini (3B) | ~2.1M tokens/s | 0.4ms | 1.1ms | 2.0 GB |
 | mistral (7B) | ~1.6M tokens/s | 0.6ms | 1.8ms | 6.0 GB |
 | llama2-7b (7B) | ~1.5M tokens/s | 0.7ms | 2.0ms | 6.0 GB |
+
+Do not cite these tables. `scripts/flow_perf_snapshot.py` and
+`cargo bench -p ghostlink-core --bench criterion` are the repo's real,
+runnable benchmark tools — see the Full-Spectrum session above for what
+their real output looks like.
 
 ---
 
