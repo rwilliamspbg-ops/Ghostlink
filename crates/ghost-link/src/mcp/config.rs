@@ -22,6 +22,8 @@ pub enum McpTransport {
     },
     Http {
         url: String,
+        /// Values written as `"${VAR_NAME}"` are resolved from the host process
+        /// environment at connect time — never stored here as literal secrets.
         #[serde(default)]
         headers: HashMap<String, String>,
     },
@@ -136,17 +138,29 @@ impl McpConfigManager {
     }
 }
 
-/// Rejects a config whose `env` map contains a literal-looking secret instead of an
-/// `${VAR_NAME}` reference — secrets must come from the host environment, never from
-/// `mcp_servers.toml` itself.
+/// Rejects a config whose `env` (stdio) or `headers` (HTTP) map contains a
+/// literal-looking secret instead of an `${VAR_NAME}` reference — secrets must come
+/// from the host environment, never from `mcp_servers.toml` itself.
 fn validate_server(server: &McpServerConfig) -> Result<(), String> {
-    if let McpTransport::Stdio { env, .. } = &server.transport {
-        for (key, value) in env {
-            if looks_like_literal_secret(value) {
-                return Err(format!(
-                    "mcp server '{}': env var '{}' looks like a literal secret; use \"${{{}}}\" to reference a host environment variable instead",
-                    server.name, key, key
-                ));
+    match &server.transport {
+        McpTransport::Stdio { env, .. } => {
+            for (key, value) in env {
+                if looks_like_literal_secret(value) {
+                    return Err(format!(
+                        "mcp server '{}': env var '{}' looks like a literal secret; use \"${{{}}}\" to reference a host environment variable instead",
+                        server.name, key, key
+                    ));
+                }
+            }
+        }
+        McpTransport::Http { headers, .. } => {
+            for (key, value) in headers {
+                if looks_like_literal_secret(value) {
+                    return Err(format!(
+                        "mcp server '{}': header '{}' looks like a literal secret; use \"${{{}}}\" to reference a host environment variable instead",
+                        server.name, key, key
+                    ));
+                }
             }
         }
     }
@@ -302,6 +316,29 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "./mcp_workspace"]
     }
 
     #[test]
+    fn literal_secret_in_http_header_is_rejected() {
+        let path = temp_config_path();
+        let manager = McpConfigManager::new(&path);
+        let servers = vec![McpServerConfig {
+            name: "remote-tools".to_string(),
+            slot: "".to_string(),
+            enabled: false,
+            transport: McpTransport::Http {
+                url: "https://mcp.example.com/mcp".to_string(),
+                headers: HashMap::from([(
+                    "X-Api-Key".to_string(),
+                    "sk-liveSecretToken1234567890".to_string(),
+                )]),
+            },
+            requires_confirmation: false,
+            timeout_secs: 30,
+        }];
+
+        assert!(manager.save(&servers).is_err());
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
     fn env_reference_is_accepted() {
         let path = temp_config_path();
         let manager = McpConfigManager::new(&path);
@@ -313,6 +350,29 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "./mcp_workspace"]
                 command: "npx".to_string(),
                 args: vec![],
                 env: HashMap::from([("BRAVE_API_KEY".to_string(), "${BRAVE_API_KEY}".to_string())]),
+            },
+            requires_confirmation: false,
+            timeout_secs: 30,
+        }];
+
+        assert!(manager.save(&servers).is_ok());
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn env_reference_in_http_header_is_accepted() {
+        let path = temp_config_path();
+        let manager = McpConfigManager::new(&path);
+        let servers = vec![McpServerConfig {
+            name: "remote-tools".to_string(),
+            slot: "".to_string(),
+            enabled: false,
+            transport: McpTransport::Http {
+                url: "https://mcp.example.com/mcp".to_string(),
+                headers: HashMap::from([(
+                    "X-Api-Key".to_string(),
+                    "${REMOTE_TOOLS_API_KEY}".to_string(),
+                )]),
             },
             requires_confirmation: false,
             timeout_secs: 30,

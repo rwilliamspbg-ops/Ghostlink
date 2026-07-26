@@ -59,6 +59,15 @@ rmcp = { version = "2", default-features = false, features = [
     "transport-child-process",
     "transport-streamable-http-client-reqwest",
 ] }
+# HeaderName/HeaderValue for the HTTP MCP transport's custom headers
+http = "1"
+# rmcp's HTTP/SSE MCP transport needs reqwest 0.13 specifically (this crate's `reqwest`
+# dependency above is pinned to 0.12 for everything else); aliased so both coexist.
+mcp-reqwest = { package = "reqwest", version = "0.13", default-features = false, features = [
+    "json",
+    "stream",
+    "rustls",
+] }
 rustls = { version = "0.23.42", features = ["prefer-post-quantum"] }
 axum-server = { version = "0.8.0", features = ["tls-rustls"] }
 jsonwebtoken = { version = "10.3.0", features = ["aws_lc_rs"] }

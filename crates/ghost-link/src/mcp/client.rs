@@ -1,16 +1,22 @@
 //! A single connected MCP server session, built on the `rmcp` SDK.
 //!
-//! Only the stdio (child-process) transport is implemented today; Docker MCP Toolkit
-//! and other stdio-spawned servers use it identically (`docker mcp gateway run` is
-//! just another command). HTTP/SSE transport is deferred until a remote server is
-//! actually needed.
+//! Two transports are implemented: stdio (child-process) — Docker MCP Toolkit and
+//! other stdio-spawned servers use it identically, since `docker mcp gateway run` is
+//! just another command — and streamable HTTP/SSE, for remote MCP servers reachable
+//! over a URL.
 
+use std::collections::HashMap;
 use std::time::Duration;
 
+use http::{HeaderName, HeaderValue};
+use mcp_reqwest::Client as McpHttpClient;
 use rmcp::{
     model::CallToolRequestParams,
     service::{RoleClient, RunningService, ServiceExt},
-    transport::TokioChildProcess,
+    transport::{
+        streamable_http_client::StreamableHttpClientTransportConfig, StreamableHttpClientTransport,
+        TokioChildProcess,
+    },
 };
 use serde_json::Value;
 use tokio::process::Command;
@@ -42,6 +48,24 @@ fn build_command(command: &str, args: &[String]) -> Command {
     let mut cmd = Command::new(command);
     cmd.args(args);
     cmd
+}
+
+/// Converts a configured `headers` map into the `HeaderName`/`HeaderValue` pairs
+/// `rmcp`'s HTTP transport expects, surfacing any invalid header as a plain string
+/// (config-driven values aren't guaranteed to be valid HTTP header syntax).
+fn parse_header_map(
+    headers: &HashMap<String, String>,
+) -> Result<HashMap<HeaderName, HeaderValue>, String> {
+    headers
+        .iter()
+        .map(|(name, value)| {
+            let header_name = HeaderName::try_from(name.as_str())
+                .map_err(|err| format!("header name '{name}': {err}"))?;
+            let header_value = HeaderValue::try_from(resolve_env_value(value))
+                .map_err(|err| format!("header value for '{name}': {err}"))?;
+            Ok((header_name, header_value))
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone)]
@@ -103,11 +127,21 @@ impl McpServerHandle {
                 })?;
                 (session, child_pid)
             }
-            McpTransport::Http { .. } => {
-                return Err(format!(
-                    "MCP server '{}': HTTP/SSE transport is not implemented yet",
-                    config.name
-                ));
+            McpTransport::Http { url, headers } => {
+                let custom_headers = parse_header_map(headers).map_err(|err| {
+                    format!("MCP server '{}': invalid header ({err})", config.name)
+                })?;
+                let transport_config = StreamableHttpClientTransportConfig::with_uri(url.clone())
+                    .custom_headers(custom_headers);
+                let transport = StreamableHttpClientTransport::with_client(
+                    McpHttpClient::new(),
+                    transport_config,
+                );
+
+                let session = ().serve(transport).await.map_err(|err| {
+                    format!("failed to initialize MCP server '{}': {err}", config.name)
+                })?;
+                (session, None)
             }
         };
 
@@ -228,5 +262,42 @@ async fn kill_process_tree(pid: u32, server_name: &str) {
         .await;
     if let Err(err) = output {
         tracing::warn!("mcp: failed to kill server '{server_name}' (pid {pid}): {err}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_header_map_resolves_env_references() {
+        std::env::set_var("GHOSTLINK_MCP_CLIENT_TEST_HEADER", "resolved-value");
+        let headers = HashMap::from([(
+            "X-Api-Key".to_string(),
+            "${GHOSTLINK_MCP_CLIENT_TEST_HEADER}".to_string(),
+        )]);
+
+        let parsed = parse_header_map(&headers).expect("valid header");
+        let value = parsed
+            .get(&HeaderName::try_from("X-Api-Key").unwrap())
+            .expect("header present");
+        assert_eq!(value, "resolved-value");
+        std::env::remove_var("GHOSTLINK_MCP_CLIENT_TEST_HEADER");
+    }
+
+    #[test]
+    fn parse_header_map_rejects_invalid_header_name() {
+        let headers = HashMap::from([("Invalid Header Name".to_string(), "value".to_string())]);
+        assert!(parse_header_map(&headers).is_err());
+    }
+
+    #[test]
+    fn parse_header_map_passes_through_literal_values() {
+        let headers = HashMap::from([("X-Plain".to_string(), "plain-value".to_string())]);
+        let parsed = parse_header_map(&headers).expect("valid header");
+        let value = parsed
+            .get(&HeaderName::try_from("X-Plain").unwrap())
+            .expect("header present");
+        assert_eq!(value, "plain-value");
     }
 }

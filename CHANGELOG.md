@@ -4,6 +4,37 @@ All notable changes to Ghostlink Studio are documented here.
 
 ---
 
+## [1.12.0] - 2026-07-26 (Real HTTP/SSE MCP transport)
+
+Closes the other stub found while auditing the codebase for leftover
+placeholders: `McpTransport::Http` was a real, user-configurable entry in
+`mcp_servers.toml`'s schema, but connecting to one always failed with
+`"HTTP/SSE transport is not implemented yet"` — the config accepted it,
+the runtime never delivered it.
+
+### ✨ Features
+
+- **Real streamable HTTP/SSE MCP transport**, built on `rmcp`'s own
+  `StreamableHttpClientTransport` (the same SDK already used for the stdio
+  transport) — connecting to a remote MCP server over a URL now actually
+  works, instead of erroring at connect time regardless of config.
+- **`${VAR_NAME}` header resolution**, matching the existing stdio `env`
+  behavior: header values written as `"${VAR_NAME}"` are resolved from the
+  host process environment at connect time, never stored as literal
+  secrets in `mcp_servers.toml`.
+
+### 🐛 Fixed
+
+- **Literal-secret validation now covers HTTP headers, not just stdio env
+  vars.** `McpConfigManager::save` rejected a literal-looking secret in a
+  stdio server's `env` map, but the same check never ran against an HTTP
+  server's `headers` map — meaning the one MCP transport where a real
+  bearer token or API key is the *normal* case for a header value had no
+  guard against saving it in plaintext. Both transports now go through the
+  same rejection.
+
+---
+
 ## [1.11.0] - 2026-07-26 (Real bearer-token auth + PQC-hybrid TLS)
 
 Closes the last item from a gap analysis against LM Studio/vLLM: the API
