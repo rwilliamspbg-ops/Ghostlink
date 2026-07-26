@@ -445,7 +445,36 @@ impl BackendRegistry {
         let is_active = current == *backend;
 
         let status = if is_active { "active" } else { "ready" }.to_string();
-        let health = "healthy".to_string(); // TODO: implement health checks
+        // Previously hardcoded "healthy" unconditionally, even for a backend
+        // that `available_backends()` doesn't consider available — an
+        // unavailable backend reporting itself healthy is actively
+        // misleading. "healthy"/"unavailable" is a real (if coarse) signal;
+        // a genuine degraded-but-available state would need actual runtime
+        // probing this registry doesn't do.
+        let health = if info.available {
+            "healthy"
+        } else {
+            "unavailable"
+        }
+        .to_string();
+
+        // GPU utilization/temperature come from one machine-wide probe
+        // (host_metrics::current_host_snapshot — nvidia-smi/rocm-smi/Windows
+        // perf counters, whichever succeeds first), not a per-backend query.
+        // Only meaningful to attach to the backend that's actually active
+        // and GPU-backed — reporting a live utilization reading against an
+        // inactive or CPU backend would be fabricating a number nothing
+        // actually measured for it.
+        let (utilization, temperature) = if is_active && *backend != ComputeBackend::Cpu {
+            let snapshot = crate::host_metrics::current_host_snapshot();
+            if snapshot.gpu_available {
+                (Some(snapshot.gpu), snapshot.gpu_temp_c)
+            } else {
+                (None, None)
+            }
+        } else {
+            (None, None)
+        };
 
         Some(BackendStatus {
             backend: info.backend,
@@ -453,8 +482,8 @@ impl BackendRegistry {
             vram_gb: info.vram_gb,
             status,
             health,
-            utilization: None, // TODO: query nvidia-smi or rocm-smi
-            temperature: None, // TODO: query nvidia-smi or rocm-smi
+            utilization,
+            temperature,
         })
     }
 }
@@ -516,6 +545,75 @@ mod tests {
         // Switch to CPU should always work
         assert!(registry.switch_backend(ComputeBackend::Cpu).is_ok());
         assert_eq!(registry.current_backend(), ComputeBackend::Cpu);
+    }
+
+    fn info(backend: ComputeBackend, available: bool) -> BackendInfo {
+        BackendInfo {
+            backend,
+            device_name: format!("{} device", backend.as_str()),
+            vram_gb: Some(8.0),
+            compute_capability: "test".to_string(),
+            driver_version: "test".to_string(),
+            available,
+        }
+    }
+
+    // Constructs a registry directly (bypassing the real hardware probe in
+    // `discover()`) so these tests are deterministic on any CI runner,
+    // regardless of what GPU (if any) is actually present.
+    fn registry_with(backends: Vec<BackendInfo>, current: ComputeBackend) -> BackendRegistry {
+        BackendRegistry {
+            backends: Arc::new(Mutex::new(backends)),
+            current: Arc::new(Mutex::new(current)),
+        }
+    }
+
+    #[test]
+    fn get_status_health_reflects_availability_not_hardcoded_healthy() {
+        // Regression: get_status() used to report health: "healthy"
+        // unconditionally, even for a backend available_backends() doesn't
+        // consider available.
+        let registry = registry_with(
+            vec![
+                info(ComputeBackend::Cpu, true),
+                info(ComputeBackend::Cuda, false),
+            ],
+            ComputeBackend::Cpu,
+        );
+
+        let cpu_status = registry.get_status(&ComputeBackend::Cpu).unwrap();
+        assert_eq!(cpu_status.health, "healthy");
+
+        let cuda_status = registry.get_status(&ComputeBackend::Cuda).unwrap();
+        assert_eq!(cuda_status.health, "unavailable");
+    }
+
+    #[test]
+    fn get_status_never_reports_gpu_readings_for_the_cpu_backend() {
+        // Cpu is never GPU-backed, so utilization/temperature must stay None
+        // regardless of what the host's GPU probe (if any) reports — there's
+        // nothing for a "CPU utilization is 40%" GPU-style reading to mean.
+        let registry = registry_with(vec![info(ComputeBackend::Cpu, true)], ComputeBackend::Cpu);
+        let status = registry.get_status(&ComputeBackend::Cpu).unwrap();
+        assert_eq!(status.utilization, None);
+        assert_eq!(status.temperature, None);
+    }
+
+    #[test]
+    fn get_status_never_reports_gpu_readings_for_an_inactive_backend() {
+        // The host-wide GPU probe reflects whichever GPU is actually active;
+        // attaching its reading to a backend that isn't the current one would
+        // be presenting a number nothing measured for it as if it were real.
+        let registry = registry_with(
+            vec![
+                info(ComputeBackend::Cuda, true),
+                info(ComputeBackend::Rocm, true),
+            ],
+            ComputeBackend::Cuda,
+        );
+        let inactive_status = registry.get_status(&ComputeBackend::Rocm).unwrap();
+        assert_eq!(inactive_status.utilization, None);
+        assert_eq!(inactive_status.temperature, None);
     }
 
     #[test]
