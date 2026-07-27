@@ -252,7 +252,14 @@ function App() {
           </div>
 
           <button
-            onClick={() => { setChatMessages([]); setActiveTab(0); closeSidebarOnMobile(); }}
+            onClick={() => {
+              const messages = useAppStore.getState().chatMessages;
+              if (messages.length === 0 || window.confirm('Are you sure you want to clear the current chat? This will permanently delete your active conversation.')) {
+                setChatMessages([]);
+                setActiveTab(0);
+                closeSidebarOnMobile();
+              }
+            }}
             className="flex items-center justify-between w-full p-3 bg-slate-800 hover:bg-slate-700 rounded-xl transition mb-6 group"
           >
             <div className="flex items-center gap-3">
