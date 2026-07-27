@@ -58,8 +58,11 @@ export const CommandPalette: React.FC = () => {
         hint: 'Clear the conversation and start fresh · Ctrl+Shift+O',
         icon: MessageSquare,
         action: () => {
-          setChatMessages([]);
-          setActiveTab(0);
+          const messages = useAppStore.getState().chatMessages;
+          if (messages.length === 0 || window.confirm('Are you sure you want to clear the current chat? This will permanently delete your active conversation.')) {
+            setChatMessages([]);
+            setActiveTab(0);
+          }
         },
       },
       ...NAV_TABS.map((tab) => ({
@@ -102,8 +105,11 @@ export const CommandPalette: React.FC = () => {
       // ChatGPT uses for "new chat" and is actually interceptable.
       if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === 'o') {
         e.preventDefault();
-        setChatMessages([]);
-        setActiveTab(0);
+        const messages = useAppStore.getState().chatMessages;
+        if (messages.length === 0 || window.confirm('Are you sure you want to clear the current chat? This will permanently delete your active conversation.')) {
+          setChatMessages([]);
+          setActiveTab(0);
+        }
       }
     };
     document.addEventListener('keydown', handleKeyDown);
