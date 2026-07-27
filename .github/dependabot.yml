@@ -7,6 +7,10 @@ updates:
     labels:
       - dependencies
       - ci
+    ignore:
+      # Version tag pins the actual Rust toolchain installed (not the action's
+      # own version) and must track the MSRV declared in msrv.yml, not latest.
+      - dependency-name: "dtolnay/rust-toolchain"
 
   - package-ecosystem: pip
     directory: /third_party/mohawk_gui
