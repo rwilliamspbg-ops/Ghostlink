@@ -10,7 +10,7 @@ native engine (`native_engine.rs`) now enable:
 
 | Knob | Flag | Default (VRAM-scaled) |
 |------|------|------------------------|
-| Context size | `-c` | **4096** on 8GB (never model default 128k) |
+| Context size | `-c` | **8192** on 8GB, up to 32768 on 16GB+ (never model default 128k) — see `GHOSTLINK_CTX_SIZE`/`GHOSTLINK_VRAM_GB` in `native_engine::get_ctx_size` |
 | KV cache type | `-ctk/-ctv q8_0` | compact KV (~2× less cache memory) |
 | Flash Attention | `-fa on` | always on (requires value on current llama.cpp) |
 | Batch size | `-b` | 2048 (≥12GB) / 1024 (≥8GB) / 512 (else) |

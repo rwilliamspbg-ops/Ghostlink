@@ -1644,7 +1644,7 @@ struct RuntimeSettings {
 // Kept as named constants (rather than inlined in both `RuntimeSettings::default()`
 // and `default_conversation_token_limit()`) so the two defaults can't drift out
 // of sync — see the derivation below.
-const DEFAULT_CTX_SIZE: usize = 4096;
+const DEFAULT_CTX_SIZE: usize = 8192;
 const DEFAULT_MAX_TOKENS: usize = 2048;
 const DEFAULT_PARALLEL_SLOTS: usize = 1;
 

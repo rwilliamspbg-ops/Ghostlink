@@ -93,10 +93,33 @@ pub fn extract_tool_call(text: &str) -> Option<ParsedToolCall> {
     Some(ParsedToolCall { tool, args })
 }
 
+/// Hard cap (in characters) on a single tool result folded back into the prompt.
+/// A `fetch` call pulling a whole webpage (nav, footer, ads, unrelated content) can
+/// otherwise blow the entire context budget in one shot regardless of how large
+/// `--ctx-size` is configured — this bounds the damage a single observation can do.
+const MAX_OBSERVATION_CHARS: usize = 4000;
+
+/// Truncates `text` to `MAX_OBSERVATION_CHARS`, appending a marker noting how much
+/// was cut so the model (and anyone reading the transcript) knows content is missing
+/// rather than silently seeing a shortened result as if it were complete.
+fn truncate_observation(text: &str) -> std::borrow::Cow<'_, str> {
+    let total_chars = text.chars().count();
+    if total_chars <= MAX_OBSERVATION_CHARS {
+        return std::borrow::Cow::Borrowed(text);
+    }
+    let kept: String = text.chars().take(MAX_OBSERVATION_CHARS).collect();
+    let omitted = total_chars - MAX_OBSERVATION_CHARS;
+    std::borrow::Cow::Owned(format!(
+        "{kept}... [truncated, {omitted} more characters omitted]"
+    ))
+}
+
 /// Formats a tool result as an "Observation" turn appended to the running prompt
 /// before asking the model to continue.
 pub fn format_observation(tool: &str, result_json: &Value) -> String {
-    format!("\nObservation ({tool}): {result_json}\n")
+    let rendered = result_json.to_string();
+    let observation = truncate_observation(&rendered);
+    format!("\nObservation ({tool}): {observation}\n")
 }
 
 /// Formats a denial (confirmation gate rejected by the user) as an observation.
@@ -154,6 +177,40 @@ mod tests {
     #[test]
     fn instructions_block_is_empty_for_no_tools() {
         assert_eq!(build_tool_instructions(&[]), "");
+    }
+
+    #[test]
+    fn format_observation_passes_through_small_results_untouched() {
+        let result = serde_json::json!({"content": "hello world"});
+        let observation = format_observation("fetch", &result);
+        assert_eq!(
+            observation,
+            "\nObservation (fetch): {\"content\":\"hello world\"}\n"
+        );
+    }
+
+    #[test]
+    fn format_observation_truncates_oversized_results() {
+        let huge_text = "x".repeat(10_000);
+        let result = serde_json::json!({"content": huge_text});
+        let observation = format_observation("fetch", &result);
+        assert!(
+            observation.len() < 5_000,
+            "expected truncation, got {} chars",
+            observation.len()
+        );
+        assert!(observation.contains("truncated"));
+        assert!(observation.contains("more characters omitted"));
+    }
+
+    #[test]
+    fn format_observation_truncation_is_utf8_safe() {
+        // Multi-byte chars near the truncation boundary shouldn't panic or split
+        // a character in half.
+        let huge_text = "é".repeat(5_000);
+        let result = serde_json::json!({"content": huge_text});
+        let observation = format_observation("fetch", &result);
+        assert!(observation.contains("truncated"));
     }
 
     #[test]

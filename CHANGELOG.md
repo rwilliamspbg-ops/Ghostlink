@@ -4,6 +4,41 @@ All notable changes to Ghostlink Studio are documented here.
 
 ---
 
+## [1.13.0] - 2026-07-26 (Tool-call context overflow fix)
+
+Found in the wild: a `fetch` tool call that pulled an entire webpage (site
+nav, a trivia quiz, promoted-songs list, footer — none of it relevant)
+got folded straight into the prompt with no size limit, pushing a single
+chat turn over the model's context window and failing outright with
+`llama_server request failed with status 400 Bad Request:
+exceed_context_size_error`.
+
+### 🐛 Fixed
+
+- **Tool observations are now capped at 4000 characters** before being
+  folded back into the prompt (`mcp::toolcall::format_observation`), with
+  a `[truncated, N more characters omitted]` marker so the model (and
+  anyone reading the transcript) knows content is missing rather than
+  silently seeing a shortened result as complete. This bounds the damage
+  any single tool call can do to the context budget, independent of how
+  `--ctx-size` is configured.
+
+### ✨ Changed
+
+- **Default context size (`-c`) doubled across every VRAM tier** in
+  `native_engine::get_ctx_size` — 8192→16384→32768 for 8/12/16GB+ (was
+  4096→8192→16384), floor raised 2048→4096 for <8GB, and the
+  no-VRAM-info fallback raised 4096→8192. The previous defaults were
+  tight enough that ordinary tool-calling chat (system prompt + a few
+  turns + one tool observation) could approach the ceiling even without
+  the truncation bug above. `GHOSTLINK_CTX_SIZE` still overrides directly
+  if you want a different value.
+- `RuntimeSettings::DEFAULT_CTX_SIZE` (the GUI's own conversation-budget
+  default, separate from the value above) raised 4096→8192 to match, so
+  the two don't drift out of sync.
+
+---
+
 ## [1.12.0] - 2026-07-26 (Real HTTP/SSE MCP transport)
 
 Closes the other stub found while auditing the codebase for leftover

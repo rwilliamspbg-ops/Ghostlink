@@ -218,8 +218,13 @@ impl NativeEngineClient {
         Self::default_perf_args()
     }
 
-    /// Context size for llama-server (`-c`). Default 4096 — model default can be 128k+
-    /// which starves iGPU VRAM and tanks decode tok/s.
+    /// Context size for llama-server (`-c`). Model default can be 128k+ which
+    /// starves iGPU VRAM and tanks decode tok/s, so this scales with reported VRAM
+    /// instead. Tiers were doubled from an earlier, tighter set of defaults after
+    /// tool-calling chat (see `mcp::toolcall::format_observation`) showed 4096 was
+    /// too tight for a single `fetch`-sized observation plus normal conversation —
+    /// that observation path now truncates any single tool result, but headroom
+    /// here still matters for multi-turn tool use within `MAX_TOOL_ITERATIONS`.
     fn get_ctx_size() -> u32 {
         if let Ok(val) = std::env::var("GHOSTLINK_CTX_SIZE") {
             if let Ok(n) = val.trim().parse::<u32>() {
@@ -229,17 +234,17 @@ impl NativeEngineClient {
         if let Ok(val) = std::env::var("GHOSTLINK_VRAM_GB") {
             if let Ok(vram) = val.trim().parse::<f32>() {
                 return if vram >= 16.0 {
-                    16384
+                    32768
                 } else if vram >= 12.0 {
-                    8192
+                    16384
                 } else if vram >= 8.0 {
-                    4096
+                    8192
                 } else {
-                    2048
+                    4096
                 };
             }
         }
-        4096
+        8192
     }
 
     /// VRAM-aware batch defaults for prompt eval + Flash Attention + compact KV.
