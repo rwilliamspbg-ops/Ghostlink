@@ -11,7 +11,7 @@ jobs:
     name: Build Release Artifacts
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write
       id-token: write
       attestations: write
     steps:
@@ -83,3 +83,36 @@ jobs:
           name: ghost-link-release
           path: artifacts/release/
           retention-days: 30
+
+      - name: Extract CHANGELOG section for this version
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          awk -v ver="$version" '
+            BEGIN { found = 0 }
+            /^## \[/ {
+              if (found) exit
+              if (index($0, "[" ver "]") > 0) { found = 1; print; next }
+              next
+            }
+            found { print }
+          ' CHANGELOG.md > ./artifacts/release/release-notes.md
+          if [[ ! -s ./artifacts/release/release-notes.md ]]; then
+            echo "No matching CHANGELOG.md section found for ${GITHUB_REF_NAME}; see CHANGELOG.md for details." \
+              > ./artifacts/release/release-notes.md
+          fi
+
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Ghostlink ${{ github.ref_name }}
+          body_path: ./artifacts/release/release-notes.md
+          files: |
+            ./artifacts/release/ghost-link
+            ./artifacts/release/SHA256SUMS
+            ./artifacts/release/SHA256SUMS.asc
+            ./artifacts/release/sbom.spdx.json
+          fail_on_unmatched_files: false

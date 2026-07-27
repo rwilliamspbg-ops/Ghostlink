@@ -434,6 +434,7 @@ Current focus areas:
 
 ## Contributing
 See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, PR expectations, and release rubric.
+See [CONTRIBUTORS.md](CONTRIBUTORS.md) to see who's built this so far.
 
 ## License
 MIT
