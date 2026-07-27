@@ -1064,7 +1064,20 @@ impl NativeEngineClient {
         use futures::StreamExt;
 
         let base_url = Self::get_llama_base_url();
-        let timeout_secs = std::env::var("GHOSTLINK_LLAMA_SERVER_TIMEOUT_SECS")
+        // Time to wait for llama-server to accept the request and start
+        // responding (covers prompt prefill on a cold/uncached slot), not
+        // the total generation time.
+        let connect_timeout_secs = std::env::var("GHOSTLINK_LLAMA_CONNECT_TIMEOUT_SECS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(30)
+            .clamp(5, 120);
+        // Max gap allowed between successive SSE chunks once streaming has
+        // started. This is deliberately NOT a cap on total generation time —
+        // a long answer that keeps producing tokens should never be killed
+        // just for running past a fixed wall-clock budget; only a stalled
+        // connection (no bytes at all for this long) should be.
+        let idle_timeout_secs = std::env::var("GHOSTLINK_LLAMA_SERVER_TIMEOUT_SECS")
             .ok()
             .and_then(|v| v.parse::<u64>().ok())
             .unwrap_or(60)
@@ -1091,16 +1104,24 @@ impl NativeEngineClient {
         });
 
         let client = self.http.clone();
-        let request_timeout = Duration::from_secs(timeout_secs);
+        let connect_timeout = Duration::from_secs(connect_timeout_secs);
+        let idle_timeout = Duration::from_secs(idle_timeout_secs);
 
-        let response = client
-            .post(&chat_url)
-            .header("Content-Type", "application/json")
-            .json(&chat_payload)
-            .timeout(request_timeout)
-            .send()
-            .await
-            .map_err(|e| format!("llama_server streaming request failed: {}", e))?;
+        let response = tokio::time::timeout(
+            connect_timeout,
+            client
+                .post(&chat_url)
+                .header("Content-Type", "application/json")
+                .json(&chat_payload)
+                .send(),
+        )
+        .await
+        .map_err(|_| {
+            format!(
+                "llama_server streaming request timed out after {connect_timeout_secs}s waiting for a response"
+            )
+        })?
+        .map_err(|e| format!("llama_server streaming request failed: {}", e))?;
 
         if response.status().as_u16() == 400 {
             // No chat template on this model: fall back to the existing
@@ -1135,11 +1156,20 @@ impl NativeEngineClient {
         tokio::spawn(async move {
             let mut byte_stream = response.bytes_stream();
             let mut buf = String::new();
-            while let Some(chunk) = byte_stream.next().await {
-                let chunk = match chunk {
-                    Ok(c) => c,
-                    Err(e) => {
+            loop {
+                let chunk = match tokio::time::timeout(idle_timeout, byte_stream.next()).await {
+                    Ok(Some(Ok(c))) => c,
+                    Ok(Some(Err(e))) => {
                         let _ = tx.send(Err(format!("stream read error: {e}"))).await;
+                        return;
+                    }
+                    Ok(None) => return, // stream ended normally
+                    Err(_) => {
+                        let _ = tx
+                            .send(Err(format!(
+                                "stream idle timeout: no data from llama_server for {idle_timeout_secs}s"
+                            )))
+                            .await;
                         return;
                     }
                 };

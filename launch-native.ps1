@@ -181,6 +181,21 @@ if ($InferenceBackend -eq "native") {
 $logicalCores = [Environment]::ProcessorCount
 $env:GHOSTLINK_LLAMA_THREADS = [Math]::Max(1, $logicalCores - 1)
 
+# GHOSTLINK_VRAM_GB was never set on this launch path, so native_engine.rs's
+# perf-tier tables (crates/ghost-link/src/native_engine.rs:default_perf_args)
+# always fell back to their worst-case "<4GB" bucket regardless of the real
+# hardware -- -b 512 -ub 128, the smallest prompt micro-batch in the table,
+# directly tanking prefill throughput / time-to-first-token. /api/metrics
+# already detects this machine's AMD Radeon 860M at ~4GB via
+# ghostlink-core::system_profile, so wire that same figure in here to move
+# batch/ubatch/ctx tiering up to their ">=4GB" values instead. GHOSTLINK_LLAMA_NGL
+# is pinned to -1 (offload every layer llama-server can fit, its own default)
+# so this doesn't also feed the separate VRAM->ngl cap table in get_ngl(),
+# which would otherwise cap offload at a fixed 12 layers -- a regression from
+# the full-offload that's already working today.
+$env:GHOSTLINK_VRAM_GB = "4"
+$env:GHOSTLINK_LLAMA_NGL = "-1"
+
 $apiLog = Join-Path $LogDir "ghostlink_api.log"
 $apiProc = Start-Process -FilePath $ApiBin -ArgumentList @("serve", $ApiHost, $ApiPort) `
     -WorkingDirectory $RootDir -PassThru -WindowStyle Hidden `

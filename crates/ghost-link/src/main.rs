@@ -6294,8 +6294,16 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
 
     let mut settings = load_settings();
 
-    // Auto-compute ngl from GPU VRAM if still at default (-1)
-    if settings.ngl < 0 {
+    // Auto-compute ngl from GPU VRAM if still at default (-1) AND the
+    // operator didn't explicitly ask for -1. `load_settings()` above copies
+    // `GHOSTLINK_LLAMA_NGL` straight into `settings.ngl` when the env var is
+    // set, so an explicit `GHOSTLINK_LLAMA_NGL=-1` (native_engine.rs's own
+    // documented "let llama-server decide, offload all it can" value) is
+    // indistinguishable from "never configured" by value alone — without
+    // this check it gets silently reinterpreted as unconfigured and
+    // overwritten by the VRAM-tier guess below on every single startup.
+    let ngl_explicitly_set = std::env::var("GHOSTLINK_LLAMA_NGL").is_ok();
+    if settings.ngl < 0 && !ngl_explicitly_set {
         let ngl = if profile.node_resources.vram_gb >= 12.0 {
             40
         } else if profile.node_resources.vram_gb >= 8.0 {
