@@ -204,6 +204,28 @@ unsafe fn scale_neon_impl(input: &[f32], output: &mut [f32], scale: f32) {
 
     let scale_vec = vdupq_n_f32(scale);
     let mut index = 0usize;
+    // Unroll 4x to process 16 floats (four 128-bit NEON registers) per loop iteration.
+    // This allows modern CPU out-of-order execution pipelines to execute multiple independent
+    // vector multiplications in parallel, avoiding dependency stalls and loop overhead.
+    while index + 16 <= input.len() {
+        let input_vec0 = vld1q_f32(input.as_ptr().add(index));
+        let input_vec1 = vld1q_f32(input.as_ptr().add(index + 4));
+        let input_vec2 = vld1q_f32(input.as_ptr().add(index + 8));
+        let input_vec3 = vld1q_f32(input.as_ptr().add(index + 12));
+
+        let output_vec0 = vmulq_f32(input_vec0, scale_vec);
+        let output_vec1 = vmulq_f32(input_vec1, scale_vec);
+        let output_vec2 = vmulq_f32(input_vec2, scale_vec);
+        let output_vec3 = vmulq_f32(input_vec3, scale_vec);
+
+        vst1q_f32(output.as_mut_ptr().add(index), output_vec0);
+        vst1q_f32(output.as_mut_ptr().add(index + 4), output_vec1);
+        vst1q_f32(output.as_mut_ptr().add(index + 8), output_vec2);
+        vst1q_f32(output.as_mut_ptr().add(index + 12), output_vec3);
+
+        index += 16;
+    }
+    // Clean up remaining vectors of size 4
     while index + 4 <= input.len() {
         let input_vec = vld1q_f32(input.as_ptr().add(index));
         let output_vec = vmulq_f32(input_vec, scale_vec);
