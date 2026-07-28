@@ -145,6 +145,13 @@ pub struct NodeResources {
     pub compute_capability: String,
     /// GPU name/model
     pub gpu_name: Option<String>,
+    /// Port this node's `ggml-rpc-server` is listening on, when it has opted
+    /// in to contributing compute to the cluster (see
+    /// `ghost_link::rpc_cluster`). `None` means this node either isn't
+    /// running one or the peer that sent this frame predates this field —
+    /// both are indistinguishable and both correctly mean "don't route
+    /// distributed inference through this node."
+    pub rpc_port: Option<u16>,
 }
 
 impl NodeResources {
@@ -162,7 +169,16 @@ impl NodeResources {
             system_memory_gb,
             compute_capability: compute_capability.into(),
             gpu_name,
+            rpc_port: None,
         }
+    }
+
+    /// Builder-style setter so adding this field didn't require touching
+    /// every existing `NodeResources::new(...)` call site across the
+    /// workspace's tests and CLI commands.
+    pub fn with_rpc_port(mut self, port: u16) -> Self {
+        self.rpc_port = Some(port);
+        self
     }
 
     /// Serialize node resources into an existing binary buffer.
@@ -187,8 +203,17 @@ impl NodeResources {
             }
         }
 
+        // Trailing 2 bytes: rpc_port as little-endian u16, 0 meaning "none"
+        // (real port 0 is not a valid bind target, so it's an unambiguous
+        // sentinel). Appended *after* the gpu_name section so a decoder built
+        // before this field existed simply never reads these bytes — it
+        // never checked for or rejected trailing data — and this encoder's
+        // output stays parseable by that older decoder. A decoder built
+        // after this field existed, reading an older (shorter) payload from
+        // a peer that predates it, just doesn't find the 2 extra bytes and
+        // defaults to `None` — see `decode_payload`.
         let payload_len =
-            11 + id_bytes.len() + cc_bytes.len() + gpu_bytes.map_or(0, |bytes| 1 + bytes.len());
+            11 + id_bytes.len() + cc_bytes.len() + gpu_bytes.map_or(0, |bytes| 1 + bytes.len()) + 2;
         if payload_len > max_size {
             return Err("payload length exceeds max_size");
         }
@@ -208,6 +233,8 @@ impl NodeResources {
             buffer.push(0);
         }
 
+        buffer.extend_from_slice(&self.rpc_port.unwrap_or(0).to_le_bytes());
+
         Ok(payload_len)
     }
 
@@ -226,7 +253,8 @@ impl NodeResources {
                 2 + gpu_bytes_len
             } else {
                 0
-            };
+            }
+            + 2;
 
         let mut payload = Vec::with_capacity(est_len);
         if self.encode_payload_into(&mut payload, max_size).is_ok() {
@@ -308,11 +336,30 @@ impl NodeResources {
                 return Err("payload truncated".into());
             }
             // Optimize: Zero-copy validation followed by direct to_string allocation on success.
-            Some(
-                std::str::from_utf8(&payload[cursor..gpu_end])
-                    .map_err(|_| "invalid UTF-8 in GPU name".to_string())?
-                    .to_string(),
-            )
+            let name = std::str::from_utf8(&payload[cursor..gpu_end])
+                .map_err(|_| "invalid UTF-8 in GPU name".to_string())?
+                .to_string();
+            // Was previously left unset here — harmless before this field
+            // existed (cursor was never read again), but the rpc_port read
+            // below now depends on this pointing past the GPU name bytes
+            // rather than into the middle of them.
+            cursor = gpu_end;
+            Some(name)
+        } else {
+            None
+        };
+
+        // Trailing rpc_port field, added after this format shipped — a
+        // payload from an older peer simply won't have these 2 bytes, which
+        // correctly decodes as "no RPC contribution advertised" rather than
+        // an error.
+        let rpc_port = if cursor + 2 <= len {
+            let port = u16::from_le_bytes([payload[cursor], payload[cursor + 1]]);
+            if port == 0 {
+                None
+            } else {
+                Some(port)
+            }
         } else {
             None
         };
@@ -323,6 +370,7 @@ impl NodeResources {
             system_memory_gb,
             compute_capability,
             gpu_name,
+            rpc_port,
         })
     }
 }
@@ -365,7 +413,15 @@ impl DiscoveryFrame {
         // their sum can still exceed MAX_PAYLOAD_SIZE and panic on the
         // slice-index writes below if left unchecked.
         let gpu_len = self.node.gpu_name.as_ref().map(|name| name.len());
-        let payload_len = 11 + id_bytes.len() + cc_bytes.len() + gpu_len.map_or(0, |len| 1 + len);
+        // +2 for the trailing rpc_port field this hand-rolled duplicate of
+        // `NodeResources::encode_payload_into` previously omitted entirely —
+        // UDP discovery replies silently dropped rpc_port while the mDNS
+        // path (which does call encode_payload_into's TXT-record analog)
+        // carried it correctly, so a UDP-discovered peer could never be
+        // selected for distributed inference. See `decode_payload`, which
+        // already tolerated this field being absent/present either way.
+        let payload_len =
+            11 + id_bytes.len() + cc_bytes.len() + gpu_len.map_or(0, |len| 1 + len) + 2;
         if payload_len > MAX_PAYLOAD_SIZE {
             buf[4..8].copy_from_slice(&crc32(&[]).to_le_bytes());
             return buf[..8].to_vec();
@@ -401,6 +457,10 @@ impl DiscoveryFrame {
             buf[pos] = 0;
             pos += 1;
         }
+
+        let rpc_port_bytes = self.node.rpc_port.unwrap_or(0).to_le_bytes();
+        buf[pos..pos + 2].copy_from_slice(&rpc_port_bytes);
+        pos += 2;
 
         let crc = crc32(&buf[8..pos]);
         buf[4..8].copy_from_slice(&crc.to_le_bytes());
@@ -501,6 +561,41 @@ mod tests {
     }
 
     #[test]
+    fn discovery_frame_encode_round_trips_rpc_port() {
+        // Regression test: `DiscoveryFrame::encode()` is a separate,
+        // hand-duplicated serializer from `NodeResources::encode_payload_into`
+        // (kept for its zero-copy-buffer calling convention) — it silently
+        // omitted the rpc_port field entirely when that field was added,
+        // so a UDP-discovered peer's contribute-compute port never survived
+        // the wire even though the equivalent mDNS path (which does reuse
+        // the shared encoder) carried it correctly. `encode_into` already
+        // covered this path; `encode()` (what `discovery.rs`'s UDP broadcast
+        // path actually calls) did not.
+        let frame = DiscoveryFrame {
+            kind: FrameKind::Join,
+            node: NodeResources::new("node-c", 12.0, 32.0, "8.6", None).with_rpc_port(50052),
+        };
+
+        let encoded = frame.encode();
+        let decoded = DiscoveryFrame::decode(&encoded).unwrap();
+
+        assert_eq!(decoded.node.rpc_port, Some(50052));
+    }
+
+    #[test]
+    fn discovery_frame_encode_without_rpc_port_decodes_to_none() {
+        let frame = DiscoveryFrame {
+            kind: FrameKind::Join,
+            node: NodeResources::new("node-d", 8.0, 16.0, "7.5", None),
+        };
+
+        let encoded = frame.encode();
+        let decoded = DiscoveryFrame::decode(&encoded).unwrap();
+
+        assert_eq!(decoded.node.rpc_port, None);
+    }
+
+    #[test]
     fn crc_verification_fails_on_modified_payload() {
         let frame = DiscoveryFrame {
             kind: FrameKind::Discovery,
@@ -534,12 +629,54 @@ mod tests {
         let node = NodeResources::new("a", 1.0, 1.0, "b", Some("c".to_string()));
         let mut buffer = Vec::new();
         // Actual encoded length: id_len(1)+id(1)+vram(4)+mem(4)+cc_len(1)+cc(1)
-        // +has_gpu(1)+gpu_len(1)+gpu(1) = 15 bytes.
+        // +has_gpu(1)+gpu_len(1)+gpu(1)+rpc_port(2) = 17 bytes.
         let written = node
-            .encode_payload_into(&mut buffer, 15)
-            .expect("payload of exactly 15 bytes must fit within max_size 15");
-        assert_eq!(written, 15);
-        assert_eq!(buffer.len(), 15);
+            .encode_payload_into(&mut buffer, 17)
+            .expect("payload of exactly 17 bytes must fit within max_size 17");
+        assert_eq!(written, 17);
+        assert_eq!(buffer.len(), 17);
+    }
+
+    #[test]
+    fn node_resources_round_trip_preserves_rpc_port() {
+        let node = NodeResources::new("node-e", 12.0, 32.0, "8.6", None).with_rpc_port(50052);
+        let encoded = node.encode_payload(64);
+        let decoded = NodeResources::decode_payload(&encoded).expect("decode");
+        assert_eq!(decoded.rpc_port, Some(50052));
+    }
+
+    #[test]
+    fn node_resources_round_trip_without_rpc_port_is_none() {
+        let node = NodeResources::new("node-f", 8.0, 16.0, "7.5", None);
+        let encoded = node.encode_payload(64);
+        let decoded = NodeResources::decode_payload(&encoded).expect("decode");
+        assert_eq!(decoded.rpc_port, None);
+    }
+
+    #[test]
+    fn node_resources_round_trip_with_gpu_name_and_rpc_port_together() {
+        // Regression test: decode_payload previously never advanced `cursor`
+        // past the GPU name bytes (harmless while nothing after it was ever
+        // read), which would have made a trailing field like rpc_port read
+        // from the middle of the GPU name instead of after it.
+        let node = NodeResources::new("node-g", 24.0, 64.0, "8.9", Some("RTX 4090".to_string()))
+            .with_rpc_port(50053);
+        let encoded = node.encode_payload(128);
+        let decoded = NodeResources::decode_payload(&encoded).expect("decode");
+        assert_eq!(decoded.gpu_name, Some("RTX 4090".to_string()));
+        assert_eq!(decoded.rpc_port, Some(50053));
+    }
+
+    #[test]
+    fn decode_payload_from_before_rpc_port_existed_defaults_to_none() {
+        // Simulates a frame from an older peer build: same format, just
+        // without the trailing 2 bytes.
+        let node = NodeResources::new("node-h", 8.0, 16.0, "7.5", None);
+        let mut encoded = node.encode_payload(64);
+        assert!(encoded.len() >= 2);
+        encoded.truncate(encoded.len() - 2);
+        let decoded = NodeResources::decode_payload(&encoded).expect("decode");
+        assert_eq!(decoded.rpc_port, None);
     }
 
     #[test]

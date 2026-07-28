@@ -1567,6 +1567,9 @@ struct BackendState {
     started_at: Instant,
     backend_url: String,
     cluster: Arc<ClusterState>,
+    /// This node's own id in `cluster` — needed to exclude ourselves when
+    /// selecting `distributed_inference` RPC peers (see `rpc_cluster`).
+    local_node_id: String,
     inference_backend: InferenceBackend,
     native_engine_client: native_engine::NativeEngineClient,
     ollama_client: ollama::OllamaClient,
@@ -1661,6 +1664,31 @@ struct RuntimeSettings {
     /// this field existed still deserialize.
     #[serde(default)]
     enable_tls: bool,
+    /// When true and the cluster has other nodes advertising
+    /// `contribute_compute`, the native engine launches with `--rpc`/`-ts`
+    /// so llama.cpp's own RPC backend splits the model across them — real
+    /// cross-process model-parallel inference (see `rpc_cluster`), not this
+    /// crate's synthetic pipeline-benchmark transport. Off by default: a
+    /// single-node deployment sees zero behavior change.
+    #[serde(default)]
+    distributed_inference: bool,
+    /// When true, this node runs `ggml-rpc-server` (see `rpc_cluster`),
+    /// exposing its own GPU/CPU as a device other cluster members can use
+    /// via `distributed_inference`. SECURITY: that server has no built-in
+    /// authentication (an upstream llama.cpp limitation) — only enable this
+    /// on a network you trust. Off by default.
+    #[serde(default)]
+    contribute_compute: bool,
+    /// Port `ggml-rpc-server` binds to when `contribute_compute` is on, and
+    /// the port advertised to peers (UDP/mDNS discovery) so they can reach
+    /// it. `#[serde(default = "...")]` so it survives a settings.json saved
+    /// before this field existed.
+    #[serde(default = "default_rpc_port")]
+    rpc_port: u16,
+}
+
+fn default_rpc_port() -> u16 {
+    50052
 }
 
 // Kept as named constants (rather than inlined in both `RuntimeSettings::default()`
@@ -1722,6 +1750,9 @@ impl Default for RuntimeSettings {
             xdp_interface: "eth0".to_string(),
             conversation_token_limit: default_conversation_token_limit(),
             enable_tls: false,
+            distributed_inference: false,
+            contribute_compute: false,
+            rpc_port: default_rpc_port(),
         }
     }
 }
@@ -2373,6 +2404,44 @@ fn select_best_gguf_group(groups: &[Vec<String>], vram_gb: f32) -> Option<Vec<St
         })
         .cloned()
         .or_else(|| groups.first().cloned())
+}
+
+/// Best-effort *unique* node id for cluster discovery/registration.
+///
+/// Previously this was the literal string `"studio-api"` for every single
+/// API-server instance, on every machine — harmless for a single node, but
+/// it means any two real Ghostlink installs collide on the same
+/// `ClusterState` key (a `HashMap<String, NodeResources>`), so the second
+/// one to register silently overwrites the first's entry instead of the
+/// cluster ever containing both. `discover_rpc_peers`'s "exclude the local
+/// node id" filter would then exclude *every* peer too, since they'd all
+/// share that id — quietly breaking distributed inference (and clustering
+/// in general) across real hardware, not just in a same-machine test.
+/// Falls back to the old literal only if no hostname signal exists at all.
+fn detect_node_id() -> String {
+    if let Ok(id) = std::env::var("GHOSTLINK_NODE_ID") {
+        let id = id.trim().to_string();
+        if !id.is_empty() {
+            return id;
+        }
+    }
+    for var in ["COMPUTERNAME", "HOSTNAME"] {
+        if let Ok(name) = std::env::var(var) {
+            let name = name.trim().to_string();
+            if !name.is_empty() {
+                return name;
+            }
+        }
+    }
+    if let Ok(output) = std::process::Command::new("hostname").output() {
+        if output.status.success() {
+            let name = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !name.is_empty() {
+                return name;
+            }
+        }
+    }
+    "studio-api".to_string()
 }
 
 fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
@@ -3473,8 +3542,41 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
 
         // Extract model info and settings under the lock, then drop it before
         // the potentially-long blocking load_model_into_slot call.
-        let (native_engine_client, local_path, native_engine, selected_model) = {
+        let (
+            native_engine_client,
+            local_path,
+            native_engine,
+            selected_model,
+            rpc_servers,
+            tensor_split,
+        ) = {
             let mut backend = lock_state(&state);
+
+            // Real cross-process model-parallel inference via llama.cpp's
+            // own RPC backend when enabled and the cluster has other nodes
+            // contributing compute — see `rpc_cluster` module docs. Empty
+            // when disabled or no qualifying peers, which reproduces
+            // single-node behavior exactly.
+            let (rpc_servers, tensor_split) = if backend.settings.distributed_inference {
+                let peers =
+                    rpc_cluster::discover_rpc_peers(&backend.cluster, &backend.local_node_id);
+                if peers.is_empty() {
+                    (None, None)
+                } else {
+                    let local_vram = backend
+                        .cluster
+                        .get_metrics(&backend.local_node_id)
+                        .map(|m| m.vram_gb)
+                        .unwrap_or(0.0);
+                    let split = rpc_cluster::compute_tensor_split(local_vram, &peers);
+                    (
+                        Some(rpc_cluster::rpc_flag_value(&peers)),
+                        Some(rpc_cluster::tensor_split_flag_value(&split)),
+                    )
+                }
+            } else {
+                (None, None)
+            };
 
             // Merge local scans so we can find local_path for locally-downloaded models
             let local = scan_local_models_dir(&backend.settings.models_dir);
@@ -3543,6 +3645,8 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                 local_path,
                 backend.settings.native_engine.clone(),
                 selected,
+                rpc_servers,
+                tensor_split,
             )
         }; // <-- state lock dropped here
 
@@ -3560,7 +3664,11 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             };
 
             let result = tokio::task::spawn_blocking(move || {
-                native_engine_client.load_model_into_slot(&path)
+                native_engine_client.load_model_into_slot(
+                    &path,
+                    rpc_servers.as_deref(),
+                    tensor_split.as_deref(),
+                )
             })
             .await
             .map_err(|e| format!("task join error: {}", e))
@@ -3574,7 +3682,11 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         } else if let Some(path) = local_path.clone() {
             if native_engine == "llama_server" || native_engine == "llama-server" {
                 let result = tokio::task::spawn_blocking(move || {
-                    native_engine_client.load_model_into_slot(&path)
+                    native_engine_client.load_model_into_slot(
+                        &path,
+                        rpc_servers.as_deref(),
+                        tensor_split.as_deref(),
+                    )
                 })
                 .await
                 .map_err(|e| format!("task join error: {}", e))
@@ -6434,6 +6546,30 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                             current.enable_tls = v;
                         }
                     }
+                    "distributed_inference" => {
+                        if let Some(v) = value.as_bool() {
+                            // Live: re-checked from `backend.settings` on
+                            // every `/api/models/load` call (see
+                            // `handle_gui_model_load`), so this takes effect
+                            // on the next model load without a restart.
+                            current.distributed_inference = v;
+                        }
+                    }
+                    "contribute_compute" => {
+                        if let Some(v) = value.as_bool() {
+                            // Takes effect on next server restart — the
+                            // rpc-server contributor process (if any) is
+                            // started once at startup, not re-evaluated on a
+                            // settings change (see `rpc_cluster`).
+                            current.contribute_compute = v;
+                        }
+                    }
+                    "rpc_port" => {
+                        if let Some(v) = value.as_u64() {
+                            // Same next-restart caveat as contribute_compute.
+                            current.rpc_port = v as u16;
+                        }
+                    }
                     "conversation_token_limit" => {
                         if let Some(v) = value.as_u64() {
                             current.conversation_token_limit = v as usize;
@@ -6593,7 +6729,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
     println!("  - POST /api/settings/reset");
     println!("  - POST /api/inference/chat");
 
-    let profile = detect_runtime_profile("studio-api");
+    let profile = detect_runtime_profile(detect_node_id());
     let backend_url = format!("http://{}:{}", host, port);
     println!(
         "Inference Core: {} workers, {} acceleration",
@@ -6619,13 +6755,31 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         .build()
         .map_err(|err| anyhow::anyhow!("failed to initialize runtime: {}", err))?;
 
+    // Loaded here (rather than at its previous spot further down) because
+    // discovery advertisement below needs `contribute_compute`/`rpc_port`
+    // to decide whether this node should advertise itself as an RPC
+    // contributor — see `rpc_cluster` module docs.
+    let mut settings = load_settings();
+
+    if settings.contribute_compute {
+        rpc_cluster::ensure_contributing(host, settings.rpc_port);
+    }
+    let advertised_node = if settings.contribute_compute {
+        profile
+            .node_resources
+            .clone()
+            .with_rpc_port(settings.rpc_port)
+    } else {
+        profile.node_resources.clone()
+    };
+
     let cluster = Arc::new(ClusterState::new());
-    let mut local_node = profile.node_resources.clone();
+    let mut local_node = advertised_node.clone();
     local_node.vram_gb = local_node.vram_gb.max(16.0);
     local_node.system_memory_gb = local_node.system_memory_gb.max(16.0);
     cluster.register(local_node);
 
-    let node_for_listener = profile.node_resources.clone();
+    let node_for_listener = advertised_node.clone();
     thread::spawn(move || {
         let auth_token = std::env::var("GHOSTLINK_DISCOVERY_AUTH_TOKEN")
             .ok()
@@ -6649,10 +6803,10 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
     // replacement — some networks (managed VLANs, cloud VPCs) filter
     // broadcast traffic but still carry multicast. Best-effort: logged and
     // otherwise ignored on failure, same as the UDP listener thread.
-    ghostlink_core::mdns::ensure_advertised(&profile.node_resources, port);
+    ghostlink_core::mdns::ensure_advertised(&advertised_node, port);
 
     let cluster_for_broadcast = Arc::clone(&cluster);
-    let node_for_broadcast = profile.node_resources.clone();
+    let node_for_broadcast = advertised_node.clone();
     thread::spawn(move || {
         let auth_token = std::env::var("GHOSTLINK_DISCOVERY_AUTH_TOKEN")
             .ok()
@@ -6686,8 +6840,6 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
 
     let models = load_persistent_models();
     save_persistent_models(&models);
-
-    let mut settings = load_settings();
 
     // Auto-compute ngl from GPU VRAM if still at default (-1) AND the
     // operator didn't explicitly ask for -1. `load_settings()` above copies
@@ -6831,6 +6983,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         inference_metrics: host_metrics::InferenceMetrics::default(),
         started_at: Instant::now(),
         backend_url,
+        local_node_id: profile.node_resources.id.clone(),
         cluster,
         inference_backend,
         native_engine_client,
@@ -9046,6 +9199,7 @@ mod host_metrics;
 mod mcp;
 mod native_engine;
 mod ollama;
+mod rpc_cluster;
 mod runtime;
 mod runtime_switcher;
 mod tls;
@@ -9084,6 +9238,17 @@ mod tests {
             .map(|s| s.to_string())
             .collect::<Vec<_>>()
             .into_iter()
+    }
+
+    #[test]
+    fn detect_node_id_prefers_explicit_env_override() {
+        // Regression coverage for the "studio-api" literal bug: two real
+        // Ghostlink instances previously always shared that id, colliding in
+        // ClusterState. GHOSTLINK_NODE_ID must win over any host-derived
+        // signal so operators (and tests) can force distinct ids.
+        std::env::set_var("GHOSTLINK_NODE_ID", "test-node-explicit");
+        assert_eq!(detect_node_id(), "test-node-explicit");
+        std::env::remove_var("GHOSTLINK_NODE_ID");
     }
 
     #[test]

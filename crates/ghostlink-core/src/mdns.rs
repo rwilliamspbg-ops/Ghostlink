@@ -133,6 +133,9 @@ fn node_to_txt_properties(node: &NodeResources) -> Vec<(String, String)> {
     if let Some(gpu_name) = &node.gpu_name {
         props.push(("gpu_name".to_string(), gpu_name.clone()));
     }
+    if let Some(rpc_port) = node.rpc_port {
+        props.push(("rpc_port".to_string(), rpc_port.to_string()));
+    }
     props
 }
 
@@ -142,12 +145,14 @@ fn node_from_txt_lookup(lookup: impl Fn(&str) -> Option<String>) -> Option<NodeR
     let system_memory_gb = lookup("system_memory_gb")?.parse().ok()?;
     let compute_capability = lookup("compute_capability").unwrap_or_default();
     let gpu_name = lookup("gpu_name");
+    let rpc_port = lookup("rpc_port").and_then(|v| v.parse().ok());
     Some(NodeResources {
         id,
         vram_gb,
         system_memory_gb,
         compute_capability,
         gpu_name,
+        rpc_port,
     })
 }
 
@@ -186,6 +191,24 @@ mod tests {
         let decoded = node_from_txt_lookup(lookup_from(&props)).expect("decode");
 
         assert_eq!(decoded.gpu_name, None);
+    }
+
+    #[test]
+    fn txt_roundtrip_preserves_rpc_port() {
+        let node = NodeResources::new("node-c", 12.0, 32.0, "8.6", None).with_rpc_port(50052);
+        let props = node_to_txt_properties(&node);
+        let decoded = node_from_txt_lookup(lookup_from(&props)).expect("decode");
+
+        assert_eq!(decoded.rpc_port, Some(50052));
+    }
+
+    #[test]
+    fn txt_roundtrip_without_rpc_port() {
+        let node = NodeResources::new("node-d", 8.0, 16.0, "7.5", None);
+        let props = node_to_txt_properties(&node);
+        let decoded = node_from_txt_lookup(lookup_from(&props)).expect("decode");
+
+        assert_eq!(decoded.rpc_port, None);
     }
 
     #[test]

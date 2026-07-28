@@ -11,7 +11,7 @@ Route workloads across CPU, GPU, and NPU resources with explicit scheduling, har
 [![MSRV](https://github.com/rwilliamspbg-ops/Ghostlink/actions/workflows/msrv.yml/badge.svg)](https://github.com/rwilliamspbg-ops/Ghostlink/actions/workflows/msrv.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Docs](https://img.shields.io/badge/Docs-GitHub%20Pages-0ea5e9)](https://rwilliamspbg-ops.github.io/Ghostlink/)
-[![Version](https://img.shields.io/badge/version-1.14.0-blueviolet)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.15.0-blueviolet)](CHANGELOG.md)
 [![Rust](https://img.shields.io/badge/Rust-2021-orange?logo=rust)](Cargo.toml)
 [![Platforms](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey)](#quick-start)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
@@ -53,6 +53,9 @@ Route workloads across CPU, GPU, and NPU resources with explicit scheduling, har
 ## What Ghostlink brings
 
 - Clear routing and scheduling for custom inference topologies
+- Real cross-machine distributed inference: opt in a node's spare GPU/CPU and
+  a request automatically splits across it via llama.cpp's own RPC backend —
+  zero-config, no manual `--rpc` flags
 - Hardware-aware placement across mixed compute environments (CPU, GPU, NPU)
 - SPSC ring-buffer transport with spin-wait for sub-microsecond handoff
 - TCP and Unix domain socket transport for multi-process pipelines
