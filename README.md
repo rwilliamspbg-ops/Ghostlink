@@ -11,7 +11,7 @@ Route workloads across CPU, GPU, and NPU resources with explicit scheduling, har
 [![MSRV](https://github.com/rwilliamspbg-ops/Ghostlink/actions/workflows/msrv.yml/badge.svg)](https://github.com/rwilliamspbg-ops/Ghostlink/actions/workflows/msrv.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Docs](https://img.shields.io/badge/Docs-GitHub%20Pages-0ea5e9)](https://rwilliamspbg-ops.github.io/Ghostlink/)
-[![Version](https://img.shields.io/badge/version-1.13.0-blueviolet)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.14.0-blueviolet)](CHANGELOG.md)
 [![Rust](https://img.shields.io/badge/Rust-2021-orange?logo=rust)](Cargo.toml)
 [![Platforms](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey)](#quick-start)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
@@ -37,6 +37,7 @@ Route workloads across CPU, GPU, and NPU resources with explicit scheduling, har
 - [Why Ghostlink](#why-ghostlink)
 - [Quick Start](#quick-start)
 - [Hardware Detection & Compatibility](#hardware-detection--compatibility)
+- [Comparison vs. Other Platforms](docs/COMPARISON.md)
 - [Performance](#performance)
 - [Launch Scripts](#launch-scripts)
 - [Usage (Developer)](#usage-developer)
@@ -291,6 +292,19 @@ for a machine-readable spec.
 | `/api/security/pqc/state` | GET | Whether this running server is serving HTTPS/PQC-hybrid TLS |
 | `/api/security/pqc/enable` | POST | Persist `enable_tls: true` (takes effect on next restart) |
 | `/api/security/audit-log` | GET | Security audit log entries (not yet populated — always empty today) |
+| `/metrics` | GET | Prometheus-exposition-format metrics (same data as `/api/metrics`) |
+
+### Python client
+
+A Python client package lives at [`sdks/python`](sdks/python) — wraps the OpenAI-compatible endpoints plus native token-streaming chat, workers, metrics, and settings. See [sdks/python/README.md](sdks/python/README.md).
+
+```python
+from ghostlink_client import GhostlinkClient
+
+client = GhostlinkClient("http://127.0.0.1:8003", api_key="<your api key>")
+resp = client.chat.completions.create(model="llama3.2:3b", messages=[{"role": "user", "content": "hi"}])
+print(resp.content)
+```
 
 ## MCP Tools (Model Context Protocol)
 
@@ -365,6 +379,8 @@ See `ghostlink.toml` for all settings:
 
 ## Architecture
 
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for a request/cluster-flow diagram.
+
 ```
 crates/
 ├── ghostlink-core/         # Shared runtime primitives
@@ -377,6 +393,7 @@ crates/
 │   ├── planning.rs          # Layer assignment & quantization
 │   ├── protocol.rs          # Binary frame protocol with CRC32 + HMAC auth
 │   ├── discovery.rs         # UDP broadcast cluster discovery
+│   ├── mdns.rs              # mDNS cluster discovery (VLAN/VPC-friendly)
 │   ├── cluster.rs           # Thread-safe node state & metrics
 │   ├── health.rs            # Network health & fault detection
 │   ├── load_balance.rs      # Tensor distribution across nodes

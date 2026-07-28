@@ -44,16 +44,30 @@ use std::time::{Duration, Instant};
 
 use tokio::io::AsyncWriteExt;
 
+// `deny_unknown_fields` on this whole family turns a typo'd key in
+// ghostlink.toml (e.g. `remote_vram_gb` misspelled) into a startup error
+// instead of a silently-ignored no-op — previously any unrecognized key
+// parsed successfully and the intended setting just never applied.
+//
+// `[compute]` is a real, documented top-level table in the same file (see
+// ghostlink.example.toml) but it's owned and parsed separately by
+// `backend_config::ConfigManager` — declared here just so deny_unknown_fields
+// doesn't reject it, not because this struct does anything with it.
 #[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct FileConfig {
     flow: Option<FlowDefaults>,
     cluster_start: Option<ClusterStartDefaults>,
     discovery: Option<DiscoveryDefaults>,
     tcp: Option<TcpDefaults>,
     gui: Option<GuiDefaults>,
+    #[allow(dead_code)]
+    #[serde(default)]
+    compute: Option<toml::Value>,
 }
 
 #[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct FlowDefaults {
     local_id: Option<String>,
     remote_id: Option<String>,
@@ -65,12 +79,14 @@ struct FlowDefaults {
 }
 
 #[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct ClusterStartDefaults {
     node_count: Option<usize>,
     base_port: Option<u16>,
 }
 
 #[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct DiscoveryDefaults {
     listen: Option<String>,
     broadcast: Option<String>,
@@ -81,6 +97,7 @@ struct DiscoveryDefaults {
 }
 
 #[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct TcpDefaults {
     max_inflight: Option<usize>,
     reconnect_attempts: Option<usize>,
@@ -89,6 +106,7 @@ struct TcpDefaults {
 }
 
 #[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct GuiDefaults {
     python: Option<String>,
 }
@@ -1569,6 +1587,10 @@ struct BackendState {
     /// last-writer-wins race with no relation to which process actually
     /// survived the taskkill/spawn collision.
     model_lifecycle_lock: Arc<tokio::sync::Mutex<()>>,
+    /// Custom inference backends registered via `backend_plugin` — checked
+    /// by the OpenAI-compatible REST handlers before falling through to the
+    /// built-in Native/Ollama dispatch. See `backend_plugin` module docs.
+    plugin_registry: backend_plugin::BackendPluginRegistry,
     /// Whether the *currently running* listener is actually serving HTTPS
     /// with the PQC-hybrid key exchange preference — set once at server
     /// startup from the same `use_tls` decision that picked the listener
@@ -2427,10 +2449,71 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         env_default_usize("GHOSTLINK_CHAT_EXEC_TOKENS", default_tokens).clamp(16, 4096)
     }
 
+    /// Upper bound on prompt size accepted by the OpenAI-compatible REST
+    /// endpoints. Generous enough for any realistic context window while
+    /// keeping a single request from forwarding an unbounded payload into
+    /// the wrapped inference backend.
+    const MAX_PROMPT_CHARS: usize = 200_000;
+
+    /// Rejects prompts that are empty/whitespace-only, over the size cap, or
+    /// contain non-whitespace control characters (e.g. embedded ANSI escape
+    /// sequences or NUL bytes) that have no legitimate role in a chat prompt
+    /// and could otherwise reach logs or a terminal-based backend unescaped.
+    fn validate_prompt_text(prompt: &str) -> Result<(), String> {
+        if prompt.trim().is_empty() {
+            return Err("prompt (or messages[].content) must not be empty".to_string());
+        }
+        if prompt.len() > MAX_PROMPT_CHARS {
+            return Err(format!(
+                "prompt exceeds the {MAX_PROMPT_CHARS}-character limit"
+            ));
+        }
+        if let Some(bad) = prompt
+            .chars()
+            .find(|c| c.is_control() && !matches!(c, '\n' | '\r' | '\t'))
+        {
+            return Err(format!(
+                "prompt contains disallowed control character U+{:04X}",
+                bad as u32
+            ));
+        }
+        Ok(())
+    }
+
+    /// Clamps free-form generation parameters to sane ranges — mirrors the
+    /// pre-existing `max_tokens` clamp so a client sending e.g. `top_p: 500`
+    /// or a negative `temperature` can't hang or crash the wrapped backend.
+    fn sanitize_generation_params(
+        temp: f32,
+        top_p: f32,
+        top_k: usize,
+        penalty: f32,
+    ) -> (f32, f32, usize, f32) {
+        (
+            temp.clamp(0.0, 2.0),
+            top_p.clamp(0.0, 1.0),
+            top_k.clamp(1, 500),
+            penalty.clamp(0.0, 2.0),
+        )
+    }
+
+    fn bad_request_json(message: String) -> (StatusCode, Json<serde_json::Value>) {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": { "message": message, "type": "invalid_request_error" }
+            })),
+        )
+    }
+
     async fn handle_chat_completions(
         State(state): State<Arc<Mutex<BackendState>>>,
         Json(req): Json<ChatCompletionRequest>,
-    ) -> Json<ChatCompletionResponse> {
+    ) -> Result<Json<ChatCompletionResponse>, (StatusCode, Json<serde_json::Value>)> {
+        if req.messages.is_empty() {
+            return Err(bad_request_json("messages must not be empty".to_string()));
+        }
+
         let prompt = req
             .messages
             .iter()
@@ -2442,6 +2525,8 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             })
             .unwrap_or_default();
 
+        validate_prompt_text(&prompt).map_err(bad_request_json)?;
+
         let request_tracker = active_runtime_switcher().request_tracker().clone();
         request_tracker.increment().await;
         // Bounds real concurrent llama-server calls to `parallel_slots`
@@ -2449,13 +2534,23 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         // automatically when this function returns.
         let _slot_permit = request_tracker.acquire_slot().await;
 
-        let temp = req.temperature.unwrap_or(0.7);
-        let top_p = req.top_p.unwrap_or(0.9);
-        let top_k = req.top_k.unwrap_or(40);
-        let penalty = req.penalty.unwrap_or(1.1);
+        let (temp, top_p, top_k, penalty) = sanitize_generation_params(
+            req.temperature.unwrap_or(0.7),
+            req.top_p.unwrap_or(0.9),
+            req.top_k.unwrap_or(40),
+            req.penalty.unwrap_or(1.1),
+        );
         let max_tokens = req.max_tokens.unwrap_or(1024).clamp(16, 4096);
 
-        let (model, chat_req_id, inference_backend, native_engine_client, ollama_client, settings) = {
+        let (
+            model,
+            chat_req_id,
+            inference_backend,
+            native_engine_client,
+            ollama_client,
+            settings,
+            plugin_registry,
+        ) = {
             let mut backend = lock_state(&state);
             backend.chat_requests = backend.chat_requests.saturating_add(1);
             let model = if req.model.trim().is_empty() {
@@ -2470,11 +2565,80 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                 backend.native_engine_client.clone(),
                 backend.ollama_client.clone(),
                 backend.settings.clone(),
+                backend.plugin_registry.clone(),
             )
         };
 
-        let exec_tokens = chat_exec_token_budget(32);
         let gen_started = Instant::now();
+
+        // Custom backend dispatch — checked before the built-in Native/Ollama
+        // match below (left completely unmodified) so registering a plugin
+        // never changes behavior for the two built-in backends. See
+        // `backend_plugin` module docs.
+        if let Some(plugin) = plugin_registry.get(&settings.inference_backend) {
+            let plugin_name = plugin.name().to_string();
+            let result = plugin
+                .generate(backend_plugin::PluginGenerationRequest {
+                    model: model.clone(),
+                    prompt: prompt.clone(),
+                    temperature: temp,
+                    top_p,
+                    top_k,
+                    penalty,
+                    max_tokens,
+                })
+                .await;
+            let gen_latency_ms = gen_started.elapsed().as_secs_f32() * 1000.0;
+
+            let (response_text, tokens_out, real_inference) = match result {
+                Ok(r) => (r.text, r.tokens, true),
+                Err(err) => (
+                    format!("Custom backend '{plugin_name}' error: {err}"),
+                    0,
+                    false,
+                ),
+            };
+            let tokens_per_sec = (gen_latency_ms > 0.0 && tokens_out > 0)
+                .then(|| tokens_out as f32 / (gen_latency_ms / 1000.0));
+
+            {
+                let mut backend = lock_state(&state);
+                backend.last_latency_ms = gen_latency_ms;
+                if let Some(tps) = tokens_per_sec {
+                    backend.last_tokens_per_sec = tps;
+                }
+                backend.inference_metrics.record(
+                    gen_latency_ms,
+                    tokens_out,
+                    tokens_per_sec,
+                    real_inference,
+                );
+            }
+
+            request_tracker.decrement().await;
+
+            return Ok(Json(ChatCompletionResponse {
+                id: format!("chatcmpl-{}", rand::random::<u32>()),
+                object: "chat.completion".to_string(),
+                created: SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs(),
+                model: model.clone(),
+                choices: vec![Choice {
+                    index: 0,
+                    message: serde_json::json!({
+                        "role": "assistant",
+                        "content": response_text,
+                        "backend": plugin_name,
+                        "real_inference": real_inference
+                    }),
+                    finish_reason: "stop".to_string(),
+                }],
+            }));
+        }
+
+        let exec_tokens = chat_exec_token_budget(32);
 
         let (response_text, real_inference, backend_used, gen_tokens, gen_tps, gen_latency_ms) =
             match inference_backend {
@@ -2617,7 +2781,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         });
 
         request_tracker.decrement().await;
-        response
+        Ok(response)
     }
 
     /// OpenAI's legacy `/v1/completions` endpoint: same backend dispatch as
@@ -2629,19 +2793,29 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
     async fn handle_completions(
         State(state): State<Arc<Mutex<BackendState>>>,
         Json(req): Json<CompletionRequest>,
-    ) -> Json<CompletionResponse> {
+    ) -> Result<Json<CompletionResponse>, (StatusCode, Json<serde_json::Value>)> {
+        validate_prompt_text(&req.prompt).map_err(bad_request_json)?;
         let prompt = req.prompt;
 
         let request_tracker = active_runtime_switcher().request_tracker().clone();
         request_tracker.increment().await;
 
-        let temp = req.temperature.unwrap_or(0.7);
-        let top_p = req.top_p.unwrap_or(0.9);
-        let top_k = req.top_k.unwrap_or(40);
-        let penalty = req.penalty.unwrap_or(1.1);
+        let (temp, top_p, top_k, penalty) = sanitize_generation_params(
+            req.temperature.unwrap_or(0.7),
+            req.top_p.unwrap_or(0.9),
+            req.top_k.unwrap_or(40),
+            req.penalty.unwrap_or(1.1),
+        );
         let max_tokens = req.max_tokens.unwrap_or(1024).clamp(16, 4096);
 
-        let (model, inference_backend, native_engine_client, ollama_client, settings) = {
+        let (
+            model,
+            inference_backend,
+            native_engine_client,
+            ollama_client,
+            settings,
+            plugin_registry,
+        ) = {
             let mut backend = lock_state(&state);
             backend.chat_requests = backend.chat_requests.saturating_add(1);
             let model = if req.model.trim().is_empty() {
@@ -2655,8 +2829,71 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                 backend.native_engine_client.clone(),
                 backend.ollama_client.clone(),
                 backend.settings.clone(),
+                backend.plugin_registry.clone(),
             )
         };
+
+        // Custom backend dispatch — checked before the built-in Native/Ollama
+        // match below (left completely unmodified). See `backend_plugin`
+        // module docs and `handle_chat_completions`'s matching check.
+        if let Some(plugin) = plugin_registry.get(&settings.inference_backend) {
+            let plugin_name = plugin.name().to_string();
+            let gen_started = Instant::now();
+            let result = plugin
+                .generate(backend_plugin::PluginGenerationRequest {
+                    model: model.clone(),
+                    prompt: prompt.clone(),
+                    temperature: temp,
+                    top_p,
+                    top_k,
+                    penalty,
+                    max_tokens,
+                })
+                .await;
+            let gen_latency_ms = gen_started.elapsed().as_secs_f32() * 1000.0;
+
+            let (response_text, tokens_out, real_inference) = match result {
+                Ok(r) => (r.text, r.tokens, true),
+                Err(err) => (
+                    format!("Custom backend '{plugin_name}' error: {err}"),
+                    0,
+                    false,
+                ),
+            };
+            let tokens_per_sec = (gen_latency_ms > 0.0 && tokens_out > 0)
+                .then(|| tokens_out as f32 / (gen_latency_ms / 1000.0));
+
+            {
+                let mut backend = lock_state(&state);
+                backend.last_latency_ms = gen_latency_ms;
+                if let Some(tps) = tokens_per_sec {
+                    backend.last_tokens_per_sec = tps;
+                }
+                backend.inference_metrics.record(
+                    gen_latency_ms,
+                    tokens_out,
+                    tokens_per_sec,
+                    real_inference,
+                );
+            }
+
+            request_tracker.decrement().await;
+
+            return Ok(Json(CompletionResponse {
+                id: format!("cmpl-{}", rand::random::<u32>()),
+                object: "text_completion".to_string(),
+                created: SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs(),
+                model,
+                choices: vec![CompletionChoice {
+                    text: response_text,
+                    index: 0,
+                    finish_reason: "stop".to_string(),
+                }],
+            }));
+        }
 
         let exec_tokens = chat_exec_token_budget(32);
 
@@ -2708,7 +2945,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         });
 
         request_tracker.decrement().await;
-        response
+        Ok(response)
     }
 
     /// OpenAI's `/v1/embeddings` endpoint, backed by
@@ -3888,9 +4125,12 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         };
         let local_node = detect_runtime_profile("workers-discover").node_resources;
 
-        // broadcast_and_collect blocks on a UDP recv loop for response_timeout —
-        // run it off the async runtime so it can't stall other requests.
-        let peers = tokio::task::spawn_blocking(move || {
+        // Both discovery paths block on their own recv loop — run them off
+        // the async runtime, concurrently, so neither stalls the other or
+        // other requests. mDNS complements the UDP broadcast fallback for
+        // networks (managed VLANs, cloud VPCs) that filter broadcast but
+        // still carry multicast.
+        let udp_peers_fut = tokio::task::spawn_blocking(move || {
             let config = UdpDiscoveryConfig {
                 broadcast_addr,
                 auth_token,
@@ -3906,14 +4146,36 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                 node: local_node,
             };
             broadcast_and_collect(&frame, &config)
-        })
-        .await
-        .unwrap_or_else(|_| Ok(Vec::new()))
-        .unwrap_or_default();
+        });
+        let mdns_peers_fut = tokio::task::spawn_blocking(|| {
+            ghostlink_core::mdns::discover(Duration::from_millis(1200))
+        });
 
-        let discovered = peers.len();
-        for (peer_frame, peer_addr) in peers {
-            cluster.register_with_addr(peer_frame.node, Some(peer_addr));
+        let (udp_result, mdns_result) = tokio::join!(udp_peers_fut, mdns_peers_fut);
+        let udp_peers = udp_result
+            .unwrap_or_else(|_| Ok(Vec::new()))
+            .unwrap_or_default();
+        let mdns_peers = mdns_result
+            .unwrap_or_else(|_| Ok(Vec::new()))
+            .unwrap_or_else(|err| {
+                tracing::warn!("mdns: discover failed, continuing with UDP results only: {err}");
+                Vec::new()
+            });
+
+        // Dedupe by node id — a peer reachable via both paths should only
+        // count once. UDP wins ties since it carries a real reply address
+        // straight from the socket rather than an mDNS-resolved one.
+        let mut by_id = std::collections::HashMap::new();
+        for (frame, addr) in udp_peers {
+            by_id.insert(frame.node.id.clone(), (frame.node, addr));
+        }
+        for (node, addr) in mdns_peers {
+            by_id.entry(node.id.clone()).or_insert((node, addr));
+        }
+
+        let discovered = by_id.len();
+        for (node, addr) in by_id.into_values() {
+            cluster.register_with_addr(node, Some(addr));
         }
 
         Json(serde_json::json!({
@@ -3981,6 +4243,133 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                 "inference_backend": backend_name,
             }
         }))
+    }
+
+    /// Prometheus text-exposition-format sibling of `/api/metrics` — same
+    /// underlying snapshot, reformatted for scraping instead of the GUI poll.
+    /// Behind the same bearer-auth middleware as the rest of the API, so a
+    /// Prometheus scrape config needs an `authorization`/`bearer_token` entry.
+    async fn handle_metrics_prometheus(
+        State(state): State<Arc<Mutex<BackendState>>>,
+    ) -> impl IntoResponse {
+        let host = host_metrics::current_host_snapshot();
+
+        let (inf, node_count, cluster_vram, uptime_s, backend_name) = {
+            let backend = lock_state(&state);
+            let cluster = Arc::clone(&backend.cluster);
+            let node_count = cluster.node_count();
+            let cluster_vram = cluster.total_vram_gb();
+            let inf = backend.inference_metrics.snapshot();
+            let uptime_s = backend.started_at.elapsed().as_secs_f32();
+            let backend_name = backend.inference_backend.as_str().to_string();
+            (inf, node_count, cluster_vram, uptime_s, backend_name)
+        };
+
+        let total_vram = if host.total_vram_gb > 0.0 {
+            host.total_vram_gb
+        } else {
+            cluster_vram
+        };
+        let gpu = if host.gpu_available { host.gpu } else { 0.0 };
+
+        let mut body = String::new();
+        let gauge = |body: &mut String, name: &str, help: &str, value: f32| {
+            body.push_str(&format!(
+                "# HELP {name} {help}\n# TYPE {name} gauge\n{name} {value}\n"
+            ));
+        };
+
+        gauge(
+            &mut body,
+            "ghostlink_inference_throughput_tokens_per_second",
+            "Recent tokens generated per second (EMA).",
+            inf.tokens_per_sec,
+        );
+        gauge(
+            &mut body,
+            "ghostlink_cpu_utilization_percent",
+            "Host CPU utilization percent.",
+            host.cpu,
+        );
+        gauge(
+            &mut body,
+            "ghostlink_memory_utilization_percent",
+            "Host memory utilization percent.",
+            host.memory,
+        );
+        gauge(
+            &mut body,
+            "ghostlink_gpu_utilization_percent",
+            "GPU utilization percent (0 when no GPU is available).",
+            gpu,
+        );
+        gauge(
+            &mut body,
+            "ghostlink_inference_latency_p50_milliseconds",
+            "Inference latency, 50th percentile over the recent sample window.",
+            inf.latency_p50_ms,
+        );
+        gauge(
+            &mut body,
+            "ghostlink_inference_latency_p95_milliseconds",
+            "Inference latency, 95th percentile over the recent sample window.",
+            inf.latency_p95_ms,
+        );
+        gauge(
+            &mut body,
+            "ghostlink_cluster_active_nodes",
+            "Number of active cluster nodes.",
+            node_count as f32,
+        );
+        gauge(
+            &mut body,
+            "ghostlink_cluster_total_vram_gb",
+            "Total VRAM available across the cluster, in GB.",
+            total_vram,
+        );
+        gauge(
+            &mut body,
+            "ghostlink_host_total_memory_gb",
+            "Total host system memory, in GB.",
+            host.total_memory_gb,
+        );
+        gauge(
+            &mut body,
+            "ghostlink_host_used_memory_gb",
+            "Used host system memory, in GB.",
+            host.used_memory_gb,
+        );
+        gauge(
+            &mut body,
+            "ghostlink_uptime_seconds",
+            "Seconds since the API server started.",
+            uptime_s,
+        );
+
+        body.push_str(
+            "# HELP ghostlink_inference_samples_total Total inference latency samples recorded since startup.\n\
+             # TYPE ghostlink_inference_samples_total counter\n",
+        );
+        body.push_str(&format!(
+            "ghostlink_inference_samples_total {}\n",
+            inf.samples
+        ));
+
+        body.push_str(
+            "# HELP ghostlink_build_info Static info labels; value is always 1.\n\
+             # TYPE ghostlink_build_info gauge\n",
+        );
+        body.push_str(&format!(
+            "ghostlink_build_info{{inference_backend=\"{backend_name}\"}} 1\n"
+        ));
+
+        (
+            [(
+                axum::http::header::CONTENT_TYPE,
+                "text/plain; version=0.0.4; charset=utf-8",
+            )],
+            body,
+        )
     }
 
     async fn handle_gui_sessions(
@@ -6256,6 +6645,12 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         let _ = serve_discovery(&node_for_listener, &config, None);
     });
 
+    // mDNS is a complement to UDP broadcast discovery above, not a
+    // replacement — some networks (managed VLANs, cloud VPCs) filter
+    // broadcast traffic but still carry multicast. Best-effort: logged and
+    // otherwise ignored on failure, same as the UDP listener thread.
+    ghostlink_core::mdns::ensure_advertised(&profile.node_resources, port);
+
     let cluster_for_broadcast = Arc::clone(&cluster);
     let node_for_broadcast = profile.node_resources.clone();
     thread::spawn(move || {
@@ -6448,6 +6843,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         pending_tool_calls: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
         download_progress: HashMap::new(),
         model_lifecycle_lock: Arc::new(tokio::sync::Mutex::new(())),
+        plugin_registry: backend_plugin::BackendPluginRegistry::from_env(),
         enable_tls_active: use_tls,
     }));
 
@@ -6463,6 +6859,27 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             Arc::clone(&backend.mcp_registry)
         };
         mcp_registry.connect_enabled().await;
+
+        // Per-IP request rate limiting — protects the API from runaway
+        // clients/retry loops. Applied as the outermost layer so it gates
+        // requests before CORS/auth do any work.
+        let governor_conf = std::sync::Arc::new(
+            tower_governor::governor::GovernorConfigBuilder::default()
+                .per_second(2)
+                .burst_size(30)
+                .finish()
+                .expect("static governor config is always valid"),
+        );
+        {
+            let governor_conf = Arc::clone(&governor_conf);
+            tokio::spawn(async move {
+                let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+                loop {
+                    interval.tick().await;
+                    governor_conf.limiter().retain_recent();
+                }
+            });
+        }
 
         let app = Router::new()
             .route("/v1/chat/completions", post(handle_chat_completions))
@@ -6521,6 +6938,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                 post(handle_gui_workers_disconnect),
             )
             .route("/api/metrics", get(handle_gui_metrics))
+            .route("/metrics", get(handle_metrics_prometheus))
             .route("/api/sessions", get(handle_gui_sessions))
             .route("/api/sessions/save", post(handle_gui_session_save))
             .route("/api/sessions/:session_id", get(handle_gui_session_load))
@@ -6575,7 +6993,10 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             // OPTIONS request is still handled without needing a bearer
             // token — matches how CORS preflight is expected to work.
             .layer(middleware::from_fn(auth_middleware))
-            .layer(CorsLayer::permissive());
+            .layer(CorsLayer::permissive())
+            .layer(tower_governor::GovernorLayer {
+                config: governor_conf,
+            });
 
         // addr already parsed above; `use_tls` computed earlier alongside
         // `BackendState.enable_tls_active`.
@@ -6597,7 +7018,7 @@ API Server Online (HTTPS, PQC-hybrid key exchange preferred). Ready for connecti
             });
             axum_server::bind_rustls(addr, tls_config)
                 .handle(shutdown_handle)
-                .serve(app.into_make_service())
+                .serve(app.into_make_service_with_connect_info::<SocketAddr>())
                 .await
                 .map_err(|err| anyhow::anyhow!("HTTPS API server terminated with error: {}", err))
         } else {
@@ -6609,10 +7030,13 @@ API Server Online (HTTPS, PQC-hybrid key exchange preferred). Ready for connecti
 API Server Online. Ready for connections."
             );
 
-            axum::serve(listener, app)
-                .with_graceful_shutdown(mcp_shutdown_on_ctrl_c(mcp_registry))
-                .await
-                .map_err(|err| anyhow::anyhow!("API server terminated with error: {}", err))
+            axum::serve(
+                listener,
+                app.into_make_service_with_connect_info::<SocketAddr>(),
+            )
+            .with_graceful_shutdown(mcp_shutdown_on_ctrl_c(mcp_registry))
+            .await
+            .map_err(|err| anyhow::anyhow!("API server terminated with error: {}", err))
         }
     })?;
 
@@ -8616,6 +9040,7 @@ fn run_gui_preflight_checks() -> Result<()> {
 mod auth;
 mod backend_api;
 mod backend_config;
+mod backend_plugin;
 mod backend_registry;
 mod host_metrics;
 mod mcp;

@@ -8,8 +8,12 @@ name: Release Artifacts
 
 jobs:
   build-release-artifacts:
-    name: Build Release Artifacts
-    runs-on: ubuntu-latest
+    name: Build Release Artifacts (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     permissions:
       contents: write
       id-token: write
@@ -60,27 +64,29 @@ jobs:
           GPG_PASSPHRASE: ${{ secrets.RELEASE_GPG_PASSPHRASE }}
         run: |
           if [[ "${GITHUB_REF}" == refs/tags/* ]] && [[ "${{ steps.gpg-check.outputs.has_key }}" == "true" ]]; then
-            bash scripts/release_bundle.sh ./artifacts/release signed
+            bash scripts/release_bundle.sh ./artifacts/release signed "${{ matrix.os }}"
           else
-            bash scripts/release_bundle.sh ./artifacts/release unsigned
+            bash scripts/release_bundle.sh ./artifacts/release unsigned "${{ matrix.os }}"
           fi
 
       - name: Generate SBOM
+        if: matrix.os == 'ubuntu-latest'
         uses: anchore/sbom-action@v0
         with:
-          file: ./artifacts/release/ghost-link
+          file: ./artifacts/release/ghost-link-${{ matrix.os }}
           format: spdx-json
           output-file: ./artifacts/release/sbom.spdx.json
 
       - name: Attest release artifact provenance
+        if: matrix.os == 'ubuntu-latest'
         uses: actions/attest-build-provenance@v4
         with:
-          subject-path: ./artifacts/release/ghost-link
+          subject-path: ./artifacts/release/ghost-link-${{ matrix.os }}
 
       - name: Upload release artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: ghost-link-release
+          name: ghost-link-release-${{ matrix.os }}
           path: artifacts/release/
           retention-days: 30
 
@@ -111,8 +117,7 @@ jobs:
           name: Ghostlink ${{ github.ref_name }}
           body_path: ./artifacts/release/release-notes.md
           files: |
-            ./artifacts/release/ghost-link
-            ./artifacts/release/SHA256SUMS
-            ./artifacts/release/SHA256SUMS.asc
+            ./artifacts/release/ghost-link-${{ matrix.os }}*
+            ./artifacts/release/SHA256SUMS-${{ matrix.os }}*
             ./artifacts/release/sbom.spdx.json
           fail_on_unmatched_files: false

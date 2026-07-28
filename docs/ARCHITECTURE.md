@@ -4,6 +4,54 @@
 
 Ghost-Link is a Rust workspace for low-overhead cluster discovery, host profiling, planning, and load distribution across local compute nodes.
 
+## Request & Cluster Flow
+
+```mermaid
+flowchart LR
+    subgraph Client
+        UI[Ghostlink GUI / API client]
+    end
+
+    subgraph "ghost-link (crates/ghost-link)"
+        API[Axum API server\nHTTP + SSE]
+        MCP[MCP registry\ncalculator / rag / vision]
+    end
+
+    subgraph "ghostlink-core (crates/ghostlink-core)"
+        Discovery[discovery.rs\nUDP broadcast peer discovery, HMAC auth]
+        Mdns[mdns.rs\nmDNS peer discovery]
+        Host[host.rs\nRuntimeProfile probing]
+        Accel[accelerator.rs\nbackend selection]
+        Planning[planning.rs\nlayer placement]
+        LoadBalance[load_balance.rs\ndistribution plans]
+        Health[health.rs\nnode health / faults]
+        Runtime[runtime.rs\nTCP / Unix socket bridge]
+    end
+
+    subgraph Backends
+        Native[native llama.cpp engine]
+        Ollama[Ollama]
+        Plugin[backend_plugin.rs\ncustom backend registry]
+    end
+
+    Peer[Remote Ghostlink node]
+    CustomBackend[Custom backend\ne.g. vLLM, LM Studio, hosted API]
+
+    UI -->|/v1/chat/completions, /api/*| API
+    API --> MCP
+    API --> Native
+    API --> Ollama
+    API --> Plugin
+    Plugin -.->|OpenAiCompatPlugin or a custom impl| CustomBackend
+    API --> Host
+    Host --> Accel --> Planning --> LoadBalance
+    LoadBalance --> Runtime
+    Discovery <-->|LAN broadcast| Peer
+    Mdns <-->|multicast, VLAN/VPC-friendly| Peer
+    Runtime <-->|TCP or Unix socket| Peer
+    Health --> LoadBalance
+```
+
 ## Workspace Structure
 
 ```text
@@ -33,6 +81,18 @@ Ghostlink/
 ```
 
 ## Main Components
+
+### Custom backend plugins (`crates/ghost-link/src/backend_plugin.rs`)
+
+A third dispatch path alongside the built-in native/Ollama backends: implement
+the `InferenceBackendPlugin` trait (`fn name()` + `async fn generate()`) and
+register an instance in `BackendPluginRegistry`. `/v1/chat/completions` and
+`/v1/completions` check the registry for a plugin matching the configured
+`inference_backend` name *before* the built-in match — no core dispatch code
+changes needed to add a backend. A reference implementation,
+`OpenAiCompatPlugin`, forwards to any OpenAI-compatible `/v1/completions`
+endpoint and is auto-registered when `GHOSTLINK_OPENAI_COMPAT_BASE_URL` is set
+(optionally `GHOSTLINK_OPENAI_COMPAT_NAME`, `GHOSTLINK_OPENAI_COMPAT_API_KEY`).
 
 ## Command Architecture Decision
 

@@ -37,6 +37,7 @@ pub mod health;
 pub mod host;
 pub mod kv_cache;
 pub mod load_balance;
+pub mod mdns;
 pub mod models;
 pub mod planning;
 pub mod protocol;

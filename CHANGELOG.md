@@ -4,6 +4,65 @@ All notable changes to Ghostlink Studio are documented here.
 
 ---
 
+## [1.14.0] - 2026-07-28 (mDNS discovery, custom backend plugins, Python SDK)
+
+A review pass over the project surfaced a punch list of usability, performance,
+and extensibility gaps. This release closes the largest items.
+
+### ✨ Features
+
+- **mDNS peer discovery** (`ghostlink-core::mdns`), alongside the existing UDP
+  broadcast fallback (`discovery.rs`) — for networks (managed VLANs, cloud
+  VPCs) that filter broadcast traffic but still carry multicast. The server
+  advertises itself under `_ghostlink._tcp.local.` at startup, and
+  `GET /api/workers/discover` now runs UDP broadcast and mDNS browsing
+  concurrently, merging results by node id.
+- **Custom inference backend plugins** (`ghost-link::backend_plugin`): an
+  object-safe `InferenceBackendPlugin` trait + registry, checked by
+  `/v1/chat/completions` and `/v1/completions` *before* the existing
+  Native/Ollama dispatch (left unmodified) — adding a backend needs no core
+  dispatch changes, just an implementation of the trait registered by name.
+  Ships a reference `OpenAiCompatPlugin` that forwards to any
+  OpenAI-compatible server (vLLM, LM Studio, a hosted API, ...), auto-registered
+  via `GHOSTLINK_OPENAI_COMPAT_BASE_URL` (optionally
+  `GHOSTLINK_OPENAI_COMPAT_NAME`, `GHOSTLINK_OPENAI_COMPAT_API_KEY`).
+- **Python client SDK** (`sdks/python`, package `ghostlink-client`): wraps the
+  OpenAI-compatible endpoints (`chat.completions`, `completions`, `embeddings`,
+  `models`) plus Ghostlink-native `workers`/`sessions`/`settings`, JSON and
+  Prometheus metrics, and real token-by-token streaming chat via
+  `stream_chat()` against `/api/inference/chat`'s SSE stream — the only
+  endpoint with genuine incremental streaming today.
+- **Prometheus `/metrics` endpoint**, alongside the existing JSON
+  `/api/metrics` — same underlying snapshot (throughput, CPU/GPU/memory,
+  latency percentiles, cluster node count, VRAM, uptime), reformatted for a
+  Prometheus scrape config instead of the GUI's polling loop.
+- **Per-IP request rate limiting** (`tower_governor`) on the API server,
+  applied as the outermost layer so it gates requests before CORS/auth do any
+  work.
+- **Release artifacts now build on Linux, Windows, and macOS** (previously
+  Linux-only), each producing its own binary + checksum; SBOM and provenance
+  attestation remain Linux-only.
+
+### 🔒 Security / Hardening
+
+- **`/v1/chat/completions` and `/v1/completions` now validate input**: empty
+  `messages`/`prompt`, oversized prompts (>200k chars), and embedded non-
+  whitespace control characters are rejected with a 400 before reaching the
+  backend. `temperature`/`top_p`/`top_k`/`penalty` are now clamped to sane
+  ranges, extending the pre-existing `max_tokens` clamp.
+- **`ghostlink.toml`'s `[flow]`/`[cluster_start]`/`[discovery]`/`[tcp]`/`[gui]`
+  sections and `[compute]` now reject unknown keys** (`deny_unknown_fields`)
+  instead of silently no-op'ing a typo'd setting.
+
+### 📚 Documentation
+
+- Un-archived and expanded the platform comparison sheet
+  (`docs/COMPARISON.md`) with Ollama, LM Studio, llama.cpp server, OpenWebUI,
+  and Kubernetes-based setups; linked from the README.
+- Added a request/cluster-flow architecture diagram to `docs/ARCHITECTURE.md`.
+
+---
+
 ## [1.13.0] - 2026-07-26 (Tool-call context overflow fix)
 
 Found in the wild: a `fetch` tool call that pulled an entire webpage (site
