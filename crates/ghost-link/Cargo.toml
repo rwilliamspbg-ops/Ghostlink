@@ -9,7 +9,7 @@ documentation = "https://rwilliamspbg-ops.github.io/Ghostlink/"
 repository = "https://github.com/rwilliamspbg-ops/Ghostlink"
 readme = "../../README.md"
 license = "MIT"
-keywords = ["networking", "spsc", "zero-copy", "async", "distributed-inference", "llm", "inference"]
+keywords = ["networking", "zero-copy", "async", "distributed", "llm"]
 categories = ["asynchronous", "network-programming", "command-line-utilities"]
 
 # Minimum Supported Rust Version (MSRV)
