@@ -60,6 +60,7 @@ jobs:
           gpgconf --kill gpg-agent
 
       - name: Build release bundle
+        shell: bash
         env:
           GPG_PASSPHRASE: ${{ secrets.RELEASE_GPG_PASSPHRASE }}
         run: |
