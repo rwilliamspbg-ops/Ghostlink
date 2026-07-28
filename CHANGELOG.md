@@ -4,6 +4,18 @@ All notable changes to Ghostlink Studio are documented here.
 
 ---
 
+## [1.15.1] - 2026-07-28 (Release workflow fix)
+
+- **`release-artifacts.yml`'s "Build release bundle" step was missing an
+  explicit `shell: bash`.** On `ubuntu-latest`/`macos-latest` that default
+  shell already is bash, so it went unnoticed there — but `windows-latest`
+  defaults to PowerShell, which fails immediately on the step's bash `[[
+  ]]` syntax. v1.15.0's release shipped with Linux and macOS binaries only;
+  this release adds the missing Windows binary under a clean version tag
+  rather than rewriting v1.15.0's already-published release.
+
+---
+
 ## [1.15.0] - 2026-07-28 (Real distributed inference via llama.cpp RPC backend)
 
 Closes the gap between what Ghostlink's clustering claimed to do and what
