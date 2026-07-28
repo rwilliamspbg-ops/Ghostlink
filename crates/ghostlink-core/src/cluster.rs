@@ -266,6 +266,7 @@ impl ClusterState {
         let vram_gb = node.vram_gb;
         let system_memory_gb = node.system_memory_gb;
         let compute_capability = node.compute_capability.clone();
+        let rpc_port = node.rpc_port;
         let mut vram_delta = vram_gb;
 
         if let Some(existing) = nodes.get_mut(&id) {
@@ -274,6 +275,12 @@ impl ClusterState {
             existing.system_memory_gb = system_memory_gb;
             existing.compute_capability = compute_capability.clone();
             existing.gpu_name = gpu_name.clone();
+            // Keeps a node's advertised RPC-contribution port in sync across
+            // re-registrations (e.g. the operator toggles compute
+            // contribution on/off and the next discovery broadcast/mDNS
+            // resolve should reflect that) — previously only set on first
+            // registration, so it could go stale for the life of the process.
+            existing.rpc_port = rpc_port;
         } else {
             nodes.insert(id.clone(), node);
         }

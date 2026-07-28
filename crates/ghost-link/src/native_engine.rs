@@ -529,7 +529,19 @@ impl NativeEngineClient {
     /// fails to load (bad file, OOM, slow CPU-only load exceeding the
     /// readiness timeout, etc.) the previous server keeps serving requests
     /// instead of the caller being left with no server running at all.
-    pub fn load_model_into_slot(&self, model_path: &str) -> Result<(), String> {
+    ///
+    /// `rpc_servers`/`tensor_split`, when both given non-empty, are passed
+    /// straight through as llama-server's `--rpc`/`-ts` values — real
+    /// cross-process model-parallel inference via llama.cpp's own RPC
+    /// backend (see `crate::rpc_cluster`), not this crate's synthetic
+    /// pipeline-benchmark transport. `None`/empty reproduces prior
+    /// single-node behavior exactly.
+    pub fn load_model_into_slot(
+        &self,
+        model_path: &str,
+        rpc_servers: Option<&str>,
+        tensor_split: Option<&str>,
+    ) -> Result<(), String> {
         let resolved = Self::resolve_model_path(model_path)?;
         let normalized_path = resolved.to_string_lossy().replace('\\', "/");
         eprintln!("[model-load] Preparing to load model: {normalized_path}");
@@ -548,7 +560,17 @@ impl NativeEngineClient {
         let threads = Self::get_threads();
         let ctx = Self::get_ctx_size();
         let parallel_slots = Self::get_parallel_slots();
-        let extra_args = Self::get_llama_server_args();
+        let mut extra_args = Self::get_llama_server_args();
+        if let Some(servers) = rpc_servers.filter(|s| !s.is_empty()) {
+            eprintln!("[model-load] Distributed inference enabled: --rpc {servers}");
+            extra_args.push("--rpc".to_string());
+            extra_args.push(servers.to_string());
+            if let Some(split) = tensor_split.filter(|s| !s.is_empty()) {
+                eprintln!("[model-load] Tensor split: -ts {split}");
+                extra_args.push("-ts".to_string());
+                extra_args.push(split.to_string());
+            }
+        }
         let alias = resolved
             .file_stem()
             .and_then(|s| s.to_str())

@@ -34,6 +34,11 @@ flowchart LR
         Plugin[backend_plugin.rs\ncustom backend registry]
     end
 
+    subgraph "Distributed inference (rpc_cluster.rs)"
+        RpcOrchestrate[discover_rpc_peers + tensor-split]
+        RpcContribute[ggml-rpc-server\nopt-in compute contribution]
+    end
+
     Peer[Remote Ghostlink node]
     CustomBackend[Custom backend\ne.g. vLLM, LM Studio, hosted API]
 
@@ -50,6 +55,11 @@ flowchart LR
     Mdns <-->|multicast, VLAN/VPC-friendly| Peer
     Runtime <-->|TCP or Unix socket| Peer
     Health --> LoadBalance
+    RpcOrchestrate -->|--rpc host:port, -ts a,b| Native
+    RpcOrchestrate <-.->|reads rpc_port from| Discovery
+    RpcOrchestrate <-.->|reads rpc_port from| Mdns
+    Native <==>|real ggml-rpc tensor execution| RpcContribute
+    RpcContribute -.->|runs on| Peer
 ```
 
 ## Workspace Structure
@@ -81,6 +91,33 @@ Ghostlink/
 ```
 
 ## Main Components
+
+### Distributed inference (`crates/ghost-link/src/rpc_cluster.rs`)
+
+Real cross-machine model-parallel inference via llama.cpp's own RPC backend
+(`ggml-rpc`) — not `ghostlink_core::runtime`'s pipeline execution
+(`ghost-link flow`/`stage-worker`), which moves synthetic benchmark payloads
+to prove out transport latency and never runs real model layers.
+
+- A node opts in to contributing compute via `contribute_compute` +
+  `rpc_port` in settings, running `ggml-rpc-server` (built from the vendored
+  `third_party/llama.cpp` checkout with `-DGGML_RPC=ON`) and advertising its
+  `rpc_port` over both UDP discovery and mDNS (`NodeResources.rpc_port`).
+  **Security**: that server has no built-in authentication — an upstream
+  llama.cpp limitation — so this should only be enabled on a trusted LAN,
+  same assumption UDP/mDNS discovery already makes.
+- A node serving a request, with `distributed_inference: true` in settings,
+  discovers healthy RPC-contributing peers from live `ClusterState`
+  (`discover_rpc_peers`), computes a VRAM-proportional `--tensor-split`
+  (`compute_tensor_split`), and launches its local `llama-server` with
+  `--rpc host:port,... -ts a,b,...` — llama.cpp's own backend scheduler does
+  the real cross-process tensor execution. Off by default; a single-node
+  deployment sees zero behavior change.
+- Verified live: a model forced entirely (`-ts 0,1`) onto a second process's
+  device produced real generated text, and two full `ghost-link serve`
+  processes with real UDP discovery between them auto-negotiated
+  `--rpc`/`-ts` with zero manual flags. See `docs/ROADMAP.md`'s "Priority
+  Zero" section for the full verification writeup.
 
 ### Custom backend plugins (`crates/ghost-link/src/backend_plugin.rs`)
 

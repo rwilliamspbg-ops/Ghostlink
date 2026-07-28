@@ -4,6 +4,60 @@ All notable changes to Ghostlink Studio are documented here.
 
 ---
 
+## [1.15.0] - 2026-07-28 (Real distributed inference via llama.cpp RPC backend)
+
+Closes the gap between what Ghostlink's clustering claimed to do and what
+`/v1/chat/completions` actually executed: peer discovery and a distributed
+*planning/benchmark* engine existed, but no request path ever ran a model
+split across more than one machine. Verified before writing any integration
+code that the existing `ghost-link flow`/`stage-worker` pipeline moves
+synthetic benchmark payloads, not real model layers — so this uses
+llama.cpp's own RPC backend (`ggml-rpc`) instead, which does real
+cross-process tensor execution.
+
+### ✨ Features
+
+- **Real distributed inference** (`ghost-link::rpc_cluster`): a node opts in
+  to contributing compute (`contribute_compute` + `rpc_port` in settings)
+  and runs `ggml-rpc-server`, exposing its GPU/CPU over TCP. A node serving
+  a request (`distributed_inference: true`) discovers healthy
+  RPC-contributing peers from live cluster state, computes a
+  VRAM-proportional `--tensor-split`, and launches its local `llama-server`
+  with `--rpc`/`-ts` — zero manual flags from the operator. Off by default;
+  single-node deployments see no behavior change. Verified live: a model
+  forced entirely onto a second process's device via `-ts 0,1` produced
+  real generated text, and two full `ghost-link serve` processes with real
+  UDP discovery between them auto-negotiated the RPC args end to end.
+- **`NodeResources.rpc_port`**: UDP discovery frames and mDNS TXT records
+  now carry each node's RPC-contribution port, so peers can be selected for
+  distributed inference without any manual configuration.
+
+### 🐛 Fixed
+
+- **Every `ghost-link serve` instance previously hardcoded its cluster node
+  id to the literal string `"studio-api"`, regardless of machine.** Two
+  real Ghostlink installs on two real machines would collide in
+  `ClusterState`'s id-keyed map — meaning no distributed feature (old or
+  new, UDP or mDNS) ever worked across genuinely separate hardware,
+  independent of this release. Now derived from the hostname
+  (`GHOSTLINK_NODE_ID` env var to override).
+- **`DiscoveryFrame::encode()`** — the function UDP discovery actually
+  calls — is a separate, hand-duplicated serializer from
+  `NodeResources::encode_payload_into` (kept for a zero-copy calling
+  convention), discovered mid-implementation to silently drop the new
+  `rpc_port` field entirely. mDNS discovery (which reuses the shared
+  encoder) carried it correctly the whole time; UDP discovery didn't, and
+  because UDP is tried first and wins ties in `/api/workers/discover`'s
+  merge, its `None` silently shadowed mDNS's correct value.
+
+### 📚 Documentation
+
+- `docs/ROADMAP.md` documents the full investigation, what was originally
+  planned versus what actually shipped and why, and the verification
+  performed at each step.
+
+---
+
 ## [1.14.0] - 2026-07-28 (mDNS discovery, custom backend plugins, Python SDK)
 
 A review pass over the project surfaced a punch list of usability, performance,
