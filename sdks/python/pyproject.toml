@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ghostlink-client"
+version = "0.1.0"
+description = "Python client for the Ghostlink Studio API: OpenAI-compatible chat/completions/embeddings, plus native token-streaming chat, workers, metrics, and settings."
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "Ghostlink contributors" }]
+requires-python = ">=3.9"
+dependencies = [
+    "requests>=2.28",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Typing :: Typed",
+]
+
+[project.urls]
+Homepage = "https://github.com/rwilliamspbg-ops/Ghostlink"
+Documentation = "https://rwilliamspbg-ops.github.io/Ghostlink/"
+Repository = "https://github.com/rwilliamspbg-ops/Ghostlink"
+
+[project.optional-dependencies]
+test = ["pytest>=7", "responses>=0.23"]
+
+[tool.setuptools.packages.find]
+include = ["ghostlink_client*"]
+
+[tool.setuptools.package-data]
+ghostlink_client = ["py.typed"]

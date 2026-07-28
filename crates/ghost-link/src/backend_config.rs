@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use crate::backend_registry::ComputeBackend;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ComputeConfig {
     #[serde(default)]
     pub preferred_backend: Option<String>,

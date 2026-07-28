@@ -42,6 +42,10 @@ axum = { version = "0.7", features = ["macros"] }
 futures = "0.3"
 tokio = { version = "1", features = ["full"] }
 tower-http = { version = "0.5", features = ["cors"] }
+tower_governor = { version = "0.4.3", features = ["axum"] }
+
+# Object-safe async trait for the custom inference backend plugin system
+async-trait = "0.1"
 rand = "0.8"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "blocking", "stream"] }
 tokio-util = "0.7"
