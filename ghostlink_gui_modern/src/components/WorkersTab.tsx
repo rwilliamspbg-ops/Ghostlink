@@ -36,7 +36,10 @@ export const WorkersTab: React.FC<{ api: any }> = ({ api }) => {
   }, [api, setWorkers]);
 
   // CRITICAL FIX #3: Add disconnect handler
-  const handleDisconnectWorker = async (workerId: string) => {
+  const handleDisconnectWorker = async (workerId: string, workerHost: string) => {
+    if (!window.confirm(`Are you sure you want to disconnect worker ${workerHost}? This will remove it from the active cluster pool.`)) {
+      return;
+    }
     const result = await api.disconnectWorker(workerId);
     if (result.success) {
       refreshWorkers();
@@ -218,7 +221,7 @@ export const WorkersTab: React.FC<{ api: any }> = ({ api }) => {
                             </div>
                             <div className="flex items-end justify-end">
                                 <button
-                                  onClick={() => handleDisconnectWorker(worker.id)}
+                                  onClick={() => handleDisconnectWorker(worker.id, worker.host)}
                                   className="p-2 text-slate-500 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition"
                                   title="Disconnect worker"
                                   aria-label={`Disconnect worker ${worker.host}`}
