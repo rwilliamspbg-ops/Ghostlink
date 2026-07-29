@@ -1,3 +1,7 @@
+## 2026-07-23 - [Zero-Copy Binary Protocol Slice Decoding Optimization]
+**Learning:** Constructing multi-byte arrays by manually indexing elements (such as `[payload[cursor], payload[cursor+1], ...]`) prevents the compiler from emitting optimal unaligned single-instruction loads. Transitioning to slice `.try_into()` conversion allows `rustc`/LLVM to generate optimal unaligned load instructions, which reduces CPU instructions and speeds up binary frame parsing.
+**Action:** Always parse multi-byte primitives (like `u16`, `u32`, `f32`) from byte streams by converting slice windows to fixed-size arrays via `.try_into()` instead of manual byte array construction.
+
 ## 2026-07-22 - [ARM64 NEON Vector Scaling Loop Unrolling]
 **Learning:** Standard ARM64 NEON implementations that process a single vector instruction (e.g. 4 floats) per iteration underutilize modern out-of-order execution pipelines. Unrolling the loop 4x to load and multiply 16 floats (four 128-bit NEON registers) per iteration allows independent memory accesses and multiplications to be pipelined concurrently, avoiding pipeline stalls and doubling performance on Apple Silicon or Graviton architectures.
 **Action:** Always unroll high-throughput vector processing routines 4x on ARM64 NEON (matching AVX2/AVX-512 unrolling patterns) to enable instruction-level parallelism.
