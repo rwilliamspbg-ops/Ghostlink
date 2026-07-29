@@ -179,6 +179,14 @@ const CompareRow: React.FC<{
   </div>
 );
 
+// Pre-configured start prompts to improve immediate UX and help-seeking onboarding.
+const SUGGESTIONS = [
+  { text: 'Check active cluster node health', label: 'Ask about active cluster node health' },
+  { text: 'Detail GGUF local model execution', label: 'Ask about GGUF local model execution' },
+  { text: 'List all available capabilities', label: 'Ask about available capabilities' },
+  { text: 'Show performance metrics overview', label: 'Ask about performance metrics overview' },
+];
+
 export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
   const {
     currentModel, models, setCurrentModel, mcpServers, setMcpServers,
@@ -192,6 +200,7 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [isRecording, setIsRecording] = useState(false);
   const recognitionRef = useRef<any>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
   // What was already in the input box when recording started, and the
   // finalized (non-interim) transcript so far — combined with the current
   // interim chunk on every onresult event to rebuild the full input value
@@ -981,12 +990,27 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
       <div className="flex-1 overflow-y-auto px-4 py-8 space-y-8">
         <div className="max-w-3xl mx-auto space-y-10">
             {messages.length === 0 && (
-                <div className="flex flex-col items-center justify-center h-[50vh] text-center space-y-4">
+                <div className="flex flex-col items-center justify-center h-[50vh] text-center space-y-4 animate-in fade-in duration-500">
                     <div className="w-16 h-16 bg-slate-900 rounded-2xl flex items-center justify-center mb-2 shadow-2xl border border-slate-800">
                         <Bot size={32} className="text-blue-500" />
                     </div>
                     <h2 className="text-2xl font-bold text-white">How can I help you today?</h2>
-                    <p className="text-slate-500 max-w-sm">Ask me to execute build pipelines, audit cryptography, or validate network topologies.</p>
+                    <p className="text-slate-500 max-w-sm mb-4">Ask me to execute build pipelines, audit cryptography, or validate network topologies.</p>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3 max-w-xl w-full px-4">
+                        {SUGGESTIONS.map((s) => (
+                            <button
+                                key={s.text}
+                                onClick={() => {
+                                    setInput(s.text);
+                                    textareaRef.current?.focus();
+                                }}
+                                aria-label={s.label}
+                                className="p-3.5 text-left bg-slate-900/50 hover:bg-slate-800/80 border border-slate-800 hover:border-slate-700 text-xs text-slate-300 hover:text-white rounded-xl transition duration-200 active:scale-[0.98]"
+                            >
+                                {s.text}
+                            </button>
+                        ))}
+                    </div>
                 </div>
             )}
 
@@ -1229,6 +1253,7 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
             onKeyDown={(e) => { if (e.key === 'Escape') setShowTools(false); }}
           >
             <textarea
+              ref={textareaRef}
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={(e) => {
