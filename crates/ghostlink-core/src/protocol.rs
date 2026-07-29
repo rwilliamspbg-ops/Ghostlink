@@ -69,10 +69,12 @@ impl FrameHeader {
         if buf.len() < Self::HEADER_SIZE {
             return None;
         }
-        let ether_type = u16::from_le_bytes([buf[0], buf[1]]);
+        // Optimize: Use try_into on slices to let the compiler emit unaligned single-instruction loads
+        // instead of compiling down to individual byte loads and array constructions.
+        let ether_type = u16::from_le_bytes(buf[0..2].try_into().ok()?);
         let kind = buf[2];
         let version = buf[3];
-        let crc = u32::from_le_bytes([buf[4], buf[5], buf[6], buf[7]]);
+        let crc = u32::from_le_bytes(buf[4..8].try_into().ok()?);
         Some(Self {
             ether_type,
             kind,
@@ -290,18 +292,18 @@ impl NodeResources {
         if vram_end > len {
             return Err("payload truncated".into());
         }
-        let vram_gb = f32::from_le_bytes([
-            payload[cursor],
-            payload[cursor + 1],
-            payload[cursor + 2],
-            payload[cursor + 3],
-        ]);
-        let system_memory_gb = f32::from_le_bytes([
-            payload[cursor + 4],
-            payload[cursor + 5],
-            payload[cursor + 6],
-            payload[cursor + 7],
-        ]);
+        // Optimize: Use slice try_into for f32 decoding to trigger unaligned single-instruction loads
+        // instead of manual indexing of individual bytes.
+        let vram_gb = f32::from_le_bytes(
+            payload[cursor..cursor + 4]
+                .try_into()
+                .map_err(|_| "vram parsing failed".to_string())?,
+        );
+        let system_memory_gb = f32::from_le_bytes(
+            payload[cursor + 4..cursor + 8]
+                .try_into()
+                .map_err(|_| "system memory parsing failed".to_string())?,
+        );
         cursor = vram_end;
 
         if cursor >= len {
@@ -353,8 +355,13 @@ impl NodeResources {
         // payload from an older peer simply won't have these 2 bytes, which
         // correctly decodes as "no RPC contribution advertised" rather than
         // an error.
+        // Optimize: Use slice try_into for u16 decoding to trigger unaligned single-instruction loads.
         let rpc_port = if cursor + 2 <= len {
-            let port = u16::from_le_bytes([payload[cursor], payload[cursor + 1]]);
+            let port = u16::from_le_bytes(
+                payload[cursor..cursor + 2]
+                    .try_into()
+                    .map_err(|_| "rpc_port parsing failed".to_string())?,
+            );
             if port == 0 {
                 None
             } else {
