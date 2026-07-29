@@ -7016,9 +7016,21 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         // Per-IP request rate limiting — protects the API from runaway
         // clients/retry loops. Applied as the outermost layer so it gates
         // requests before CORS/auth do any work.
+        //
+        // NOTE: tower_governor's `.per_second(n)` is NOT "n requests per
+        // second" — it's "replenish 1 token every n seconds". `.per_second(2)`
+        // was clearly meant to read as a generous 2 req/s, but actually capped
+        // sustained throughput at 0.5 req/s per client IP. The GUI's own
+        // background polling alone (metrics+sessions every 3s, workers every
+        // 15s, MCP status every 10s, plus CORS preflights, all sharing one
+        // bucket behind control-plane's single IP) comfortably exceeds that,
+        // so the burst allowance drained fast and every request after it —
+        // including /api/models — got permanently 429'd. `.per_millisecond(100)`
+        // gives the actually-intended ~10 req/s sustained rate, generous enough
+        // for normal polling while still bounding a genuine runaway retry loop.
         let governor_conf = std::sync::Arc::new(
             tower_governor::governor::GovernorConfigBuilder::default()
-                .per_second(2)
+                .per_millisecond(100)
                 .burst_size(30)
                 .finish()
                 .expect("static governor config is always valid"),
