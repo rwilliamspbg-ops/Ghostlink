@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"bytes"
+	"crypto/tls"
 	"io"
 	"net/http"
 	"strings"
@@ -23,9 +24,21 @@ var corsHeaders = map[string]bool{
 }
 
 func NewChatProxy(backendURL string) *ChatProxy {
+	client := &http.Client{}
+	if strings.HasPrefix(backendURL, "https://") {
+		// ghost-link's HTTPS listener (enabled via the persisted settings.json
+		// "enable_tls" flag) uses a self-signed loopback cert with no CA chain
+		// a Go client would trust, so the default transport's cert validation
+		// would fail every request. This gateway only ever talks to ghost-link
+		// over loopback, so skipping verification here doesn't expose it to a
+		// real network MITM risk.
+		client.Transport = &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		}
+	}
 	return &ChatProxy{
 		BackendURL: strings.TrimRight(backendURL, "/"),
-		Client:     &http.Client{},
+		Client:     client,
 	}
 }
 

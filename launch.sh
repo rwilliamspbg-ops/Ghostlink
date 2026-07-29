@@ -100,6 +100,11 @@ spinner() {
 # Optional 5th arg: the env var to suggest as a port override in the
 # on-timeout diagnostic (e.g. "GHOSTLINK_API_PORT"). Omit for checks where
 # no such override applies.
+#
+# -k/--insecure is passed unconditionally: it's a no-op against plain http://
+# targets and required against https:// ones, since ghost-link's TLS listener
+# (see get_api_scheme below) uses a self-signed loopback cert curl won't
+# otherwise trust.
 wait_for_http() {
     local url="$1"
     local label="$2"
@@ -112,12 +117,12 @@ wait_for_http() {
 
     while true; do
         if [ -n "$body_marker" ]; then
-            body=$(curl -sf "$url" 2>/dev/null || true)
+            body=$(curl -skf "$url" 2>/dev/null || true)
             if [ -n "$body" ] && echo "$body" | grep -qF "$body_marker"; then
                 printf "\r${CLEAR_LINE}  ${GREEN}✓${NC} ${WHITE}%s${NC} ${GREEN}ready${NC} at ${CYAN}%s${NC}\n" "$label" "$url"
                 return 0
             fi
-        elif curl -sf "$url" >/dev/null 2>&1; then
+        elif curl -skf "$url" >/dev/null 2>&1; then
             printf "\r${CLEAR_LINE}  ${GREEN}✓${NC} ${WHITE}%s${NC} ${GREEN}ready${NC} at ${CYAN}%s${NC}\n" "$label" "$url"
             return 0
         fi
@@ -142,6 +147,23 @@ wait_for_http() {
         printf "\r  ${CYAN}⠸${NC} ${WHITE}%s${NC} ${DIM}waiting...${NC}" "$label"
         sleep 0.5
     done
+}
+
+# ghost-link binds HTTPS instead of HTTP whenever settings.json's persisted
+# "enable_tls" is true (crates/ghost-link/src/main.rs: `use_tls = settings.enable_tls
+# || !is_loopback_host(host)` — host here is always loopback, so this flag alone
+# decides it). That's a GUI-toggleable, sticky-across-restarts preference this
+# script previously had no idea about: every URL below was hardcoded to http://,
+# so once enable_tls got flipped on, every health check here just hung until its
+# timeout and the whole launch aborted, even though ghost-link came up fine.
+# No jq dependency here to match the rest of this script's grep/sed style.
+get_api_scheme() {
+    local settings_file="$PROJECT_ROOT/settings.json"
+    if [ -f "$settings_file" ] && grep -Eq '"enable_tls"[[:space:]]*:[[:space:]]*true' "$settings_file"; then
+        echo "https"
+    else
+        echo "http"
+    fi
 }
 
 # Animated typing effect
@@ -843,6 +865,8 @@ start_services() {
 
     local BACKEND_HOST="${GHOSTLINK_API_HOST:-127.0.0.1}"
     local BACKEND_PORT="${GHOSTLINK_API_PORT:-8003}"
+    local API_SCHEME
+    API_SCHEME=$(get_api_scheme)
     local GUI_PORT="${GUI_PORT:-5173}"
     local LLAMA_PORT="${GHOSTLINK_LLAMA_SERVER_PORT:-8080}"
     # native (default, matches Windows launch-ollama.bat) or ollama
@@ -1116,8 +1140,8 @@ start_services() {
     export GHOSTLINK_LLAMA_NGL="${LLAMA_NGL:-0}"
     export GHOSTLINK_LLAMA_THREADS="${THREADS}"
     # Always pin GUI → ghost-link API (never llama-server / ollama ports)
-    export VITE_GHOSTLINK_API_BASE="http://${BACKEND_HOST}:${BACKEND_PORT}"
-    export VITE_PROXY_TARGET="http://${BACKEND_HOST}:${BACKEND_PORT}"
+    export VITE_GHOSTLINK_API_BASE="${API_SCHEME}://${BACKEND_HOST}:${BACKEND_PORT}"
+    export VITE_PROXY_TARGET="${API_SCHEME}://${BACKEND_HOST}:${BACKEND_PORT}"
     if [ -n "${MODEL_FILE:-}" ]; then
         export GHOSTLINK_MODEL_PATH="$MODEL_FILE"
     fi
@@ -1149,15 +1173,15 @@ start_services() {
     if is_wsl; then
         api_wait=180
     fi
-    if ! wait_for_http "http://${BACKEND_HOST}:${BACKEND_PORT}/health" "Ghostlink API" "$api_wait" "inference_backend" "GHOSTLINK_API_PORT"; then
+    if ! wait_for_http "${API_SCHEME}://${BACKEND_HOST}:${BACKEND_PORT}/health" "Ghostlink API" "$api_wait" "inference_backend" "GHOSTLINK_API_PORT"; then
         echo -e "  ${RED}✗${NC} API failed — see /tmp/ghostlink_api.log"
         echo -e "  ${DIM}Tip: ensure port ${BACKEND_PORT} is free and ghost-link is a Linux binary under WSL.${NC}"
         tail -40 /tmp/ghostlink_api.log 2>/dev/null || true
         return 1
     fi
-    if ! wait_for_http "http://${BACKEND_HOST}:${BACKEND_PORT}/api/health" "API /api/health" 30 "inference_backend" "GHOSTLINK_API_PORT"; then
+    if ! wait_for_http "${API_SCHEME}://${BACKEND_HOST}:${BACKEND_PORT}/api/health" "API /api/health" 30 "inference_backend" "GHOSTLINK_API_PORT"; then
         echo -e "  ${RED}✗${NC} /api/health failed — wrong process on :${BACKEND_PORT} or outdated binary"
-        echo -e "  ${DIM}Check: curl -i http://${BACKEND_HOST}:${BACKEND_PORT}/api/health${NC}"
+        echo -e "  ${DIM}Check: curl -ik ${API_SCHEME}://${BACKEND_HOST}:${BACKEND_PORT}/api/health${NC}"
         tail -40 /tmp/ghostlink_api.log 2>/dev/null || true
         return 1
     fi
@@ -1165,7 +1189,7 @@ start_services() {
     # Verify critical GUI routes (GET). 405 here means wrong server (e.g. POST-only proxy).
     local code
     for path in /api/settings /api/models; do
-        code=$(curl -s -o /dev/null -w "%{http_code}" "http://${BACKEND_HOST}:${BACKEND_PORT}${path}" || echo "000")
+        code=$(curl -sk -o /dev/null -w "%{http_code}" "${API_SCHEME}://${BACKEND_HOST}:${BACKEND_PORT}${path}" || echo "000")
         if [ "$API_LAUNCH_MODE" = "bin" ] && { [ "$code" = "404" ] || [ "$code" = "405" ]; }; then
             echo -e "  ${YELLOW}⚠${NC} GET ${path} returned ${code} from prebuilt API binary; retrying with cargo run"
 
@@ -1180,11 +1204,11 @@ start_services() {
             API_PID=$!
             API_LAUNCH_MODE="cargo"
 
-            if ! wait_for_http "http://${BACKEND_HOST}:${BACKEND_PORT}/health" "Ghostlink API (cargo fallback)" 90 "inference_backend" "GHOSTLINK_API_PORT"; then
+            if ! wait_for_http "${API_SCHEME}://${BACKEND_HOST}:${BACKEND_PORT}/health" "Ghostlink API (cargo fallback)" 90 "inference_backend" "GHOSTLINK_API_PORT"; then
                 echo -e "  ${RED}✗${NC} API failed after cargo fallback — see /tmp/ghostlink_api.log"
                 return 1
             fi
-            if ! wait_for_http "http://${BACKEND_HOST}:${BACKEND_PORT}/api/health" "API /api/health (cargo fallback)" 30 "inference_backend" "GHOSTLINK_API_PORT"; then
+            if ! wait_for_http "${API_SCHEME}://${BACKEND_HOST}:${BACKEND_PORT}/api/health" "API /api/health (cargo fallback)" 30 "inference_backend" "GHOSTLINK_API_PORT"; then
                 echo -e "  ${RED}✗${NC} /api/health failed after cargo fallback"
                 return 1
             fi
@@ -1205,7 +1229,7 @@ start_services() {
                 return 1
             fi
 
-            code=$(curl -s -o /dev/null -w "%{http_code}" "http://${BACKEND_HOST}:${BACKEND_PORT}${path}" || echo "000")
+            code=$(curl -sk -o /dev/null -w "%{http_code}" "${API_SCHEME}://${BACKEND_HOST}:${BACKEND_PORT}${path}" || echo "000")
         fi
         if [ "$code" = "405" ]; then
             echo -e "  ${RED}✗${NC} GET ${path} returned 405 Method Not Allowed"
@@ -1219,10 +1243,10 @@ start_services() {
     done
 
     # Chat endpoint must accept POST (not 404/405). Empty body → 4xx is OK; 405 is not.
-    code=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
+    code=$(curl -sk -o /dev/null -w "%{http_code}" -X POST \
         -H "Content-Type: application/json" \
         -d '{}' \
-        "http://${BACKEND_HOST}:${BACKEND_PORT}/api/inference/chat" || echo "000")
+        "${API_SCHEME}://${BACKEND_HOST}:${BACKEND_PORT}/api/inference/chat" || echo "000")
     if [ "$code" = "405" ] || [ "$code" = "404" ]; then
         echo -e "  ${RED}✗${NC} POST /api/inference/chat returned HTTP ${code}"
         echo -e "  ${DIM}Wrong API process on :${BACKEND_PORT}. Rebuild: cargo build --release -p ghost-link${NC}"
@@ -1295,13 +1319,13 @@ start_services() {
     progress_bar 2 3
     echo " ${DIM}Starting Vite dev server...${NC}"
     # Always pin GUI → ghost-link API (:8003). Never :8080/:11434.
-    export VITE_GHOSTLINK_API_BASE="http://${BACKEND_HOST}:${BACKEND_PORT}"
-    export VITE_PROXY_TARGET="http://${BACKEND_HOST}:${BACKEND_PORT}"
+    export VITE_GHOSTLINK_API_BASE="${API_SCHEME}://${BACKEND_HOST}:${BACKEND_PORT}"
+    export VITE_PROXY_TARGET="${API_SCHEME}://${BACKEND_HOST}:${BACKEND_PORT}"
     # Clear any stale override that pointed at wrong ports
     unset VITE_GHOSTLINK_BACKEND_URL 2>/dev/null || true
     PATH="$(dirname "$NODE_BIN"):$PATH" \
-      VITE_GHOSTLINK_API_BASE="http://${BACKEND_HOST}:${BACKEND_PORT}" \
-      VITE_PROXY_TARGET="http://${BACKEND_HOST}:${BACKEND_PORT}" \
+      VITE_GHOSTLINK_API_BASE="${API_SCHEME}://${BACKEND_HOST}:${BACKEND_PORT}" \
+      VITE_PROXY_TARGET="${API_SCHEME}://${BACKEND_HOST}:${BACKEND_PORT}" \
       "$NPM_BIN" run dev -- --host 127.0.0.1 --port "$GUI_PORT" >/tmp/ghostlink_frontend.log 2>&1 &
     GUI_PID=$!
     cd "$PROJECT_ROOT" || true
@@ -1335,12 +1359,14 @@ show_success() {
     
     local gui_port="${GUI_PORT:-5173}"
     local api_port="${GHOSTLINK_API_PORT:-8003}"
+    local api_scheme
+    api_scheme=$(get_api_scheme)
     local llama_port="${GHOSTLINK_LLAMA_SERVER_PORT:-8080}"
     local inference="${GHOSTLINK_INFERENCE_BACKEND:-native}"
 
     echo -e "${BLUE}┌─ Service Endpoints ──────────────────────────────────────────────────────────────┐${NC}"
     echo -e "${BLUE}│${NC}  ${WHITE}▶${NC} ${BOLD}Web Interface${NC}      → ${CYAN}http://127.0.0.1:${gui_port}${NC}"
-    echo -e "${BLUE}│${NC}  ${WHITE}▶${NC} ${BOLD}API Server${NC}         → ${CYAN}http://127.0.0.1:${api_port}${NC}"
+    echo -e "${BLUE}│${NC}  ${WHITE}▶${NC} ${BOLD}API Server${NC}         → ${CYAN}${api_scheme}://127.0.0.1:${api_port}${NC}"
     if [ "$inference" = "ollama" ]; then
         echo -e "${BLUE}│${NC}  ${WHITE}▶${NC} ${BOLD}Ollama${NC}             → ${CYAN}http://127.0.0.1:11434${NC}"
     else
