@@ -52,11 +52,50 @@ function Free-Port([int]$Port) {
     }
 }
 
+# -SkipCertificateCheck (needed below for ghost-link's self-signed loopback
+# cert when TLS is on) only exists on Invoke-WebRequest in PowerShell 6+;
+# Windows PowerShell 5.1 (still the `powershell.exe` default on stock Windows)
+# throws a parameter-binding error for it on every attempt, which the catch
+# below swallows as "not ready" until the wait times out. Use the
+# ServicePointManager callback instead when running under 5.1 - it's honored
+# by 5.1's WebRequest-based Invoke-WebRequest the same way -SkipCertificateCheck
+# is honored by 7's HttpClient-based one.
+#
+# The callback can't be a plain scriptblock: ServerCertificateValidationCallback
+# fires on a .NET networking thread with no PowerShell runspace attached, so a
+# scriptblock delegate throws "There is no Runspace available to run scripts in
+# this thread" the instant .NET invokes it (silently, inside Invoke-WebRequest's
+# own try/catch, indistinguishable from "still starting up"). A compiled
+# delegate via Add-Type has no runspace dependency and works from any thread.
+$IsPwshCore = $PSVersionTable.PSVersion.Major -ge 6
+if (-not $IsPwshCore) {
+    if (-not ("GhostlinkTrustAllCerts" -as [type])) {
+        Add-Type @"
+using System.Net.Security;
+using System.Security.Cryptography.X509Certificates;
+public class GhostlinkTrustAllCerts {
+    public static bool Validate(object sender, X509Certificate cert, X509Chain chain, SslPolicyErrors errors) {
+        return true;
+    }
+}
+"@
+    }
+    [System.Net.ServicePointManager]::ServerCertificateValidationCallback = [Delegate]::CreateDelegate(
+        [System.Net.Security.RemoteCertificateValidationCallback],
+        [GhostlinkTrustAllCerts],
+        "Validate"
+    )
+}
+
 function Wait-Http([string]$Url, [string]$Label, [int]$TimeoutSec = 60) {
     $deadline = (Get-Date).AddSeconds($TimeoutSec)
     while ((Get-Date) -lt $deadline) {
         try {
-            $resp = Invoke-WebRequest -Uri $Url -UseBasicParsing -TimeoutSec 3 -ErrorAction Stop
+            if ($IsPwshCore) {
+                $resp = Invoke-WebRequest -Uri $Url -UseBasicParsing -TimeoutSec 3 -SkipCertificateCheck -ErrorAction Stop
+            } else {
+                $resp = Invoke-WebRequest -Uri $Url -UseBasicParsing -TimeoutSec 3 -ErrorAction Stop
+            }
             if ($resp.StatusCode -ge 200 -and $resp.StatusCode -lt 500) {
                 return $true
             }
@@ -67,6 +106,26 @@ function Wait-Http([string]$Url, [string]$Label, [int]$TimeoutSec = 60) {
     }
     Write-Err "$Label did not become ready within ${TimeoutSec}s ($Url)"
     return $false
+}
+
+# ghost-link binds HTTPS instead of HTTP whenever settings.json's persisted
+# "enable_tls" is true (crates/ghost-link/src/main.rs: `use_tls = settings.enable_tls
+# || !is_loopback_host(host)` — host here is always loopback, so this flag alone
+# decides it). That's a GUI-toggleable, sticky-across-restarts preference this
+# script previously had no idea about, so it always probed http:// — which just
+# hangs against an HTTPS-only listener until the readiness wait times out and the
+# whole launch aborts, even though ghost-link came up fine.
+function Get-ApiScheme {
+    $settingsPath = Join-Path $RootDir "settings.json"
+    if (Test-Path $settingsPath) {
+        try {
+            $settings = Get-Content $settingsPath -Raw | ConvertFrom-Json
+            if ($settings.enable_tls -eq $true) { return "https" }
+        } catch {
+            # malformed/unreadable settings.json - fall through to the http default
+        }
+    }
+    return "http"
 }
 
 Write-Host ""
@@ -196,12 +255,17 @@ $env:GHOSTLINK_LLAMA_THREADS = [Math]::Max(1, $logicalCores - 1)
 $env:GHOSTLINK_VRAM_GB = "4"
 $env:GHOSTLINK_LLAMA_NGL = "-1"
 
+$ApiScheme = Get-ApiScheme
+if ($ApiScheme -eq "https") {
+    Write-Warn "settings.json has enable_tls=true - Ghost-Link API will bind HTTPS (self-signed cert)"
+}
+
 $apiLog = Join-Path $LogDir "ghostlink_api.log"
 $apiProc = Start-Process -FilePath $ApiBin -ArgumentList @("serve", $ApiHost, $ApiPort) `
     -WorkingDirectory $RootDir -PassThru -WindowStyle Hidden `
     -RedirectStandardOutput $apiLog -RedirectStandardError (Join-Path $LogDir "ghostlink_api.err.log")
 
-if (-not (Wait-Http "http://${ApiHost}:${ApiPort}/health" "Ghostlink API" 90)) {
+if (-not (Wait-Http "${ApiScheme}://${ApiHost}:${ApiPort}/health" "Ghostlink API" 90)) {
     Write-Host "  Last API log lines:" -ForegroundColor DarkGray
     Get-Content $apiLog -Tail 30 -ErrorAction SilentlyContinue
     exit 1
@@ -215,7 +279,7 @@ Write-Ok "API ready (PID $($apiProc.Id))"
 # ghost-link is confirmed healthy since it needs a real backend to proxy to.
 Write-Step "Starting control-plane (port $ControlPlanePort)"
 $env:PORT = $ControlPlanePort
-$env:GHOSTLINK_BACKEND_URL = "http://${ApiHost}:${ApiPort}"
+$env:GHOSTLINK_BACKEND_URL = "${ApiScheme}://${ApiHost}:${ApiPort}"
 
 $cpLog = Join-Path $LogDir "control_plane.log"
 $cpProc = Start-Process -FilePath $ControlPlaneBin `
