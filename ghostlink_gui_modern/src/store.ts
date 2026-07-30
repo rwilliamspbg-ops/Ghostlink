@@ -94,6 +94,13 @@ export interface BackendStatus {
   temperature: number | null;
 }
 
+export interface WorkspaceEntry {
+  name: string;
+  path: string;
+  is_dir: boolean;
+  size: number;
+}
+
 export interface McpServer {
   name: string;
   slot: string;
@@ -183,6 +190,20 @@ interface AppState {
   pendingModelActions: Record<string, string>;
   downloadProgress: Record<string, DownloadProgressEntry>;
 
+  // Editor tab state — lifted here for the same reason as chatMessages
+  // above: switching tabs unmounts EditorTab, and an in-progress unsaved
+  // edit (or a diff the user hasn't accepted/rejected yet) would otherwise
+  // be silently lost instead of just picking back up on remount.
+  editorOpenPath: string | null;
+  editorContent: string;
+  editorOriginalContent: string;
+  editorPendingDiff: { proposed: string } | null;
+  setEditorOpenFile: (path: string, content: string) => void;
+  setEditorContent: (content: string) => void;
+  setEditorSaved: () => void;
+  setEditorPendingDiff: (diff: { proposed: string } | null) => void;
+  closeEditorFile: () => void;
+
   // App-wide transient notifications (rendered by <Toaster/> in App.tsx).
   // Distinct from the persistent inline error/empty-state banners each tab
   // already has for context-tied validation/connection errors — this is for
@@ -247,6 +268,10 @@ export const useAppStore = create<AppState>((set) => ({
   pendingModelActions: {},
   downloadProgress: {},
   toasts: [],
+  editorOpenPath: null,
+  editorContent: '',
+  editorOriginalContent: '',
+  editorPendingDiff: null,
 
   setApiBase: (base) => set({ apiBase: base }),
   setBackendOnline: (online) => set({ backendOnline: online }),
@@ -285,6 +310,13 @@ export const useAppStore = create<AppState>((set) => ({
     set((state) => ({ pendingModelActions: resolveUpdater(updater, state.pendingModelActions) })),
   setDownloadProgress: (updater) =>
     set((state) => ({ downloadProgress: resolveUpdater(updater, state.downloadProgress) })),
+  setEditorOpenFile: (path, content) =>
+    set({ editorOpenPath: path, editorContent: content, editorOriginalContent: content, editorPendingDiff: null }),
+  setEditorContent: (content) => set({ editorContent: content }),
+  setEditorSaved: () => set((state) => ({ editorOriginalContent: state.editorContent })),
+  setEditorPendingDiff: (diff) => set({ editorPendingDiff: diff }),
+  closeEditorFile: () =>
+    set({ editorOpenPath: null, editorContent: '', editorOriginalContent: '', editorPendingDiff: null }),
   addToast: (toast) => {
     const id = typeof crypto !== 'undefined' && crypto.randomUUID
       ? crypto.randomUUID()

@@ -11,7 +11,7 @@ Route workloads across CPU, GPU, and NPU resources with explicit scheduling, har
 [![MSRV](https://github.com/rwilliamspbg-ops/Ghostlink/actions/workflows/msrv.yml/badge.svg)](https://github.com/rwilliamspbg-ops/Ghostlink/actions/workflows/msrv.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Docs](https://img.shields.io/badge/Docs-GitHub%20Pages-0ea5e9)](https://rwilliamspbg-ops.github.io/Ghostlink/)
-[![Version](https://img.shields.io/badge/version-1.15.1-blueviolet)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.16.0-blueviolet)](CHANGELOG.md)
 [![Rust](https://img.shields.io/badge/Rust-2021-orange?logo=rust)](Cargo.toml)
 [![Platforms](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey)](#quick-start)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
@@ -42,6 +42,7 @@ Route workloads across CPU, GPU, and NPU resources with explicit scheduling, har
 - [Launch Scripts](#launch-scripts)
 - [Usage (Developer)](#usage-developer)
 - [MCP Tools](#mcp-tools-model-context-protocol)
+- [Editor Tab & Copilot Features](#editor-tab--copilot-features)
 - [Troubleshooting](#troubleshooting)
 - [Environment Variables](#environment-variables)
 - [Architecture](#architecture)
@@ -61,6 +62,9 @@ Route workloads across CPU, GPU, and NPU resources with explicit scheduling, har
 - TCP and Unix domain socket transport for multi-process pipelines
 - Session-level authentication on transport frames
 - Dynamic system profile watching with auto-tuning cache
+- In-GUI code editor (Monaco) with copilot-style actions — Explain/Fix/Refactor
+  with diff preview before anything is written, multi-file refactor, opt-in
+  ghost-text autocomplete, and repo-aware chat via local RAG indexing
 - A strong open-source foundation with a commercial support path
 
 ## Why Ghostlink
@@ -294,7 +298,10 @@ for a machine-readable spec.
 | `/api/security/jwt/refresh` | POST | Exchange the API key for a short-lived JWT |
 | `/api/security/pqc/state` | GET | Whether this running server is serving HTTPS/PQC-hybrid TLS |
 | `/api/security/pqc/enable` | POST | Persist `enable_tls: true` (takes effect on next restart) |
-| `/api/security/audit-log` | GET | Security audit log entries (not yet populated — always empty today) |
+| `/api/security/audit-log` | GET | Security audit log entries (failed auth, JWT refresh, PQC enable, tool-call approve/deny — last 500, most recent first) |
+| `/api/workspace/tree` | GET | List a directory under the Editor tab's workspace root (`?path=`) |
+| `/api/workspace/file` | GET / PUT | Read or write a workspace file (`?path=` / `{path, content}`) — both reject any path that escapes the workspace root |
+| `/api/workspace/index` | POST | Index the workspace into the `rag` MCP server for repo-aware chat context; `"skipped"` if `rag`/Ollama isn't reachable |
 | `/metrics` | GET | Prometheus-exposition-format metrics (same data as `/api/metrics`) |
 
 ### Python client
@@ -329,7 +336,7 @@ Default servers:
 | `image_generation` | *(not yet configured — no default backend picked)* | ❌ |
 | — | `sequential-thinking` (npx) | ✅ |
 | — | `vision` (this repo, wraps local Ollama) | needs a pulled vision model |
-| — | `rag` (this repo — `index_document`/`search`, local Ollama embeddings + brute-force cosine index, no external vector DB) | needs a pulled embedding model (e.g. `nomic-embed-text`) |
+| — | `rag` (this repo — `index_document`/`search`, local Ollama embeddings + brute-force cosine index, no external vector DB) | ✅ (needs a pulled embedding model, e.g. `nomic-embed-text` — the Editor tab's auto-index degrades to a no-op `"skipped"` if Ollama isn't reachable) |
 
 The model decides whether and which tool to call (a ReAct-style prompt works
 with any local GGUF/Ollama model; Ollama models whose chat template declares
@@ -339,6 +346,33 @@ for explicit user approval before executing — see the MCP tab in the GUI.
 
 Requires `npx`/`node` (bundled MCP servers) and `uvx`/`python` (Python-distributed
 ones) on `PATH`; Docker Desktop for the terminal/code_execution slots.
+
+## Editor Tab & Copilot Features
+
+Ghostlink Studio's **Editor** tab is a Monaco-based code editor over the
+running server's real filesystem (`/api/workspace/*`, confined to a
+canonicalized workspace root — no path traversal outside it), separate from
+the sandboxed `file_operations` MCP tool above.
+
+- **Browse, open, and save** any file under the workspace root, with syntax
+  highlighting per extension.
+- **Explain / Fix / Refactor** — scoped to the current selection, or the
+  whole file if nothing's selected. Fix/Refactor render their proposed change
+  as a side-by-side diff (Monaco's `DiffEditor`) with explicit Accept/Reject
+  — nothing is written to disk until you accept it.
+- **Multi-file refactor** — select several files in the tree, send them in
+  one prompt, then step through each proposed change individually
+  (Accept/Reject/Skip).
+- **Ghost-text autocomplete** (opt-in, via the lightning-bolt toggle) —
+  Monaco's native inline-completion UI, driven by the same chat-completion
+  endpoint as everything else here. Not true fill-in-the-middle (no suffix
+  awareness, no model-specific FIM tokens) — a real network+inference round
+  trip on a debounce, not per-keystroke-fast.
+- **Repo-aware chat context** — on first load, the Editor tab feeds the
+  workspace into the `rag` MCP server (enabled by default; needs a pulled
+  Ollama embedding model) so chat can pull in relevant file content without
+  anyone calling `index_document` by hand. Re-indexing a file replaces its
+  prior chunks rather than duplicating them.
 
 ## Troubleshooting
 

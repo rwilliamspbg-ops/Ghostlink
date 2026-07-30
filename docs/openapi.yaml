@@ -145,10 +145,10 @@ paths:
   /api/security/audit-log:
     get:
       summary: Security audit log entries
-      description: Exists but is not yet wired up to record events — always returns an empty list today.
+      description: Real events — failed auth, JWT refresh, PQC enable, tool-call approve/deny — capped at the most recent 500, most-recent-first. In-memory only; resets on restart.
       responses:
         "200":
-          description: Audit log entries (currently always empty)
+          description: Audit log entries
           content:
             application/json:
               schema:
@@ -156,7 +156,109 @@ paths:
                 properties:
                   entries:
                     type: array
-                    items: {}
+                    items:
+                      type: object
+                      properties:
+                        event: { type: string, example: jwt_refresh }
+                        status: { type: string, example: SUCCESS }
+                        ip: { type: string, example: 127.0.0.1 }
+                        time: { type: string, format: date-time }
+                        detail: { type: string, nullable: true }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /api/workspace/tree:
+    get:
+      summary: List a directory under the Editor tab's workspace root
+      parameters:
+        - name: path
+          in: query
+          required: false
+          schema: { type: string }
+          description: Relative path under the workspace root; empty for the root itself.
+      responses:
+        "200":
+          description: Directory entries
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  path: { type: string }
+                  entries:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        name: { type: string }
+                        path: { type: string }
+                        is_dir: { type: boolean }
+                        size: { type: integer }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /api/workspace/file:
+    get:
+      summary: Read a workspace file
+      parameters:
+        - name: path
+          in: query
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: File content, or an error if the path escapes the workspace root, is a directory, exceeds 5MB, or isn't valid UTF-8
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  path: { type: string }
+                  content: { type: string }
+                  error: { type: string }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+    put:
+      summary: Write a workspace file
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [path, content]
+              properties:
+                path: { type: string }
+                content: { type: string }
+      responses:
+        "200":
+          description: Write result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: ok }
+                  path: { type: string }
+                  error: { type: string }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /api/workspace/index:
+    post:
+      summary: Index the workspace into the rag MCP server for repo-aware chat context
+      description: Returns status "skipped" (not an error) when the rag MCP server isn't connected or Ollama isn't reachable at its configured OLLAMA_URL.
+      responses:
+        "200":
+          description: Indexing result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: ok }
+                  scanned: { type: integer }
+                  indexed: { type: integer }
+                  failed: { type: integer }
+                  capped: { type: boolean }
+                  reason: { type: string }
         "401":
           $ref: "#/components/responses/Unauthorized"
 components:

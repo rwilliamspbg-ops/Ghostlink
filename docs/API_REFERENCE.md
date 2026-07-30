@@ -68,13 +68,73 @@ curl http://127.0.0.1:8080/api/security/pqc/state \
 
 ### Audit log
 
-`GET /api/security/audit-log` exists but always returns an empty list today
-— it is not yet wired up to record events. Documented here as-is rather than
-implied to be functional.
+`GET /api/security/audit-log` records real security-relevant events —
+failed authentication attempts, JWT refresh, PQC/TLS enable, and tool-call
+approve/deny decisions — in-memory, capped at the most recent 500, returned
+most-recent-first. Resets on restart (no persistent trail across restarts
+yet).
+
+```bash
+curl http://127.0.0.1:8080/api/security/audit-log \
+  -H "Authorization: Bearer $GHOSTLINK_API_KEY"
+```
 
 ```json
-{ "entries": [] }
+{
+  "entries": [
+    { "event": "jwt_refresh", "status": "SUCCESS", "ip": "127.0.0.1", "time": "2026-07-30T00:56:16.043249300+00:00", "detail": null },
+    { "event": "auth", "status": "FAILED", "ip": "127.0.0.1", "time": "2026-07-30T00:56:16.000337400+00:00", "detail": "GET /api/models" }
+  ]
+}
 ```
+
+## Workspace (Editor tab)
+
+Backs the GUI's Editor tab — file tree browsing, open/save, and repo-aware
+chat indexing. Confined to a canonicalized workspace root
+(`GHOSTLINK_WORKSPACE_ROOT`, defaults to the launch directory); every route
+rejects a `path` that resolves outside it.
+
+### List a directory
+
+```bash
+curl "http://127.0.0.1:8080/api/workspace/tree?path=" \
+  -H "Authorization: Bearer $GHOSTLINK_API_KEY"
+```
+
+```json
+{ "path": "", "entries": [{ "name": "README.md", "path": "README.md", "is_dir": false, "size": 23257 }] }
+```
+
+### Read / write a file
+
+```bash
+curl "http://127.0.0.1:8080/api/workspace/file?path=README.md" \
+  -H "Authorization: Bearer $GHOSTLINK_API_KEY"
+
+curl -X PUT http://127.0.0.1:8080/api/workspace/file \
+  -H "Authorization: Bearer $GHOSTLINK_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"path": "README.md", "content": "..."}'
+```
+
+Files over 5MB, directories, and non-UTF-8 (binary) content are rejected
+with a JSON `{"error": "..."}` body rather than a partial read/write.
+
+### Index the workspace for repo-aware chat
+
+```bash
+curl -X POST http://127.0.0.1:8080/api/workspace/index \
+  -H "Authorization: Bearer $GHOSTLINK_API_KEY"
+```
+
+```json
+{ "status": "ok", "scanned": 2, "indexed": 2, "failed": 0, "capped": false }
+```
+
+Returns `{"status": "skipped", "reason": "..."}` instead — not an error —
+when the `rag` MCP server isn't configured or Ollama isn't reachable at the
+configured `OLLAMA_URL`.
 
 ## `POST /v1/chat/completions`
 
