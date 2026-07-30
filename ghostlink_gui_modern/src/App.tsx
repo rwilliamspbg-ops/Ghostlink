@@ -3,6 +3,7 @@ import { Plus, ChevronRight, Menu, Cpu, Zap, Wifi } from 'lucide-react';
 import { useAppStore } from './store';
 import { GhostlinkAPI } from './api';
 import { ChatTab } from './components/ChatTab';
+import { EditorTab } from './components/EditorTab';
 import { ModelsTab } from './components/ModelsTab';
 import { MetricsTab } from './components/MetricsTab';
 import { SessionsTab } from './components/SessionsTab';
@@ -220,6 +221,8 @@ function App() {
         return <SettingsTab api={api} />;
       case 7:
         return <McpTab api={api} />;
+      case 8:
+        return <EditorTab api={api} />;
       default:
         return null;
     }

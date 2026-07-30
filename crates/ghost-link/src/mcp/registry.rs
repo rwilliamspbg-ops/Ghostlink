@@ -144,6 +144,23 @@ impl McpRegistry {
         Ok(())
     }
 
+    /// Reads a configured env var for one server from `mcp_servers.toml`
+    /// (e.g. `rag`'s `OLLAMA_URL`), resolving `${VAR}` indirection the same
+    /// way `connect_enabled` does. Needed because those env vars are only
+    /// ever applied to the *spawned child process* — this (main) process
+    /// never inherits them, so out-of-band checks (e.g. "is rag's Ollama
+    /// actually reachable") can't just read `std::env::var` directly.
+    pub fn env_var_for(&self, server_name: &str, key: &str) -> Option<String> {
+        let configs = self.config_manager.load().ok()?;
+        let config = configs.into_iter().find(|c| c.name == server_name)?;
+        match config.transport {
+            super::config::McpTransport::Stdio { env, .. } => {
+                env.get(key).map(|v| super::config::resolve_env_value(v))
+            }
+            super::config::McpTransport::Http { .. } => None,
+        }
+    }
+
     pub async fn call_tool(
         &self,
         server_name: &str,

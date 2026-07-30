@@ -1,5 +1,5 @@
 import axios, { AxiosInstance } from 'axios';
-import { Model, Metric, Session, Worker, Settings, McpServer } from './store';
+import { Model, Metric, Session, Worker, Settings, McpServer, WorkspaceEntry } from './store';
 
 type CircuitState = 'closed' | 'open' | 'half-open';
 
@@ -660,6 +660,59 @@ export class GhostlinkAPI {
       return { success: true, data: response.data };
     } catch (error: any) {
       return { success: false, error: error.response?.data?.error || error.message };
+    }
+  }
+
+  // Workspace file API (Editor tab) — distinct from the MCP file_operations
+  // tool (sandboxed to ./mcp_workspace, only invoked mid tool-call); these
+  // hit the new /api/workspace/* routes directly so the GUI can browse/open/
+  // save real project files.
+  async getWorkspaceTree(path = ''): Promise<{ path: string; entries: WorkspaceEntry[]; error?: string }> {
+    try {
+      const response = await this.http.get('/api/workspace/tree', { params: { path } });
+      if (response.data?.error) {
+        return { path, entries: [], error: response.data.error };
+      }
+      return { path: response.data.path ?? path, entries: response.data.entries || [] };
+    } catch (error: any) {
+      return { path, entries: [], error: error.response?.data?.error || error.message };
+    }
+  }
+
+  async getWorkspaceFile(path: string): Promise<{ path: string; content: string; error?: string }> {
+    try {
+      const response = await this.http.get('/api/workspace/file', { params: { path } });
+      if (response.data?.error) {
+        return { path, content: '', error: response.data.error };
+      }
+      return { path: response.data.path ?? path, content: response.data.content ?? '' };
+    } catch (error: any) {
+      return { path, content: '', error: error.response?.data?.error || error.message };
+    }
+  }
+
+  async writeWorkspaceFile(path: string, content: string): Promise<{ success: boolean; error?: string }> {
+    try {
+      const response = await this.http.put('/api/workspace/file', { path, content });
+      if (response.data?.error) {
+        return { success: false, error: response.data.error };
+      }
+      return { success: true };
+    } catch (error: any) {
+      return { success: false, error: error.response?.data?.error || error.message };
+    }
+  }
+
+  /** Feeds the workspace into the `rag` MCP server's retrieval index so chat
+   *  has repo context without the user calling index_document by hand.
+   *  `status: "skipped"` (not an error) is the expected result whenever the
+   *  `rag` server isn't configured/connected — most installs won't have it. */
+  async indexWorkspace(): Promise<{ status: string; indexed?: number; failed?: number; scanned?: number; capped?: boolean; reason?: string; error?: string }> {
+    try {
+      const response = await this.http.post('/api/workspace/index');
+      return response.data;
+    } catch (error: any) {
+      return { status: 'error', error: error.response?.data?.error || error.message };
     }
   }
 

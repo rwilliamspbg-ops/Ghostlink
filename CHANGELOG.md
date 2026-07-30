@@ -4,6 +4,76 @@ All notable changes to Ghostlink Studio are documented here.
 
 ---
 
+## [1.16.0] - 2026-07-30 (Editor tab: in-GUI code editor + copilot features)
+
+Ghostlink Studio was chat-only — code blocks rendered as read-only Markdown,
+with no way to browse, open, or edit a real project file from the GUI, and no
+diff-preview step before an AI-proposed change touched disk. This release
+adds a Monaco-based Editor tab wired directly into the existing chat/MCP
+infrastructure to close that gap.
+
+### ✨ Features
+
+- **Editor tab** (`ghostlink_gui_modern/src/components/EditorTab.tsx`): a
+  Monaco editor over three new backend routes —
+  `GET /api/workspace/tree`, `GET`/`PUT /api/workspace/file` — confined to a
+  canonicalized workspace root (`GHOSTLINK_WORKSPACE_ROOT`, defaults to the
+  launch directory) with a path-traversal guard verified against real `../`
+  escape attempts on read, tree, and write. Distinct from the sandboxed
+  `file_operations` MCP tool: this is the GUI talking to real project files
+  directly, not a model-invoked tool call.
+- **Explain / Fix / Refactor** — scoped to the current selection or the
+  whole file. Fix/Refactor render their proposed change as a side-by-side
+  `DiffEditor` with explicit Accept/Reject; nothing is written until
+  accepted.
+- **Multi-file refactor** — select several files via tree checkboxes, send
+  them in one prompt (`### FILE: <path>` sections), then step through each
+  proposed change individually (Accept/Reject/Skip).
+- **Ghost-text autocomplete** (opt-in toggle) — Monaco's native
+  inline-completions provider, debounced against the same chat-completion
+  endpoint. Explicitly an MVP: no fill-in-the-middle model support, no
+  suffix awareness — continuation-only, and a real network round trip per
+  suggestion rather than a fast local model.
+- **Repo-aware chat context**: `POST /api/workspace/index` walks the
+  workspace (skipping `node_modules`/`target`/`.git`/etc., capped at 400
+  files / 4MB) and feeds eligible text files into the `rag` MCP server's
+  `index_document` tool directly — not through an LLM tool-calling loop,
+  which would be slow and unreliable for bulk indexing. The Editor tab
+  triggers this once per page load; a `"skipped"` (not error) status is the
+  expected outcome when `rag`/Ollama isn't reachable, verified by probing
+  Ollama's `/api/tags` before the indexing loop rather than trusting MCP
+  connection state (`rag`'s own handshake never touches Ollama, so it
+  reports "connected" even with Ollama down).
+- **`rag` MCP server enabled by default** (`mcp_servers.example.toml`) — was
+  disabled out of the box; needs `ollama pull nomic-embed-text` (or another
+  embedding model via `OLLAMA_EMBED_MODEL`) to actually do anything, and
+  degrades to the `"skipped"` status above otherwise.
+- **Real security audit log** (`/api/security/audit-log`): was a hardcoded
+  stub that always returned an empty list. Now records failed auth attempts,
+  JWT refresh, PQC/TLS enable, and tool-call approve/deny decisions
+  in-memory, capped at 500 entries, most-recent-first — verified live
+  through the Security tab (triggered a JWT refresh, watched the real entry
+  appear).
+
+### 🐛 Fixed
+
+- **`mcp-rag`'s `index_document` only ever appended chunks, never removed a
+  document's prior ones.** Re-indexing the same file (which the Editor tab's
+  auto-index does on every page load) silently grew `rag_index.json` with
+  duplicate chunks forever, and `search()` would return multiple stale
+  copies of the same source. `index_document` now replaces a document's
+  existing chunks by id prefix before inserting the new ones. Verified live:
+  indexed a directory (10 chunks), re-indexed the same files, still exactly
+  10.
+
+### 📚 Documentation
+
+- `README.md`: new "Editor Tab & Copilot Features" section, updated API
+  endpoint table (`/api/workspace/*`, corrected `/api/security/audit-log`
+  description), updated MCP tools table (`rag` now enabled by default).
+
+---
+
 ## [1.15.1] - 2026-07-28 (Release workflow fix)
 
 - **`release-artifacts.yml`'s "Build release bundle" step was missing an

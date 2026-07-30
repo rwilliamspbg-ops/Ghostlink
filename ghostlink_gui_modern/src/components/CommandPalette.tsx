@@ -10,6 +10,7 @@ import {
   Shield,
   Settings,
   Plug,
+  FileCode,
   CornerDownLeft,
   type LucideIcon,
 } from 'lucide-react';
@@ -25,6 +26,7 @@ export interface NavTab {
 // so the two never drift out of sync.
 export const NAV_TABS: NavTab[] = [
   { label: 'Chat', icon: MessageSquare, id: 0 },
+  { label: 'Editor', icon: FileCode, id: 8 },
   { label: 'Models', icon: Database, id: 1 },
   { label: 'Metrics', icon: BarChart3, id: 2 },
   { label: 'Sessions', icon: Clock, id: 3 },

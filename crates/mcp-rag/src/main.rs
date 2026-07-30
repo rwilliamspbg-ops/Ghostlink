@@ -69,6 +69,22 @@ impl RagIndex {
     }
 }
 
+/// Removes any existing entries for `doc_id` (chunk ids are `"{doc_id}#N"`)
+/// and appends `new_entries` in their place. Re-indexing the same document
+/// (e.g. a file re-saved, or a workspace re-index revisiting an unchanged
+/// path) must *replace* its prior chunks, not pile up duplicates alongside
+/// them — otherwise every re-index grows the index and search() starts
+/// returning multiple stale copies of the same source.
+fn replace_document_entries(
+    entries: &mut Vec<IndexEntry>,
+    doc_id: &str,
+    new_entries: Vec<IndexEntry>,
+) {
+    let prefix = format!("{doc_id}#");
+    entries.retain(|e| !e.id.starts_with(&prefix));
+    entries.extend(new_entries);
+}
+
 /// Splits `text` into paragraph-sized chunks (blank-line separated), further
 /// breaking any paragraph longer than `max_chars` at word boundaries so a
 /// single giant paragraph doesn't become one unwieldy embedding. Empty/
@@ -256,25 +272,29 @@ impl Rag {
                 .unwrap_or_else(|_| "doc".to_string())
         });
 
-        let mut indexed = 0usize;
+        // Embed every chunk into a scratch Vec first — only replace the
+        // document's prior entries once all of them succeed, so a
+        // mid-document embed failure (Ollama dropping mid-loop) leaves the
+        // previous good index untouched instead of half-deleted.
+        let mut new_entries = Vec::with_capacity(chunks.len());
         for (i, chunk) in chunks.iter().enumerate() {
             let embedding = match self.embed(chunk).await {
                 Ok(e) => e,
                 Err(err) => return err,
             };
             let norm = embedding.iter().map(|x| x * x).sum::<f32>().sqrt();
-            let mut index = self.index.lock().await;
-            index.entries.push(IndexEntry {
+            new_entries.push(IndexEntry {
                 id: format!("{doc_id}#{i}"),
                 source: source.clone(),
                 text: chunk.clone(),
                 embedding,
                 norm,
             });
-            indexed += 1;
         }
 
-        let index = self.index.lock().await;
+        let indexed = new_entries.len();
+        let mut index = self.index.lock().await;
+        replace_document_entries(&mut index.entries, &doc_id, new_entries);
         if let Err(err) = index.save(&self.index_path) {
             return format!(
                 "indexed {indexed} chunk(s) from '{doc_id}' but failed to persist index: {err}"
@@ -420,6 +440,48 @@ mod tests {
         assert_eq!(ranked[0].1.id, "exact");
         assert_eq!(ranked[1].1.id, "close");
         assert!(ranked[0].0 >= ranked[1].0);
+    }
+
+    #[test]
+    fn replace_document_entries_replaces_only_the_matching_doc_id() {
+        let mut entries = vec![
+            entry("readme.md#0", vec![0.1, 0.2]),
+            entry("readme.md#1", vec![0.3, 0.4]),
+            entry("other.md#0", vec![0.5, 0.6]),
+        ];
+        let fresh = vec![entry("readme.md#0", vec![0.9, 0.9])];
+        replace_document_entries(&mut entries, "readme.md", fresh);
+
+        assert_eq!(
+            entries.len(),
+            2,
+            "old readme.md chunks dropped, other.md untouched"
+        );
+        assert!(entries.iter().any(|e| e.id == "other.md#0"));
+        let readme_entries: Vec<_> = entries
+            .iter()
+            .filter(|e| e.id.starts_with("readme.md#"))
+            .collect();
+        assert_eq!(
+            readme_entries.len(),
+            1,
+            "re-indexing must not leave stale duplicate chunks"
+        );
+        assert_eq!(readme_entries[0].embedding, vec![0.9, 0.9]);
+    }
+
+    #[test]
+    fn replace_document_entries_does_not_match_on_prefix_alone() {
+        // "readme.md-old" must not be treated as a chunk of "readme.md" just
+        // because it shares a string prefix — only the literal "#"-delimited
+        // doc_id boundary counts.
+        let mut entries = vec![entry("readme.md-old#0", vec![0.1, 0.2])];
+        replace_document_entries(
+            &mut entries,
+            "readme.md",
+            vec![entry("readme.md#0", vec![0.5, 0.5])],
+        );
+        assert_eq!(entries.len(), 2);
     }
 
     #[test]
