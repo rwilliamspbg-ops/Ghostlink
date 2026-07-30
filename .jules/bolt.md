@@ -1,3 +1,7 @@
+## 2026-07-24 - [Lock-Free Total System Memory Query Optimization]
+**Learning:** Frequently querying cluster-wide hardware capacities (such as total system memory or total VRAM) by locking thread-safe maps and summing their values on every call introduces unnecessary mutex acquisition overhead, thread contention, and linear traversal cost. Caching cumulative system metrics in atomic integers (e.g., `AtomicU64`) and maintaining them with delta updates during registration enables lock-free, O(1) status queries.
+**Action:** Always maintain cumulative metrics with atomic delta updates on registration/deregistration instead of computing them via map traversal on the query path.
+
 ## 2026-07-23 - [Zero-Copy Binary Protocol Slice Decoding Optimization]
 **Learning:** Constructing multi-byte arrays by manually indexing elements (such as `[payload[cursor], payload[cursor+1], ...]`) prevents the compiler from emitting optimal unaligned single-instruction loads. Transitioning to slice `.try_into()` conversion allows `rustc`/LLVM to generate optimal unaligned load instructions, which reduces CPU instructions and speeds up binary frame parsing.
 **Action:** Always parse multi-byte primitives (like `u16`, `u32`, `f32`) from byte streams by converting slice windows to fixed-size arrays via `.try_into()` instead of manual byte array construction.
