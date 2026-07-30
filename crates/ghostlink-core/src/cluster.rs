@@ -323,7 +323,8 @@ impl ClusterState {
             Ordering::Release,
         );
 
-        let current_total_system_mem = f64::from_bits(self.total_system_memory_cache.load(Ordering::Acquire));
+        let current_total_system_mem =
+            f64::from_bits(self.total_system_memory_cache.load(Ordering::Acquire));
         self.total_system_memory_cache.store(
             (current_total_system_mem + system_memory_delta as f64).to_bits(),
             Ordering::Release,
