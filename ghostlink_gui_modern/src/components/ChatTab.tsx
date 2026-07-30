@@ -744,7 +744,7 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                     onClick={() => setShowModelSelector(!showModelSelector)}
                     aria-haspopup="listbox"
                     aria-expanded={showModelSelector}
-                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg hover:bg-slate-900 transition text-sm font-semibold group"
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg hover:bg-slate-900 transition text-sm font-semibold group focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
                 >
                     <span className="text-slate-200 group-hover:text-white max-w-[200px] truncate">
                         {currentModel === 'none' ? 'Select Model' : currentModel.split('/').pop()}
@@ -809,7 +809,7 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                         aria-haspopup="listbox"
                         aria-expanded={showCompareSelector}
                         title="Compare against a second model"
-                        className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg hover:bg-slate-900 text-slate-500 hover:text-slate-300 transition text-xs font-semibold"
+                        className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg hover:bg-slate-900 text-slate-500 hover:text-slate-300 transition text-xs font-semibold focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
                     >
                         <GitCompare size={14} aria-hidden="true" />
                         Compare
@@ -862,7 +862,7 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
               <div className="flex items-center gap-1">
                 <button
                   onClick={() => { if (!loading) { setSessionName(`Session ${new Date().toLocaleDateString()}`); setShowSessions(true); }}}
-                  className="p-1.5 rounded-lg hover:bg-slate-900 text-slate-500 hover:text-white transition"
+                  className="p-1.5 rounded-lg hover:bg-slate-900 text-slate-500 hover:text-white transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
                   title="Save Session"
                   aria-label="Save session"
                   aria-haspopup="dialog"
@@ -872,7 +872,7 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                 </button>
                 <button
                   onClick={() => { loadSessions(); setShowSessions(true); }}
-                  className="p-1.5 rounded-lg hover:bg-slate-900 text-slate-500 hover:text-white transition"
+                  className="p-1.5 rounded-lg hover:bg-slate-900 text-slate-500 hover:text-white transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
                   title="Load Session"
                   aria-label="Load session"
                   aria-haspopup="dialog"
@@ -887,7 +887,7 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                       setMessages([]);
                     }
                   }}
-                  className="p-1.5 rounded-lg hover:bg-slate-900 text-slate-500 hover:text-white transition"
+                  className="p-1.5 rounded-lg hover:bg-slate-900 text-slate-500 hover:text-white transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
                   title="Clear chat"
                   aria-label="Clear chat"
                 >
@@ -1005,7 +1005,7 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                                     textareaRef.current?.focus();
                                 }}
                                 aria-label={s.label}
-                                className="p-3.5 text-left bg-slate-900/50 hover:bg-slate-800/80 border border-slate-800 hover:border-slate-700 text-xs text-slate-300 hover:text-white rounded-xl transition duration-200 active:scale-[0.98]"
+                                className="p-3.5 text-left bg-slate-900/50 hover:bg-slate-800/80 border border-slate-800 hover:border-slate-700 text-xs text-slate-300 hover:text-white rounded-xl transition duration-200 active:scale-[0.98] focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
                             >
                                 {s.text}
                             </button>
@@ -1143,21 +1143,21 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
 
                         {msg.role === 'assistant' && (
                             <div className="flex items-center gap-1 mt-1 opacity-0 group-hover:opacity-100 transition-opacity focus-within:opacity-100">
-                                <button onClick={() => handleCopy(msg.content, msg.id)} className="p-1.5 rounded-lg hover:bg-slate-900 text-slate-500 hover:text-slate-300 transition" title="Copy" aria-label="Copy response">
+                                <button onClick={() => handleCopy(msg.content, msg.id)} className="p-1.5 rounded-lg hover:bg-slate-900 text-slate-500 hover:text-slate-300 transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none" title="Copy" aria-label="Copy response">
                                   {copiedId === msg.id ? <Check size={14} className="text-green-400" aria-hidden="true" /> : <Copy size={14} aria-hidden="true" />}
                                 </button>
-                                <button className="p-1.5 rounded-lg hover:bg-slate-900 text-slate-500 hover:text-slate-300 transition" title="Good response" aria-label="Good response">
+                                <button className="p-1.5 rounded-lg hover:bg-slate-900 text-slate-500 hover:text-slate-300 transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none" title="Good response" aria-label="Good response">
                                     <ThumbsUp size={14} aria-hidden="true" />
                                 </button>
-                                <button className="p-1.5 rounded-lg hover:bg-slate-900 text-slate-500 hover:text-slate-300 transition" title="Bad response" aria-label="Bad response">
+                                <button className="p-1.5 rounded-lg hover:bg-slate-900 text-slate-500 hover:text-slate-300 transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none" title="Bad response" aria-label="Bad response">
                                     <ThumbsDown size={14} aria-hidden="true" />
                                 </button>
-                                <button onClick={handleRegenerate} className="p-1.5 rounded-lg hover:bg-slate-900 text-slate-500 hover:text-slate-300 transition" title="Regenerate" aria-label="Regenerate response">
+                                <button onClick={handleRegenerate} className="p-1.5 rounded-lg hover:bg-slate-900 text-slate-500 hover:text-slate-300 transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none" title="Regenerate" aria-label="Regenerate response">
                                     <RotateCcw size={14} aria-hidden="true" />
                                 </button>
                                 <button
                                   onClick={() => { try { speechSynthesis.speak(new SpeechSynthesisUtterance(msg.content)); } catch {} }}
-                                  className="p-1.5 rounded-lg hover:bg-slate-900 text-slate-500 hover:text-slate-300 transition"
+                                  className="p-1.5 rounded-lg hover:bg-slate-900 text-slate-500 hover:text-slate-300 transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
                                   title="Read aloud"
                                   aria-label="Read response aloud"
                                 >
@@ -1166,7 +1166,7 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                                 <button
                                   onClick={() => handleDeleteMessage(msg.id)}
                                   disabled={loading}
-                                  className="p-1.5 rounded-lg hover:bg-slate-900 text-slate-500 hover:text-red-400 transition disabled:opacity-40"
+                                  className="p-1.5 rounded-lg hover:bg-slate-900 text-slate-500 hover:text-red-400 transition disabled:opacity-40 focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
                                   title="Delete"
                                   aria-label="Delete response"
                                 >
@@ -1180,7 +1180,7 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                                 <button
                                   onClick={() => handleEditMessage(msg)}
                                   disabled={loading}
-                                  className="p-1.5 rounded-lg hover:bg-slate-900 text-slate-500 hover:text-slate-300 transition disabled:opacity-40"
+                                  className="p-1.5 rounded-lg hover:bg-slate-900 text-slate-500 hover:text-slate-300 transition disabled:opacity-40 focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
                                   title="Edit and resend"
                                   aria-label="Edit and resend message"
                                 >
@@ -1189,7 +1189,7 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                                 <button
                                   onClick={() => handleDeleteMessage(msg.id)}
                                   disabled={loading}
-                                  className="p-1.5 rounded-lg hover:bg-slate-900 text-slate-500 hover:text-red-400 transition disabled:opacity-40"
+                                  className="p-1.5 rounded-lg hover:bg-slate-900 text-slate-500 hover:text-red-400 transition disabled:opacity-40 focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
                                   title="Delete"
                                   aria-label="Delete message"
                                 >
@@ -1276,7 +1276,7 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                     aria-haspopup="menu"
                     aria-expanded={showTools}
                     aria-label="Capabilities"
-                    className={`p-2 rounded-xl transition ${showTools ? 'bg-slate-800 text-blue-400' : 'text-slate-500 hover:text-slate-300 hover:bg-slate-800'}`}
+                    className={`p-2 rounded-xl transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none ${showTools ? 'bg-slate-800 text-blue-400' : 'text-slate-500 hover:text-slate-300 hover:bg-slate-800'}`}
                 >
                     <Plus size={20} aria-hidden="true" />
                 </button>
@@ -1289,7 +1289,7 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                         aria-label={isRecording ? 'Stop voice input' : 'Start voice input'}
                         aria-pressed={isRecording}
                         title={isRecording ? 'Stop voice input' : 'Voice input (requires internet — browser speech recognition)'}
-                        className={`relative p-2 rounded-full transition ${
+                        className={`relative p-2 rounded-full transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none ${
                             isRecording
                                 ? 'bg-red-500/20 text-red-400'
                                 : 'text-slate-500 hover:text-slate-300 hover:bg-slate-800'
@@ -1305,7 +1305,7 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                     onClick={handleSend}
                     disabled={!input.trim() || loading}
                     aria-label="Send message"
-                    className={`p-2 rounded-full transition shadow-lg ${
+                    className={`p-2 rounded-full transition shadow-lg focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none ${
                         !input.trim() || loading
                             ? 'bg-slate-800 text-slate-600'
                             : 'bg-white text-black hover:bg-slate-200'
