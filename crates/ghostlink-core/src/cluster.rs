@@ -211,6 +211,8 @@ pub struct ClusterState {
     last_update: Arc<AtomicU64>,
     /// Cached total VRAM across all registered nodes
     total_vram_cache: Arc<AtomicU64>,
+    /// Cached total system memory across all registered nodes
+    total_system_memory_cache: Arc<AtomicU64>,
 }
 
 impl Clone for ClusterState {
@@ -222,6 +224,7 @@ impl Clone for ClusterState {
             metrics: Arc::clone(&self.metrics),
             last_update: Arc::clone(&self.last_update),
             total_vram_cache: Arc::clone(&self.total_vram_cache),
+            total_system_memory_cache: Arc::clone(&self.total_system_memory_cache),
         }
     }
 }
@@ -242,6 +245,7 @@ impl ClusterState {
             metrics: Arc::new(Mutex::new(HashMap::new())),
             last_update: Arc::new(AtomicU64::new(0)),
             total_vram_cache: Arc::new(AtomicU64::new(0.0_f64.to_bits())),
+            total_system_memory_cache: Arc::new(AtomicU64::new(0.0_f64.to_bits())),
         }
     }
 
@@ -268,9 +272,11 @@ impl ClusterState {
         let compute_capability = node.compute_capability.clone();
         let rpc_port = node.rpc_port;
         let mut vram_delta = vram_gb;
+        let mut system_memory_delta = system_memory_gb;
 
         if let Some(existing) = nodes.get_mut(&id) {
             vram_delta = vram_gb - existing.vram_gb;
+            system_memory_delta = system_memory_gb - existing.system_memory_gb;
             existing.vram_gb = vram_gb;
             existing.system_memory_gb = system_memory_gb;
             existing.compute_capability = compute_capability.clone();
@@ -314,6 +320,12 @@ impl ClusterState {
         let current_total_vram = f64::from_bits(self.total_vram_cache.load(Ordering::Acquire));
         self.total_vram_cache.store(
             (current_total_vram + vram_delta as f64).to_bits(),
+            Ordering::Release,
+        );
+
+        let current_total_system_mem = f64::from_bits(self.total_system_memory_cache.load(Ordering::Acquire));
+        self.total_system_memory_cache.store(
+            (current_total_system_mem + system_memory_delta as f64).to_bits(),
             Ordering::Release,
         );
 
@@ -437,11 +449,7 @@ impl ClusterState {
 
     /// Get total system memory
     pub fn total_system_memory_gb(&self) -> f32 {
-        let nodes = self
-            .nodes
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner());
-        nodes.values().map(|n| n.system_memory_gb).sum()
+        f64::from_bits(self.total_system_memory_cache.load(Ordering::Acquire)) as f32
     }
 }
 
