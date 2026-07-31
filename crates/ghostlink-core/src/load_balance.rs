@@ -173,7 +173,10 @@ impl LoadBalancer {
             .unwrap_or_default()
     }
 
-    /// Distribute tensor layers across nodes based on VRAM capacity
+    /// Distribute tensor layers across nodes based on VRAM capacity.
+    ///
+    /// Optimized using cursor-based index traversal instead of costly vector draining
+    /// and shifting elements, improving complexity from O(N^2) to O(N).
     pub fn distribute_layers(
         &self,
         layers: &[crate::planning::LayerSpec],
@@ -196,51 +199,44 @@ impl LoadBalancer {
         all_layers.sort_by_key(|l| l.index);
         let total_layer_count = all_layers.len();
 
-        // Greedy assignment: assign contiguous layers to nodes based on VRAM
-        let mut distributions = Vec::new();
-        let mut remaining_layers = all_layers;
+        // Greedy assignment: assign contiguous layers to nodes based on VRAM using O(1) indices
+        let mut distributions = Vec::with_capacity(sorted_nodes.len());
+        let mut current_layer_idx = 0usize;
 
         for node in &sorted_nodes {
-            if remaining_layers.is_empty() {
+            if current_layer_idx >= all_layers.len() {
                 break;
             }
 
             let mut used_vram = 0.0f32;
-            let mut start_enum = usize::MAX;
-            let mut end_enum = 0usize;
+            let start_idx = current_layer_idx;
+            let mut end_idx = current_layer_idx;
 
-            for (enum_idx, layer) in remaining_layers.iter().enumerate() {
+            for layer in &all_layers[current_layer_idx..] {
                 if used_vram + layer.vram_gb > node.vram_gb {
                     break;
                 }
-
-                if start_enum == usize::MAX {
-                    start_enum = enum_idx;
-                }
-                end_enum = enum_idx + 1;
-
+                end_idx += 1;
                 used_vram += layer.vram_gb;
             }
 
-            if start_enum != usize::MAX {
-                let slices: Vec<TensorSlice> = remaining_layers[start_enum..end_enum]
+            if end_idx > start_idx {
+                let slices: Vec<TensorSlice> = all_layers[start_idx..end_idx]
                     .iter()
                     .map(|l| TensorSlice::new((l.index, l.index + 1), l.vram_gb))
                     .collect();
 
                 distributions.push((node.id.clone(), slices));
-
-                // Remove assigned layers from remaining
-                remaining_layers.drain(start_enum..end_enum);
+                current_layer_idx = end_idx;
             }
         }
 
-        if remaining_layers.is_empty() {
+        if current_layer_idx >= all_layers.len() {
             Ok(LoadDistributionPlan::new(distributions, total_layer_count))
         } else {
             Err(format!(
                 "insufficient VRAM: {} layers remain",
-                remaining_layers.len()
+                all_layers.len() - current_layer_idx
             ))
         }
     }
