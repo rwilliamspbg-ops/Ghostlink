@@ -1,3 +1,11 @@
+## 2026-07-25 - [Cursor-Based Index Traversal for Tensor Distribution]
+**Learning:** Draining and shifting elements of a vector within loops (e.g. `remaining_layers.drain(...)`) to track remaining work causes high element-shifting and copying overhead, leading to $O(N^2)$ time complexity. Keeping a cursor/index into a read-only slice of the original vector avoids modifying the vector structure entirely, eliminating element moves and bringing the time complexity to $O(N)$.
+**Action:** Always prefer read-only cursor-based slice indices over mutating/draining vectors when traversing and dividing contiguous sequences.
+
+## 2026-07-25 - [Direct Chunked Layout Generation in Cluster Planning]
+**Learning:** Generating an intermediate full-size/unchunked assignment plan, only to immediately consume and chunk it into worker-sized assignments via subsequent post-processing loops, introduces highly redundant vector allocations, element copies, and metadata recomputations. Directly calling specialized chunked allocators avoids intermediate states, single-passing the layout mapping directly to final plans.
+**Action:** Directly invoke layout-specific chunked generators instead of performing sequentially unchunked allocations followed by post-allocation slicing.
+
 ## 2026-07-24 - [Lock-Free Total System Memory Query Optimization]
 **Learning:** Frequently querying cluster-wide hardware capacities (such as total system memory or total VRAM) by locking thread-safe maps and summing their values on every call introduces unnecessary mutex acquisition overhead, thread contention, and linear traversal cost. Caching cumulative system metrics in atomic integers (e.g., `AtomicU64`) and maintaining them with delta updates during registration enables lock-free, O(1) status queries.
 **Action:** Always maintain cumulative metrics with atomic delta updates on registration/deregistration instead of computing them via map traversal on the query path.

@@ -426,28 +426,51 @@ pub fn assign_layers_with_fault_tolerance(
 }
 
 /// Assign layers with fault tolerance and runtime-aware chunking.
+///
+/// Optimized to directly call `assign_layers_chunked`, bypassing intermediate
+/// `LayerAssignment` allocations and `chunk_assignments_for_workers` overhead.
 pub fn assign_layers_with_fault_tolerance_and_runtime(
     cluster: &ClusterState,
     layers: &[LayerSpec],
     profile: &RuntimeProfile,
 ) -> Result<PlacementPlan, String> {
-    let mut plan = assign_layers_with_fault_tolerance(cluster, layers)?;
+    let nodes = cluster.nodes_snapshot();
+
+    if nodes.is_empty() {
+        return Err("no nodes available".into());
+    }
+
     let tuning = PlanningTuning::from_runtime_profile(profile, layers.len());
-    plan.assignments = chunk_assignments_for_workers(
-        std::mem::take(&mut plan.assignments),
-        tuning.max_layers_per_assignment,
-    );
-    plan.total_layers = plan
-        .assignments
-        .iter()
-        .map(|assignment| assignment.num_layers)
-        .sum();
-    plan.participating_nodes = plan
-        .assignments
-        .iter()
-        .map(|assignment| assignment.node_id.clone())
-        .collect();
-    Ok(plan)
+    // Directly run the chunked layout computation
+    let assignments = assign_layers_chunked(&nodes, layers, tuning.max_layers_per_assignment)?;
+
+    // Calculate average delivery ratio across all nodes in a single lock pass
+    let (sum_delivery, active_count) = {
+        let metrics = cluster
+            .metrics
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let mut sum = 0.0f32;
+        let mut count = 0usize;
+        for metric in metrics.values() {
+            if metric.status == NodeStatus::Active {
+                sum += metric.delivery_ratio;
+                count += 1;
+            }
+        }
+        (sum, count)
+    };
+
+    let total_delivery_ratio = if active_count > 0 {
+        sum_delivery / active_count as f32
+    } else {
+        0.0
+    };
+
+    // Select quantization mode based on health
+    let quantization_mode = select_quantization_mode(total_delivery_ratio);
+
+    Ok(PlacementPlan::new(assignments, quantization_mode))
 }
 
 /// Update layer assignments based on node health metrics
