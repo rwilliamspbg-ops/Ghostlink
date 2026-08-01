@@ -57,7 +57,7 @@ impl RagIndex {
             .unwrap_or_default();
         for entry in &mut index.entries {
             if entry.norm == 0.0 && !entry.embedding.is_empty() {
-                entry.norm = entry.embedding.iter().map(|x| x * x).sum::<f32>().sqrt();
+                entry.norm = euclidean_norm(&entry.embedding);
             }
         }
         index
@@ -117,6 +117,46 @@ fn chunk_text(text: &str, max_chars: usize) -> Vec<String> {
     chunks
 }
 
+/// Helper to calculate Euclidean norm using loop-unrolled chunk processing via `chunks_exact(8)`.
+/// This eliminates intermediate bounds checks and allows the compiler to leverage SIMD vectorization,
+/// and breaks loop carry dependency chains by accumulating into multiple independent registers.
+fn euclidean_norm(v: &[f32]) -> f32 {
+    if v.is_empty() {
+        return 0.0;
+    }
+
+    let mut sum0 = 0.0;
+    let mut sum1 = 0.0;
+    let mut sum2 = 0.0;
+    let mut sum3 = 0.0;
+    let mut sum4 = 0.0;
+    let mut sum5 = 0.0;
+    let mut sum6 = 0.0;
+    let mut sum7 = 0.0;
+
+    let chunks = v.chunks_exact(8);
+    let remainder = chunks.remainder();
+
+    for c in chunks {
+        sum0 += c[0] * c[0];
+        sum1 += c[1] * c[1];
+        sum2 += c[2] * c[2];
+        sum3 += c[3] * c[3];
+        sum4 += c[4] * c[4];
+        sum5 += c[5] * c[5];
+        sum6 += c[6] * c[6];
+        sum7 += c[7] * c[7];
+    }
+
+    let mut sum = sum0 + sum1 + sum2 + sum3 + sum4 + sum5 + sum6 + sum7;
+
+    for &x in remainder {
+        sum += x * x;
+    }
+
+    sum.sqrt()
+}
+
 /// Helper to calculate cosine similarity using precomputed norms for both embeddings.
 /// This reduces the computation to a single-pass dot product loop with absolutely no sqrt or sum of squares.
 fn cosine_similarity_precomputed(a: &[f32], b: &[f32], norm_a: f32, norm_b: f32) -> f32 {
@@ -163,8 +203,8 @@ fn cosine_similarity_precomputed(a: &[f32], b: &[f32], norm_a: f32, norm_b: f32)
 
 #[allow(dead_code)]
 fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
-    let norm_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
-    let norm_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
+    let norm_a = euclidean_norm(a);
+    let norm_b = euclidean_norm(b);
     cosine_similarity_precomputed(a, b, norm_a, norm_b)
 }
 
@@ -176,7 +216,7 @@ fn rank<'a>(
     query_embedding: &[f32],
     top_k: usize,
 ) -> Vec<(f32, &'a IndexEntry)> {
-    let norm_b: f32 = query_embedding.iter().map(|x| x * x).sum::<f32>().sqrt();
+    let norm_b = euclidean_norm(query_embedding);
     if norm_b == 0.0 {
         return Vec::new();
     }
@@ -282,7 +322,7 @@ impl Rag {
                 Ok(e) => e,
                 Err(err) => return err,
             };
-            let norm = embedding.iter().map(|x| x * x).sum::<f32>().sqrt();
+            let norm = euclidean_norm(&embedding);
             new_entries.push(IndexEntry {
                 id: format!("{doc_id}#{i}"),
                 source: source.clone(),
@@ -418,7 +458,7 @@ mod tests {
     }
 
     fn entry(id: &str, embedding: Vec<f32>) -> IndexEntry {
-        let norm = embedding.iter().map(|x| x * x).sum::<f32>().sqrt();
+        let norm = euclidean_norm(&embedding);
         IndexEntry {
             id: id.to_string(),
             source: Some("test".to_string()),
