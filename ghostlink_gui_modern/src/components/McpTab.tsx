@@ -53,7 +53,7 @@ export const McpTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
         <button
           onClick={refresh}
           aria-label="Refresh MCP servers"
-          className="p-2 rounded-lg hover:bg-slate-900 text-slate-400 hover:text-white transition"
+          className="p-2 rounded-lg hover:bg-slate-900 text-slate-400 hover:text-white transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
         >
           <RefreshCw size={18} className={loading ? 'animate-spin' : ''} aria-hidden="true" />
         </button>
@@ -140,7 +140,7 @@ export const McpTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                   aria-label={`${server.enabled ? 'Disable' : 'Enable'} ${server.name}`}
                   className={`relative w-11 h-6 rounded-full transition-colors shrink-0 ${
                     server.enabled ? 'bg-blue-600' : 'bg-slate-700'
-                  } ${toggling === server.name ? 'opacity-50' : ''}`}
+                  } ${toggling === server.name ? 'opacity-50' : ''} focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none`}
                   title={server.enabled ? 'Disable server' : 'Enable server'}
                 >
                   <div
