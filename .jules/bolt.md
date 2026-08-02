@@ -1,3 +1,7 @@
+## 2026-08-02 - [Partial Sort for Top-K Document Ranking in RAG]
+**Learning:** Performing a full sort ($O(N \log N)$) on a large list of indexed documents to retrieve only the top $K$ items is highly inefficient. Using a partial sort like `select_nth_unstable_by` partitions the list in $O(N)$ expected time, and we only need to sort the resulting $K$ elements. This reduces complexity to $O(N + K \log K)$, which is significantly faster when $N$ is large and $K$ is small. Additionally, we must handle the edge case where `top_k == 0` to prevent integer subtraction underflow.
+**Action:** Always prefer `select_nth_unstable_by` followed by a small sort over full array sorting when only the top $K$ elements are required. Ensure bounds and subtraction checks are in place to avoid underflow/overflow panics for edge cases like $K=0$.
+
 ## 2026-07-25 - [Cursor-Based Index Traversal for Tensor Distribution]
 **Learning:** Draining and shifting elements of a vector within loops (e.g. `remaining_layers.drain(...)`) to track remaining work causes high element-shifting and copying overhead, leading to $O(N^2)$ time complexity. Keeping a cursor/index into a read-only slice of the original vector avoids modifying the vector structure entirely, eliminating element moves and bringing the time complexity to $O(N)$.
 **Action:** Always prefer read-only cursor-based slice indices over mutating/draining vectors when traversing and dividing contiguous sequences.
