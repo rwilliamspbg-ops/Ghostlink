@@ -9,8 +9,8 @@
 //! binary, not `ghost-link.exe`.
 
 use std::io::Read;
-use std::process::{Command, Stdio};
 use std::net::TcpListener;
+use std::process::{Command, Stdio};
 use std::time::Duration;
 
 #[test]
@@ -18,8 +18,8 @@ fn flow_remote_addr_executes_across_real_processes() {
     let bin = env!("CARGO_BIN_EXE_ghost-link");
     // Avoid fixed-port collisions on shared CI runners.
     let bind_addr = {
-        let listener = TcpListener::bind("127.0.0.1:0")
-            .expect("failed to reserve an ephemeral loopback port");
+        let listener =
+            TcpListener::bind("127.0.0.1:0").expect("failed to reserve an ephemeral loopback port");
         listener
             .local_addr()
             .expect("failed to read ephemeral bind address")
