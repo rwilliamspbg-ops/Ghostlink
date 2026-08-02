@@ -11,6 +11,8 @@ vi.mock('./api', () => ({
     getSessions: vi.fn().mockResolvedValue({ sessions: [] }),
     listSessions: vi.fn().mockResolvedValue({ sessions: [] }),
     getWorkers: vi.fn().mockResolvedValue({ workers: [] }),
+    listMcpServers: vi.fn().mockResolvedValue({ servers: [] }),
+    getSettings: vi.fn().mockResolvedValue({ settings: { conversation_token_limit: 3072 } }),
   })),
 }));
 

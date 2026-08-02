@@ -86,21 +86,56 @@ spinner() {
     return $?
 }
 
-# Wait for HTTP endpoint with animated spinner
+# Wait for HTTP endpoint with animated spinner.
+# Optional 4th arg: a substring that must appear in the response BODY, not
+# just a 2xx status. A bare "curl -sf succeeded" is not proof that the
+# service we WANT is what answered — any unrelated service already bound to
+# the same port (a leftover dev server, a different project's process,
+# anything) will also return 200 and fool a status-only check, especially
+# since free_port can't do anything about a process that immediately
+# respawns (a supervised service, `--reload`, a cron job). Content-checking
+# a marker unique to the expected service's response body closes that gap
+# regardless of what's supervising the conflicting process or how fast it
+# respawns.
+# Optional 5th arg: the env var to suggest as a port override in the
+# on-timeout diagnostic (e.g. "GHOSTLINK_API_PORT"). Omit for checks where
+# no such override applies.
+#
+# -k/--insecure is passed unconditionally: it's a no-op against plain http://
+# targets and required against https:// ones, since ghost-link's TLS listener
+# (see get_api_scheme below) uses a self-signed loopback cert curl won't
+# otherwise trust.
 wait_for_http() {
     local url="$1"
     local label="$2"
     local timeout_s="${3:-120}"
+    local body_marker="${4:-}"
+    local override_var="${5:-}"
     local start
     start=$(date +%s)
-    
+    local body
+
     while true; do
-        if curl -sf "$url" >/dev/null 2>&1; then
+        if [ -n "$body_marker" ]; then
+            body=$(curl -skf "$url" 2>/dev/null || true)
+            if [ -n "$body" ] && echo "$body" | grep -qF "$body_marker"; then
+                printf "\r${CLEAR_LINE}  ${GREEN}✓${NC} ${WHITE}%s${NC} ${GREEN}ready${NC} at ${CYAN}%s${NC}\n" "$label" "$url"
+                return 0
+            fi
+        elif curl -skf "$url" >/dev/null 2>&1; then
             printf "\r${CLEAR_LINE}  ${GREEN}✓${NC} ${WHITE}%s${NC} ${GREEN}ready${NC} at ${CYAN}%s${NC}\n" "$label" "$url"
             return 0
         fi
         if (( $(date +%s) - start >= timeout_s )); then
             printf "\r${CLEAR_LINE}  ${RED}✗${NC} ${WHITE}%s${NC} ${RED}timeout${NC} after %ds: %s\n" "$label" "$timeout_s" "$url"
+            if [ -n "$body_marker" ] && [ -n "${body:-}" ]; then
+                echo -e "  ${YELLOW}⚠${NC} ${DIM}Something answered ${url} but it isn't ${label} (missing '${body_marker}' in response).${NC}"
+                if [ -n "$override_var" ]; then
+                    echo -e "  ${DIM}A different service is likely already bound to this port. Pick another with ${override_var}=<port> ./launch.sh${NC}"
+                else
+                    echo -e "  ${DIM}A different service is likely already bound to this port. Free it, or override the port for this service and retry.${NC}"
+                fi
+            fi
             return 1
         fi
         printf "\r  ${CYAN}⠋${NC} ${WHITE}%s${NC} ${DIM}waiting...${NC}" "$label"
@@ -112,6 +147,23 @@ wait_for_http() {
         printf "\r  ${CYAN}⠸${NC} ${WHITE}%s${NC} ${DIM}waiting...${NC}" "$label"
         sleep 0.5
     done
+}
+
+# ghost-link binds HTTPS instead of HTTP whenever settings.json's persisted
+# "enable_tls" is true (crates/ghost-link/src/main.rs: `use_tls = settings.enable_tls
+# || !is_loopback_host(host)` — host here is always loopback, so this flag alone
+# decides it). That's a GUI-toggleable, sticky-across-restarts preference this
+# script previously had no idea about: every URL below was hardcoded to http://,
+# so once enable_tls got flipped on, every health check here just hung until its
+# timeout and the whole launch aborted, even though ghost-link came up fine.
+# No jq dependency here to match the rest of this script's grep/sed style.
+get_api_scheme() {
+    local settings_file="$PROJECT_ROOT/settings.json"
+    if [ -f "$settings_file" ] && grep -Eq '"enable_tls"[[:space:]]*:[[:space:]]*true' "$settings_file"; then
+        echo "https"
+    else
+        echo "http"
+    fi
 }
 
 # Animated typing effect
@@ -158,8 +210,32 @@ echo -e "${BLUE}│${NC}  ${WHITE}OS:${NC}           $(uname -s) $(uname -r) ($(
 echo -e "${BLUE}│${NC}  ${WHITE}Shell:${NC}         $SHELL"
 echo -e "${BLUE}│${NC}  ${WHITE}Rust:${NC}          $(rustc --version 2>/dev/null | cut -d' ' -f2 || echo 'not installed')"
 echo -e "${BLUE}│${NC}  ${WHITE}Cargo:${NC}         $(cargo --version 2>/dev/null | cut -d' ' -f2 || echo 'not installed')"
-echo -e "${BLUE}│${NC}  ${WHITE}Node.js:${NC}       $(node -v 2>/dev/null || echo 'not installed')"
-echo -e "${BLUE}│${NC}  ${WHITE}npm:${NC}           $(npm -v 2>/dev/null || echo 'not installed')"
+_display_node_bin="$(resolve_node_bin 2>/dev/null)"
+if [ -n "$_display_node_bin" ]; then
+    echo -e "${BLUE}│${NC}  ${WHITE}Node.js:${NC}       $("$_display_node_bin" -v 2>/dev/null || echo 'not installed')"
+    _display_npm_bin="$(dirname "$_display_node_bin")/npm"
+    if [ -x "$_display_npm_bin" ]; then
+        # npm is typically a symlink to a `#!/usr/bin/env node`-shebang JS
+        # file — that shebang needs `node` resolvable on PATH, so it must be
+        # prepended here too (same pattern start_services() already uses
+        # when actually invoking npm), or this silently fails to "not
+        # installed" even though a perfectly good npm was just found.
+        echo -e "${BLUE}│${NC}  ${WHITE}npm:${NC}           $(PATH="$(dirname "$_display_node_bin"):$PATH" "$_display_npm_bin" -v 2>/dev/null || echo 'not installed')"
+    else
+        echo -e "${BLUE}│${NC}  ${WHITE}npm:${NC}           $(npm -v 2>/dev/null || echo 'not installed')"
+    fi
+else
+    # Same reasoning as resolve_node_bin/resolve_llama_server_bin elsewhere in
+    # this script: a bare `node -v`/`npm -v` here can silently succeed against
+    # a wrong-platform binary reached via WSL interop (e.g. Windows' npm.exe
+    # under /mnt/c), showing a version for a binary the script would later
+    # reject outright — misleading the user into thinking Node "is installed"
+    # when the actual dependency-install/dev-server step will fail to find a
+    # usable one. Falls back to the bare commands only when resolve_node_bin
+    # itself found nothing, for a still-useful (if less precise) display.
+    echo -e "${BLUE}│${NC}  ${WHITE}Node.js:${NC}       $(node -v 2>/dev/null || echo 'not installed')"
+    echo -e "${BLUE}│${NC}  ${WHITE}npm:${NC}           $(npm -v 2>/dev/null || echo 'not installed')"
+fi
 if [[ "$(uname -s)" == "Darwin" ]]; then
     local _ram=$(sysctl -n hw.memsize 2>/dev/null | awk '{printf "%.0f", $1/1073741824}' || echo '?')
     echo -e "${BLUE}│${NC}  ${WHITE}RAM:${NC}          ${_ram} GB"
@@ -235,7 +311,12 @@ detect_gpu() {
                 GPU_NAME="${gpu_name:-AMD GPU}"
                 gpu_vendor="amd"
                 GPU_VENDOR="amd"
-                BACKEND="rocm"
+                # rocm-smi already gets its own detection branch above; if we
+                # only found this GPU via lspci vendor-string matching, ROCm
+                # support is unconfirmed (and unsupported entirely on most
+                # integrated Radeon chips), so use the generic Vulkan backend
+                # rather than assuming a HIP/ROCm toolchain is usable.
+                BACKEND="vulkan"
             elif echo "$gpu_name" | grep -qiE "intel|arc|iris|uhd"; then
                 echo -e "  ${GREEN}╡${NC} ${WHITE}GPU${NC}          ${GREEN}Intel: ${gpu_name}${NC}"
                 GPU_NAME="$gpu_name"
@@ -520,21 +601,61 @@ resolve_node_bin() {
 }
 
 # Free a TCP port (best-effort) so stale processes do not cause bind errors / 405 from wrong servers
+# Tool-independent fallback: find PIDs with a LISTEN socket on $1 by walking
+# /proc directly. Needed on minimal hosts without fuser/lsof/ss/netstat —
+# without this, free_port() silently no-ops on such hosts, a stale listener
+# is never actually killed, and a later health check can be fooled into
+# reporting a freshly-started replacement as "ready" when it's really still
+# talking to the old process (which then fails on any route added since).
+proc_net_pids_for_port() {
+    local port="$1"
+    [ -r /proc/net/tcp ] || return 0
+    local hex_port
+    hex_port=$(printf '%04X' "$port")
+    local inodes
+    inodes=$( { cat /proc/net/tcp 2>/dev/null; cat /proc/net/tcp6 2>/dev/null; } \
+        | awk -v hp="$hex_port" 'NR>1 { split($2,a,":"); if (a[2]==hp && $4=="0A") print $10 }' \
+        | sort -u)
+    [ -n "$inodes" ] || return 0
+    local inode fd link pid
+    local -A seen=()
+    for fd in /proc/[0-9]*/fd/*; do
+        link=$(readlink "$fd" 2>/dev/null) || continue
+        case "$link" in
+            socket:\[*\])
+                for inode in $inodes; do
+                    if [ "$link" = "socket:[$inode]" ]; then
+                        pid="${fd#/proc/}"
+                        pid="${pid%%/*}"
+                        if [ -z "${seen[$pid]:-}" ]; then
+                            seen[$pid]=1
+                            echo "$pid"
+                        fi
+                    fi
+                done
+                ;;
+        esac
+    done
+}
+
 free_port() {
     local port="$1"
     local pids=""
     if command -v fuser >/dev/null 2>&1; then
         fuser -k "${port}/tcp" >/dev/null 2>&1 || true
-        return 0
-    fi
-    if command -v lsof >/dev/null 2>&1; then
+    elif command -v lsof >/dev/null 2>&1; then
         pids=$(lsof -ti "tcp:${port}" -sTCP:LISTEN 2>/dev/null || lsof -ti ":${port}" 2>/dev/null || true)
     elif command -v ss >/dev/null 2>&1; then
         pids=$(ss -lptn "sport = :${port}" 2>/dev/null | grep -oE 'pid=[0-9]+' | cut -d= -f2 | sort -u || true)
     elif command -v netstat >/dev/null 2>&1 && [[ "$(uname -s)" != "Darwin" ]]; then
         pids=$(netstat -tlnp 2>/dev/null | awk -v p=":${port}" '$4 ~ p"$" {print $7}' | cut -d/ -f1 | grep -E '^[0-9]+$' || true)
     fi
-    if [ -n "$pids" ]; then
+    # Always cross-check via /proc directly — covers hosts with none of the
+    # above tools, and catches orphaned processes the tool-based lookup missed.
+    if [[ "$(uname -s)" != "Darwin" ]]; then
+        pids="$pids $(proc_net_pids_for_port "$port" 2>/dev/null || true)"
+    fi
+    if [ -n "${pids// /}" ]; then
         # shellcheck disable=SC2086
         kill -9 $pids >/dev/null 2>&1 || true
     fi
@@ -744,6 +865,8 @@ start_services() {
 
     local BACKEND_HOST="${GHOSTLINK_API_HOST:-127.0.0.1}"
     local BACKEND_PORT="${GHOSTLINK_API_PORT:-8003}"
+    local API_SCHEME
+    API_SCHEME=$(get_api_scheme)
     local GUI_PORT="${GUI_PORT:-5173}"
     local LLAMA_PORT="${GHOSTLINK_LLAMA_SERVER_PORT:-8080}"
     # native (default, matches Windows launch-ollama.bat) or ollama
@@ -754,14 +877,16 @@ start_services() {
     echo ""
     echo -e "  ${DIM}Inference backend: ${INFERENCE_BACKEND}${NC}"
 
-    # Clear stale listeners that cause 404/405 and bind failures
+    # Clear stale listeners that cause 404/405 and bind failures.
+    # Scoped to the exact ports we're about to bind (via free_port's PID lookup on
+    # that port) rather than a blind `pkill -f llama-server` / `pkill -f ghost-link`,
+    # which would kill any matching process system-wide — including one started by
+    # a different user, session, or repo that just happens to share the binary name.
     free_port "$BACKEND_PORT"
     free_port "$GUI_PORT"
     if [ "$INFERENCE_BACKEND" = "native" ]; then
         free_port "$LLAMA_PORT"
-        pkill -f "llama-server" >/dev/null 2>&1 || true
     fi
-    pkill -f "ghost-link.*serve" >/dev/null 2>&1 || true
     sleep 0.5
 
     GPU_VENDOR="${GPU_VENDOR:-}"
@@ -817,6 +942,13 @@ start_services() {
     export GHOSTLINK_VRAM_GB="${VRAM_GB:-0}"
     export GHOSTLINK_LLAMA_NGL="${LLAMA_NGL:-0}"
     export GHOSTLINK_LLAMA_THREADS="${THREADS}"
+    # Only pass the detected GPU name through when a real vendor was found — the
+    # Rust-side auto-discovery treats GHOSTLINK_GPU_NAME as an explicit override,
+    # so this must stay unset in CPU-only mode (GPU_VENDOR empty) to let it fall
+    # through to real hardware probes instead of reporting a fake GPU.
+    if [ -n "${GPU_VENDOR:-}" ]; then
+        export GHOSTLINK_GPU_NAME="${GPU_NAME}"
+    fi
 
     local NATIVE_ENGINE="simulated"
     LLAMA_PID=""
@@ -972,8 +1104,15 @@ start_services() {
             >/tmp/ghostlink_llama_server.log 2>&1 &
         LLAMA_PID=$!
 
-        if ! wait_for_http "http://127.0.0.1:${LLAMA_PORT}/health" "llama-server" 90; then
+        # llama-server's own /health body is just {"status":"ok"} — too generic
+        # to prove it's actually llama.cpp (the exact same false-positive class
+        # fixed for the Ghostlink API's own health checks applies here too, e.g.
+        # any web app already bound to this port that happens to have its own
+        # /health route). /v1/models includes "owned_by":"llamacpp", which is
+        # distinctive enough that nothing else plausibly returns it.
+        if ! wait_for_http "http://127.0.0.1:${LLAMA_PORT}/v1/models" "llama-server" 90 "llamacpp" "GHOSTLINK_LLAMA_SERVER_PORT"; then
             echo -e "  ${RED}✗${NC} llama-server failed — see /tmp/ghostlink_llama_server.log"
+            echo -e "  ${DIM}Tip: ensure port ${LLAMA_PORT} is free (another web app there will fool a bare health check).${NC}"
             return 1
         fi
         NATIVE_ENGINE="llama_server"
@@ -1001,8 +1140,8 @@ start_services() {
     export GHOSTLINK_LLAMA_NGL="${LLAMA_NGL:-0}"
     export GHOSTLINK_LLAMA_THREADS="${THREADS}"
     # Always pin GUI → ghost-link API (never llama-server / ollama ports)
-    export VITE_GHOSTLINK_API_BASE="http://${BACKEND_HOST}:${BACKEND_PORT}"
-    export VITE_PROXY_TARGET="http://${BACKEND_HOST}:${BACKEND_PORT}"
+    export VITE_GHOSTLINK_API_BASE="${API_SCHEME}://${BACKEND_HOST}:${BACKEND_PORT}"
+    export VITE_PROXY_TARGET="${API_SCHEME}://${BACKEND_HOST}:${BACKEND_PORT}"
     if [ -n "${MODEL_FILE:-}" ]; then
         export GHOSTLINK_MODEL_PATH="$MODEL_FILE"
     fi
@@ -1034,15 +1173,15 @@ start_services() {
     if is_wsl; then
         api_wait=180
     fi
-    if ! wait_for_http "http://${BACKEND_HOST}:${BACKEND_PORT}/health" "Ghostlink API" "$api_wait"; then
+    if ! wait_for_http "${API_SCHEME}://${BACKEND_HOST}:${BACKEND_PORT}/health" "Ghostlink API" "$api_wait" "inference_backend" "GHOSTLINK_API_PORT"; then
         echo -e "  ${RED}✗${NC} API failed — see /tmp/ghostlink_api.log"
         echo -e "  ${DIM}Tip: ensure port ${BACKEND_PORT} is free and ghost-link is a Linux binary under WSL.${NC}"
         tail -40 /tmp/ghostlink_api.log 2>/dev/null || true
         return 1
     fi
-    if ! wait_for_http "http://${BACKEND_HOST}:${BACKEND_PORT}/api/health" "API /api/health" 30; then
+    if ! wait_for_http "${API_SCHEME}://${BACKEND_HOST}:${BACKEND_PORT}/api/health" "API /api/health" 30 "inference_backend" "GHOSTLINK_API_PORT"; then
         echo -e "  ${RED}✗${NC} /api/health failed — wrong process on :${BACKEND_PORT} or outdated binary"
-        echo -e "  ${DIM}Check: curl -i http://${BACKEND_HOST}:${BACKEND_PORT}/api/health${NC}"
+        echo -e "  ${DIM}Check: curl -ik ${API_SCHEME}://${BACKEND_HOST}:${BACKEND_PORT}/api/health${NC}"
         tail -40 /tmp/ghostlink_api.log 2>/dev/null || true
         return 1
     fi
@@ -1050,7 +1189,7 @@ start_services() {
     # Verify critical GUI routes (GET). 405 here means wrong server (e.g. POST-only proxy).
     local code
     for path in /api/settings /api/models; do
-        code=$(curl -s -o /dev/null -w "%{http_code}" "http://${BACKEND_HOST}:${BACKEND_PORT}${path}" || echo "000")
+        code=$(curl -sk -o /dev/null -w "%{http_code}" "${API_SCHEME}://${BACKEND_HOST}:${BACKEND_PORT}${path}" || echo "000")
         if [ "$API_LAUNCH_MODE" = "bin" ] && { [ "$code" = "404" ] || [ "$code" = "405" ]; }; then
             echo -e "  ${YELLOW}⚠${NC} GET ${path} returned ${code} from prebuilt API binary; retrying with cargo run"
 
@@ -1065,16 +1204,32 @@ start_services() {
             API_PID=$!
             API_LAUNCH_MODE="cargo"
 
-            if ! wait_for_http "http://${BACKEND_HOST}:${BACKEND_PORT}/health" "Ghostlink API (cargo fallback)" 90; then
+            if ! wait_for_http "${API_SCHEME}://${BACKEND_HOST}:${BACKEND_PORT}/health" "Ghostlink API (cargo fallback)" 90 "inference_backend" "GHOSTLINK_API_PORT"; then
                 echo -e "  ${RED}✗${NC} API failed after cargo fallback — see /tmp/ghostlink_api.log"
                 return 1
             fi
-            if ! wait_for_http "http://${BACKEND_HOST}:${BACKEND_PORT}/api/health" "API /api/health (cargo fallback)" 30; then
+            if ! wait_for_http "${API_SCHEME}://${BACKEND_HOST}:${BACKEND_PORT}/api/health" "API /api/health (cargo fallback)" 30 "inference_backend" "GHOSTLINK_API_PORT"; then
                 echo -e "  ${RED}✗${NC} /api/health failed after cargo fallback"
                 return 1
             fi
 
-            code=$(curl -s -o /dev/null -w "%{http_code}" "http://${BACKEND_HOST}:${BACKEND_PORT}${path}" || echo "000")
+            # A passing health check above is not proof the NEW process answered
+            # it: if the old process was never actually killed (e.g. free_port
+            # had no way to find it, or it was orphaned by shell subshell
+            # semantics), the new `cargo run` fails to bind the port, exits, and
+            # every health check up to here would have kept talking to the OLD
+            # process the whole time — which then still 404s on any route it
+            # predates. Catch that here with a clear diagnostic instead of
+            # letting it surface as a confusing later 404.
+            if ! kill -0 "$API_PID" 2>/dev/null; then
+                echo -e "  ${RED}✗${NC} cargo-fallback API process exited — port ${BACKEND_PORT} is likely still held by a stale process"
+                echo -e "  ${DIM}Health checks above answered from that stale process, not the rebuild. See /tmp/ghostlink_api.log${NC}"
+                echo -e "  ${DIM}Fix: manually stop whatever holds port ${BACKEND_PORT} (e.g. sudo lsof -i:${BACKEND_PORT}) and relaunch.${NC}"
+                tail -20 /tmp/ghostlink_api.log 2>/dev/null || true
+                return 1
+            fi
+
+            code=$(curl -sk -o /dev/null -w "%{http_code}" "${API_SCHEME}://${BACKEND_HOST}:${BACKEND_PORT}${path}" || echo "000")
         fi
         if [ "$code" = "405" ]; then
             echo -e "  ${RED}✗${NC} GET ${path} returned 405 Method Not Allowed"
@@ -1088,10 +1243,10 @@ start_services() {
     done
 
     # Chat endpoint must accept POST (not 404/405). Empty body → 4xx is OK; 405 is not.
-    code=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
+    code=$(curl -sk -o /dev/null -w "%{http_code}" -X POST \
         -H "Content-Type: application/json" \
         -d '{}' \
-        "http://${BACKEND_HOST}:${BACKEND_PORT}/api/inference/chat" || echo "000")
+        "${API_SCHEME}://${BACKEND_HOST}:${BACKEND_PORT}/api/inference/chat" || echo "000")
     if [ "$code" = "405" ] || [ "$code" = "404" ]; then
         echo -e "  ${RED}✗${NC} POST /api/inference/chat returned HTTP ${code}"
         echo -e "  ${DIM}Wrong API process on :${BACKEND_PORT}. Rebuild: cargo build --release -p ghost-link${NC}"
@@ -1164,13 +1319,13 @@ start_services() {
     progress_bar 2 3
     echo " ${DIM}Starting Vite dev server...${NC}"
     # Always pin GUI → ghost-link API (:8003). Never :8080/:11434.
-    export VITE_GHOSTLINK_API_BASE="http://${BACKEND_HOST}:${BACKEND_PORT}"
-    export VITE_PROXY_TARGET="http://${BACKEND_HOST}:${BACKEND_PORT}"
+    export VITE_GHOSTLINK_API_BASE="${API_SCHEME}://${BACKEND_HOST}:${BACKEND_PORT}"
+    export VITE_PROXY_TARGET="${API_SCHEME}://${BACKEND_HOST}:${BACKEND_PORT}"
     # Clear any stale override that pointed at wrong ports
     unset VITE_GHOSTLINK_BACKEND_URL 2>/dev/null || true
     PATH="$(dirname "$NODE_BIN"):$PATH" \
-      VITE_GHOSTLINK_API_BASE="http://${BACKEND_HOST}:${BACKEND_PORT}" \
-      VITE_PROXY_TARGET="http://${BACKEND_HOST}:${BACKEND_PORT}" \
+      VITE_GHOSTLINK_API_BASE="${API_SCHEME}://${BACKEND_HOST}:${BACKEND_PORT}" \
+      VITE_PROXY_TARGET="${API_SCHEME}://${BACKEND_HOST}:${BACKEND_PORT}" \
       "$NPM_BIN" run dev -- --host 127.0.0.1 --port "$GUI_PORT" >/tmp/ghostlink_frontend.log 2>&1 &
     GUI_PID=$!
     cd "$PROJECT_ROOT" || true
@@ -1204,12 +1359,14 @@ show_success() {
     
     local gui_port="${GUI_PORT:-5173}"
     local api_port="${GHOSTLINK_API_PORT:-8003}"
+    local api_scheme
+    api_scheme=$(get_api_scheme)
     local llama_port="${GHOSTLINK_LLAMA_SERVER_PORT:-8080}"
     local inference="${GHOSTLINK_INFERENCE_BACKEND:-native}"
 
     echo -e "${BLUE}┌─ Service Endpoints ──────────────────────────────────────────────────────────────┐${NC}"
     echo -e "${BLUE}│${NC}  ${WHITE}▶${NC} ${BOLD}Web Interface${NC}      → ${CYAN}http://127.0.0.1:${gui_port}${NC}"
-    echo -e "${BLUE}│${NC}  ${WHITE}▶${NC} ${BOLD}API Server${NC}         → ${CYAN}http://127.0.0.1:${api_port}${NC}"
+    echo -e "${BLUE}│${NC}  ${WHITE}▶${NC} ${BOLD}API Server${NC}         → ${CYAN}${api_scheme}://127.0.0.1:${api_port}${NC}"
     if [ "$inference" = "ollama" ]; then
         echo -e "${BLUE}│${NC}  ${WHITE}▶${NC} ${BOLD}Ollama${NC}             → ${CYAN}http://127.0.0.1:11434${NC}"
     else
@@ -1251,7 +1408,7 @@ cleanup() {
     [ -n "${GUI_PID:-}" ] && kill $GUI_PID 2>/dev/null && wait $GUI_PID 2>/dev/null || true
     [ -n "${API_PID:-}" ] && kill $API_PID 2>/dev/null && wait $API_PID 2>/dev/null || true
     [ -n "${LLAMA_PID:-}" ] && kill $LLAMA_PID 2>/dev/null && wait $LLAMA_PID 2>/dev/null || true
-    pkill -f "llama-server" >/dev/null 2>&1 || true
+    # Port-scoped cleanup only (see start_services) — never a blind system-wide pkill.
     free_port "${GHOSTLINK_API_PORT:-8003}" 2>/dev/null || true
     free_port "${GHOSTLINK_LLAMA_SERVER_PORT:-8080}" 2>/dev/null || true
     free_port "${GUI_PORT:-5173}" 2>/dev/null || true

@@ -2,16 +2,46 @@
 setlocal EnableExtensions EnableDelayedExpansion
 
 REM Ghostlink unified launcher for Windows hosts.
-REM This wrapper runs the Linux launcher inside WSL to keep one source of truth.
+REM
+REM Default: runs natively on Windows (launch-native.ps1) so real Windows GPU
+REM detection and drivers (Vulkan/DirectML) are visible to the app. WSL2 runs
+REM a Linux build in a lightweight VM that can't see this host's GPU the same
+REM way, so it silently fell back to CPU-only and isn't the default anymore.
+REM
+REM Set GHOSTLINK_USE_WSL=1 to keep using the old WSL-delegated launch.sh path.
 
 set "ROOT_DIR=%~dp0"
+if "%ROOT_DIR:~-1%"=="\" set "ROOT_DIR=%ROOT_DIR:~0,-1%"
 cd /d "%ROOT_DIR%"
 
+if "%GHOSTLINK_USE_WSL%"=="1" goto :use_wsl
+
+where powershell >nul 2>nul
+if errorlevel 1 (
+    echo ERROR: PowerShell is required for the native launcher but was not found.
+    echo Set GHOSTLINK_USE_WSL=1 to fall back to the WSL-based launcher instead.
+    exit /b 1
+)
+
+echo.
+echo Launching Ghostlink natively on Windows...
+echo.
+
+powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT_DIR%\launch-native.ps1" -OpenBrowser %*
+set "RC=%ERRORLEVEL%"
+
+if not "%RC%"=="0" (
+    echo.
+    echo Ghostlink native launcher exited with code %RC%.
+)
+
+exit /b %RC%
+
+:use_wsl
 where wsl >nul 2>nul
 if errorlevel 1 (
-    echo ERROR: WSL is required for this launcher but was not found.
-    echo Install WSL and Ubuntu, then retry.
-    echo Alternative: run launch.sh from Linux/WSL directly.
+    echo ERROR: WSL is required for GHOSTLINK_USE_WSL=1 but was not found.
+    echo Install WSL and Ubuntu, or unset GHOSTLINK_USE_WSL to use the native launcher.
     exit /b 1
 )
 

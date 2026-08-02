@@ -1,5 +1,5 @@
 import axios, { AxiosInstance } from 'axios';
-import { Model, Metric, Session, Worker, Settings } from './store';
+import { Model, Metric, Session, Worker, Settings, McpServer, WorkspaceEntry } from './store';
 import { createInferenceEngineDescriptors, InferenceEngineDescriptor } from './types/engines';
 
 export interface MetricsHistoryPoint {
@@ -56,6 +56,12 @@ export interface CircuitBreakerState {
   lastFailureTime: number;
 }
 
+// The backend has no way to hand this to the GUI automatically — it's
+// printed once in the server's own startup console output (never returned
+// by any API response, on purpose) — so the user pastes it in manually
+// once (see SecurityTab) and it's remembered here across reloads.
+const API_KEY_STORAGE_KEY = 'ghostlink-api-key';
+
 export class GhostlinkAPI {
   private http: AxiosInstance;
   private requestTimeout = [5000, 120000] as const;
@@ -71,6 +77,42 @@ export class GhostlinkAPI {
       baseURL: apiBase.trim(),
       timeout: this.requestTimeout[1],
     });
+
+    this.http.interceptors.request.use((config) => {
+      const apiKey = this.getApiKey();
+      if (apiKey) {
+        config.headers = config.headers ?? {};
+        config.headers.Authorization = `Bearer ${apiKey}`;
+      }
+      return config;
+    });
+  }
+
+  /** Reads the persisted API key/token, if the user has entered one. */
+  getApiKey(): string {
+    try {
+      return localStorage.getItem(API_KEY_STORAGE_KEY) ?? '';
+    } catch {
+      return '';
+    }
+  }
+
+  /** Persists the API key (or JWT) used to authenticate every request from
+   * here on — every call already in flight keeps its old header, but the
+   * interceptor reads fresh on each new request, so this takes effect
+   * immediately. Pass an empty string to clear it. */
+  setApiKey(key: string): void {
+    try {
+      if (key) {
+        localStorage.setItem(API_KEY_STORAGE_KEY, key);
+      } else {
+        localStorage.removeItem(API_KEY_STORAGE_KEY);
+      }
+    } catch {
+      // localStorage unavailable (private browsing, etc.) — the key just
+      // won't survive a reload; not fatal, every other request this
+      // session still works via the in-memory read above failing closed.
+    }
   }
 
   private isNotFound(error: any): boolean {
@@ -111,7 +153,13 @@ export class GhostlinkAPI {
             ? 'Ready'
             : rawStatus;
         const type = m.type || 'unknown';
-        const usable = normalizedStatus === 'Ready' || normalizedStatus === 'Loaded';
+        // The backend marks catalog/placeholder entries (never downloaded,
+        // no local_path) with status "Ready" too — it doesn't distinguish
+        // them from a real, loadable local file. Status alone can't tell
+        // them apart; a non-empty local_path is the only reliable signal
+        // that the model actually exists on disk and can be loaded.
+        const hasLocalFile = typeof m.local_path === 'string' && m.local_path.trim() !== '';
+        const usable = normalizedStatus === 'Loaded' || (normalizedStatus === 'Ready' && hasLocalFile);
         return {
           ...m,
           status: normalizedStatus,
@@ -128,6 +176,13 @@ export class GhostlinkAPI {
   async loadModel(modelName: string) {
     try {
       const response = await this.http.post('/api/models/load', { model: modelName });
+      // The backend returns HTTP 200 with an `error` field in the body when
+      // it rejects the load (e.g. no local GGUF path for a catalog/placeholder
+      // model) — it never throws for this case, so axios never lands in catch.
+      // Without this check, a rejected load looked identical to a real one.
+      if (response.data?.error) {
+        return { success: false, error: response.data.error };
+      }
       return { success: true, data: response.data };
     } catch (error: any) {
       return { success: false, error: error.response?.data?.error || error.message };
@@ -137,19 +192,33 @@ export class GhostlinkAPI {
   async downloadModel(modelId: string) {
     try {
       const response = await this.http.post('/api/models/download', { model_id: modelId });
+      // Same 200-with-error-body pattern as loadModel above.
+      if (response.data?.error) {
+        return { success: false, error: response.data.error };
+      }
       return { success: true, data: response.data };
     } catch (error: any) {
       return { success: false, error: error.response?.data?.error || error.message };
     }
   }
 
-  async getDownloadProgress(modelId: string): Promise<{ progress: number; status: string; error?: string }> {
+  async getDownloadProgress(
+    modelId: string
+  ): Promise<{ progress: number; status: string; bytesDownloaded?: number; totalBytes?: number; error?: string }> {
     try {
       const response = await this.http.get('/api/models/download/progress', { params: { model_id: modelId } });
       const rawProgress = Number(response.data?.progress ?? 0);
       const progress = Number.isFinite(rawProgress) ? Math.max(0, Math.min(1, rawProgress)) : 0;
       const status = String(response.data?.status ?? 'unknown');
-      return { progress, status };
+      const bytesDownloaded = Number(response.data?.bytes_downloaded);
+      const totalBytes = Number(response.data?.total_bytes);
+      return {
+        progress,
+        status,
+        bytesDownloaded: Number.isFinite(bytesDownloaded) ? bytesDownloaded : undefined,
+        totalBytes: Number.isFinite(totalBytes) && totalBytes > 0 ? totalBytes : undefined,
+        error: response.data?.error ?? undefined,
+      };
     } catch (error: any) {
       try {
         // Fallback for backends that expose aggregate status instead of a per-model progress endpoint.
@@ -202,6 +271,27 @@ export class GhostlinkAPI {
     }
   }
 
+  async listPartialDownloads(): Promise<{ partials: { filename: string; size_bytes: number; age_secs: number }[]; error?: string }> {
+    try {
+      const response = await this.http.get('/api/models/partial');
+      return { partials: response.data.partial_downloads || [] };
+    } catch (error: any) {
+      return { partials: [], error: error.response?.data?.error || error.message };
+    }
+  }
+
+  async discardPartialDownload(filename: string): Promise<{ success: boolean; error?: string }> {
+    try {
+      const response = await this.http.post('/api/models/partial/discard', { filename });
+      if (response.data?.error) {
+        return { success: false, error: response.data.error };
+      }
+      return { success: true };
+    } catch (error: any) {
+      return { success: false, error: error.response?.data?.error || error.message };
+    }
+  }
+
   async searchHuggingFace(query: string) {
     try {
       const response = await this.http.get('/api/models/search/huggingface', { params: { q: query } });
@@ -237,6 +327,10 @@ export class GhostlinkAPI {
   async sendMessage(
     payload: {
       message: string;
+      /** Full transcript (oldest first, including the latest turn) so the
+       *  model has memory of the conversation instead of seeing `message`
+       *  alone. Optional only for older callers — always pass it in new code. */
+      messages?: { role: string; content: string }[];
       model?: string;
       temperature: number;
       top_p: number;
@@ -256,10 +350,12 @@ export class GhostlinkAPI {
             ? `${this.http.defaults.baseURL}/api/inference/chat`
             : '/api/inference/chat';
 
+        const apiKey = this.getApiKey();
         const response = await fetch(url, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
+            ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
           },
           body: JSON.stringify(payload),
         });
@@ -274,6 +370,7 @@ export class GhostlinkAPI {
 
         const decoder = new TextDecoder();
         let fullText = '';
+        let truncated = false;
 
         while (true) {
           const { done, value } = await reader.read();
@@ -290,6 +387,10 @@ export class GhostlinkAPI {
                   fullText += data.token;
                   if (onToken) onToken(data.token);
                 }
+                // Carried on the final "done" chunk — see handle_gui_chat_stream.
+                if (typeof data.truncated === 'boolean') {
+                  truncated = data.truncated;
+                }
               } catch (e) {
                 // Ignore incomplete JSON
               }
@@ -297,11 +398,54 @@ export class GhostlinkAPI {
           }
         }
 
-        return { success: true, data: { response: fullText } };
+        return { success: true, data: { response: fullText, truncated } };
       } else {
         const response = await this.http.post('/api/inference/chat', payload);
         return { success: true, data: response.data };
       }
+    } catch (error: any) {
+      return { success: false, error: error.response?.data?.error || error.message };
+    }
+  }
+
+  /** Approves or denies a tool call the model requested that needed confirmation
+   *  first (see the `pending_tool_call` field `sendMessage` can return) — resumes
+   *  the same chat turn on the backend. */
+  async confirmToolCall(requestId: string, approve: boolean) {
+    try {
+      const response = await this.http.post('/api/inference/chat/tool-confirm', {
+        request_id: requestId,
+        approve,
+      });
+      return { success: true, data: response.data };
+    } catch (error: any) {
+      return { success: false, error: error.response?.data?.error || error.message };
+    }
+  }
+
+  async listMcpServers(): Promise<{ servers: McpServer[]; error?: string }> {
+    try {
+      const response = await this.http.get('/api/mcp/servers');
+      return { servers: response.data.servers || [], error: response.data.error };
+    } catch (error: any) {
+      return { servers: [], error: error.response?.data?.error || error.message };
+    }
+  }
+
+  async toggleMcpServer(
+    name: string,
+    enabled: boolean
+  ): Promise<{ success: boolean; servers?: McpServer[]; error?: string }> {
+    try {
+      const response = await this.http.post(
+        `/api/mcp/servers/${encodeURIComponent(name)}/toggle`,
+        { enabled }
+      );
+      return {
+        success: response.data.success !== false,
+        servers: response.data.servers,
+        error: response.data.error,
+      };
     } catch (error: any) {
       return { success: false, error: error.response?.data?.error || error.message };
     }
@@ -597,6 +741,68 @@ export class GhostlinkAPI {
     }
   }
 
+  async refreshJWT(): Promise<{ success: boolean; data?: any; error?: string }> {
+    try {
+      const response = await this.http.post('/api/security/jwt/refresh');
+      return { success: true, data: response.data };
+    } catch (error: any) {
+      return { success: false, error: error.response?.data?.error || error.message };
+    }
+  }
+
+  // Workspace file API (Editor tab) — distinct from the MCP file_operations
+  // tool (sandboxed to ./mcp_workspace, only invoked mid tool-call); these
+  // hit the new /api/workspace/* routes directly so the GUI can browse/open/
+  // save real project files.
+  async getWorkspaceTree(path = ''): Promise<{ path: string; entries: WorkspaceEntry[]; error?: string }> {
+    try {
+      const response = await this.http.get('/api/workspace/tree', { params: { path } });
+      if (response.data?.error) {
+        return { path, entries: [], error: response.data.error };
+      }
+      return { path: response.data.path ?? path, entries: response.data.entries || [] };
+    } catch (error: any) {
+      return { path, entries: [], error: error.response?.data?.error || error.message };
+    }
+  }
+
+  async getWorkspaceFile(path: string): Promise<{ path: string; content: string; error?: string }> {
+    try {
+      const response = await this.http.get('/api/workspace/file', { params: { path } });
+      if (response.data?.error) {
+        return { path, content: '', error: response.data.error };
+      }
+      return { path: response.data.path ?? path, content: response.data.content ?? '' };
+    } catch (error: any) {
+      return { path, content: '', error: error.response?.data?.error || error.message };
+    }
+  }
+
+  async writeWorkspaceFile(path: string, content: string): Promise<{ success: boolean; error?: string }> {
+    try {
+      const response = await this.http.put('/api/workspace/file', { path, content });
+      if (response.data?.error) {
+        return { success: false, error: response.data.error };
+      }
+      return { success: true };
+    } catch (error: any) {
+      return { success: false, error: error.response?.data?.error || error.message };
+    }
+  }
+
+  /** Feeds the workspace into the `rag` MCP server's retrieval index so chat
+   *  has repo context without the user calling index_document by hand.
+   *  `status: "skipped"` (not an error) is the expected result whenever the
+   *  `rag` server isn't configured/connected — most installs won't have it. */
+  async indexWorkspace(): Promise<{ status: string; indexed?: number; failed?: number; scanned?: number; capped?: boolean; reason?: string; error?: string }> {
+    try {
+      const response = await this.http.post('/api/workspace/index');
+      return response.data;
+    } catch (error: any) {
+      return { status: 'error', error: error.response?.data?.error || error.message };
+    }
+  }
+
   // Ollama-specific API methods
   async getOllamaHealth(): Promise<{ reachable: boolean; model_count: number; error?: string }> {
     try {
@@ -671,7 +877,10 @@ export class GhostlinkAPI {
 
   async pullOllamaModel(modelName: string): Promise<{ success: boolean; error?: string }> {
     try {
-      await this.http.post('/api/ollama/pull', { model: modelName });
+      const response = await this.http.post('/api/ollama/pull', { model: modelName });
+      if (response.data?.error) {
+        return { success: false, error: response.data.error };
+      }
       return { success: true };
     } catch (error: any) {
       if (this.isNotFound(error)) {
@@ -688,9 +897,13 @@ export class GhostlinkAPI {
 
   async pullOllamaModelStream(modelName: string, onProgress: (progress: any) => void): Promise<{ success: boolean; error?: string }> {
     try {
+      const apiKey = this.getApiKey();
       const response = await fetch(`${this.http.defaults.baseURL}/api/ollama/pull/stream`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+        },
         body: JSON.stringify({ model: modelName }),
       });
 

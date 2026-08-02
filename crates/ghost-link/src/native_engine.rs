@@ -5,11 +5,17 @@
 
 #![allow(dead_code)]
 
+use futures::Stream;
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
+use tokio::sync::mpsc;
 use tokio::time::sleep as tokio_sleep;
+
+/// Stream of incremental text deltas from a native backend's chat endpoint.
+pub type NativeChatStream = Pin<Box<dyn Stream<Item = Result<String, String>> + Send>>;
 
 #[derive(Debug, Clone)]
 pub struct NativeGeneration {
@@ -36,14 +42,26 @@ impl NativeGeneration {
 }
 
 #[derive(Debug, Clone)]
-pub struct NativeEngineClient;
+pub struct NativeEngineClient {
+    /// Shared, connection-pooled HTTP client. `reqwest::Client` is explicitly
+    /// designed to be built once and reused — internally it's an `Arc` around
+    /// the connection pool, so `.clone()` is a cheap refcount bump, not a new
+    /// pool. Building a fresh client per request (the previous behavior)
+    /// meant a brand-new TCP connection to llama-server on every single chat
+    /// completion, with no keep-alive reuse at all.
+    http: reqwest::Client,
+}
 
 // Static variable to track the llama-server process
 static LLAMA_SERVER_PROCESS: OnceLock<Arc<Mutex<Option<Child>>>> = OnceLock::new();
 
 impl NativeEngineClient {
     pub fn new() -> Self {
-        Self
+        Self {
+            http: reqwest::Client::builder()
+                .build()
+                .unwrap_or_else(|_| reqwest::Client::new()),
+        }
     }
 
     /// Get or initialize the llama-server process handle
@@ -193,14 +211,20 @@ impl NativeEngineClient {
     fn get_llama_server_args() -> Vec<String> {
         if let Ok(v) = std::env::var("GHOSTLINK_LLAMA_SERVER_ARGS") {
             if !v.trim().is_empty() {
+                eprintln!("[perf-tier] Using explicit GHOSTLINK_LLAMA_SERVER_ARGS override: {v}");
                 return v.split_whitespace().map(|s| s.to_string()).collect();
             }
         }
         Self::default_perf_args()
     }
 
-    /// Context size for llama-server (`-c`). Default 4096 — model default can be 128k+
-    /// which starves iGPU VRAM and tanks decode tok/s.
+    /// Context size for llama-server (`-c`). Model default can be 128k+ which
+    /// starves iGPU VRAM and tanks decode tok/s, so this scales with reported VRAM
+    /// instead. Tiers were doubled from an earlier, tighter set of defaults after
+    /// tool-calling chat (see `mcp::toolcall::format_observation`) showed 4096 was
+    /// too tight for a single `fetch`-sized observation plus normal conversation —
+    /// that observation path now truncates any single tool result, but headroom
+    /// here still matters for multi-turn tool use within `MAX_TOOL_ITERATIONS`.
     fn get_ctx_size() -> u32 {
         if let Ok(val) = std::env::var("GHOSTLINK_CTX_SIZE") {
             if let Ok(n) = val.trim().parse::<u32>() {
@@ -210,17 +234,17 @@ impl NativeEngineClient {
         if let Ok(val) = std::env::var("GHOSTLINK_VRAM_GB") {
             if let Ok(vram) = val.trim().parse::<f32>() {
                 return if vram >= 16.0 {
-                    16384
+                    32768
                 } else if vram >= 12.0 {
-                    8192
+                    16384
                 } else if vram >= 8.0 {
-                    4096
+                    8192
                 } else {
-                    2048
+                    4096
                 };
             }
         }
-        4096
+        8192
     }
 
     /// VRAM-aware batch defaults for prompt eval + Flash Attention + compact KV.
@@ -229,15 +253,21 @@ impl NativeEngineClient {
             .ok()
             .and_then(|v| v.trim().parse::<f32>().ok())
             .unwrap_or(0.0);
-        let (batch, ubatch) = if vram >= 12.0 {
-            (2048, 512)
+        let (tier, batch, ubatch) = if vram >= 12.0 {
+            (">=12GB", 2048, 512)
         } else if vram >= 8.0 {
-            (1024, 512)
+            (">=8GB", 1024, 512)
         } else if vram >= 4.0 {
-            (512, 256)
+            (">=4GB", 512, 256)
         } else {
-            (512, 128)
+            ("<4GB", 512, 128)
         };
+        // Cheap, greppable proof at boot that the VRAM-scaled tuning table in
+        // docs/LOCAL_INFERENCE_TUNING.md actually landed for this hardware,
+        // instead of only being inferable later from slow generations.
+        eprintln!(
+            "[perf-tier] Detected VRAM={vram}GB -> tier {tier} (-b {batch} -ub {ubatch} -fa on -ctk/-ctv q8_0)"
+        );
         // q8_0 KV cuts cache memory ~2× vs f16 → more room for GPU layers / speed.
         vec![
             "-fa".to_string(),
@@ -319,6 +349,21 @@ impl NativeEngineClient {
             .max(1)
     }
 
+    /// Number of parallel inference slots to give llama-server (`-np`).
+    /// Defaults to `1` — today's exact prior behavior — unless
+    /// `GHOSTLINK_PARALLEL_SLOTS` is set (mirrored from `RuntimeSettings
+    /// .parallel_slots` by `load_settings()`, or set directly by a launch
+    /// script). More than one slot lets llama-server serve concurrent
+    /// generations instead of queueing them one at a time.
+    fn get_parallel_slots() -> usize {
+        if let Ok(val) = std::env::var("GHOSTLINK_PARALLEL_SLOTS") {
+            if let Ok(n) = val.trim().parse::<usize>() {
+                return n.clamp(1, 64);
+            }
+        }
+        1
+    }
+
     /// Check if llama-server is healthy. `url` may be a base URL or a launcher URL
     /// that includes `/completion`; both are normalized before probing `/health`.
     async fn check_llama_server_health(url: &str) -> bool {
@@ -333,8 +378,15 @@ impl NativeEngineClient {
             .unwrap_or(false)
     }
 
-    /// Wait for llama-server to become ready
-    async fn wait_for_llama_server_ready(url: &str, timeout_secs: u64) -> Result<(), String> {
+    /// Wait for llama-server to become ready. Polls `child`'s exit status
+    /// alongside the HTTP health check so a process that dies immediately
+    /// (corrupt model file, missing shared lib, bad CLI arg) is reported in
+    /// well under a second instead of only after the full timeout elapses.
+    async fn wait_for_llama_server_ready(
+        url: &str,
+        timeout_secs: u64,
+        child: &mut Child,
+    ) -> Result<(), String> {
         let start = std::time::Instant::now();
         let timeout = Duration::from_secs(timeout_secs);
         let base = Self::normalize_llama_base_url(url);
@@ -342,6 +394,17 @@ impl NativeEngineClient {
         while start.elapsed() < timeout {
             if Self::check_llama_server_health(&base).await {
                 return Ok(());
+            }
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    return Err(format!(
+                        "llama-server exited before becoming ready (status: {status})"
+                    ));
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    return Err(format!("failed to poll llama-server process state: {e}"));
+                }
             }
             tokio_sleep(Duration::from_millis(500)).await;
         }
@@ -437,19 +500,54 @@ impl NativeEngineClient {
         Err(format!("model file not found: {model_path}"))
     }
 
+    /// Find a free TCP port to stage a new llama-server on. Tries `preferred`
+    /// first (for readable logs), then falls back to letting the OS assign one.
+    /// There's an inherent bind-then-release race here (the port could be
+    /// grabbed by something else before llama-server binds it), but that's
+    /// the same best-effort tradeoff `free_llama_port` already makes.
+    fn find_free_port(host: &str, preferred: u16) -> Option<u16> {
+        use std::net::TcpListener;
+        if let Ok(listener) = TcpListener::bind((host, preferred)) {
+            if let Ok(addr) = listener.local_addr() {
+                return Some(addr.port());
+            }
+        }
+        if let Ok(listener) = TcpListener::bind((host, 0)) {
+            if let Ok(addr) = listener.local_addr() {
+                return Some(addr.port());
+            }
+        }
+        None
+    }
+
     /// Load a model into llama-server by restarting it with the new model.
     /// llama-server loads models at startup and doesn't support runtime hot-swapping,
     /// so we must restart it with the new model path.
-    pub fn load_model_into_slot(&self, model_path: &str) -> Result<(), String> {
+    ///
+    /// The new model is first staged on a scratch port and health-checked
+    /// *before* the currently running server is touched. If the new model
+    /// fails to load (bad file, OOM, slow CPU-only load exceeding the
+    /// readiness timeout, etc.) the previous server keeps serving requests
+    /// instead of the caller being left with no server running at all.
+    ///
+    /// `rpc_servers`/`tensor_split`, when both given non-empty, are passed
+    /// straight through as llama-server's `--rpc`/`-ts` values — real
+    /// cross-process model-parallel inference via llama.cpp's own RPC
+    /// backend (see `crate::rpc_cluster`), not this crate's synthetic
+    /// pipeline-benchmark transport. `None`/empty reproduces prior
+    /// single-node behavior exactly.
+    pub fn load_model_into_slot(
+        &self,
+        model_path: &str,
+        rpc_servers: Option<&str>,
+        tensor_split: Option<&str>,
+    ) -> Result<(), String> {
         let resolved = Self::resolve_model_path(model_path)?;
         let normalized_path = resolved.to_string_lossy().replace('\\', "/");
         eprintln!("[model-load] Preparing to load model: {normalized_path}");
 
-        // Stop process we own and any externally-launched llama-server on the port.
-        Self::stop_owned_llama_server();
         let base_url = Self::get_llama_base_url();
         let (host, port) = Self::parse_host_port_from_url(&base_url);
-        Self::free_llama_port(port);
 
         // Get binary and configuration
         let bin = Self::get_llama_server_bin();
@@ -461,7 +559,18 @@ impl NativeEngineClient {
         let ngl = Self::get_ngl();
         let threads = Self::get_threads();
         let ctx = Self::get_ctx_size();
-        let extra_args = Self::get_llama_server_args();
+        let parallel_slots = Self::get_parallel_slots();
+        let mut extra_args = Self::get_llama_server_args();
+        if let Some(servers) = rpc_servers.filter(|s| !s.is_empty()) {
+            eprintln!("[model-load] Distributed inference enabled: --rpc {servers}");
+            extra_args.push("--rpc".to_string());
+            extra_args.push(servers.to_string());
+            if let Some(split) = tensor_split.filter(|s| !s.is_empty()) {
+                eprintln!("[model-load] Tensor split: -ts {split}");
+                extra_args.push("-ts".to_string());
+                extra_args.push(split.to_string());
+            }
+        }
         let alias = resolved
             .file_stem()
             .and_then(|s| s.to_str())
@@ -469,39 +578,138 @@ impl NativeEngineClient {
             .to_string();
 
         // Build the command:
-        //   llama-server -m <model> --alias <name> --host <host> --port <port> -c <ctx> [-ngl <n>] [-t <n>]
-        let mut cmd = Command::new(&bin);
-        cmd.arg("-m").arg(&normalized_path);
-        cmd.arg("--alias").arg(&alias);
-        cmd.arg("--host").arg(&host);
-        cmd.arg("--port").arg(port.to_string());
-        cmd.arg("-c").arg(ctx.to_string());
-        cmd.arg("-np").arg("1");
-        if ngl >= 0 {
+        //   llama-server -m <model> --alias <name> --host <host> --port <port> -c <ctx> [-ngl <n>] [-t <n>] -np <n> [--cont-batching]
+        let build_cmd = |bind_port: u16, args: &[String]| -> Command {
+            let mut cmd = Command::new(&bin);
+            cmd.arg("-m").arg(&normalized_path);
+            cmd.arg("--alias").arg(&alias);
+            cmd.arg("--host").arg(&host);
+            cmd.arg("--port").arg(bind_port.to_string());
+            cmd.arg("-c").arg(ctx.to_string());
+            cmd.arg("-np").arg(parallel_slots.to_string());
+            if parallel_slots > 1 {
+                // Only meaningful with more than one slot: lets llama-server
+                // start decoding a newly-admitted request instead of
+                // batching strictly by arrival order.
+                cmd.arg("--cont-batching");
+            }
+            // Always pass -ngl, including -1 ("let llama-server decide /
+            // offload all it can" per get_ngl()'s doc comment). Previously
+            // this was gated on `ngl >= 0`, which silently omitted the flag
+            // for -1 — and llama-server defaults -ngl to 0 (CPU-only) when
+            // the flag isn't given at all, defeating the documented "auto"
+            // intent on any launch path where GHOSTLINK_VRAM_GB/
+            // GHOSTLINK_LLAMA_NGL aren't set. scripts/run_native_llama_server_stack.sh
+            // and validate_native_llama_server.sh already pass `-ngl -1`
+            // explicitly, confirming this build of llama-server accepts it.
             cmd.arg("-ngl").arg(ngl.to_string());
+            cmd.arg("-t").arg(threads.to_string());
+            for arg in args {
+                cmd.arg(arg);
+            }
+            cmd.stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .stdin(Stdio::null());
+            cmd
+        };
+
+        // Fallback arg set with quantized KV cache (-ctk/-ctv) stripped: some
+        // architectures fail to create a context with it (e.g. stories15M's
+        // 48-dim attention heads don't divide evenly into q8_0's 32-element
+        // blocks: "K cache type q8_0 ... does not divide n_embd_head_k=48").
+        // Tried automatically below if the default args fail to load.
+        let no_quant_kv_args: Vec<String> = {
+            let mut out = Vec::new();
+            let mut iter = extra_args.iter();
+            while let Some(a) = iter.next() {
+                if a == "-ctk" || a == "-ctv" {
+                    iter.next();
+                } else {
+                    out.push(a.clone());
+                }
+            }
+            out
+        };
+        let arg_variants: Vec<&Vec<String>> = if no_quant_kv_args.len() != extra_args.len() {
+            vec![&extra_args, &no_quant_kv_args]
+        } else {
+            vec![&extra_args]
+        };
+
+        let rt = tokio::runtime::Runtime::new()
+            .map_err(|e| format!("failed to create async runtime: {e}"))?;
+
+        // Stage the new model on a scratch port so the current server (if any)
+        // keeps running while it loads.
+        let staging_port = Self::find_free_port(&host, port.wrapping_add(1))
+            .ok_or_else(|| "failed to find a free port to stage the new model".to_string())?;
+        let staging_url = format!("http://{host}:{staging_port}");
+
+        let mut winning_args: Option<&Vec<String>> = None;
+        let mut last_err = String::new();
+        for (attempt, args) in arg_variants.iter().enumerate() {
+            eprintln!("[model-load] Staging model on port {staging_port}: {normalized_path}");
+            let mut staging_cmd = build_cmd(staging_port, args);
+            eprintln!(
+                "[model-load] Command: {} {}",
+                bin,
+                staging_cmd
+                    .get_args()
+                    .map(|a| a.to_string_lossy())
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            );
+            let mut staging_child = match staging_cmd.spawn() {
+                Ok(c) => c,
+                Err(err) => {
+                    return Err(format!(
+                        "failed to start llama-server ('{bin}'): {err}. Ensure the binary exists and port {staging_port} is free."
+                    ));
+                }
+            };
+            eprintln!(
+                "[model-load] Staged llama-server PID: {:?}",
+                staging_child.id()
+            );
+
+            let staged_ready = rt.block_on(Self::wait_for_llama_server_ready(
+                &staging_url,
+                90,
+                &mut staging_child,
+            ));
+            let _ = staging_child.kill();
+            let _ = staging_child.wait();
+            match staged_ready {
+                Ok(()) => {
+                    winning_args = Some(args);
+                    break;
+                }
+                Err(e) => {
+                    last_err = e;
+                    if attempt + 1 < arg_variants.len() {
+                        eprintln!(
+                            "[model-load] Staged load failed with this arg set ({last_err}); retrying without quantized KV cache."
+                        );
+                    }
+                }
+            }
         }
-        cmd.arg("-t").arg(threads.to_string());
-        for arg in &extra_args {
-            cmd.arg(arg);
-        }
 
-        // Set up process
-        cmd.stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .stdin(Stdio::null());
+        let Some(winning_args) = winning_args else {
+            eprintln!(
+                "[model-load] New model failed to become ready ({last_err}); leaving previous server running."
+            );
+            return Err(last_err);
+        };
 
-        eprintln!("[model-load] Starting llama-server with model: {normalized_path}");
-        eprintln!(
-            "[model-load] Command: {} {}",
-            bin,
-            cmd.get_args()
-                .map(|a| a.to_string_lossy())
-                .collect::<Vec<_>>()
-                .join(" ")
-        );
+        // New model verified healthy on the scratch port — safe to retire the
+        // old server and rebind the real port. The OS page cache from the
+        // staging load makes this second load fast.
+        Self::stop_owned_llama_server();
+        Self::free_llama_port(port);
 
-        // Spawn the process
-        let child = cmd.spawn().map_err(|err| {
+        eprintln!("[model-load] Starting llama-server on {port}: {normalized_path}");
+        let mut child = build_cmd(port, winning_args).spawn().map_err(|err| {
             format!(
                 "failed to start llama-server ('{bin}'): {err}. Ensure the binary exists and port {port} is free."
             )
@@ -510,23 +718,20 @@ impl NativeEngineClient {
         let pid = child.id();
         eprintln!("[model-load] Started llama-server with PID: {pid}");
 
-        // Store the process handle
+        let ready = rt.block_on(Self::wait_for_llama_server_ready(&base_url, 90, &mut child));
+        if let Err(e) = ready {
+            let _ = child.kill();
+            let _ = child.wait();
+            Self::free_llama_port(port);
+            return Err(e);
+        }
+
+        // Store the process handle now that it's confirmed healthy.
         let handle = Self::get_process_handle();
         if let Ok(mut guard) = handle.lock() {
             *guard = Some(child);
         }
         drop(handle);
-
-        // Wait for server to be ready (using tokio runtime)
-        let rt = tokio::runtime::Runtime::new()
-            .map_err(|e| format!("failed to create async runtime: {e}"))?;
-
-        let ready = rt.block_on(Self::wait_for_llama_server_ready(&base_url, 90));
-        if let Err(ref _e) = ready {
-            Self::stop_owned_llama_server();
-            Self::free_llama_port(port);
-        }
-        ready?;
 
         eprintln!("[model-load] Successfully loaded model: {normalized_path}");
         Ok(())
@@ -547,13 +752,23 @@ impl NativeEngineClient {
     pub fn has_running_llama_server(&self) -> bool {
         let handle = Self::get_process_handle();
         let locked = handle.lock();
-        if let Ok(guard) = locked {
-            guard.as_ref().map(|c| c.id() > 0).unwrap_or(false)
+        if let Ok(mut guard) = locked {
+            match guard.as_mut() {
+                // `try_wait` returns `Ok(None)` while the child is still
+                // alive. `Ok(Some(_))` (or an error polling it) means the
+                // process already exited (crash, OOM-kill, etc.) without
+                // anyone reaping it yet — the stale handle must not be
+                // reported as "running", or callers would believe a dead
+                // server is still serving requests.
+                Some(child) => matches!(child.try_wait(), Ok(None)),
+                None => false,
+            }
         } else {
             false
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     #[allow(clippy::too_many_arguments)]
     pub async fn generate(
         &self,
@@ -565,6 +780,10 @@ impl NativeEngineClient {
         top_k: usize,
         repeat_penalty: f32,
         native_engine: &str,
+        // See `generate_with_llama_server`'s doc comment. Ignored by the
+        // llama_cpp/simulated paths below, which have no slot concept.
+        id_slot: Option<i64>,
+        cache_prompt: bool,
     ) -> Result<NativeGeneration, String> {
         if model.trim().is_empty() {
             return Err("model cannot be empty".to_string());
@@ -595,6 +814,8 @@ impl NativeEngineClient {
                         top_p,
                         top_k,
                         repeat_penalty,
+                        id_slot,
+                        cache_prompt,
                     )
                     .await?;
                 if gen.latency_ms.is_none() {
@@ -706,6 +927,17 @@ impl NativeEngineClient {
         top_p: f32,
         top_k: usize,
         repeat_penalty: f32,
+        // Slot/context reuse: `id_slot` pins this generation to a specific
+        // llama-server slot (-1, llama-server's own "any idle slot" sentinel,
+        // when None) and `cache_prompt` lets llama-server reuse whatever KV
+        // state that slot already holds for the common prefix instead of
+        // reprocessing it — the actual fix for repeat turns in the same
+        // conversation otherwise re-evaluating the full prior transcript
+        // every call. Both are llama-server's own request parameters
+        // (confirmed current via its examples/server docs), not a Ghostlink
+        // invention.
+        id_slot: Option<i64>,
+        cache_prompt: bool,
     ) -> Result<NativeGeneration, String> {
         let base_url = Self::get_llama_base_url();
 
@@ -737,19 +969,25 @@ impl NativeEngineClient {
             "top_p": top_p.clamp(0.0, 1.0),
             "top_k": top_k.clamp(1, 200),
             "repeat_penalty": repeat_penalty.clamp(0.0, 2.0),
-            "stream": false
+            "stream": false,
+            "id_slot": id_slot.unwrap_or(-1),
+            "cache_prompt": cache_prompt
         });
 
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(timeout_secs))
-            .build()
-            .map_err(|e| format!("failed to create HTTP client: {}", e))?;
+        // Reuse the shared, connection-pooled client instead of building a new
+        // one (and a new TCP connection) per request; apply the configurable
+        // timeout per-request instead of baking it into the client so this
+        // still behaves exactly as before if GHOSTLINK_LLAMA_SERVER_TIMEOUT_SECS
+        // changes between calls.
+        let client = self.http.clone();
+        let request_timeout = Duration::from_secs(timeout_secs);
 
         // Try chat endpoint first
         let chat_response = client
             .post(&chat_url)
             .header("Content-Type", "application/json")
             .json(&chat_payload)
+            .timeout(request_timeout)
             .send()
             .await;
 
@@ -785,13 +1023,16 @@ impl NativeEngineClient {
             "top_p": top_p.clamp(0.0, 1.0),
             "top_k": top_k.clamp(1, 200),
             "repeat_penalty": repeat_penalty.clamp(0.0, 2.0),
-            "stream": false
+            "stream": false,
+            "id_slot": id_slot.unwrap_or(-1),
+            "cache_prompt": cache_prompt
         });
 
         let response = client
             .post(&completion_url)
             .header("Content-Type", "application/json")
             .json(&completion_payload)
+            .timeout(request_timeout)
             .send()
             .await
             .map_err(|e| format!("llama_server request failed: {}", e))?;
@@ -815,6 +1056,188 @@ impl NativeEngineClient {
         }
 
         Err("llama_server returned empty content".to_string())
+    }
+
+    /// Real incremental streaming against llama-server's OpenAI-compatible
+    /// chat endpoint. Unlike `generate_with_llama_server` (which always sends
+    /// `"stream": false` and returns only the complete text), this forwards
+    /// text deltas to the caller as llama-server produces them.
+    ///
+    /// Only covers the chat-completions endpoint (the common case for models
+    /// with a chat template, which is what this project's models use in
+    /// practice). If the model has no chat template (chat endpoint returns
+    /// HTTP 400), falls back to the existing non-streaming `/completion`
+    /// path and yields the whole result as a single chunk rather than
+    /// duplicating a second incremental parser for an uncommon case.
+    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
+    pub async fn generate_chat_stream(
+        &self,
+        model: &str,
+        cleaned_prompt: &str,
+        max_tokens: usize,
+        temperature: f32,
+        top_p: f32,
+        top_k: usize,
+        repeat_penalty: f32,
+        id_slot: Option<i64>,
+        cache_prompt: bool,
+    ) -> Result<NativeChatStream, String> {
+        use futures::StreamExt;
+
+        let base_url = Self::get_llama_base_url();
+        // Time to wait for llama-server to accept the request and start
+        // responding (covers prompt prefill on a cold/uncached slot), not
+        // the total generation time.
+        let connect_timeout_secs = std::env::var("GHOSTLINK_LLAMA_CONNECT_TIMEOUT_SECS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(30)
+            .clamp(5, 120);
+        // Max gap allowed between successive SSE chunks once streaming has
+        // started. This is deliberately NOT a cap on total generation time —
+        // a long answer that keeps producing tokens should never be killed
+        // just for running past a fixed wall-clock budget; only a stalled
+        // connection (no bytes at all for this long) should be.
+        let idle_timeout_secs = std::env::var("GHOSTLINK_LLAMA_SERVER_TIMEOUT_SECS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(60)
+            .clamp(5, 300);
+        let system_prompt = format!(
+            "You are a helpful assistant. Current local date and time: {}.",
+            chrono::Local::now().format("%A, %B %d, %Y, %H:%M")
+        );
+        let chat_url = format!("{base_url}/v1/chat/completions");
+        let chat_payload = serde_json::json!({
+            "model": model,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": cleaned_prompt}
+            ],
+            "max_tokens": max_tokens,
+            "temperature": temperature.clamp(0.0, 2.0),
+            "top_p": top_p.clamp(0.0, 1.0),
+            "top_k": top_k.clamp(1, 200),
+            "repeat_penalty": repeat_penalty.clamp(0.0, 2.0),
+            "stream": true,
+            "id_slot": id_slot.unwrap_or(-1),
+            "cache_prompt": cache_prompt
+        });
+
+        let client = self.http.clone();
+        let connect_timeout = Duration::from_secs(connect_timeout_secs);
+        let idle_timeout = Duration::from_secs(idle_timeout_secs);
+
+        let response = tokio::time::timeout(
+            connect_timeout,
+            client
+                .post(&chat_url)
+                .header("Content-Type", "application/json")
+                .json(&chat_payload)
+                .send(),
+        )
+        .await
+        .map_err(|_| {
+            format!(
+                "llama_server streaming request timed out after {connect_timeout_secs}s waiting for a response"
+            )
+        })?
+        .map_err(|e| format!("llama_server streaming request failed: {}", e))?;
+
+        if response.status().as_u16() == 400 {
+            // No chat template on this model: fall back to the existing
+            // non-streaming completion path and present it as one chunk.
+            let gen = self
+                .generate_with_llama_server(
+                    model,
+                    cleaned_prompt,
+                    max_tokens,
+                    temperature,
+                    top_p,
+                    top_k,
+                    repeat_penalty,
+                    id_slot,
+                    cache_prompt,
+                )
+                .await?;
+            let single = futures::stream::once(async move { Ok(gen.text) });
+            return Ok(Box::pin(single));
+        }
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            return Err(format!(
+                "llama_server streaming request failed with status {}: {}",
+                status, body
+            ));
+        }
+
+        let (tx, rx) = mpsc::channel::<Result<String, String>>(100);
+        tokio::spawn(async move {
+            let mut byte_stream = response.bytes_stream();
+            let mut buf = String::new();
+            loop {
+                let chunk = match tokio::time::timeout(idle_timeout, byte_stream.next()).await {
+                    Ok(Some(Ok(c))) => c,
+                    Ok(Some(Err(e))) => {
+                        let _ = tx.send(Err(format!("stream read error: {e}"))).await;
+                        return;
+                    }
+                    Ok(None) => return, // stream ended normally
+                    Err(_) => {
+                        let _ = tx
+                            .send(Err(format!(
+                                "stream idle timeout: no data from llama_server for {idle_timeout_secs}s"
+                            )))
+                            .await;
+                        return;
+                    }
+                };
+                buf.push_str(&String::from_utf8_lossy(&chunk));
+                while let Some(pos) = buf.find('\n') {
+                    let line = buf[..pos].trim().to_string();
+                    buf.drain(..=pos);
+                    if line.is_empty() {
+                        continue;
+                    }
+                    let payload = match line.strip_prefix("data: ") {
+                        Some(p) => p,
+                        None => continue,
+                    };
+                    if payload == "[DONE]" {
+                        return;
+                    }
+                    let data: serde_json::Value = match serde_json::from_str(payload) {
+                        Ok(v) => v,
+                        Err(_) => continue,
+                    };
+                    let delta = data
+                        .get("choices")
+                        .and_then(|c| c.get(0))
+                        .and_then(|c| c.get("delta"))
+                        .and_then(|d| d.get("content"))
+                        .and_then(|v| v.as_str());
+                    if let Some(text) = delta {
+                        if !text.is_empty() && tx.send(Ok(text.to_string())).await.is_err() {
+                            return; // receiver dropped, stop reading
+                        }
+                    }
+                    let finished = data
+                        .get("choices")
+                        .and_then(|c| c.get(0))
+                        .and_then(|c| c.get("finish_reason"))
+                        .map(|v| !v.is_null())
+                        .unwrap_or(false);
+                    if finished {
+                        return;
+                    }
+                }
+            }
+        });
+
+        Ok(Box::pin(tokio_stream::wrappers::ReceiverStream::new(rx)))
     }
 }
 
@@ -965,6 +1388,53 @@ mod tests {
     }
 
     #[test]
+    #[ignore] // requires a live llama-server; run manually with --ignored
+    fn generate_chat_stream_yields_incremental_chunks_against_live_server() {
+        use futures::StreamExt;
+        let _guard = env_lock().lock().expect("env lock poisoned");
+        std::env::set_var("GHOSTLINK_LLAMA_SERVER_URL", "http://127.0.0.1:8080");
+
+        let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+        let engine = NativeEngineClient::new();
+        rt.block_on(async {
+            let mut stream = engine
+                .generate_chat_stream(
+                    "test-model",
+                    "Count from one to five, one number per line.",
+                    64,
+                    0.7,
+                    0.9,
+                    40,
+                    1.1,
+                    None,
+                    false,
+                )
+                .await
+                .expect("stream should start");
+
+            let mut chunk_count = 0usize;
+            let mut chunk_times = Vec::new();
+            let start = std::time::Instant::now();
+            let mut full_text = String::new();
+            while let Some(item) = stream.next().await {
+                let text = item.expect("chunk should not error");
+                chunk_count += 1;
+                chunk_times.push(start.elapsed());
+                full_text.push_str(&text);
+            }
+            eprintln!("received {chunk_count} chunks over {:?}", start.elapsed());
+            eprintln!("first few chunk arrival times: {:?}", &chunk_times[..chunk_times.len().min(5)]);
+            eprintln!("accumulated text: {full_text:?}");
+            assert!(
+                chunk_count > 1,
+                "expected multiple incremental chunks, got {chunk_count} (looks like buffering, not streaming)"
+            );
+        });
+
+        std::env::remove_var("GHOSTLINK_LLAMA_SERVER_URL");
+    }
+
+    #[test]
     fn native_engine_generates_preview() {
         let _guard = env_lock().lock().expect("env lock poisoned");
         std::env::remove_var("GHOSTLINK_NATIVE_ENGINE");
@@ -984,6 +1454,8 @@ mod tests {
                         40,
                         1.1,
                         "simulated",
+                        None,
+                        false,
                     )
                     .await
             })
@@ -991,6 +1463,102 @@ mod tests {
         assert!(out.text.contains("[native:ghostlink-30b-v1]"));
         assert!(out.text.contains("token budget 128"));
         assert!(!out.real_inference);
+    }
+
+    /// Reads one HTTP/1.1 request off `stream` (headers, then the exact
+    /// `Content-Length` body bytes) and returns the body as a string. No
+    /// mocking crate — a real socket, real bytes, matching how this
+    /// project's other real-TCP tests already work (see
+    /// ghostlink-core::runtime's stage-worker round-trip test).
+    fn read_http_request_body(stream: &mut std::net::TcpStream) -> String {
+        use std::io::{BufRead, BufReader, Read};
+        let mut reader = BufReader::new(stream);
+        let mut content_length = 0usize;
+        loop {
+            let mut line = String::new();
+            reader.read_line(&mut line).expect("read header line");
+            if line == "\r\n" || line.is_empty() {
+                break;
+            }
+            if let Some(value) = line
+                .to_ascii_lowercase()
+                .strip_prefix("content-length:")
+                .map(str::trim)
+            {
+                content_length = value.parse().unwrap_or(0);
+            }
+        }
+        let mut body = vec![0u8; content_length];
+        reader.read_exact(&mut body).expect("read request body");
+        String::from_utf8(body).expect("request body should be utf8")
+    }
+
+    #[test]
+    fn generate_sends_the_requested_id_slot_and_cache_prompt_to_llama_server() {
+        let _guard = env_lock().lock().expect("env lock poisoned");
+
+        let listener =
+            std::net::TcpListener::bind("127.0.0.1:0").expect("failed to bind test listener");
+        let addr = listener.local_addr().expect("failed to read local_addr");
+
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept coordinator connection");
+            let body = read_http_request_body(&mut stream);
+            let response_body = serde_json::json!({
+                "choices": [{"message": {"content": "hello from the test server"}}]
+            })
+            .to_string();
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                response_body.len(),
+                response_body
+            );
+            use std::io::Write;
+            stream
+                .write_all(response.as_bytes())
+                .expect("write mock response");
+            body
+        });
+
+        std::env::set_var("GHOSTLINK_LLAMA_SERVER_URL", format!("http://{addr}"));
+
+        let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+        let engine = NativeEngineClient::new();
+        let out = rt
+            .block_on(async {
+                engine
+                    .generate(
+                        "test-model",
+                        "hello",
+                        32,
+                        0.7,
+                        0.9,
+                        40,
+                        1.1,
+                        "llama_server",
+                        Some(0),
+                        true,
+                    )
+                    .await
+            })
+            .expect("generation against the test server should succeed");
+        assert_eq!(out.text, "hello from the test server");
+
+        let captured_body = server.join().expect("server thread should not panic");
+        let parsed: serde_json::Value =
+            serde_json::from_str(&captured_body).expect("captured body should be valid JSON");
+        assert_eq!(
+            parsed.get("id_slot").and_then(|v| v.as_i64()),
+            Some(0),
+            "expected id_slot: 0 in the outgoing request, got: {captured_body}"
+        );
+        assert_eq!(
+            parsed.get("cache_prompt").and_then(|v| v.as_bool()),
+            Some(true),
+            "expected cache_prompt: true in the outgoing request, got: {captured_body}"
+        );
+
+        std::env::remove_var("GHOSTLINK_LLAMA_SERVER_URL");
     }
 
     #[test]
@@ -1013,6 +1581,8 @@ mod tests {
                         40,
                         1.1,
                         "llama_cpp",
+                        None,
+                        false,
                     )
                     .await
             })
@@ -1062,5 +1632,73 @@ mod tests {
         assert_eq!(NativeEngineClient::get_ngl(), 7);
         std::env::remove_var("GHOSTLINK_LLAMA_NGL");
         std::env::remove_var("GHOSTLINK_VRAM_GB");
+    }
+
+    #[test]
+    fn get_parallel_slots_defaults_to_one_when_unset() {
+        let _guard = env_lock().lock().expect("env lock poisoned");
+        std::env::remove_var("GHOSTLINK_PARALLEL_SLOTS");
+        assert_eq!(NativeEngineClient::get_parallel_slots(), 1);
+    }
+
+    #[test]
+    fn get_parallel_slots_reads_env_and_clamps_range() {
+        let _guard = env_lock().lock().expect("env lock poisoned");
+
+        std::env::set_var("GHOSTLINK_PARALLEL_SLOTS", "4");
+        assert_eq!(NativeEngineClient::get_parallel_slots(), 4);
+
+        // Clamped, not rejected: 0 would make llama-server refuse to start.
+        std::env::set_var("GHOSTLINK_PARALLEL_SLOTS", "0");
+        assert_eq!(NativeEngineClient::get_parallel_slots(), 1);
+
+        std::env::set_var("GHOSTLINK_PARALLEL_SLOTS", "9999");
+        assert_eq!(NativeEngineClient::get_parallel_slots(), 64);
+
+        // Unparseable input falls back to the safe default rather than panicking.
+        std::env::set_var("GHOSTLINK_PARALLEL_SLOTS", "not-a-number");
+        assert_eq!(NativeEngineClient::get_parallel_slots(), 1);
+
+        std::env::remove_var("GHOSTLINK_PARALLEL_SLOTS");
+    }
+
+    #[test]
+    fn has_running_llama_server_reflects_actual_process_state() {
+        let _guard = env_lock().lock().expect("env lock poisoned");
+        let engine = NativeEngineClient::new();
+
+        // Regression: `has_running_llama_server` used to only check that a
+        // `Child` handle existed (`c.id() > 0`, which is true for every real
+        // PID), so a process that already crashed/exited but hadn't been
+        // reaped yet was still reported as "running".
+        let handle = NativeEngineClient::get_process_handle();
+
+        let mut child = if cfg!(windows) {
+            std::process::Command::new("cmd")
+                .args(["/C", "exit 0"])
+                .spawn()
+        } else {
+            std::process::Command::new("true").spawn()
+        }
+        .expect("spawn short-lived helper process");
+
+        // Block until the helper process has actually exited instead of
+        // sleeping a fixed duration and hoping it's done by then. Under
+        // system load (e.g. `cargo test --workspace` running many tests
+        // concurrently) a fixed sleep isn't reliably long enough, and a
+        // panic here while holding `_guard` poisons `env_lock()` for every
+        // other test in this file that also locks it. `wait()` blocks for
+        // as long as it actually takes, so this is deterministic regardless
+        // of scheduling delays.
+        child.wait().expect("helper process should exit");
+
+        *handle.lock().expect("process handle lock poisoned") = Some(child);
+
+        assert!(
+            !engine.has_running_llama_server(),
+            "an exited process must not be reported as a running llama-server"
+        );
+
+        *handle.lock().expect("process handle lock poisoned") = None;
     }
 }

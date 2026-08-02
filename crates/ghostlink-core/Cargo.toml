@@ -9,7 +9,7 @@ documentation = "https://rwilliamspbg-ops.github.io/Ghostlink/"
 repository = "https://github.com/rwilliamspbg-ops/Ghostlink"
 readme = "../../README.md"
 license = "MIT"
-keywords = ["networking", "xdp", "zero-copy", "async", "llm", "inference"]
+keywords = ["networking", "zero-copy", "async", "llm", "inference"]
 categories = ["asynchronous", "network-programming"]
 
 [features]
@@ -49,6 +49,10 @@ arc-swap = "1"
 # Auto-tuning cache
 serde_json = "1"
 dirs-next = "2"
+
+# mDNS peer discovery — alternative to UDP broadcast for networks (VLANs,
+# cloud VPCs) that filter broadcast traffic but still carry multicast.
+mdns-sd = "0.20"
 
 [dev-dependencies]
 tempfile = "3"

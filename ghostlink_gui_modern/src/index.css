@@ -53,3 +53,63 @@ body {
 .animate-fade-in {
   animation: fadeIn 0.3s ease-in;
 }
+
+/* Hand-authored highlight.js theme using the app's semantic color tokens
+   (see tailwind.config.js) instead of pulling in a full hljs theme package —
+   keeps the chat code blocks visually consistent with the rest of the UI. */
+.hljs {
+  color: #cbd5e1;
+  background: transparent;
+}
+.hljs-comment,
+.hljs-quote {
+  color: #64748b;
+  font-style: italic;
+}
+.hljs-keyword,
+.hljs-selector-tag,
+.hljs-literal,
+.hljs-doctag {
+  color: #c084fc;
+}
+.hljs-string,
+.hljs-regexp,
+.hljs-addition {
+  color: #4ade80;
+}
+.hljs-number {
+  color: #fb923c;
+}
+.hljs-title,
+.hljs-section,
+.hljs-name,
+.hljs-selector-id,
+.hljs-selector-class {
+  color: #22d3ee;
+}
+.hljs-attr,
+.hljs-attribute,
+.hljs-variable,
+.hljs-template-variable {
+  color: #60a5fa;
+}
+.hljs-type,
+.hljs-class .hljs-title {
+  color: #22d3ee;
+}
+.hljs-symbol,
+.hljs-bullet,
+.hljs-built_in,
+.hljs-builtin-name,
+.hljs-link {
+  color: #f472b6;
+}
+.hljs-deletion {
+  color: #f87171;
+}
+.hljs-emphasis {
+  font-style: italic;
+}
+.hljs-strong {
+  font-weight: 700;
+}

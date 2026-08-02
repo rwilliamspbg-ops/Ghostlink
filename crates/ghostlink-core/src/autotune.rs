@@ -78,11 +78,22 @@ impl AutoTuner {
     /// Load a previously cached `AutoTuner` if the hardware fingerprint matches.
     /// Checks the in-memory cache first, then falls back to disk.
     pub fn load_cache() -> Option<Self> {
+        // Current fingerprint is needed to validate either cache — compute it
+        // once up front rather than only on the disk path. The in-memory fast
+        // path previously returned whatever was cached with no fingerprint
+        // check at all (unlike from_system_profile() and the disk path below),
+        // so a hardware change mid-process (GPU hot-plug/unplug, VRAM change)
+        // kept serving stale tuning forever from the in-memory cache.
+        let current = SystemProfile::detect_fast();
+        let current_fp = compute_fingerprint(&current);
+
         // Fast path: in-memory cache hit
         {
             let cache = TUNE_CACHE.lock().unwrap();
             if let Some(cached) = cache.as_ref() {
-                return Some(cached.clone());
+                if cached.fingerprint == current_fp {
+                    return Some(cached.clone());
+                }
             }
         }
 
@@ -91,8 +102,7 @@ impl AutoTuner {
         let data = fs::read_to_string(&path).ok()?;
         let cached: AutoTuner = serde_json::from_str(&data).ok()?;
 
-        let current = SystemProfile::detect_fast();
-        if cached.fingerprint != compute_fingerprint(&current) {
+        if cached.fingerprint != current_fp {
             return None;
         }
 
@@ -381,6 +391,28 @@ mod tests {
         // In a real scenario, load_cache would reject this due to fingerprint mismatch
         let restored: AutoTuner = serde_json::from_str(&json).unwrap();
         assert_eq!(restored.fingerprint, 0);
+    }
+
+    #[test]
+    fn load_cache_rejects_stale_in_memory_fingerprint() {
+        // Regression: load_cache()'s in-memory fast path used to return
+        // whatever was cached with no fingerprint check at all (unlike
+        // from_system_profile() and this same function's disk-fallback
+        // path). Force a stale, guaranteed-wrong fingerprint directly into
+        // the in-memory cache and confirm it's no longer blindly returned.
+        {
+            let mut cache = TUNE_CACHE.lock().unwrap();
+            let mut stale = tune(&SystemProfile::detect_fast());
+            stale.fingerprint = 0; // a real fingerprint is a hash of many fields; 0 is not realistically achievable
+            *cache = Some(stale);
+        }
+        if let Some(tuner) = AutoTuner::load_cache() {
+            assert_ne!(
+                tuner.fingerprint, 0,
+                "load_cache() returned the stale in-memory entry instead of rejecting it"
+            );
+        }
+        // None is also a valid outcome here (no matching on-disk cache either).
     }
 
     #[test]

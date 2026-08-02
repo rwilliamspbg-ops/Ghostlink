@@ -1,0 +1,15 @@
+[package]
+name = "mcp-calculator"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Local stdio MCP server exposing a safe expression-evaluator 'calculate' tool for Ghostlink chat's calculator tool slot."
+
+[dependencies]
+rmcp = { version = "2", features = ["transport-io", "schemars"] }
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+evalexpr = "13"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+anyhow = "1"

@@ -232,6 +232,8 @@ pub struct ClusterState {
     last_update: Arc<AtomicU64>,
     /// Cached total VRAM across all registered nodes
     total_vram_cache: Arc<AtomicU64>,
+    /// Cached total system memory across all registered nodes
+    total_system_memory_cache: Arc<AtomicU64>,
 }
 
 impl Clone for ClusterState {
@@ -243,6 +245,7 @@ impl Clone for ClusterState {
             metrics: Arc::clone(&self.metrics),
             last_update: Arc::clone(&self.last_update),
             total_vram_cache: Arc::clone(&self.total_vram_cache),
+            total_system_memory_cache: Arc::clone(&self.total_system_memory_cache),
         }
     }
 }
@@ -263,6 +266,7 @@ impl ClusterState {
             metrics: Arc::new(Mutex::new(HashMap::new())),
             last_update: Arc::new(AtomicU64::new(0)),
             total_vram_cache: Arc::new(AtomicU64::new(0.0_f64.to_bits())),
+            total_system_memory_cache: Arc::new(AtomicU64::new(0.0_f64.to_bits())),
         }
     }
 
@@ -287,14 +291,23 @@ impl ClusterState {
         let vram_gb = node.vram_gb;
         let system_memory_gb = node.system_memory_gb;
         let compute_capability = node.compute_capability.clone();
+        let rpc_port = node.rpc_port;
         let mut vram_delta = vram_gb;
+        let mut system_memory_delta = system_memory_gb;
 
         if let Some(existing) = nodes.get_mut(&id) {
             vram_delta = vram_gb - existing.vram_gb;
+            system_memory_delta = system_memory_gb - existing.system_memory_gb;
             existing.vram_gb = vram_gb;
             existing.system_memory_gb = system_memory_gb;
             existing.compute_capability = compute_capability.clone();
             existing.gpu_name = gpu_name.clone();
+            // Keeps a node's advertised RPC-contribution port in sync across
+            // re-registrations (e.g. the operator toggles compute
+            // contribution on/off and the next discovery broadcast/mDNS
+            // resolve should reflect that) — previously only set on first
+            // registration, so it could go stale for the life of the process.
+            existing.rpc_port = rpc_port;
         } else {
             nodes.insert(id.clone(), node);
         }
@@ -328,6 +341,13 @@ impl ClusterState {
         let current_total_vram = f64::from_bits(self.total_vram_cache.load(Ordering::Acquire));
         self.total_vram_cache.store(
             (current_total_vram + vram_delta as f64).to_bits(),
+            Ordering::Release,
+        );
+
+        let current_total_system_mem =
+            f64::from_bits(self.total_system_memory_cache.load(Ordering::Acquire));
+        self.total_system_memory_cache.store(
+            (current_total_system_mem + system_memory_delta as f64).to_bits(),
             Ordering::Release,
         );
 
@@ -432,6 +452,18 @@ impl ClusterState {
             .collect()
     }
 
+    /// Get the count of active nodes without cloning metrics
+    pub fn active_nodes_count(&self) -> usize {
+        let metrics = self
+            .metrics
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        metrics
+            .values()
+            .filter(|m| m.status == NodeStatus::Active)
+            .count()
+    }
+
     /// Get total cluster VRAM
     pub fn total_vram_gb(&self) -> f32 {
         f64::from_bits(self.total_vram_cache.load(Ordering::Acquire)) as f32
@@ -439,11 +471,7 @@ impl ClusterState {
 
     /// Get total system memory
     pub fn total_system_memory_gb(&self) -> f32 {
-        let nodes = self
-            .nodes
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner());
-        nodes.values().map(|n| n.system_memory_gb).sum()
+        f64::from_bits(self.total_system_memory_cache.load(Ordering::Acquire)) as f32
     }
 }
 
@@ -491,7 +519,7 @@ impl ClusterHealthMonitor {
 
     /// Get health report
     pub fn health_report(&self) -> String {
-        let active_count = self.cluster.active_nodes().len();
+        let active_count = self.cluster.active_nodes_count();
         let total_nodes = self.cluster.nodes_snapshot().len();
 
         format!(

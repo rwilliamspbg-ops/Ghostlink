@@ -16,6 +16,8 @@ function createMockApi() {
         top_k: 40,
         repeat_penalty: 1.1,
         max_tokens: 1024,
+        conversation_token_limit: 3072,
+        parallel_slots: 1,
         chat_exec_tokens: 512,
         chat_micro_batch: 4,
         tcp_max_inflight: 64,
@@ -159,8 +161,8 @@ describe('SettingsTab', () => {
       expect(screen.getByText('cpu')).toBeInTheDocument();
     });
 
-    // Click the cpu backend button (which has the backend name in its accessible name)
-    fireEvent.click(screen.getByRole('button', { name: /cpu/i }));
+    // Click the cpu backend option (radiogroup entry; has the backend name in its accessible name)
+    fireEvent.click(screen.getByRole('radio', { name: /cpu/i }));
 
     await waitFor(() => {
       expect(api.switchBackend).toHaveBeenCalledWith('cpu');

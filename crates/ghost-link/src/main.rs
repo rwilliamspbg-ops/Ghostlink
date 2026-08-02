@@ -2154,6 +2154,8 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                     40,
                     1.1,
                     &settings.native_engine,
+                    None,
+                    false,
                 )
                 .await
             {
@@ -2643,7 +2645,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             };
 
             let result = tokio::task::spawn_blocking(move || {
-                native_engine_client.load_model_into_slot(&path)
+                native_engine_client.load_model_into_slot(&path, None, None)
             })
             .await
             .map_err(|e| format!("task join error: {}", e))
@@ -2657,7 +2659,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         } else if let Some(path) = local_path.clone() {
             if native_engine == "llama_server" || native_engine == "llama-server" {
                 let result = tokio::task::spawn_blocking(move || {
-                    native_engine_client.load_model_into_slot(&path)
+                    native_engine_client.load_model_into_slot(&path, None, None)
                 })
                 .await
                 .map_err(|e| format!("task join error: {}", e))
@@ -3651,6 +3653,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                 Some(ollama::ChatMessage {
                     role: role.to_string(),
                     content: content.to_string(),
+                    tool_calls: None,
                 })
             })
             .collect::<Vec<_>>();
@@ -3673,6 +3676,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                 req.top_k,
                 req.repeat_penalty,
                 req.max_tokens,
+                None,
             )
             .await
         {
@@ -3851,6 +3855,8 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                         top_k,
                         penalty,
                         &settings.native_engine,
+                        None,
+                        false,
                     )
                     .await
                 {

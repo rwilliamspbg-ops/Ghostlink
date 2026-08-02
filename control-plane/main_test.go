@@ -6,80 +6,16 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"strings"
 	"testing"
 	"time"
-
-	"github.com/rwilliamspbg-ops/Ghostlink/control-plane/pkg/registry"
 )
 
-func setupTestServer(authToken string) (*registry.Registry, *http.ServeMux) {
-	reg := registry.NewRegistry()
-	mux := http.NewServeMux()
-	withAuth := func(next http.HandlerFunc) http.HandlerFunc {
-		return func(w http.ResponseWriter, r *http.Request) {
-			if !requireControlPlaneAuth(w, r, authToken) {
-				return
-			}
-			next(w, r)
-		}
-	}
-
-	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]any{
-			"status":  "ok",
-			"workers": reg.Summary(),
-			"auth_required": authToken != "",
-		})
-	})
-
-	mux.HandleFunc("/api/workers", withAuth(func(w http.ResponseWriter, r *http.Request) {
-		switch r.Method {
-		case http.MethodGet:
-			workers := reg.List()
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(map[string]any{"workers": workers})
-		case http.MethodPost:
-			var worker registry.Worker
-			if err := json.NewDecoder(r.Body).Decode(&worker); err != nil {
-				http.Error(w, "invalid request body", http.StatusBadRequest)
-				return
-			}
-			reg.Register(&worker)
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(map[string]string{"status": "ok", "id": worker.ID})
-		}
-	}))
-
-	mux.HandleFunc("/api/workers/", withAuth(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodDelete {
-			w.WriteHeader(http.StatusMethodNotAllowed)
-			return
-		}
-		id := strings.TrimPrefix(r.URL.Path, "/api/workers/")
-		if id == "" || strings.Contains(id, "/") {
-			http.Error(w, "worker id required", http.StatusBadRequest)
-			return
-		}
-		if reg.Deregister(id) {
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(map[string]string{"status": "ok", "id": id})
-			return
-		}
-		w.WriteHeader(http.StatusNotFound)
-		json.NewEncoder(w).Encode(map[string]string{"error": "worker not found"})
-	}))
-
-	return reg, mux
-}
-
 func TestHealthEndpoint(t *testing.T) {
-	_, mux := setupTestServer("")
+	handler := buildHandler("http://127.0.0.1:19999", 1000, time.Second, "")
 
 	req := httptest.NewRequest("GET", "/health", nil)
 	w := httptest.NewRecorder()
-	mux.ServeHTTP(w, req)
+	handler.ServeHTTP(w, req)
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", w.Code)
@@ -89,125 +25,171 @@ func TestHealthEndpoint(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("invalid JSON response: %v", err)
 	}
-
 	if resp["status"] != "ok" {
 		t.Errorf("expected status=ok, got %v", resp["status"])
+	}
+	if resp["backend"] != "http://127.0.0.1:19999" {
+		t.Errorf("expected backend to be reported, got %v", resp["backend"])
 	}
 	if resp["auth_required"] != false {
 		t.Errorf("expected auth_required=false, got %v", resp["auth_required"])
 	}
 }
 
-func TestWorkerRegisterAndList(t *testing.T) {
-	reg, mux := setupTestServer("")
+func TestHealthRejectsPost(t *testing.T) {
+	handler := buildHandler("http://127.0.0.1:19999", 1000, time.Second, "")
 
-	worker := registry.Worker{
-		ID:       "test-node-1",
-		Hostname: "test-host",
-		Port:     8080,
-		VRAMGB:   16.0,
-	}
-	body, _ := json.Marshal(worker)
-
-	req := httptest.NewRequest("POST", "/api/workers", bytes.NewReader(body))
+	req := httptest.NewRequest("POST", "/health", nil)
 	w := httptest.NewRecorder()
-	mux.ServeHTTP(w, req)
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("expected 405, got %d", w.Code)
+	}
+}
+
+func TestWorkersProxiesToBackend(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/workers" {
+			t.Errorf("expected backend to receive /api/workers, got %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"workers":[{"id":"real-node-1"}]}`))
+	}))
+	defer backend.Close()
+
+	handler := buildHandler(backend.URL, 1000, time.Second, "")
+
+	req := httptest.NewRequest("GET", "/api/workers", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
 
 	if w.Code != http.StatusOK {
-		t.Fatalf("register: expected 200, got %d", w.Code)
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("invalid JSON response: %v", err)
+	}
+	workers, ok := resp["workers"].([]any)
+	if !ok || len(workers) != 1 {
+		t.Fatalf("expected the backend's real worker list to pass through, got %v", resp)
+	}
+}
+
+func TestCORSHeaders(t *testing.T) {
+	handler := buildHandler("http://127.0.0.1:19999", 1000, time.Second, "")
+
+	req := httptest.NewRequest("OPTIONS", "/api/models", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("expected 204 for OPTIONS preflight, got %d", w.Code)
+	}
+	if got := w.Header().Get("Access-Control-Allow-Origin"); got != "*" {
+		t.Errorf("expected permissive CORS origin, got %q", got)
+	}
+}
+
+func TestRateLimitingBlocksExcessRequests(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer backend.Close()
+
+	handler := buildHandler(backend.URL, 2, time.Minute, "")
+
+	makeReq := func() int {
+		req := httptest.NewRequest("GET", "/health", nil)
+		req.RemoteAddr = "10.0.0.1:1234"
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, req)
+		return w.Code
 	}
 
-	workers := reg.List()
-	if len(workers) != 1 {
-		t.Fatalf("expected 1 worker, got %d", len(workers))
+	if code := makeReq(); code != http.StatusOK {
+		t.Fatalf("request 1: expected 200, got %d", code)
 	}
-	if workers[0].ID != "test-node-1" {
-		t.Errorf("expected worker ID test-node-1, got %s", workers[0].ID)
+	if code := makeReq(); code != http.StatusOK {
+		t.Fatalf("request 2: expected 200, got %d", code)
 	}
+	if code := makeReq(); code != http.StatusTooManyRequests {
+		t.Fatalf("request 3: expected 429 (over limit), got %d", code)
+	}
+}
 
-	req = httptest.NewRequest("GET", "/api/workers", nil)
-	w = httptest.NewRecorder()
-	mux.ServeHTTP(w, req)
+func TestRateLimitingIsolatesByClient(t *testing.T) {
+	handler := buildHandler("http://127.0.0.1:19999", 1, time.Minute, "")
+
+	req1 := httptest.NewRequest("GET", "/health", nil)
+	req1.RemoteAddr = "10.0.0.1:1111"
+	w1 := httptest.NewRecorder()
+	handler.ServeHTTP(w1, req1)
+
+	req2 := httptest.NewRequest("GET", "/health", nil)
+	req2.RemoteAddr = "10.0.0.2:2222"
+	w2 := httptest.NewRecorder()
+	handler.ServeHTTP(w2, req2)
+
+	if w1.Code != http.StatusOK || w2.Code != http.StatusOK {
+		t.Fatalf("distinct clients should each get their own limit: client1=%d client2=%d", w1.Code, w2.Code)
+	}
+}
+
+func TestStreamingResponsesAreFlushed(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			t.Fatal("test backend's ResponseWriter must support flushing")
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("data: {\"token\":\"hel\"}\n\n"))
+		flusher.Flush()
+		_, _ = w.Write([]byte("data: {\"token\":\"lo\"}\n\n"))
+		flusher.Flush()
+	}))
+	defer backend.Close()
+
+	handler := buildHandler(backend.URL, 1000, time.Second, "")
+
+	req := httptest.NewRequest("POST", "/api/inference/chat", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
 
 	if w.Code != http.StatusOK {
-		t.Fatalf("list: expected 200, got %d", w.Code)
+		t.Fatalf("expected 200, got %d", w.Code)
 	}
-}
-
-func TestWorkerHeartbeat(t *testing.T) {
-	reg, _ := setupTestServer("")
-
-	reg.Register(&registry.Worker{ID: "node-hb", Hostname: "hb-host", Port: 9000})
-
-	ok := reg.Heartbeat("node-hb", 45.0, 60.0, 80.0)
-	if !ok {
-		t.Fatal("heartbeat should succeed for registered worker")
+	if !w.Flushed {
+		t.Fatal("proxy must flush the response writer for streaming bodies, but Flushed is false")
 	}
-
-	ok = reg.Heartbeat("nonexistent", 0, 0, 0)
-	if ok {
-		t.Fatal("heartbeat should fail for unregistered worker")
-	}
-}
-
-func TestWorkerDeregister(t *testing.T) {
-	reg, _ := setupTestServer("")
-
-	reg.Register(&registry.Worker{ID: "node-dr", Hostname: "dr-host", Port: 9000})
-
-	ok := reg.Deregister("node-dr")
-	if !ok {
-		t.Fatal("deregister should succeed for registered worker")
-	}
-
-	workers := reg.List()
-	if len(workers) != 0 {
-		t.Fatalf("expected 0 workers after deregister, got %d", len(workers))
-	}
-
-	ok = reg.Deregister("nonexistent")
-	if ok {
-		t.Fatal("deregister should fail for unregistered worker")
-	}
-}
-
-func TestWorkerCleanup(t *testing.T) {
-	reg, _ := setupTestServer("")
-
-	reg.Register(&registry.Worker{ID: "node-old", Hostname: "old-host", Port: 9000})
-
-	time.Sleep(10 * time.Millisecond)
-	reg.Cleanup(5 * time.Millisecond)
-
-	workers := reg.List()
-	if len(workers) != 0 {
-		t.Fatalf("expected 0 workers after cleanup, got %d", len(workers))
-	}
-}
-
-func TestRegistrySummary(t *testing.T) {
-	reg, _ := setupTestServer("")
-
-	reg.Register(&registry.Worker{ID: "n1", Hostname: "h1", Port: 9000})
-	reg.Register(&registry.Worker{ID: "n2", Hostname: "h2", Port: 9001})
-
-	summary := reg.Summary()
-	if summary["total"] != 2 {
-		t.Errorf("expected total=2, got %d", summary["total"])
-	}
-	if summary["online"] != 2 {
-		t.Errorf("expected online=2, got %d", summary["online"])
+	if w.Body.String() == "" {
+		t.Fatal("expected streamed body content to reach the client")
 	}
 }
 
 func TestControlPlaneMutationsRequireBearerToken(t *testing.T) {
 	const token = "test-control-plane-token"
-	_, mux := setupTestServer(token)
+	if err := os.Setenv("GHOSTLINK_CONTROL_PLANE_AUTH_TOKEN", token); err != nil {
+		t.Fatalf("set env: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.Unsetenv("GHOSTLINK_CONTROL_PLANE_AUTH_TOKEN")
+	})
 
-	body, _ := json.Marshal(registry.Worker{ID: "secured-node", Hostname: "secure-host", Port: 9000})
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer backend.Close()
+
+	handler := buildHandler(backend.URL, 1000, time.Second, "")
+
+	body := []byte(`{"id":"secured-node"}`)
 	createReq := httptest.NewRequest("POST", "/api/workers", bytes.NewReader(body))
 	createResp := httptest.NewRecorder()
-	mux.ServeHTTP(createResp, createReq)
+	handler.ServeHTTP(createResp, createReq)
 	if createResp.Code != http.StatusUnauthorized {
 		t.Fatalf("expected unauthenticated POST to be rejected, got %d", createResp.Code)
 	}
@@ -215,28 +197,28 @@ func TestControlPlaneMutationsRequireBearerToken(t *testing.T) {
 	createReq = httptest.NewRequest("POST", "/api/workers", bytes.NewReader(body))
 	createReq.Header.Set("Authorization", "Bearer "+token)
 	createResp = httptest.NewRecorder()
-	mux.ServeHTTP(createResp, createReq)
+	handler.ServeHTTP(createResp, createReq)
 	if createResp.Code != http.StatusOK {
 		t.Fatalf("expected authenticated POST to succeed, got %d", createResp.Code)
 	}
 
 	listReq := httptest.NewRequest("GET", "/api/workers", nil)
 	listResp := httptest.NewRecorder()
-	mux.ServeHTTP(listResp, listReq)
+	handler.ServeHTTP(listResp, listReq)
 	if listResp.Code != http.StatusUnauthorized {
 		t.Fatalf("expected unauthenticated GET to be rejected, got %d", listResp.Code)
 	}
 
 	deleteReq := httptest.NewRequest("DELETE", "/api/workers/secured-node", nil)
 	deleteResp := httptest.NewRecorder()
-	mux.ServeHTTP(deleteResp, deleteReq)
+	handler.ServeHTTP(deleteResp, deleteReq)
 	if deleteResp.Code != http.StatusUnauthorized {
 		t.Fatalf("expected unauthenticated DELETE to be rejected, got %d", deleteResp.Code)
 	}
 
 	healthReq := httptest.NewRequest("GET", "/health", nil)
 	healthResp := httptest.NewRecorder()
-	mux.ServeHTTP(healthResp, healthReq)
+	handler.ServeHTTP(healthResp, healthReq)
 	if healthResp.Code != http.StatusOK {
 		t.Fatalf("expected health endpoint to stay open, got %d", healthResp.Code)
 	}

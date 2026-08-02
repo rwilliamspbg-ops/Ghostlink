@@ -1,40 +1,20 @@
 import { useState, useEffect } from 'react';
-import {
-  MessageSquare,
-  Database,
-  BarChart3,
-  Clock,
-  Network,
-  Shield,
-  Plus,
-  Settings,
-  ChevronRight,
-  Menu,
-  Cpu,
-  Zap,
-  Wifi,
-} from 'lucide-react';
+import { Plus, ChevronRight, Menu, Cpu, Zap, Wifi } from 'lucide-react';
 import { useAppStore } from './store';
 import { GhostlinkAPI } from './api';
 import { ChatTab } from './components/ChatTab';
+import { EditorTab } from './components/EditorTab';
 import { ModelsTab } from './components/ModelsTab';
 import { MetricsTab } from './components/MetricsTab';
 import { SessionsTab } from './components/SessionsTab';
 import { WorkersTab } from './components/WorkersTab';
 import { SecurityTab } from './components/SecurityTab';
 import { SettingsTab } from './components/SettingsTab';
+import { McpTab } from './components/McpTab';
 import { ErrorBoundary, OfflineBanner, useOnlineStatus } from './components/ErrorBoundary';
+import { CommandPalette, NAV_TABS } from './components/CommandPalette';
+import { Toaster } from './components/Toaster';
 import { resolveApiBase } from './config';
-
-const tabs = [
-  { label: 'Chat', icon: MessageSquare, id: 0 },
-  { label: 'Models', icon: Database, id: 1 },
-  { label: 'Metrics', icon: BarChart3, id: 2 },
-  { label: 'Sessions', icon: Clock, id: 3 },
-  { label: 'Workers', icon: Network, id: 4 },
-  { label: 'Security', icon: Shield, id: 5 },
-  { label: 'Settings', icon: Settings, id: 6 },
-];
 
 const LOADING_STEPS = [
   'Connecting to backend...',
@@ -126,9 +106,19 @@ function SplashScreen() {
 }
 
 function App() {
-  const { currentModel, activeTab, setActiveTab, setModels, setApiBase, setMetrics, setWorkers, setSessions, setBackendOnline } = useAppStore();
+  const { currentModel, activeTab, setActiveTab, setModels, setApiBase, setMetrics, setWorkers, setSessions, setBackendOnline, setChatMessages } = useAppStore();
   const [api, setApi] = useState<GhostlinkAPI | null>(null);
-  const [sidebarOpen, setSidebarOpen] = useState(true);
+  // Starts collapsed on phone-width viewports — at 375px a permanently
+  // open 256px sidebar left only ~119px for actual content, which is
+  // unusable. Below `md` the sidebar renders as a fixed overlay (see
+  // className below) rather than pushing content, so opening it on mobile
+  // never squeezes the tab content again.
+  const [sidebarOpen, setSidebarOpen] = useState(() =>
+    typeof window === 'undefined' ? true : window.innerWidth >= 768
+  );
+  const closeSidebarOnMobile = () => {
+    if (window.innerWidth < 768) setSidebarOpen(false);
+  };
   const isOnline = useOnlineStatus();
 
   // CRITICAL FIX: Initialize API base on app load
@@ -151,6 +141,9 @@ function App() {
       const result = await api.getModels();
       if (!result.error) {
         setModels(result.models);
+        if (result.current_model && result.current_model !== 'none' && useAppStore.getState().currentModel === 'none') {
+          useAppStore.getState().setCurrentModel(result.current_model);
+        }
       }
     };
 
@@ -226,6 +219,10 @@ function App() {
         return <SecurityTab api={api} />;
       case 6:
         return <SettingsTab api={api} />;
+      case 7:
+        return <McpTab api={api} />;
+      case 8:
+        return <EditorTab api={api} />;
       default:
         return null;
     }
@@ -235,10 +232,20 @@ function App() {
     <ErrorBoundary>
       <div className="flex h-screen bg-slate-950 text-slate-100 font-sans overflow-hidden relative">
         <OfflineBanner isOnline={isOnline} />
+        <CommandPalette />
+        <Toaster />
+        {/* Backdrop — mobile-only, closes the sidebar overlay on tap outside it */}
+        {sidebarOpen && (
+          <div
+            className="fixed inset-0 bg-black/50 z-30 md:hidden"
+            onClick={() => setSidebarOpen(false)}
+            aria-hidden="true"
+          />
+        )}
         {/* Sidebar */}
       <div
         className={`${
-          sidebarOpen ? 'w-64' : 'w-0'
+          sidebarOpen ? 'w-64 max-md:fixed max-md:inset-y-0 max-md:left-0 max-md:z-40 max-md:shadow-2xl' : 'w-0'
         } transition-all duration-300 bg-slate-900 border-r border-slate-800 flex flex-col overflow-hidden relative`}
       >
         <div className="p-4 flex flex-col h-full">
@@ -248,30 +255,39 @@ function App() {
           </div>
 
           <button
-            onClick={() => setActiveTab(0)}
+            onClick={() => {
+              const messages = useAppStore.getState().chatMessages;
+              if (messages.length === 0 || window.confirm('Are you sure you want to clear the current chat? This will permanently delete your active conversation.')) {
+                setChatMessages([]);
+                setActiveTab(0);
+                closeSidebarOnMobile();
+              }
+            }}
             className="flex items-center justify-between w-full p-3 bg-slate-800 hover:bg-slate-700 rounded-xl transition mb-6 group"
           >
             <div className="flex items-center gap-3">
-              <Plus size={18} className="text-slate-400 group-hover:text-white" />
+              <Plus size={18} className="text-slate-400 group-hover:text-white" aria-hidden="true" />
               <span className="text-sm font-medium">New Chat</span>
             </div>
-            <div className="text-[10px] text-slate-500 bg-slate-950 px-1.5 py-0.5 rounded border border-slate-700">Ctrl K</div>
+            <div className="text-[10px] text-slate-500 bg-slate-950 px-1.5 py-0.5 rounded border border-slate-700" title="Open the command palette">Ctrl K</div>
           </button>
 
-          <nav className="flex-1 space-y-1">
-            {tabs.map((tab) => {
+          <nav className="flex-1 space-y-1" aria-label="Primary">
+            {NAV_TABS.map((tab) => {
               const Icon = tab.icon;
+              const isActive = activeTab === tab.id;
               return (
                 <button
                   key={tab.id}
-                  onClick={() => setActiveTab(tab.id)}
+                  onClick={() => { setActiveTab(tab.id); closeSidebarOnMobile(); }}
+                  aria-current={isActive ? 'page' : undefined}
                   className={`flex items-center gap-3 w-full px-3 py-2.5 rounded-xl transition text-sm font-medium ${
-                    activeTab === tab.id
+                    isActive
                       ? 'bg-blue-600/10 text-blue-400'
                       : 'text-slate-400 hover:bg-slate-800 hover:text-slate-200'
                   }`}
                 >
-                  <Icon size={18} />
+                  <Icon size={18} aria-hidden="true" />
                   <span>{tab.label}</span>
                 </button>
               );
@@ -299,18 +315,20 @@ function App() {
         {!sidebarOpen && (
             <button
                 onClick={() => setSidebarOpen(true)}
+                aria-label="Open sidebar"
                 className="absolute left-4 top-4 z-10 p-2 bg-slate-900 border border-slate-800 rounded-lg text-slate-400 hover:text-white transition"
             >
-                <Menu size={20} />
+                <Menu size={20} aria-hidden="true" />
             </button>
         )}
 
         {sidebarOpen && (
             <button
                 onClick={() => setSidebarOpen(false)}
-                className="absolute left-[-12px] top-1/2 -translate_y-1/2 z-20 p-1 bg-slate-800 border border-slate-700 rounded-full text-slate-500 hover:text-white transition"
+                aria-label="Collapse sidebar"
+                className="absolute left-[-12px] top-1/2 -translate-y-1/2 z-20 p-1 bg-slate-800 border border-slate-700 rounded-full text-slate-500 hover:text-white transition"
             >
-                <ChevronRight size={16} className="rotate-180" />
+                <ChevronRight size={16} className="rotate-180" aria-hidden="true" />
             </button>
         )}
 

@@ -49,6 +49,11 @@ pub struct OllamaModelsResponse {
 pub struct ChatMessage {
     pub role: String,
     pub content: String,
+    /// Only ever populated by Ollama on an incoming response (when the model
+    /// natively supports tool-calling and decides to call one) — never set on
+    /// an outgoing message we build ourselves.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_calls: Option<Vec<Value>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -59,6 +64,11 @@ pub struct ChatRequest {
     pub stream: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub options: Option<OllamaOptions>,
+    /// OpenAI-style function-tool definitions:
+    /// `{"type": "function", "function": {"name", "description", "parameters"}}`.
+    /// Only sent to models that declare tool-calling support in their template.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tools: Option<Vec<Value>>,
 }
 
 /// Sampling parameters accepted by Ollama's `/api/generate` and `/api/chat`
@@ -288,6 +298,23 @@ impl OllamaClient {
             .send()
             .await?;
 
+        // Without this check, an HTTP error response (model not found, bad
+        // request, etc.) flows into `stream_response`, which only forwards
+        // lines that parse as `{"response": ..., "done": ...}`. An error
+        // body like `{"error": "..."}` matches neither shape, so it was
+        // silently dropped and the caller got back an empty-but-Ok stream
+        // instead of any indication the request failed.
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp
+                .text()
+                .await
+                .unwrap_or_else(|_| "<unreadable body>".to_string());
+            return Err(Box::new(io::Error::other(format!(
+                "Ollama generate failed: HTTP {status} - {body}"
+            ))));
+        }
+
         let stream = Box::pin(tokio_stream::wrappers::ReceiverStream::new(
             Self::stream_response(resp).await?,
         ));
@@ -300,26 +327,46 @@ impl OllamaClient {
     ) -> Result<mpsc::Receiver<Result<String, Box<dyn Error + Send + Sync>>>, Box<dyn Error>> {
         let (tx, rx) = mpsc::channel(100);
 
-        let body = resp.bytes().await?;
-
+        // Process the response as it arrives over the wire (`bytes_stream()`)
+        // instead of `bytes().await` (which buffers the *entire* body before
+        // returning). The previous version only faked streaming downstream of
+        // this call — Ghostlink itself still waited for Ollama's whole
+        // response before relaying anything, defeating the actual purpose of
+        // streaming (reducing time-to-first-token).
         tokio::spawn(async move {
-            let text = String::from_utf8_lossy(&body);
-            for line in text.lines() {
-                if let Some(json_str) = line.strip_prefix("data: ") {
+            use futures::StreamExt;
+            let mut byte_stream = resp.bytes_stream();
+            let mut buf = String::new();
+            while let Some(chunk) = byte_stream.next().await {
+                let chunk = match chunk {
+                    Ok(c) => c,
+                    Err(e) => {
+                        let _ = tx
+                            .send(Err(Box::new(e) as Box<dyn Error + Send + Sync>))
+                            .await;
+                        return;
+                    }
+                };
+                buf.push_str(&String::from_utf8_lossy(&chunk));
+                // A network chunk boundary rarely lines up with a JSON-line
+                // boundary; only consume complete lines, keep any trailing
+                // partial line buffered for the next chunk.
+                while let Some(pos) = buf.find('\n') {
+                    let line = buf[..pos].trim().to_string();
+                    buf.drain(..=pos);
+                    if line.is_empty() {
+                        continue;
+                    }
+                    let json_str = line.strip_prefix("data: ").unwrap_or(&line);
                     if let Ok(data) = serde_json::from_str::<Value>(json_str) {
                         if let Some(response) = data.get("response").and_then(|v| v.as_str()) {
-                            let _ = tx.send(Ok(response.to_string())).await;
+                            if tx.send(Ok(response.to_string())).await.is_err() {
+                                return; // receiver dropped, stop reading
+                            }
                         }
                         if data.get("done").and_then(|v| v.as_bool()).unwrap_or(false) {
                             return;
                         }
-                    }
-                } else if let Ok(data) = serde_json::from_str::<Value>(line) {
-                    if let Some(response) = data.get("response").and_then(|v| v.as_str()) {
-                        let _ = tx.send(Ok(response.to_string())).await;
-                    }
-                    if data.get("done").and_then(|v| v.as_bool()).unwrap_or(false) {
-                        return;
                     }
                 }
             }
@@ -330,6 +377,7 @@ impl OllamaClient {
 
     /// Chat with Ollama (non-streaming)
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     pub async fn chat(
         &self,
         model: &str,
@@ -339,6 +387,7 @@ impl OllamaClient {
         top_k: Option<usize>,
         repeat_penalty: Option<f32>,
         max_tokens: Option<usize>,
+        tools: Option<Vec<Value>>,
     ) -> Result<ChatResponse, Box<dyn Error>> {
         let request = ChatRequest {
             model: model.to_string(),
@@ -351,6 +400,7 @@ impl OllamaClient {
                 repeat_penalty,
                 num_predict: max_tokens,
             }),
+            tools,
         };
 
         let resp = self
@@ -359,6 +409,17 @@ impl OllamaClient {
             .json(&request)
             .send()
             .await?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp
+                .text()
+                .await
+                .unwrap_or_else(|_| "<unreadable body>".to_string());
+            return Err(Box::new(io::Error::other(format!(
+                "Ollama chat failed: HTTP {status} - {body}"
+            ))));
+        }
 
         let data: ChatResponse = resp.json().await?;
         Ok(data)
@@ -390,6 +451,7 @@ impl OllamaClient {
                 repeat_penalty,
                 num_predict: max_tokens,
             }),
+            tools: None,
         };
 
         let resp = self
@@ -398,6 +460,21 @@ impl OllamaClient {
             .json(&request)
             .send()
             .await?;
+
+        // Same class of bug as `generate_stream`: an HTTP error body doesn't
+        // deserialize as `ChatResponse` (which requires `model`/`created_at`/
+        // `message`/`done`), so without this check it was silently dropped
+        // by `stream_chat_response` and the caller saw an empty Ok stream.
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp
+                .text()
+                .await
+                .unwrap_or_else(|_| "<unreadable body>".to_string());
+            return Err(Box::new(io::Error::other(format!(
+                "Ollama chat failed: HTTP {status} - {body}"
+            ))));
+        }
 
         let stream = Box::pin(tokio_stream::wrappers::ReceiverStream::new(
             Self::stream_chat_response(resp).await?,
@@ -412,24 +489,38 @@ impl OllamaClient {
     {
         let (tx, rx) = mpsc::channel(100);
 
-        let body = resp.bytes().await?;
-
+        // See stream_response's comment: process as bytes arrive rather than
+        // buffering the whole body first.
         tokio::spawn(async move {
-            let text = String::from_utf8_lossy(&body);
-            for line in text.lines() {
-                if let Some(json_str) = line.strip_prefix("data: ") {
+            use futures::StreamExt;
+            let mut byte_stream = resp.bytes_stream();
+            let mut buf = String::new();
+            while let Some(chunk) = byte_stream.next().await {
+                let chunk = match chunk {
+                    Ok(c) => c,
+                    Err(e) => {
+                        let _ = tx
+                            .send(Err(Box::new(e) as Box<dyn Error + Send + Sync>))
+                            .await;
+                        return;
+                    }
+                };
+                buf.push_str(&String::from_utf8_lossy(&chunk));
+                while let Some(pos) = buf.find('\n') {
+                    let line = buf[..pos].trim().to_string();
+                    buf.drain(..=pos);
+                    if line.is_empty() {
+                        continue;
+                    }
+                    let json_str = line.strip_prefix("data: ").unwrap_or(&line);
                     if let Ok(data) = serde_json::from_str::<ChatResponse>(json_str) {
                         let done = data.done;
-                        let _ = tx.send(Ok(data)).await;
+                        if tx.send(Ok(data)).await.is_err() {
+                            return; // receiver dropped, stop reading
+                        }
                         if done {
                             return;
                         }
-                    }
-                } else if let Ok(data) = serde_json::from_str::<ChatResponse>(line) {
-                    let done = data.done;
-                    let _ = tx.send(Ok(data)).await;
-                    if done {
-                        return;
                     }
                 }
             }
@@ -451,6 +542,21 @@ impl OllamaClient {
             .json(&payload)
             .send()
             .await?;
+
+        // Previously this returned `Ok(text)` for any response whose body
+        // could be read as text, including 4xx/5xx error responses — a
+        // failed pull (unknown model, registry unreachable, etc.) was
+        // reported to the caller as a successful result.
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp
+                .text()
+                .await
+                .unwrap_or_else(|_| "<unreadable body>".to_string());
+            return Err(Box::new(io::Error::other(format!(
+                "Ollama pull failed: HTTP {status} - {body}"
+            ))));
+        }
 
         match resp.text().await {
             Ok(text) => Ok(text),
@@ -483,6 +589,21 @@ impl OllamaClient {
             .send()
             .await?;
 
+        // Same class of bug as `generate_stream`/`chat_stream`: an error body
+        // (e.g. unknown model name) doesn't parse as `PullProgressResponse`
+        // (requires a `status` field), so it was silently dropped and the
+        // caller saw an empty Ok stream instead of the pull failure.
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp
+                .text()
+                .await
+                .unwrap_or_else(|_| "<unreadable body>".to_string());
+            return Err(Box::new(io::Error::other(format!(
+                "Ollama pull failed: HTTP {status} - {body}"
+            ))));
+        }
+
         let stream = Box::pin(tokio_stream::wrappers::ReceiverStream::new(
             Self::stream_pull_progress(resp).await?,
         ));
@@ -498,16 +619,41 @@ impl OllamaClient {
     > {
         let (tx, rx) = mpsc::channel(100);
 
-        let body = resp.bytes().await?;
-
+        // Was `resp.bytes().await?` (buffers the whole response before
+        // processing any of it). A model pull can run for minutes; this made
+        // the GUI's progress bar sit frozen for the entire download and then
+        // jump straight to 100% instead of updating incrementally as Ollama
+        // reports real progress. `bytes_stream()` processes chunks as they
+        // arrive over the wire instead.
         tokio::spawn(async move {
-            let text = String::from_utf8_lossy(&body);
-            for line in text.lines() {
-                if let Ok(data) = serde_json::from_str::<PullProgressResponse>(line) {
-                    let status = data.status.clone();
-                    let _ = tx.send(Ok(data)).await;
-                    if status == "success" || status == "error" {
+            use futures::StreamExt;
+            let mut byte_stream = resp.bytes_stream();
+            let mut buf = String::new();
+            while let Some(chunk) = byte_stream.next().await {
+                let chunk = match chunk {
+                    Ok(c) => c,
+                    Err(e) => {
+                        let _ = tx
+                            .send(Err(Box::new(e) as Box<dyn Error + Send + Sync>))
+                            .await;
                         return;
+                    }
+                };
+                buf.push_str(&String::from_utf8_lossy(&chunk));
+                while let Some(pos) = buf.find('\n') {
+                    let line = buf[..pos].trim().to_string();
+                    buf.drain(..=pos);
+                    if line.is_empty() {
+                        continue;
+                    }
+                    if let Ok(data) = serde_json::from_str::<PullProgressResponse>(&line) {
+                        let status = data.status.clone();
+                        if tx.send(Ok(data)).await.is_err() {
+                            return; // receiver dropped, stop reading
+                        }
+                        if status == "success" || status == "error" {
+                            return;
+                        }
                     }
                 }
             }
@@ -566,7 +712,12 @@ impl OllamaClient {
 
     /// Unload a model by setting keep_alive to zero.
     pub async fn unload_model(&self, model_name: &str) -> Result<String, Box<dyn Error>> {
-        let running_models = self.list_running().await.unwrap_or_default();
+        // Propagate failures from `list_running` instead of treating them as
+        // "nothing is running": if Ollama is unreachable or errors here, we
+        // genuinely don't know the model's state, and silently reporting
+        // "unload skipped" as success would hide a real connectivity failure
+        // from the caller.
+        let running_models = self.list_running().await?;
         if !running_models
             .iter()
             .any(|model| Self::matches_model_name(&model.name, model_name))
@@ -624,6 +775,18 @@ impl OllamaClient {
             .send()
             .await?;
 
+        // See `pull_model`: an error response must not be reported as Ok.
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp
+                .text()
+                .await
+                .unwrap_or_else(|_| "<unreadable body>".to_string());
+            return Err(Box::new(io::Error::other(format!(
+                "Ollama create failed: HTTP {status} - {body}"
+            ))));
+        }
+
         match resp.text().await {
             Ok(text) => Ok(text),
             Err(e) => Err(Box::new(e)),
@@ -648,6 +811,18 @@ impl OllamaClient {
             .send()
             .await?;
 
+        // See `pull_model`: an error response must not be reported as Ok.
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp
+                .text()
+                .await
+                .unwrap_or_else(|_| "<unreadable body>".to_string());
+            return Err(Box::new(io::Error::other(format!(
+                "Ollama copy failed: HTTP {status} - {body}"
+            ))));
+        }
+
         match resp.text().await {
             Ok(text) => Ok(text),
             Err(e) => Err(Box::new(e)),
@@ -666,6 +841,18 @@ impl OllamaClient {
             .json(&payload)
             .send()
             .await?;
+
+        // See `pull_model`: an error response must not be reported as Ok.
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp
+                .text()
+                .await
+                .unwrap_or_else(|_| "<unreadable body>".to_string());
+            return Err(Box::new(io::Error::other(format!(
+                "Ollama delete failed: HTTP {status} - {body}"
+            ))));
+        }
 
         match resp.text().await {
             Ok(text) => Ok(text),
@@ -755,6 +942,7 @@ mod tests {
                 repeat_penalty: Some(1.2),
                 num_predict: Some(256),
             }),
+            tools: None,
         };
         let value = serde_json::to_value(&request).expect("serialize ChatRequest");
         assert!(

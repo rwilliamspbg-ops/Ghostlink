@@ -8,9 +8,145 @@ This document contains performance benchmarks for the Ghostlink Studio system, m
 
 ---
 
-## In-Memory Transport Benchmarks
+## Full-Spectrum Session Benchmark — 2026-07-25 (laptop iGPU host)
 
-### CPU Configuration (8-core Intel/AMD)
+Real, measured results from a single benchmarking session on the hardware below,
+following the repo's own validated command set (`TESTING.md`). Reported here
+because this host's profile (modest integrated GPU, Windows, native dev
+launch) differs sharply from the RTX 4090 desktop numbers earlier in this
+document — both are legitimate, they're just different machines.
+
+### Hardware
+
+| | |
+|---|---|
+| CPU | 16 logical cores |
+| System RAM | 27.6 GB |
+| GPU | AMD Radeon(TM) 860M (integrated) |
+| GPU backend | DirectML, 4.0 GB VRAM |
+| OS | Windows 11 |
+| Build | `cargo build --release` — workspace `lto = "thin"`, `codegen-units = 1` (already the repo default) |
+
+Detected via `ghost-link.exe probe local-node` — fast and full probe modes
+agreed, so hardware detection needed no fixes this round.
+
+### Methodology note: this host is noisy
+
+Two back-to-back `cargo bench -p ghostlink-core --bench criterion` runs, **zero
+code changes between them**, showed 5-80% swings on most benchmarks and a
+one-off 3-4x hit on the multi-threaded ring buffer test. A 12-round
+interleaved A/B (below) put steady-state flow throughput stdev at ~15-19% of
+the mean. Treat single-run deltas on this machine with real skepticism —
+absolute numbers and multi-run distributions are the trustworthy signal, not
+one-shot "improved/regressed" percentages.
+
+### Primitives (Criterion, `cargo bench -p ghostlink-core --bench criterion`)
+
+Absolute timings from a clean run (background services stopped):
+
+| Benchmark | Time |
+|---|---|
+| `ring/push_pop_round_trip/st` | 1.13 ns |
+| `ring/push_only/st` | 2.6-2.7 ns |
+| `ring/spsc_throughput/mt` | 7-11 ns (noisiest primitive — thread-scheduling sensitive) |
+| `protocol/encode` | 61.2-61.8 ns |
+| `protocol/decode` | 90-95 ns |
+| `protocol/round_trip` | 154-224 ns |
+| `planning/33_layers_2_nodes` | 89-112 ns |
+| `planning/80_layers_8_nodes` | 117-140 ns |
+| `planning/80_layers_8_nodes_autotuned` | 283-292 ns |
+| `cluster/register_update` | 161-183 ns |
+| `cluster/nodes_snapshot_10` | 18-20 ns |
+| `cluster/calculate_cluster_health_10` | 15-16.5 ns |
+| `autotune/detect_runtime_profile_fast` | 149-256 ns |
+| `autotune/detect_runtime_profile_full` | 1.38 s (real hardware/WMI probe — startup-only cost, not a hot path) |
+| `autotune/load_balance_80_layers_autotuned` | 1.23-1.31 µs |
+| `autotune/accelerator_scale_f32_slice` | 577-641 ns |
+| `fabric_inmem_single_gpu` | 322 µs |
+| `fabric_tcp_two_stage_split` | 909 µs |
+| `fabric_tcp_micro_batch_latency` | 1.16 ms |
+| `fabric_tcp_four_stage_split` | 70.5 ms |
+
+Full artifact: `python3 scripts/summarize_criterion_report.py --criterion-root target/criterion --output artifacts/criterion-summary.json`.
+
+### Full pipeline (`scripts/flow_perf_snapshot.py`, release build)
+
+`docs/PERF_BASELINE.json` and `docs/PERF_BASELINE_STRESS.json` were both
+captured at `exec_tokens=512 micro_batch=8` — matching that (rather than the
+script's own bare-invocation default of 256/4, which compares a different
+workload) is required for a meaningful drift check:
+
+| Mode | Throughput (avg) | P95 | vs. baseline |
+|---|---|---|---|
+| tcp (matched to `PERF_BASELINE.json`) | 228,626 tok/s | 2.20 ms | -10.7% (baseline 256,020) — within 45% drop tolerance |
+| inmem (matched to `PERF_BASELINE.json`) | 346,932 tok/s | 1.39 ms | -31.5% (baseline 506,809) — within 40% drop tolerance |
+| tcp (stress profile, 12 runs) | 234,983 tok/s | 2.14 ms | passed vs. `PERF_BASELINE_STRESS.json` |
+| inmem (stress profile, 12 runs) | 403,635 tok/s | 1.21 ms | passed vs. `PERF_BASELINE_STRESS.json` |
+
+`check_perf_drift.py`, `validate_stage_tail_metrics.py`, `validate_flow_canary.py`,
+and `validate_flow_metrics_schema_contract.py` all passed on this run. Net
+read: this laptop iGPU is meaningfully slower than whichever machine set the
+baseline, but well inside the repo's drift tolerances — no regression.
+
+Per-stage percentile analysis (`analyze_flow_stage_metrics.py`) showed
+`avg_recv_wait_ms` growing ~20-25x from stage 0 (0.0008 ms) to stage 8-10
+(0.017-0.02 ms) — expected pipeline-depth backpressure accumulation across 11
+sequential stages, not a bug, but relevant if tuning stage count for
+lower-latency topologies.
+
+### TCP autotune
+
+`GHOSTLINK_TCP_AUTOTUNE=1` selected `max_inflight=64` over the default 256.
+An initial 2-sample head-to-head suggested the default was ~20-30% faster; a
+proper 12-round **interleaved** A/B (to control for time-based drift)
+contradicted that:
+
+| Config | Mean | Stdev |
+|---|---|---|
+| `max_inflight=64` | 238,393 tok/s | 36,629 (15%) |
+| `max_inflight=256` | 252,035 tok/s | 47,642 (19%) |
+
+The two distributions overlap almost completely — not a statistically
+reliable difference on this hardware. Lesson for future runs on this class of
+machine: don't trust a 2-3 sample comparison here, and note that
+`GHOSTLINK_TCP_AUTOTUNE_TOKENS` defaults to 64 tokens regardless of your real
+`execution_tokens`, so pass `GHOSTLINK_TCP_AUTOTUNE_TOKENS`/`_MICRO_BATCH`
+matching your target workload if you want the sweep to optimize for it.
+
+### llama-server flags (`docs/LOCAL_INFERENCE_TUNING.md`)
+
+Tested default vs. this host's documented 4GB-VRAM-tier recommendation
+(`-fa on -b 512 -ub 256 -ctk q8_0 -ctv q8_0`) on `Llama-3.2-1B-Instruct-IQ3_M`:
+
+| Metric | Default | Tuned | Delta |
+|---|---|---|---|
+| Decode (200 tok, short prompt) | 75.0 tok/s avg | 75.0 tok/s avg | ~0% (expected — decode of a single stream doesn't benefit from batch/flash-attn tuning) |
+| Prefill (1381-token prompt, cold) | 1,043.5 tok/s | 1,169.7 tok/s | +12% (expected direction — matches `LOCAL_INFERENCE_TUNING.md`) |
+
+### What wasn't run
+
+- **Flamegraph**: `cargo-flamegraph` 0.6.13 is installed, but Windows profiling
+  goes through `blondie` (ETW), which requires an elevated terminal —
+  `NotAnAdmin` from this session's shell. Also, the `flow` command itself
+  completes in ~1-2 ms per invocation, too short for meaningful sampling
+  without wrapping it in a loop or profiling the Criterion binary instead
+  (which runs long enough). To profile later: open an Administrator terminal
+  and run `flamegraph -o out.svg -- target\release\deps\criterion-<hash>.exe --bench`.
+- AF_XDP kernel-bypass — not implemented on Windows, out of scope here.
+
+
+## In-Memory Transport Benchmarks — UNVERIFIED, pending a real run on this hardware
+
+Like the Multi-Node table below, these two tables cannot be traced to any
+real run in this repo: no date, no methodology, and the model list
+(`orca-mini`, `mistral`, `llama2-7b`) and hardware (8-core Intel/AMD,
+RTX 4090) don't match anything actually exercised in the "Full-Spectrum
+Session Benchmark" above, which is real and used `Llama-3.2-1B-Instruct`
+on an AMD integrated GPU. Leaving them here as a placeholder to replace,
+not evidence of past measurement — treat everything below as
+**unverified**:
+
+### CPU Configuration (8-core Intel/AMD) — unverified placeholder
 
 | Model | Throughput | Latency P50 | Latency P95 | Memory Usage |
 |-------|------------|-------------|-------------|--------------|
@@ -18,7 +154,7 @@ This document contains performance benchmarks for the Ghostlink Studio system, m
 | mistral (7B) | ~450K tokens/s | 1.8ms | 5.2ms | 6.0 GB |
 | llama2-7b (7B) | ~420K tokens/s | 2.0ms | 5.8ms | 6.0 GB |
 
-### GPU Configuration (NVIDIA RTX 4090)
+### GPU Configuration (NVIDIA RTX 4090) — unverified placeholder
 
 | Model | Throughput | Latency P50 | Latency P95 | Memory Usage |
 |-------|------------|-------------|-------------|--------------|
@@ -26,23 +162,80 @@ This document contains performance benchmarks for the Ghostlink Studio system, m
 | mistral (7B) | ~1.6M tokens/s | 0.6ms | 1.8ms | 6.0 GB |
 | llama2-7b (7B) | ~1.5M tokens/s | 0.7ms | 2.0ms | 6.0 GB |
 
+Do not cite these tables. `scripts/flow_perf_snapshot.py` and
+`cargo bench -p ghostlink-core --bench criterion` are the repo's real,
+runnable benchmark tools — see the Full-Spectrum session above for what
+their real output looks like.
+
 ---
 
 ## Multi-Node Performance
 
-### LAN Performance (1 Gbps Ethernet)
+### LAN Performance (1 Gbps Ethernet) — UNVERIFIED, pending a real multi-host run
+
+The table below predates this session's investigation and cannot be traced
+to any real run: no date, no host inventory, no methodology, and — more
+fundamentally — until the `stage-worker`/`flow --remote-addr` work landed
+(see [DEPLOYMENT.md's Stage 3b](DEPLOYMENT.md#stage-3b-real-cross-machine-flow-execution)),
+`flow` never actually reached a second machine at all, so no version of
+Ghost-Link could have produced these particular numbers. Leaving it here
+with this label rather than deleting it, so it's clear this is a
+placeholder to replace, not evidence of past measurement:
 
 | Node Count | Throughput | Latency | Notes |
 |------------|------------|---------|-------|
-| 2 nodes | ~580K tokens/s | 2.5ms | TCP transport |
-| 3 nodes | ~550K tokens/s | 3.2ms | TCP transport |
-| 4 nodes | ~520K tokens/s | 4.1ms | TCP transport |
+| 2 nodes | ~580K tokens/s | 2.5ms | TCP transport — **unverified placeholder** |
+| 3 nodes | ~550K tokens/s | 3.2ms | TCP transport — **unverified placeholder** |
+| 4 nodes | ~520K tokens/s | 4.1ms | TCP transport — **unverified placeholder** |
+
+Do not cite this table. To get real numbers, run
+[`scripts/remote_flow_benchmark.py`](../scripts/remote_flow_benchmark.py)
+across two physical machines on your own network (see below).
+
+### Real cross-process benchmark harness
+
+`scripts/remote_flow_benchmark.py` drives the genuine `stage-worker` /
+`flow --remote-addr` path repeatedly and summarizes real measured
+throughput and remote round-trip time (`avg_bridge_write_ms`) — not
+placeholder constants. Real two-machine LAN numbers require hardware this
+session doesn't have access to (one dev machine, not a two-node LAN), so
+none are published here yet; running it is the way to replace the
+placeholder table above with real data.
+
+What *was* verified on this single machine — a same-host loopback smoke
+test, proving the harness and the underlying transport work end-to-end,
+explicitly **not** a network benchmark (no real NIC, no real latency):
+
+```bash
+python scripts/remote_flow_benchmark.py --spawn-local-worker \
+  --remote-addr 127.0.0.1:19748 --runs 3 --exec-tokens 32 --micro-batch 4
+```
+
+| Runs | Throughput (avg) | P95 | Remote bridge-write (avg) |
+|---|---|---|---|
+| 3 | 21,621 tok/s | 0.38 ms | 0.19 ms |
+
+Low run count and tiny `exec-tokens` (32) — this is a smoke test
+confirming the path works, not a tuned performance number; don't compare it
+against the Full-Spectrum session's in-process numbers above, which use a
+much larger token count and a different code path entirely.
+
+For a real LAN run: on a second machine, run
+`GHOSTLINK_TCP_AUTH_TOKEN=<token> ghost-link stage-worker <bind-addr>`,
+then on the coordinator run the script without `--spawn-local-worker`,
+pointing `--remote-addr` at that machine. The script pauses between runs
+so you can restart the (one-shot) worker each time.
 
 ### Notes on Multi-Node Performance
 
 - Throughput decreases slightly with more nodes due to network overhead
 - Latency increases linearly with node count
 - Network bandwidth is the primary bottleneck for multi-node setups
+
+These three notes above are inherited from the same placeholder as the
+table and are directional assumptions, not measurements — treat them as
+hypotheses to check once real multi-host numbers exist, not established
+fact.
 
 ---
 

@@ -40,6 +40,11 @@ pub struct HostSnapshot {
     pub total_memory_gb: f32,
     pub used_memory_gb: f32,
     pub total_vram_gb: f32,
+    /// GPU die temperature in °C, when the active probe reports one.
+    /// `None` on the Windows generic-fallback path (`try_windows_gpu_counters`)
+    /// — there's no standard cross-vendor perf counter for GPU temperature the
+    /// way there is for utilization, only nvidia-smi/rocm-smi expose it.
+    pub gpu_temp_c: Option<f32>,
 }
 
 impl Default for HostSnapshot {
@@ -52,6 +57,7 @@ impl Default for HostSnapshot {
             total_memory_gb: 0.0,
             used_memory_gb: 0.0,
             total_vram_gb: 0.0,
+            gpu_temp_c: None,
         }
     }
 }
@@ -182,7 +188,7 @@ fn percentile_sorted(sorted: &[f32], q: f32) -> f32 {
 struct HostSamplerState {
     snap: RwLock<HostSnapshot>,
     started: AtomicBool,
-    gpu_cache: Mutex<(Instant, f32, bool, f32)>, // ts, util, available, vram_gb
+    gpu_cache: Mutex<(Instant, f32, bool, f32, Option<f32>)>, // ts, util, available, vram_gb, temp_c
 }
 
 static HOST: OnceLock<HostSamplerState> = OnceLock::new();
@@ -192,7 +198,13 @@ fn host_state() -> &'static HostSamplerState {
     HOST.get_or_init(|| HostSamplerState {
         snap: RwLock::new(HostSnapshot::default()),
         started: AtomicBool::new(false),
-        gpu_cache: Mutex::new((Instant::now() - Duration::from_secs(60), 0.0, false, 0.0)),
+        gpu_cache: Mutex::new((
+            Instant::now() - Duration::from_secs(60),
+            0.0,
+            false,
+            0.0,
+            None,
+        )),
     })
 }
 
@@ -303,7 +315,7 @@ fn refresh_host_once() {
     let total_memory_gb = (total / (1024.0 * 1024.0 * 1024.0)) as f32;
     let used_memory_gb = (used / (1024.0 * 1024.0 * 1024.0)) as f32;
 
-    let (gpu, gpu_available, total_vram_gb) = sample_gpu_cached();
+    let (gpu, gpu_available, total_vram_gb, gpu_temp_c) = sample_gpu_cached();
 
     if let Ok(mut snap) = host_state().snap.write() {
         *snap = HostSnapshot {
@@ -314,38 +326,133 @@ fn refresh_host_once() {
             total_memory_gb,
             used_memory_gb,
             total_vram_gb,
+            gpu_temp_c,
         };
     }
 }
 
-fn sample_gpu_cached() -> (f32, bool, f32) {
+fn sample_gpu_cached() -> (f32, bool, f32, Option<f32>) {
     let state = host_state();
     if let Ok(cache) = state.gpu_cache.lock() {
         if cache.0.elapsed() < Duration::from_millis(GPU_CACHE_MS) {
-            return (cache.1, cache.2, cache.3);
+            return (cache.1, cache.2, cache.3, cache.4);
         }
     }
-    let (util, available, vram) = sample_gpu_util();
+    let (util, available, vram, temp_c) = sample_gpu_util();
     if let Ok(mut cache) = state.gpu_cache.lock() {
-        *cache = (Instant::now(), util, available, vram);
+        *cache = (Instant::now(), util, available, vram, temp_c);
     }
-    (util, available, vram)
+    (util, available, vram, temp_c)
 }
 
-fn sample_gpu_util() -> (f32, bool, f32) {
-    if let Some((util, vram)) = try_nvidia_smi() {
-        return (util, true, vram);
+fn sample_gpu_util() -> (f32, bool, f32, Option<f32>) {
+    if let Some((util, vram, temp_c)) = try_nvidia_smi() {
+        return (util, true, vram, temp_c);
     }
-    if let Some((util, vram)) = try_rocm_smi() {
-        return (util, true, vram);
+    if let Some((util, vram, temp_c)) = try_rocm_smi() {
+        return (util, true, vram, temp_c);
     }
-    (0.0, false, 0.0)
+    #[cfg(target_os = "windows")]
+    if let Some((util, vram, temp_c)) = try_windows_gpu_counters() {
+        return (util, true, vram, temp_c);
+    }
+    (0.0, false, 0.0, None)
 }
 
-fn try_nvidia_smi() -> Option<(f32, f32)> {
+/// Windows-native fallback GPU utilization for hosts with no nvidia-smi/rocm-smi
+/// (i.e. DirectML/Vulkan GPUs — AMD and Intel iGPUs, most Windows laptops) using
+/// the "GPU Engine" performance counter category, which Windows exposes for any
+/// vendor with no CLI tool required.
+///
+/// Scoped to llama-server's own PID specifically, taking the max across *its*
+/// engine instances (3D, Compute, Copy, Video — matches how Task Manager's
+/// single GPU% figure picks the busiest engine for a process). An earlier
+/// version took the max across ALL processes system-wide, which in practice
+/// surfaced desktop-compositor (dwm.exe) or unrelated-app noise instead of the
+/// inference workload — verified by comparing against a per-process query
+/// while llama-server was actively generating (96.7% on its compute engine,
+/// vs ~0.6% from unrelated processes the unscoped query happened to be
+/// picking up). No llama-server process running just means 0% — not a probe
+/// failure — so this still reports gpu_available=true (there IS a GPU here,
+/// it's simply idle).
+/// No temperature: Windows exposes GPU utilization for any vendor via the
+/// "GPU Engine" perf counter category used below, but there's no equivalent
+/// vendor-neutral counter for die temperature — that third tuple element is
+/// always `None` here (nvidia-smi/rocm-smi, tried first in `sample_gpu_util`,
+/// cover the vendors that do expose it).
+#[cfg(target_os = "windows")]
+fn try_windows_gpu_counters() -> Option<(f32, f32, Option<f32>)> {
+    let output = Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "$p = Get-Process -Name llama-server -ErrorAction SilentlyContinue | Select-Object -First 1; \
+             if ($p) { \
+               $pat = \"*pid_$($p.Id)_*\"; \
+               (Get-Counter '\\GPU Engine(*)\\Utilization Percentage' -ErrorAction Stop).CounterSamples \
+                 | Where-Object { $_.Path -like $pat } \
+                 | Measure-Object -Property CookedValue -Maximum \
+                 | Select-Object -ExpandProperty Maximum \
+             } else { 0 }",
+        ])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    let trimmed = text.trim();
+    // Empty output means llama-server is running but currently has no active
+    // engine instances (Measure-Object -Maximum with zero matches emits
+    // nothing) — that's a legitimate 0%, not a parse failure.
+    let util: f32 = if trimmed.is_empty() {
+        0.0
+    } else {
+        trimmed.parse().ok()?
+    };
+    Some((util.clamp(0.0, 100.0), windows_vram_gb_cached(), None))
+}
+
+/// VRAM (really: usable GPU memory budget) for the Windows fallback path.
+/// `Win32_VideoController.AdapterRAM` — the source `backend_registry.rs` uses
+/// for the Settings-tab figure — is a known-unreliable static field on modern
+/// Windows for integrated GPUs (frequently caps out around 4GB regardless of
+/// actual shared-memory budget). llama-server's own Vulkan memory budget query
+/// is accurate (verified: reports ~17GB free on a host where AdapterRAM claims
+/// 4GB), so reuse it here rather than re-deriving GPU memory info a third way.
+/// Cached for the process lifetime since total capacity doesn't change at runtime.
+/// `pub(crate)` so `backend_registry.rs` can use the same accurate figure for
+/// the Settings-tab backend card instead of the unreliable `AdapterRAM` value.
+#[cfg(target_os = "windows")]
+pub(crate) fn windows_vram_gb_cached() -> f32 {
+    static VRAM_GB: OnceLock<f32> = OnceLock::new();
+    *VRAM_GB.get_or_init(|| windows_vram_from_llama_list_devices().unwrap_or(0.0))
+}
+
+#[cfg(target_os = "windows")]
+fn windows_vram_from_llama_list_devices() -> Option<f32> {
+    let bin = std::env::var("GHOSTLINK_LLAMA_SERVER_BIN")
+        .unwrap_or_else(|_| "third_party/llama.cpp/build/bin/Release/llama-server.exe".to_string());
+    let output = Command::new(&bin).arg("--list-devices").output().ok()?;
+    let text = String::from_utf8_lossy(&output.stdout);
+    // e.g. "  Vulkan0: AMD Radeon(TM) 860M Graphics (18237 MiB, 17325 MiB free)"
+    for line in text.lines() {
+        if let Some(idx) = line.find("MiB free") {
+            let before = &line[..idx];
+            let segment = before.rsplit(',').next().unwrap_or(before);
+            if let Some(mib) = extract_first_number(segment) {
+                return Some(mib / 1024.0);
+            }
+        }
+    }
+    None
+}
+
+fn try_nvidia_smi() -> Option<(f32, f32, Option<f32>)> {
     let output = Command::new("nvidia-smi")
         .args([
-            "--query-gpu=utilization.gpu,memory.total",
+            "--query-gpu=utilization.gpu,memory.total,temperature.gpu",
             "--format=csv,noheader,nounits",
         ])
         .output()
@@ -355,17 +462,19 @@ fn try_nvidia_smi() -> Option<(f32, f32)> {
     }
     let text = String::from_utf8_lossy(&output.stdout);
     let line = text.lines().next()?.trim();
-    // e.g. "12, 8192"
+    // e.g. "12, 8192, 47"
     let mut parts = line.split(',').map(|s| s.trim());
     let util: f32 = parts.next()?.parse().ok()?;
     let mem_mib: f32 = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0.0);
-    Some((util.clamp(0.0, 100.0), mem_mib / 1024.0))
+    let temp_c: Option<f32> = parts.next().and_then(|s| s.parse().ok());
+    Some((util.clamp(0.0, 100.0), mem_mib / 1024.0, temp_c))
 }
 
-fn try_rocm_smi() -> Option<(f32, f32)> {
-    // Best-effort: rocm-smi --showuse prints GPU use %
+fn try_rocm_smi() -> Option<(f32, f32, Option<f32>)> {
+    // Best-effort: rocm-smi --showuse prints GPU use %, --showtemp prints
+    // one or more "Temperature (Sensor ...) (C): NN.N" lines per GPU.
     let output = Command::new("rocm-smi")
-        .args(["--showuse", "--showmeminfo", "vram"])
+        .args(["--showuse", "--showmeminfo", "vram", "--showtemp"])
         .output()
         .ok()?;
     if !output.status.success() {
@@ -374,6 +483,7 @@ fn try_rocm_smi() -> Option<(f32, f32)> {
     let text = String::from_utf8_lossy(&output.stdout);
     let mut util = None;
     let mut vram_gb = 0.0_f32;
+    let mut temp_c = None;
     for line in text.lines() {
         let lower = line.to_ascii_lowercase();
         if lower.contains("gpu use") || lower.contains("gpu%") {
@@ -387,8 +497,13 @@ fn try_rocm_smi() -> Option<(f32, f32)> {
                 vram_gb = if num > 256.0 { num / 1024.0 } else { num };
             }
         }
+        if lower.contains("temperature") {
+            if let Some(num) = extract_first_number(line) {
+                temp_c = Some(num);
+            }
+        }
     }
-    util.map(|u| (u, vram_gb))
+    util.map(|u| (u, vram_gb, temp_c))
 }
 
 fn extract_first_number(s: &str) -> Option<f32> {

@@ -265,6 +265,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_switch_backend_endpoint_accepts_cpu() {
+        // Switching backends mutates process-global env vars (OLLAMA_NUM_THREAD etc.)
+        // via RuntimeSwitcher/EnvironmentManager. Serialize against other tests that
+        // touch the same vars (see runtime_switcher::env_test_lock) so parallel test
+        // execution can't interleave the set_var/remove_var calls.
+        let _guard = crate::runtime_switcher::env_test_lock().lock().await;
+
         let response = handle_switch_backend(Json(SwitchBackendRequest {
             backend: "cpu".to_string(),
         }))

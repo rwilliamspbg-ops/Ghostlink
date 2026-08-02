@@ -1,0 +1,19 @@
+[package]
+name = "mcp-rag"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Local stdio MCP server exposing index_document/search retrieval tools backed by a local Ollama embedding model and an in-process cosine-similarity index, for Ghostlink chat's RAG tool."
+
+[dependencies]
+rmcp = { version = "2", features = ["transport-io", "schemars"] }
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+anyhow = "1"
+
+[dev-dependencies]
+tempfile = "3"

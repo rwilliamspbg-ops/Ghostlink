@@ -9,7 +9,7 @@ documentation = "https://rwilliamspbg-ops.github.io/Ghostlink/"
 repository = "https://github.com/rwilliamspbg-ops/Ghostlink"
 readme = "../../README.md"
 license = "MIT"
-keywords = ["networking", "spsc", "zero-copy", "async", "distributed-inference", "llm", "inference"]
+keywords = ["networking", "zero-copy", "async", "distributed", "llm"]
 categories = ["asynchronous", "network-programming", "command-line-utilities"]
 
 # Minimum Supported Rust Version (MSRV)
@@ -42,8 +42,12 @@ axum = { version = "0.7", features = ["macros"] }
 futures = "0.3"
 tokio = { version = "1", features = ["full"] }
 tower-http = { version = "0.5", features = ["cors"] }
+tower_governor = { version = "0.4.3", features = ["axum"] }
+
+# Object-safe async trait for the custom inference backend plugin system
+async-trait = "0.1"
 rand = "0.8"
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "blocking"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "blocking", "stream"] }
 tokio-util = "0.7"
 tokio-stream = { version = "0.1", features = ["sync"] }
 
@@ -52,3 +56,23 @@ uuid = { version = "1", features = ["v4"] }
 
 # Host CPU / memory sampling for /api/metrics
 sysinfo = "0.33"
+
+# MCP (Model Context Protocol) client — spawns/connects to tool servers
+rmcp = { version = "2", default-features = false, features = [
+    "client",
+    "transport-child-process",
+    "transport-streamable-http-client-reqwest",
+] }
+# HeaderName/HeaderValue for the HTTP MCP transport's custom headers
+http = "1"
+# rmcp's HTTP/SSE MCP transport needs reqwest 0.13 specifically (this crate's `reqwest`
+# dependency above is pinned to 0.12 for everything else); aliased so both coexist.
+mcp-reqwest = { package = "reqwest", version = "0.13", default-features = false, features = [
+    "json",
+    "stream",
+    "rustls",
+] }
+rustls = { version = "0.23.42", features = ["prefer-post-quantum"] }
+axum-server = { version = "0.8.0", features = ["tls-rustls"] }
+jsonwebtoken = { version = "10.3.0", features = ["aws_lc_rs"] }
+rcgen = "0.14.7"

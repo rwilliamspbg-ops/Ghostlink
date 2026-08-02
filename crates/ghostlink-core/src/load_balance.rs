@@ -45,10 +45,15 @@ impl LoadBalanceConfig {
             AccelerationMode::Avx512 => 750,
             _ => 1000,
         };
+        // skew_ratio (max_available / min_available) is mathematically always
+        // >= 1.0, so a threshold below 1.0 here made rebalance() return true
+        // unconditionally for this tier — including the all-zero-VRAM CPU-only
+        // case (skew_ratio pinned to exactly 1.0), which a threshold of 1.0
+        // itself would still have wrongly matched. Must stay strictly > 1.0.
         let min_load_threshold = match profile.acceleration_mode {
             AccelerationMode::Gpu => 1.15,
             AccelerationMode::Avx512 => 1.05,
-            _ => 0.95,
+            _ => 1.02,
         };
         let max_layers_per_assignment = profile.recommended_workers.max(1) * 2;
 
@@ -168,7 +173,10 @@ impl LoadBalancer {
             .unwrap_or_default()
     }
 
-    /// Distribute tensor layers across nodes based on VRAM capacity
+    /// Distribute tensor layers across nodes based on VRAM capacity.
+    ///
+    /// Optimized using cursor-based index traversal instead of costly vector draining
+    /// and shifting elements, improving complexity from O(N^2) to O(N).
     pub fn distribute_layers(
         &self,
         layers: &[crate::planning::LayerSpec],
@@ -191,51 +199,44 @@ impl LoadBalancer {
         all_layers.sort_by_key(|l| l.index);
         let total_layer_count = all_layers.len();
 
-        // Greedy assignment: assign contiguous layers to nodes based on VRAM
-        let mut distributions = Vec::new();
-        let mut remaining_layers = all_layers;
+        // Greedy assignment: assign contiguous layers to nodes based on VRAM using O(1) indices
+        let mut distributions = Vec::with_capacity(sorted_nodes.len());
+        let mut current_layer_idx = 0usize;
 
         for node in &sorted_nodes {
-            if remaining_layers.is_empty() {
+            if current_layer_idx >= all_layers.len() {
                 break;
             }
 
             let mut used_vram = 0.0f32;
-            let mut start_enum = usize::MAX;
-            let mut end_enum = 0usize;
+            let start_idx = current_layer_idx;
+            let mut end_idx = current_layer_idx;
 
-            for (enum_idx, layer) in remaining_layers.iter().enumerate() {
+            for layer in &all_layers[current_layer_idx..] {
                 if used_vram + layer.vram_gb > node.vram_gb {
                     break;
                 }
-
-                if start_enum == usize::MAX {
-                    start_enum = enum_idx;
-                }
-                end_enum = enum_idx + 1;
-
+                end_idx += 1;
                 used_vram += layer.vram_gb;
             }
 
-            if start_enum != usize::MAX {
-                let slices: Vec<TensorSlice> = remaining_layers[start_enum..end_enum]
+            if end_idx > start_idx {
+                let slices: Vec<TensorSlice> = all_layers[start_idx..end_idx]
                     .iter()
                     .map(|l| TensorSlice::new((l.index, l.index + 1), l.vram_gb))
                     .collect();
 
                 distributions.push((node.id.clone(), slices));
-
-                // Remove assigned layers from remaining
-                remaining_layers.drain(start_enum..end_enum);
+                current_layer_idx = end_idx;
             }
         }
 
-        if remaining_layers.is_empty() {
+        if current_layer_idx >= all_layers.len() {
             Ok(LoadDistributionPlan::new(distributions, total_layer_count))
         } else {
             Err(format!(
                 "insufficient VRAM: {} layers remain",
-                remaining_layers.len()
+                all_layers.len() - current_layer_idx
             ))
         }
     }
@@ -473,6 +474,8 @@ pub struct LoadStats {
     pub avg_load_balance_ratio: f32,
     /// Number of rebalancing operations
     pub rebalancing_count: usize,
+    /// Whether avg_load_balance_ratio has received its first sample yet.
+    balance_ratio_initialized: bool,
 }
 
 impl LoadStats {
@@ -489,12 +492,10 @@ impl LoadStats {
 
     /// Update load balance ratio
     pub fn update_balance_ratio(&mut self, ratio: f32) {
-        if self.avg_load_balance_ratio == 0.0
-            && self.rebalancing_count == 0
-            && self.total_layers_distributed == 0
-        {
+        if !self.balance_ratio_initialized {
             // First call - initialize directly
             self.avg_load_balance_ratio = ratio;
+            self.balance_ratio_initialized = true;
         } else {
             // EMA with alpha=0.1
             self.avg_load_balance_ratio = self.avg_load_balance_ratio * 0.9 + ratio * 0.1;
@@ -609,6 +610,27 @@ mod tests {
     }
 
     #[test]
+    fn load_stats_first_balance_ratio_not_diluted_by_prior_distribution() {
+        // Regression: the "first call" check for update_balance_ratio used
+        // total_layers_distributed == 0 as a proxy for "never updated
+        // before". If record_distribution() ran first (the normal order:
+        // record layer placements, then periodically report a balance
+        // ratio), the very first update_balance_ratio() call fell through
+        // to the EMA branch and diluted the true first sample by 10x
+        // (0.0 * 0.9 + ratio * 0.1) instead of setting it directly.
+        let mut stats = LoadStats::new();
+
+        stats.record_distribution(24, 24.0);
+        stats.update_balance_ratio(0.95);
+
+        assert!(
+            (stats.avg_load_balance_ratio - 0.95).abs() < 1e-6,
+            "first balance ratio sample must be set directly, got {}",
+            stats.avg_load_balance_ratio
+        );
+    }
+
+    #[test]
     fn load_stats_reports() {
         let mut stats = LoadStats::new();
 
@@ -637,6 +659,52 @@ mod tests {
         assert_eq!(config.max_layers_per_assignment, 12);
         assert_eq!(config.max_concurrent_rebalances, 6);
         assert!(config.min_load_threshold > 1.0);
+    }
+
+    #[test]
+    fn autotuned_cpu_threshold_stays_above_one() {
+        // Regression: the CPU/generic tier's min_load_threshold was 0.95,
+        // below the mathematical minimum of skew_ratio (always >= 1.0), so
+        // rebalance() always returned true regardless of actual balance.
+        let profile = RuntimeProfile {
+            node_resources: NodeResources::new("node-a", 0.0, 16.0, "generic", None),
+            logical_cores: 4,
+            recommended_workers: 2,
+            acceleration_mode: AccelerationMode::Generic,
+            gpu_backend: crate::host::GpuBackend::Cpu,
+            xdp_supported: false,
+            detection_source: String::from("test"),
+            probe_mode: crate::host::ProbeMode::Fast,
+        };
+        let config = LoadBalanceConfig::autotuned(&profile);
+        assert!(
+            config.min_load_threshold > 1.0,
+            "CPU-tier threshold {} must exceed skew_ratio's mathematical floor of 1.0",
+            config.min_load_threshold
+        );
+    }
+
+    #[test]
+    fn rebalance_does_not_always_trigger_on_balanced_cpu_cluster() {
+        let cluster = Arc::new(ClusterState::new());
+        cluster.register(NodeResources::new("node-a", 0.0, 16.0, "generic", None));
+        cluster.register(NodeResources::new("node-b", 0.0, 16.0, "generic", None));
+
+        let profile = RuntimeProfile {
+            node_resources: NodeResources::new("node-a", 0.0, 16.0, "generic", None),
+            logical_cores: 4,
+            recommended_workers: 2,
+            acceleration_mode: AccelerationMode::Generic,
+            gpu_backend: crate::host::GpuBackend::Cpu,
+            xdp_supported: false,
+            detection_source: String::from("test"),
+            probe_mode: crate::host::ProbeMode::Fast,
+        };
+        let balancer = LoadBalancer::new(cluster, LoadBalanceConfig::autotuned(&profile));
+        assert!(
+            !balancer.rebalance(),
+            "a perfectly balanced (zero-VRAM) CPU cluster must not be reported as needing rebalance"
+        );
     }
 
     #[test]

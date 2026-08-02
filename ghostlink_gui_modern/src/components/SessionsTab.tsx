@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { RefreshCw, XCircle, Clock, Database, Zap } from 'lucide-react';
 import { useAppStore } from '../store';
+import { EmptyState, ErrorPanel } from './StatusViews';
 
 export const SessionsTab: React.FC<{ api: any }> = ({ api }) => {
   const { sessions, setSessions } = useAppStore();
@@ -34,26 +35,24 @@ export const SessionsTab: React.FC<{ api: any }> = ({ api }) => {
         <h2 className="text-xl font-bold text-white">Active Sessions</h2>
         <button
           onClick={refreshSessions}
+          aria-label="Refresh sessions"
           className="p-2 rounded-lg hover:bg-slate-900 text-slate-400 hover:text-white transition"
         >
-          <RefreshCw size={18} className={loading ? 'animate-spin' : ''} />
+          <RefreshCw size={18} className={loading ? 'animate-spin' : ''} aria-hidden="true" />
         </button>
       </div>
 
       <div className="flex-1 overflow-y-auto p-6">
         <div className="max-w-5xl mx-auto">
           {error ? (
-            <div className="flex flex-col items-center justify-center py-20 text-slate-500 bg-slate-900/30 border border-red-800/50 border-dashed rounded-3xl">
-              <XCircle size={48} className="mb-4 opacity-40 text-red-400" />
-              <p className="text-lg font-medium text-red-400">Connection Error</p>
-              <p className="text-sm opacity-60">{error}</p>
-            </div>
+            <ErrorPanel icon={XCircle} title="Connection Error" message={error} />
           ) : sessions.length === 0 ? (
-            <div className="flex flex-col items-center justify-center py-20 text-slate-500 bg-slate-900/30 border border-slate-800 border-dashed rounded-3xl">
-                <Clock size={48} className="mb-4 opacity-20" />
-                <p className="text-lg font-medium">No active inference sessions</p>
-                <p className="text-sm opacity-60">Start a chat to create a new session.</p>
-            </div>
+            <EmptyState
+              variant="card"
+              icon={Clock}
+              title="No active inference sessions"
+              description="Start a chat to create a new session."
+            />
           ) : (
             <div className="grid grid-cols-1 gap-4">
               {sessions.map((session) => (
@@ -78,8 +77,9 @@ export const SessionsTab: React.FC<{ api: any }> = ({ api }) => {
                         <button
                             onClick={() => handleCancel(session.id)}
                             className="p-2 text-slate-500 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition"
+                            aria-label={`Cancel session ${session.id}`}
                         >
-                            <XCircle size={18} />
+                            <XCircle size={18} aria-hidden="true" />
                         </button>
                     </div>
                   </div>

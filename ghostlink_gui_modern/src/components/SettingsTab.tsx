@@ -191,11 +191,17 @@ export const SettingsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
     label: string; desc?: string; value: number; min: number; max: number; step?: number; onChange: (v: number) => void; unit?: string;
   }) => {
     const fieldId = label.toLowerCase().replace(/\s+/g, '-');
+    // Settings round-trip through an f32 backend, so fractional values arrive
+    // as things like 0.8999999761581421 — round for display to the precision
+    // `step` actually offers instead of showing the float32 artifact.
+    const displayValue = !step || step >= 1
+      ? Math.round(value).toString()
+      : value.toFixed(Math.max(0, -Math.floor(Math.log10(step))));
     return (
       <div className="space-y-1.5">
         <div className="flex items-center justify-between">
           <label htmlFor={fieldId} className="text-sm font-medium text-slate-300">{label}</label>
-          <span className="text-xs font-mono text-blue-400 bg-blue-500/10 px-2 py-0.5 rounded-md">{value}{unit}</span>
+          <span className="text-xs font-mono text-blue-400 bg-blue-500/10 px-2 py-0.5 rounded-md">{displayValue}{unit}</span>
         </div>
         {desc && <p className="text-[10px] text-slate-500">{desc}</p>}
         <input
@@ -270,13 +276,13 @@ export const SettingsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
         </div>
         <div className="flex items-center gap-2">
           {Object.keys(validationErrors).length > 0 && (
-            <span className="flex items-center gap-1 text-xs text-orange-400 bg-orange-500/10 px-2 py-1 rounded-lg">
-              <AlertTriangle size={14} /> Fix validation errors
+            <span role="alert" className="flex items-center gap-1 text-xs text-orange-400 bg-orange-500/10 px-2 py-1 rounded-lg">
+              <AlertTriangle size={14} aria-hidden="true" /> Fix validation errors
             </span>
           )}
           {saved && (
-            <span className="flex items-center gap-1 text-xs text-green-400 bg-green-500/10 px-2 py-1 rounded-lg">
-              <CheckCircle2 size={14} /> Saved
+            <span role="status" className="flex items-center gap-1 text-xs text-green-400 bg-green-500/10 px-2 py-1 rounded-lg">
+              <CheckCircle2 size={14} aria-hidden="true" /> Saved
             </span>
           )}
           <button
@@ -284,14 +290,14 @@ export const SettingsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
             disabled={saving}
             className="flex items-center gap-2 px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl text-sm transition disabled:opacity-50"
           >
-            <RotateCcw size={14} /> Reset
+            <RotateCcw size={14} aria-hidden="true" /> Reset
           </button>
           <button
             onClick={handleSave}
             disabled={saving}
             className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-sm font-bold transition shadow-lg shadow-blue-500/20 disabled:opacity-50"
           >
-            <Save size={14} /> {saving ? 'Saving...' : 'Save'}
+            <Save size={14} aria-hidden="true" /> {saving ? 'Saving...' : 'Save'}
           </button>
         </div>
       </div>
@@ -329,10 +335,12 @@ export const SettingsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                         </button>
                       </div>
 
-                      <div className="space-y-2">
+                      <div className="space-y-2" role="radiogroup" aria-label="Compute backend">
                         {backends.map((backend) => (
                           <button
                             key={backend.name}
+                            role="radio"
+                            aria-checked={backend.name === currentBackend}
                             onClick={() => handleSwitchBackend(backend.name)}
                             disabled={switchingBackend !== null || backend.name === currentBackend}
                             className={`flex items-center justify-between w-full px-3 py-2.5 rounded-xl text-left transition text-sm ${
@@ -380,8 +388,8 @@ export const SettingsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                     </div>
 
                     {restartRequired && (
-                      <div className="flex items-center gap-2 px-4 py-3 bg-orange-500/10 border border-orange-500/30 rounded-xl text-orange-400">
-                        <AlertTriangle size={20} />
+                      <div role="alert" className="flex items-center gap-2 px-4 py-3 bg-orange-500/10 border border-orange-500/30 rounded-xl text-orange-400">
+                        <AlertTriangle size={20} aria-hidden="true" />
                         <div>
                           <p className="font-medium">Restart Required</p>
                           <p className="text-sm text-slate-400">The backend has been switched but requires a server restart to take full effect.</p>
@@ -537,10 +545,33 @@ export const SettingsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                 min={16} max={8192} step={16}
                 onChange={(v) => update('max_tokens', v)}
               />
+              <SliderField
+                label="Conversation Token Limit"
+                desc="How much chat history the model remembers — separate from Max Tokens, which only caps the reply. Oldest turns are dropped first once a conversation outgrows this."
+                value={settings.conversation_token_limit}
+                min={256} max={16384} step={128}
+                onChange={(v) => update('conversation_token_limit', v)}
+              />
+              {settings.conversation_token_limit + settings.max_tokens > 4096 && (
+                <div role="alert" className="flex items-start gap-2 text-xs text-orange-400 bg-orange-500/10 px-3 py-2 rounded-xl">
+                  <AlertTriangle size={14} className="mt-0.5 shrink-0" aria-hidden="true" />
+                  <span>
+                    History ({settings.conversation_token_limit}) + Max Tokens ({settings.max_tokens}) exceeds the
+                    default 4096-token context window. If your model runs with a larger <code className="text-orange-300 bg-slate-800 px-1 rounded font-mono">GHOSTLINK_CTX_SIZE</code>, this is fine — otherwise the server-side truncation still protects you.
+                  </span>
+                </div>
+              )}
             </Section>
 
             {/* Model Section */}
             <Section title="Inference Parameters" icon={Server}>
+              <SliderField
+                label="Parallel Slots"
+                desc="Concurrent llama-server inference slots. 1 processes one generation at a time (today's default); raising it lets the server handle multiple requests concurrently instead of queueing them, at the cost of splitting VRAM/context across slots. Takes effect on the next model load."
+                value={settings.parallel_slots}
+                min={1} max={16} step={1}
+                onChange={(v) => update('parallel_slots', v)}
+              />
               <SliderField
                 label="Chat Exec Tokens"
                 desc="Execution token budget per chat request"

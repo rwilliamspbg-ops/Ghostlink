@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { RefreshCw, Server, Shield, Cpu, Activity, Power, Plus } from 'lucide-react';
+import { RefreshCw, Server, Shield, Cpu, Activity, Power, Plus, HeartPulse } from 'lucide-react';
 import { ClusterTopology } from '../api';
 import { useAppStore } from '../store';
+import { EmptyState } from './StatusViews';
 
 export const WorkersTab: React.FC<{ api: any }> = ({ api }) => {
   const { workers, setWorkers } = useAppStore();
@@ -9,6 +10,10 @@ export const WorkersTab: React.FC<{ api: any }> = ({ api }) => {
   const [topology, setTopology] = useState<ClusterTopology | null>(null);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [historyWindow, setHistoryWindow] = useState<8 | 16 | 32>(16);
+  const healthyCount = useMemo(
+    () => workers.filter((w) => w.status?.toLowerCase() === 'connected').length,
+    [workers]
+  );
   const [showAddForm, setShowAddForm] = useState(false);
   const [addHost, setAddHost] = useState('');
   const [addPort, setAddPort] = useState('8003');
@@ -85,7 +90,10 @@ export const WorkersTab: React.FC<{ api: any }> = ({ api }) => {
   }, [api, setWorkers]);
 
   // CRITICAL FIX #3: Add disconnect handler
-  const handleDisconnectWorker = async (workerId: string) => {
+  const handleDisconnectWorker = async (workerId: string, workerHost: string) => {
+    if (!window.confirm(`Are you sure you want to disconnect worker ${workerHost}? This will remove it from the active cluster pool.`)) {
+      return;
+    }
     const result = await api.disconnectWorker(workerId);
     if (result.success) {
       refreshWorkers();
@@ -122,35 +130,56 @@ export const WorkersTab: React.FC<{ api: any }> = ({ api }) => {
             <div className="px-2 py-0.5 bg-blue-600/20 text-blue-400 rounded text-[10px] font-bold uppercase tracking-wider">
                 {workers.length} Nodes
             </div>
+            {workers.length > 0 && (
+                <div
+                    className={`flex items-center gap-1.5 px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider ${
+                        healthyCount === workers.length
+                            ? 'bg-green-500/10 text-green-400'
+                            : healthyCount === 0
+                            ? 'bg-red-500/10 text-red-400'
+                            : 'bg-amber-500/10 text-amber-400'
+                    }`}
+                    title="Nodes reporting a Connected status"
+                >
+                    <HeartPulse size={11} aria-hidden="true" />
+                    {healthyCount}/{workers.length} healthy
+                </div>
+            )}
         </div>
         <div className="flex items-center gap-2">
             <button
                 onClick={() => { setShowAddForm(!showAddForm); setAddError(''); }}
-                className="flex items-center gap-2 px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold rounded-lg transition"
+                aria-haspopup="true"
+                aria-expanded={showAddForm}
+                className="flex items-center gap-2 px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold rounded-lg transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
             >
-                <Plus size={14} /> Add Worker
+                <Plus size={14} aria-hidden="true" /> Add Worker
             </button>
             <button
                 onClick={async () => { const r = await api.discoverPeers(); if (r.success) refreshWorkers(); }}
-                className="flex items-center gap-2 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-white text-xs font-bold rounded-lg transition"
+                className="flex items-center gap-2 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-white text-xs font-bold rounded-lg transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
                 title="Discover peers on network"
             >
-                <RefreshCw size={14} /> Discover
+                <RefreshCw size={14} aria-hidden="true" /> Discover
             </button>
             <button
                 onClick={refreshWorkers}
-                className="p-2 rounded-lg hover:bg-slate-900 text-slate-400 hover:text-white transition"
+                aria-label="Refresh workers"
+                className="p-2 rounded-lg hover:bg-slate-900 text-slate-400 hover:text-white transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
             >
-                <RefreshCw size={18} className={loading ? 'animate-spin' : ''} />
+                <RefreshCw size={18} className={loading ? 'animate-spin' : ''} aria-hidden="true" />
             </button>
         </div>
       </div>
 
       {showAddForm && (
-        <div className="px-6 py-4 border-b border-slate-800 bg-slate-900/30">
+        <div
+          className="px-6 py-4 border-b border-slate-800 bg-slate-900/30"
+          onKeyDown={(e) => { if (e.key === 'Escape') setShowAddForm(false); }}
+        >
           <div className="flex items-end gap-3 max-w-lg">
             <div className="flex-1">
-              <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1">Host</label>
+              <label htmlFor="host" className="block text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1">Host</label>
               <input
                 type="text"
                 value={addHost}
@@ -158,11 +187,11 @@ export const WorkersTab: React.FC<{ api: any }> = ({ api }) => {
                 placeholder="192.168.1.100"
                 name="host"
                 id="host"
-                className="w-full px-3 py-1.5 bg-slate-800 border border-slate-700 rounded-lg text-sm text-slate-200 placeholder-slate-500 focus:outline-none focus:border-blue-500"
+                className="w-full px-3 py-1.5 bg-slate-800 border border-slate-700 rounded-lg text-sm text-slate-200 placeholder-slate-500 focus:outline-none focus:border-blue-500 focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
               />
             </div>
             <div className="w-24">
-              <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1">Port</label>
+              <label htmlFor="port" className="block text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1">Port</label>
               <input
                 type="number"
                 value={addPort}
@@ -170,17 +199,17 @@ export const WorkersTab: React.FC<{ api: any }> = ({ api }) => {
                 placeholder="8003"
                 name="port"
                 id="port"
-                className="w-full px-3 py-1.5 bg-slate-800 border border-slate-700 rounded-lg text-sm text-slate-200 placeholder-slate-500 focus:outline-none focus:border-blue-500"
+                className="w-full px-3 py-1.5 bg-slate-800 border border-slate-700 rounded-lg text-sm text-slate-200 placeholder-slate-500 focus:outline-none focus:border-blue-500 focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
               />
             </div>
             <button
               onClick={handleAddWorker}
-              className="px-4 py-1.5 bg-green-600 hover:bg-green-500 text-white text-xs font-bold rounded-lg transition"
+              className="px-4 py-1.5 bg-green-600 hover:bg-green-500 text-white text-xs font-bold rounded-lg transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
             >
               Connect
             </button>
           </div>
-          {addError && <p className="text-red-400 text-xs mt-2">{addError}</p>}
+          {addError && <p role="alert" className="text-red-400 text-xs mt-2">{addError}</p>}
         </div>
       )}
 
@@ -294,72 +323,81 @@ export const WorkersTab: React.FC<{ api: any }> = ({ api }) => {
                 </div>
               </div>
             )}
-            <div className="grid grid-cols-1 gap-4">
-              {workers.map((worker) => (
-                <div key={worker.id} className="bg-slate-900/50 border border-slate-800 rounded-3xl p-6 hover:border-slate-700 transition-all relative overflow-hidden group">
-                  <div className="absolute top-0 right-0 p-4">
-                      <div className="flex items-center gap-2 px-3 py-1 bg-green-500/10 text-green-400 rounded-full text-[10px] font-bold">
-                          <div className="w-1.5 h-1.5 bg-green-400 rounded-full animate-pulse"></div>
-                          {worker.status}
+            {workers.length === 0 ? (
+              <EmptyState
+                icon={Server}
+                title="No workers connected"
+                description="Add a worker by host/port, or discover peers on the local network."
+              />
+            ) : (
+              <div className="grid grid-cols-1 gap-4">
+                {workers.map((worker) => (
+                  <div key={worker.id} className="bg-slate-900/50 border border-slate-800 rounded-3xl p-6 hover:border-slate-700 transition-all relative overflow-hidden group">
+                    <div className="absolute top-0 right-0 p-4">
+                        <div className="flex items-center gap-2 px-3 py-1 bg-green-500/10 text-green-400 rounded-full text-[10px] font-bold">
+                            <div className="w-1.5 h-1.5 bg-green-400 rounded-full animate-pulse"></div>
+                            {worker.status}
+                        </div>
+                    </div>
+
+                    <div className="flex items-start gap-5">
+                      <div className="p-4 bg-slate-800 rounded-2xl text-slate-400 group-hover:bg-blue-600 group-hover:text-white transition-colors">
+                        <Server size={28} />
                       </div>
-                  </div>
 
-                  <div className="flex items-start gap-5">
-                    <div className="p-4 bg-slate-800 rounded-2xl text-slate-400 group-hover:bg-blue-600 group-hover:text-white transition-colors">
-                      <Server size={28} />
-                    </div>
+                      <div className="flex-1">
+                          <div className="flex flex-col mb-6">
+                              <h3 className="text-lg font-bold text-slate-100">{worker.host}</h3>
+                              <p className="text-xs text-slate-500 font-mono">ID: {worker.id}</p>
+                          </div>
 
-                    <div className="flex-1">
-                        <div className="flex flex-col mb-6">
-                            <h3 className="text-lg font-bold text-slate-100">{worker.host}</h3>
-                            <p className="text-xs text-slate-500 font-mono">ID: {worker.id}</p>
-                        </div>
-
-                        <div className="grid grid-cols-2 md:grid-cols-4 gap-6">
-                            <div className="space-y-1">
-                                <div className="flex items-center gap-1.5 text-slate-500">
-                                    <Cpu size={12} />
-                                    <span className="text-[10px] font-bold uppercase tracking-wider">Resources</span>
-                                </div>
-                                <p className="text-sm font-bold text-slate-200">{worker.threads} Threads</p>
-                            </div>
-                            <div className="space-y-1">
-                                <div className="flex items-center gap-1.5 text-slate-500">
-                                    <Activity size={12} />
-                                    <span className="text-[10px] font-bold uppercase tracking-wider">Current Load</span>
-                                </div>
-                                <div className="flex items-center gap-2">
-                                    <div className="flex-1 h-1.5 bg-slate-800 rounded-full overflow-hidden">
-                                        <div
-                                            className="h-full bg-blue-500 transition-all duration-500"
-                                            style={{ width: `${worker.load}%` }}
-                                        ></div>
-                                    </div>
-                                    <span className="text-sm font-bold text-slate-200">{worker.load}%</span>
-                                </div>
-                            </div>
-                            <div className="space-y-1">
-                                <div className="flex items-center gap-1.5 text-slate-500">
-                                    <Shield size={12} />
-                                    <span className="text-[10px] font-bold uppercase tracking-wider">Model</span>
-                                </div>
-                                <p className="text-sm font-bold text-slate-200 truncate">{worker.model}</p>
-                            </div>
-                            <div className="flex items-end justify-end">
-                                <button 
-                                  onClick={() => handleDisconnectWorker(worker.id)}
-                                  className="p-2 text-slate-500 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition"
-                                  title="Disconnect worker"
-                                >
-                                    <Power size={20} />
-                                </button>
-                            </div>
-                        </div>
+                          <div className="grid grid-cols-2 md:grid-cols-4 gap-6">
+                              <div className="space-y-1">
+                                  <div className="flex items-center gap-1.5 text-slate-500">
+                                      <Cpu size={12} />
+                                      <span className="text-[10px] font-bold uppercase tracking-wider">Resources</span>
+                                  </div>
+                                  <p className="text-sm font-bold text-slate-200">{worker.threads} Threads</p>
+                              </div>
+                              <div className="space-y-1">
+                                  <div className="flex items-center gap-1.5 text-slate-500">
+                                      <Activity size={12} />
+                                      <span className="text-[10px] font-bold uppercase tracking-wider">Current Load</span>
+                                  </div>
+                                  <div className="flex items-center gap-2">
+                                      <div className="flex-1 h-1.5 bg-slate-800 rounded-full overflow-hidden">
+                                          <div
+                                              className="h-full bg-blue-500 transition-all duration-500"
+                                              style={{ width: `${worker.load}%` }}
+                                          ></div>
+                                      </div>
+                                      <span className="text-sm font-bold text-slate-200">{worker.load}%</span>
+                                  </div>
+                              </div>
+                              <div className="space-y-1">
+                                  <div className="flex items-center gap-1.5 text-slate-500">
+                                      <Shield size={12} />
+                                      <span className="text-[10px] font-bold uppercase tracking-wider">Model</span>
+                                  </div>
+                                  <p className="text-sm font-bold text-slate-200 truncate">{worker.model}</p>
+                              </div>
+                              <div className="flex items-end justify-end">
+                                  <button
+                                    onClick={() => handleDisconnectWorker(worker.id, worker.host)}
+                                    className="p-2 text-slate-500 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
+                                    title="Disconnect worker"
+                                    aria-label={`Disconnect worker ${worker.host}`}
+                                  >
+                                      <Power size={20} aria-hidden="true" />
+                                  </button>
+                              </div>
+                          </div>
+                      </div>
                     </div>
                   </div>
-                </div>
-              ))}
-            </div>
+                ))}
+              </div>
+            )}
         </div>
       </div>
     </div>

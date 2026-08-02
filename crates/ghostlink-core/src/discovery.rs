@@ -141,6 +141,14 @@ pub fn broadcast_and_collect(
     frame: &DiscoveryFrame,
     config: &UdpDiscoveryConfig,
 ) -> Result<Vec<(DiscoveryFrame, SocketAddr)>, String> {
+    if config.enforce_auth && config.auth_token.is_none() {
+        return Err(
+            "discovery config error: enforce_auth is true but no auth_token is configured; \
+             refusing to run with authentication silently disabled"
+                .to_string(),
+        );
+    }
+
     let socket = UdpSocket::bind(config.bind_addr)
         .map_err(|e| format!("failed to bind UDP discovery socket: {e}"))?;
     socket
@@ -207,6 +215,14 @@ pub fn respond_once(
     local_node: &NodeResources,
     config: &UdpDiscoveryConfig,
 ) -> Result<Option<SocketAddr>, String> {
+    if config.enforce_auth && config.auth_token.is_none() {
+        return Err(
+            "discovery config error: enforce_auth is true but no auth_token is configured; \
+             refusing to run with authentication silently disabled"
+                .to_string(),
+        );
+    }
+
     let socket = UdpSocket::bind(config.bind_addr)
         .map_err(|e| format!("failed to bind UDP discovery listener socket: {e}"))?;
     socket
@@ -292,6 +308,14 @@ pub fn serve_discovery_with_stats(
     config: &UdpDiscoveryConfig,
     max_replies: Option<usize>,
 ) -> Result<DiscoveryServeStats, String> {
+    if config.enforce_auth && config.auth_token.is_none() {
+        return Err(
+            "discovery config error: enforce_auth is true but no auth_token is configured; \
+             refusing to run with authentication silently disabled"
+                .to_string(),
+        );
+    }
+
     let socket = UdpSocket::bind(config.bind_addr)
         .map_err(|e| format!("failed to bind UDP discovery listener socket: {e}"))?;
     socket
@@ -574,6 +598,31 @@ mod tests {
     }
 
     #[test]
+    fn enforce_auth_without_token_is_rejected_as_config_error() {
+        // enforce_auth=true with no auth_token previously fell through to the
+        // unauthenticated decode path, silently accepting any well-formed frame
+        // with zero authentication. That contradicts the documented contract
+        // ("Require HMAC-SHA256 authentication for all incoming datagrams") and
+        // must fail closed instead.
+        let config = UdpDiscoveryConfig {
+            bind_addr: SocketAddr::from(([127, 0, 0, 1], 0)),
+            enforce_auth: true,
+            auth_token: None,
+            ..UdpDiscoveryConfig::default()
+        };
+
+        let frame = DiscoveryFrame {
+            kind: FrameKind::Join,
+            node: NodeResources::new("node-config-error", 8.0, 16.0, "8.0", None),
+        };
+        assert!(broadcast_and_collect(&frame, &config).is_err());
+
+        let node = NodeResources::new("node-config-error-listener", 8.0, 16.0, "8.0", None);
+        assert!(respond_once(&node, &config).is_err());
+        assert!(serve_discovery(&node, &config, Some(1)).is_err());
+    }
+
+    #[test]
     fn datagram_auth_validation_rejects_modified_data() {
         let frame = DiscoveryFrame {
             kind: FrameKind::Join,
@@ -615,7 +664,12 @@ mod tests {
             respond_once(&node, &responder_cfg)
         });
 
-        thread::sleep(Duration::from_millis(50));
+        // Give the responder thread time to actually reach its socket recv
+        // loop before traffic starts. 50ms was observed to be too tight under
+        // system load (e.g. `cargo test --workspace` scheduling many
+        // concurrent tests/processes), intermittently causing early packets
+        // to arrive before the responder was listening.
+        thread::sleep(Duration::from_millis(200));
 
         let join = DiscoveryFrame {
             kind: FrameKind::Join,
@@ -654,7 +708,12 @@ mod tests {
             respond_once(&node, &responder_cfg)
         });
 
-        thread::sleep(Duration::from_millis(50));
+        // Give the responder thread time to actually reach its socket recv
+        // loop before traffic starts. 50ms was observed to be too tight under
+        // system load (e.g. `cargo test --workspace` scheduling many
+        // concurrent tests/processes), intermittently causing early packets
+        // to arrive before the responder was listening.
+        thread::sleep(Duration::from_millis(200));
 
         let mismatch_sender = UdpDiscoveryConfig {
             bind_addr: SocketAddr::from(([127, 0, 0, 1], 0)),
@@ -724,7 +783,12 @@ mod tests {
             }
         });
 
-        thread::sleep(Duration::from_millis(50));
+        // Give the responder thread time to actually reach its socket recv
+        // loop before traffic starts. 50ms was observed to be too tight under
+        // system load (e.g. `cargo test --workspace` scheduling many
+        // concurrent tests/processes), intermittently causing early packets
+        // to arrive before the responder was listening.
+        thread::sleep(Duration::from_millis(200));
 
         let sender = UdpDiscoveryConfig {
             bind_addr: SocketAddr::from(([127, 0, 0, 1], 0)),
@@ -764,7 +828,12 @@ mod tests {
             serve_discovery_with_stats(&node, &responder_cfg, Some(1))
         });
 
-        thread::sleep(Duration::from_millis(50));
+        // Give the responder thread time to actually reach its socket recv
+        // loop before traffic starts. 50ms was observed to be too tight under
+        // system load (e.g. `cargo test --workspace` scheduling many
+        // concurrent tests/processes), intermittently causing early packets
+        // to arrive before the responder was listening.
+        thread::sleep(Duration::from_millis(200));
 
         let raw_sender =
             UdpSocket::bind(SocketAddr::from(([127, 0, 0, 1], 0))).expect("bind raw sender");
@@ -844,7 +913,12 @@ mod tests {
             respond_once(&node, &responder_cfg)
         });
 
-        thread::sleep(Duration::from_millis(50));
+        // Give the responder thread time to actually reach its socket recv
+        // loop before traffic starts. 50ms was observed to be too tight under
+        // system load (e.g. `cargo test --workspace` scheduling many
+        // concurrent tests/processes), intermittently causing early packets
+        // to arrive before the responder was listening.
+        thread::sleep(Duration::from_millis(200));
 
         let raw_sender =
             UdpSocket::bind(SocketAddr::from(([127, 0, 0, 1], 0))).expect("bind raw sender");
@@ -857,14 +931,20 @@ mod tests {
         let wrong_sender = UdpDiscoveryConfig {
             bind_addr: SocketAddr::from(([127, 0, 0, 1], 0)),
             broadcast_addr: SocketAddr::from(([127, 0, 0, 1], port)),
-            response_timeout: Duration::from_millis(45),
+            // Was 45ms; bumped for headroom under system load. This waits
+            // out the full timeout each call (no reply is expected for a
+            // bad-auth frame), so a tighter value only saved wall-clock time
+            // in the success case at the cost of false failures under load.
+            response_timeout: Duration::from_millis(150),
             auth_token: Some("wrong".to_string()),
             ..UdpDiscoveryConfig::default()
         };
         let valid_sender = UdpDiscoveryConfig {
             bind_addr: SocketAddr::from(([127, 0, 0, 1], 0)),
             broadcast_addr: SocketAddr::from(([127, 0, 0, 1], port)),
-            response_timeout: Duration::from_millis(260),
+            // Was 260ms; bumped alongside the startup sleep/wrong_sender
+            // timeout above for the same load-headroom reason.
+            response_timeout: Duration::from_millis(500),
             auth_token: Some("secret".to_string()),
             ..UdpDiscoveryConfig::default()
         };

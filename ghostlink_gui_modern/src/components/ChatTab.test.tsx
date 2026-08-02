@@ -1,5 +1,5 @@
-import { describe, it, expect, vi } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { describe, it, expect, vi, afterEach } from 'vitest';
+import { render, screen, fireEvent, act } from '@testing-library/react';
 import { ChatTab } from './ChatTab';
 import { useAppStore } from '../store';
 import { GhostlinkAPI } from '../api';
@@ -135,5 +135,61 @@ describe('ChatTab', () => {
 
     expect(await screen.findByText('Structured outputs')).toBeInTheDocument();
     expect(screen.getByText('vLLM')).toBeInTheDocument();
+  });
+
+  describe('voice input', () => {
+    afterEach(() => {
+      vi.unstubAllGlobals();
+    });
+
+    it('does not render the mic button when SpeechRecognition is unavailable', () => {
+      const api = createMockApi();
+      render(<ChatTab api={api} />);
+      expect(screen.queryByLabelText('Start voice input')).not.toBeInTheDocument();
+    });
+
+    it('renders the mic button and starts/stops recognition on click', () => {
+      const instances: any[] = [];
+      class MockSpeechRecognition {
+        continuous = false;
+        interimResults = false;
+        lang = '';
+        onresult: ((e: any) => void) | null = null;
+        onerror: (() => void) | null = null;
+        onend: (() => void) | null = null;
+        start = vi.fn();
+        stop = vi.fn(() => {
+          this.onend?.();
+        });
+        constructor() {
+          instances.push(this);
+        }
+      }
+      vi.stubGlobal('SpeechRecognition', MockSpeechRecognition);
+
+      const api = createMockApi();
+      render(<ChatTab api={api} />);
+
+      const micButton = screen.getByLabelText('Start voice input');
+      fireEvent.click(micButton);
+
+      expect(instances).toHaveLength(1);
+      expect(instances[0].start).toHaveBeenCalledOnce();
+      expect(screen.getByLabelText('Stop voice input')).toBeInTheDocument();
+
+      // A final transcript result should land in the textarea. `results[i]`
+      // mimics a SpeechRecognitionResult: array-indexable to an alternative
+      // with `.transcript`, plus an `.isFinal` flag.
+      const finalResult = Object.assign([{ transcript: 'hello from voice' }], { isFinal: true });
+      act(() => {
+        instances[0].onresult({ resultIndex: 0, results: [finalResult] });
+      });
+      const textarea = screen.getByPlaceholderText('Send a Message');
+      expect(textarea).toHaveValue('hello from voice');
+
+      fireEvent.click(screen.getByLabelText('Stop voice input'));
+      expect(instances[0].stop).toHaveBeenCalledOnce();
+      expect(screen.getByLabelText('Start voice input')).toBeInTheDocument();
+    });
   });
 });

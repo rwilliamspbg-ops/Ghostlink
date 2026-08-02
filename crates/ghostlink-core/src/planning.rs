@@ -345,8 +345,11 @@ fn assign_layers_chunked(
         }
     }
 
-    // Finalize last chunk
-    if chunk_vram > 0.0 {
+    // Finalize last chunk. Checked by pending-layer range, not accumulated
+    // VRAM: a trailing run of zero-VRAM layers (e.g. bias-only layers) would
+    // otherwise leave `chunk_vram == 0.0` and be silently dropped from the
+    // plan even though `chunk_start..layers.len()` is non-empty.
+    if chunk_start < layers.len() {
         assignments.push(LayerAssignment::new(
             nodes[node_idx].id.clone(),
             chunk_start,
@@ -382,13 +385,39 @@ pub fn assign_layers_with_fault_tolerance(
     // First pass: greedy assignment
     let assignments = assign_layers_sequentially(&nodes, layers)?;
 
-    // Calculate average delivery ratio across all nodes
-    let total_delivery_ratio = cluster
-        .active_nodes()
-        .iter()
-        .map(|m| m.delivery_ratio)
-        .sum::<f32>()
-        / cluster.active_nodes().len() as f32;
+    // Calculate average delivery ratio across all nodes in a single lock pass
+    // (avoids the clone/allocation of active_nodes() and the lock contention
+    // of taking it twice). Also avoids a real divide-by-zero/TOCTOU hazard:
+    // calling `active_nodes()` twice (once for the sum, once for the count)
+    // risked dividing by a different node count than was summed if a node's
+    // status changed between calls, and an empty active set (e.g. all nodes
+    // failed but still registered) would divide by zero.
+    let (sum_delivery, active_count) = {
+        let metrics = cluster
+            .metrics
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let mut sum = 0.0f32;
+        let mut count = 0usize;
+        for metric in metrics.values() {
+            if metric.status == NodeStatus::Active {
+                sum += metric.delivery_ratio;
+                count += 1;
+            }
+        }
+        (sum, count)
+    };
+
+    // Fall back to 0.0 (not 1.0) when there are zero active nodes to sample:
+    // this selects the most conservative quantization mode below. Assuming a
+    // perfect 1.0 ratio when we have literally no corroborating health data
+    // is optimistic in exactly the scenario (all nodes failed/degraded) where
+    // it's least likely to be true.
+    let total_delivery_ratio = if active_count > 0 {
+        sum_delivery / active_count as f32
+    } else {
+        0.0
+    };
 
     // Select quantization mode based on health
     let quantization_mode = select_quantization_mode(total_delivery_ratio);
@@ -397,28 +426,51 @@ pub fn assign_layers_with_fault_tolerance(
 }
 
 /// Assign layers with fault tolerance and runtime-aware chunking.
+///
+/// Optimized to directly call `assign_layers_chunked`, bypassing intermediate
+/// `LayerAssignment` allocations and `chunk_assignments_for_workers` overhead.
 pub fn assign_layers_with_fault_tolerance_and_runtime(
     cluster: &ClusterState,
     layers: &[LayerSpec],
     profile: &RuntimeProfile,
 ) -> Result<PlacementPlan, String> {
-    let mut plan = assign_layers_with_fault_tolerance(cluster, layers)?;
+    let nodes = cluster.nodes_snapshot();
+
+    if nodes.is_empty() {
+        return Err("no nodes available".into());
+    }
+
     let tuning = PlanningTuning::from_runtime_profile(profile, layers.len());
-    plan.assignments = chunk_assignments_for_workers(
-        std::mem::take(&mut plan.assignments),
-        tuning.max_layers_per_assignment,
-    );
-    plan.total_layers = plan
-        .assignments
-        .iter()
-        .map(|assignment| assignment.num_layers)
-        .sum();
-    plan.participating_nodes = plan
-        .assignments
-        .iter()
-        .map(|assignment| assignment.node_id.clone())
-        .collect();
-    Ok(plan)
+    // Directly run the chunked layout computation
+    let assignments = assign_layers_chunked(&nodes, layers, tuning.max_layers_per_assignment)?;
+
+    // Calculate average delivery ratio across all nodes in a single lock pass
+    let (sum_delivery, active_count) = {
+        let metrics = cluster
+            .metrics
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let mut sum = 0.0f32;
+        let mut count = 0usize;
+        for metric in metrics.values() {
+            if metric.status == NodeStatus::Active {
+                sum += metric.delivery_ratio;
+                count += 1;
+            }
+        }
+        (sum, count)
+    };
+
+    let total_delivery_ratio = if active_count > 0 {
+        sum_delivery / active_count as f32
+    } else {
+        0.0
+    };
+
+    // Select quantization mode based on health
+    let quantization_mode = select_quantization_mode(total_delivery_ratio);
+
+    Ok(PlacementPlan::new(assignments, quantization_mode))
 }
 
 /// Update layer assignments based on node health metrics
@@ -710,6 +762,43 @@ mod tests {
         assert_eq!(chunked[0].end_layer, 5);
         assert_eq!(chunked[2].start_layer, 10);
         assert_eq!(chunked[2].end_layer, 12);
+    }
+
+    #[test]
+    fn runtime_profile_assignment_keeps_trailing_zero_vram_layers() {
+        // Regression: assign_layers_chunked finalized its last pending chunk
+        // by checking `chunk_vram > 0.0`, so a trailing run of zero-VRAM
+        // layers left a non-empty pending chunk with chunk_vram == 0.0 and
+        // silently dropped those layers from the plan.
+        let nodes = vec![NodeResources::new("node-a", 24.0, 64.0, "8.9", None)];
+        let layers = sample_layers(3, 0.0);
+        let profile = RuntimeProfile {
+            node_resources: NodeResources::new("node-a", 24.0, 64.0, "8.9", None),
+            logical_cores: 4,
+            recommended_workers: 1,
+            acceleration_mode: AccelerationMode::Generic,
+            gpu_backend: crate::host::GpuBackend::Cpu,
+            xdp_supported: false,
+            detection_source: String::from("test"),
+            probe_mode: crate::host::ProbeMode::Fast,
+        };
+
+        let assignments = assign_layers_with_runtime_profile(&nodes, &layers, &profile).unwrap();
+        let total: usize = assignments.iter().map(|a| a.num_layers).sum();
+        assert_eq!(total, 3, "all zero-VRAM layers must still be assigned");
+    }
+
+    #[test]
+    fn fault_tolerance_handles_all_failed_nodes_without_panicking() {
+        // Regression: dividing active_nodes' summed delivery ratio by
+        // active_nodes().len() produced NaN (or a TOCTOU-inconsistent
+        // average) when every registered node's metrics were marked Failed.
+        let cluster = ClusterState::new();
+        cluster.register(NodeResources::new("node-a", 24.0, 64.0, "8.9", None));
+        cluster.mark_failed("node-a");
+
+        let plan = assign_layers_with_fault_tolerance(&cluster, &sample_layers(4, 1.0)).unwrap();
+        assert_eq!(plan.quantization_mode, QuantizationMode::Int4);
     }
 
     #[test]

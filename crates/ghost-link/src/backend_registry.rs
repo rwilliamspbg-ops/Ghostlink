@@ -9,6 +9,9 @@ pub enum ComputeBackend {
     Cuda,
     OneAPI,
     Metal,
+    Directml,
+    Vulkan,
+    Npu,
     Cpu,
 }
 
@@ -19,6 +22,9 @@ impl ComputeBackend {
             Self::Cuda => "cuda",
             Self::OneAPI => "oneapi",
             Self::Metal => "metal",
+            Self::Directml => "directml",
+            Self::Vulkan => "vulkan",
+            Self::Npu => "npu",
             Self::Cpu => "cpu",
         }
     }
@@ -29,6 +35,9 @@ impl ComputeBackend {
             "cuda" => Some(Self::Cuda),
             "oneapi" => Some(Self::OneAPI),
             "metal" => Some(Self::Metal),
+            "directml" | "dml" => Some(Self::Directml),
+            "vulkan" => Some(Self::Vulkan),
+            "npu" => Some(Self::Npu),
             "cpu" => Some(Self::Cpu),
             _ => None,
         }
@@ -72,35 +81,58 @@ impl BackendRegistry {
         let mut current = ComputeBackend::Cpu;
 
         for gpu in &profile.gpus {
+            // Mirrors GpuBackend one-to-one — previously Directml and Vulkan
+            // were both collapsed onto OneAPI (a real, distinct technology,
+            // unrelated to either) and Npu was dropped entirely, so an
+            // NPU-equipped host (e.g. AMD Ryzen AI / Intel Core Ultra) never
+            // saw its NPU listed as a selectable backend at all, and a
+            // DirectML-only GPU (the common case on Windows without
+            // CUDA/ROCm) was mislabeled as "oneapi".
             let backend = match gpu.backend {
                 ghostlink_core::host::GpuBackend::Cuda => Some(ComputeBackend::Cuda),
                 ghostlink_core::host::GpuBackend::Rocm => Some(ComputeBackend::Rocm),
                 ghostlink_core::host::GpuBackend::Metal => Some(ComputeBackend::Metal),
-                ghostlink_core::host::GpuBackend::Directml => Some(ComputeBackend::OneAPI),
-                ghostlink_core::host::GpuBackend::Vulkan => Some(ComputeBackend::OneAPI),
-                ghostlink_core::host::GpuBackend::Npu | ghostlink_core::host::GpuBackend::Cpu => {
-                    None
-                }
+                ghostlink_core::host::GpuBackend::Directml => Some(ComputeBackend::Directml),
+                ghostlink_core::host::GpuBackend::Vulkan => Some(ComputeBackend::Vulkan),
+                ghostlink_core::host::GpuBackend::Npu => Some(ComputeBackend::Npu),
+                ghostlink_core::host::GpuBackend::Cpu => None,
             };
 
+            // Dedup against `b` (this GPU's backend), not `current` (which
+            // only ever reflected the first backend seen) — the old check
+            // silently dropped every subsequent distinct backend type on any
+            // host with more than one kind of accelerator.
             if let Some(b) = backend {
-                if backends.is_empty() {
-                    current = b;
-                }
-                if !backends
-                    .iter()
-                    .any(|bi: &BackendInfo| bi.backend == current)
-                {
+                if !backends.iter().any(|bi: &BackendInfo| bi.backend == b) {
+                    // `gpu.vram_gb` comes from Win32_VideoController.AdapterRAM,
+                    // a known-unreliable static field for integrated GPUs on
+                    // Windows (verified: reports ~4GB on a host where the real
+                    // usable budget is ~17GB). Prefer llama-server's own Vulkan
+                    // memory budget query when it's available and higher.
+                    // `mut` is only exercised on Windows — non-Windows builds
+                    // never reassign it, hence the explicit allow.
+                    #[allow(unused_mut)]
+                    let mut vram_gb = gpu.vram_gb;
+                    #[cfg(target_os = "windows")]
+                    if matches!(b, ComputeBackend::Directml | ComputeBackend::Vulkan) {
+                        let accurate = crate::host_metrics::windows_vram_gb_cached();
+                        if accurate > vram_gb {
+                            vram_gb = accurate;
+                        }
+                    }
                     backends.push(BackendInfo {
                         backend: b,
                         device_name: gpu.name.clone(),
-                        vram_gb: Some(gpu.vram_gb),
+                        vram_gb: Some(vram_gb),
                         compute_capability: gpu.compute_capability.clone(),
                         driver_version: gpu.driver_version.clone(),
                         available: true,
                     });
                 }
             }
+        }
+        if let Some(first) = backends.first() {
+            current = first.backend;
         }
 
         // CPU is always available as fallback
@@ -413,7 +445,36 @@ impl BackendRegistry {
         let is_active = current == *backend;
 
         let status = if is_active { "active" } else { "ready" }.to_string();
-        let health = "healthy".to_string(); // TODO: implement health checks
+        // Previously hardcoded "healthy" unconditionally, even for a backend
+        // that `available_backends()` doesn't consider available — an
+        // unavailable backend reporting itself healthy is actively
+        // misleading. "healthy"/"unavailable" is a real (if coarse) signal;
+        // a genuine degraded-but-available state would need actual runtime
+        // probing this registry doesn't do.
+        let health = if info.available {
+            "healthy"
+        } else {
+            "unavailable"
+        }
+        .to_string();
+
+        // GPU utilization/temperature come from one machine-wide probe
+        // (host_metrics::current_host_snapshot — nvidia-smi/rocm-smi/Windows
+        // perf counters, whichever succeeds first), not a per-backend query.
+        // Only meaningful to attach to the backend that's actually active
+        // and GPU-backed — reporting a live utilization reading against an
+        // inactive or CPU backend would be fabricating a number nothing
+        // actually measured for it.
+        let (utilization, temperature) = if is_active && *backend != ComputeBackend::Cpu {
+            let snapshot = crate::host_metrics::current_host_snapshot();
+            if snapshot.gpu_available {
+                (Some(snapshot.gpu), snapshot.gpu_temp_c)
+            } else {
+                (None, None)
+            }
+        } else {
+            (None, None)
+        };
 
         Some(BackendStatus {
             backend: info.backend,
@@ -421,8 +482,8 @@ impl BackendRegistry {
             vram_gb: info.vram_gb,
             status,
             health,
-            utilization: None, // TODO: query nvidia-smi or rocm-smi
-            temperature: None, // TODO: query nvidia-smi or rocm-smi
+            utilization,
+            temperature,
         })
     }
 }
@@ -436,6 +497,26 @@ mod tests {
         assert_eq!(ComputeBackend::Rocm.as_str(), "rocm");
         assert_eq!(ComputeBackend::Cuda.as_str(), "cuda");
         assert_eq!(ComputeBackend::from_str("rocm"), Some(ComputeBackend::Rocm));
+    }
+
+    #[test]
+    fn test_backend_enum_covers_directml_vulkan_npu() {
+        // Regression: these three used to have no ComputeBackend representation
+        // at all (Directml/Vulkan were both mapped onto the unrelated OneAPI
+        // variant in discover(), Npu was silently dropped), so a DirectML GPU
+        // or an NPU could never actually be selected via the API.
+        for (variant, s) in [
+            (ComputeBackend::Directml, "directml"),
+            (ComputeBackend::Vulkan, "vulkan"),
+            (ComputeBackend::Npu, "npu"),
+        ] {
+            assert_eq!(variant.as_str(), s);
+            assert_eq!(ComputeBackend::from_str(s), Some(variant));
+        }
+        assert_eq!(
+            ComputeBackend::from_str("dml"),
+            Some(ComputeBackend::Directml)
+        );
     }
 
     #[test]
@@ -464,6 +545,75 @@ mod tests {
         // Switch to CPU should always work
         assert!(registry.switch_backend(ComputeBackend::Cpu).is_ok());
         assert_eq!(registry.current_backend(), ComputeBackend::Cpu);
+    }
+
+    fn info(backend: ComputeBackend, available: bool) -> BackendInfo {
+        BackendInfo {
+            backend,
+            device_name: format!("{} device", backend.as_str()),
+            vram_gb: Some(8.0),
+            compute_capability: "test".to_string(),
+            driver_version: "test".to_string(),
+            available,
+        }
+    }
+
+    // Constructs a registry directly (bypassing the real hardware probe in
+    // `discover()`) so these tests are deterministic on any CI runner,
+    // regardless of what GPU (if any) is actually present.
+    fn registry_with(backends: Vec<BackendInfo>, current: ComputeBackend) -> BackendRegistry {
+        BackendRegistry {
+            backends: Arc::new(Mutex::new(backends)),
+            current: Arc::new(Mutex::new(current)),
+        }
+    }
+
+    #[test]
+    fn get_status_health_reflects_availability_not_hardcoded_healthy() {
+        // Regression: get_status() used to report health: "healthy"
+        // unconditionally, even for a backend available_backends() doesn't
+        // consider available.
+        let registry = registry_with(
+            vec![
+                info(ComputeBackend::Cpu, true),
+                info(ComputeBackend::Cuda, false),
+            ],
+            ComputeBackend::Cpu,
+        );
+
+        let cpu_status = registry.get_status(&ComputeBackend::Cpu).unwrap();
+        assert_eq!(cpu_status.health, "healthy");
+
+        let cuda_status = registry.get_status(&ComputeBackend::Cuda).unwrap();
+        assert_eq!(cuda_status.health, "unavailable");
+    }
+
+    #[test]
+    fn get_status_never_reports_gpu_readings_for_the_cpu_backend() {
+        // Cpu is never GPU-backed, so utilization/temperature must stay None
+        // regardless of what the host's GPU probe (if any) reports — there's
+        // nothing for a "CPU utilization is 40%" GPU-style reading to mean.
+        let registry = registry_with(vec![info(ComputeBackend::Cpu, true)], ComputeBackend::Cpu);
+        let status = registry.get_status(&ComputeBackend::Cpu).unwrap();
+        assert_eq!(status.utilization, None);
+        assert_eq!(status.temperature, None);
+    }
+
+    #[test]
+    fn get_status_never_reports_gpu_readings_for_an_inactive_backend() {
+        // The host-wide GPU probe reflects whichever GPU is actually active;
+        // attaching its reading to a backend that isn't the current one would
+        // be presenting a number nothing measured for it as if it were real.
+        let registry = registry_with(
+            vec![
+                info(ComputeBackend::Cuda, true),
+                info(ComputeBackend::Rocm, true),
+            ],
+            ComputeBackend::Cuda,
+        );
+        let inactive_status = registry.get_status(&ComputeBackend::Rocm).unwrap();
+        assert_eq!(inactive_status.utilization, None);
+        assert_eq!(inactive_status.temperature, None);
     }
 
     #[test]
