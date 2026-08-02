@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   Trash2,
   RefreshCw,
@@ -166,15 +166,27 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
     if (!result.error) setPartialDownloads(result.partials);
   }, [api]);
 
+  const refreshRequestIdRef = useRef(0);
+
   const refreshModels = useCallback(async () => {
+    // Each call captures its own engine-specific requestId. If a newer
+    // refreshModels() call starts (e.g. currentEngine flips from the
+    // 'ollama' default to the real engine right after mount) before this
+    // one's slower awaits (getOllamaModels can take seconds when Ollama
+    // isn't running) resolve, the stale call must not clobber the fresher
+    // state — otherwise the model list flashes correct then reverts to
+    // empty once the superseded 'ollama' branch finally lands.
+    const requestId = ++refreshRequestIdRef.current;
     setLoading(true);
     try {
       const result = await api.getModels();
+      if (requestId !== refreshRequestIdRef.current) return;
       if (result.models) {
         setModels(result.models);
         if (result.current_model) setCurrentModel(result.current_model);
         if (currentEngine === 'vllm') {
           const inventory = await api.getVllmModels();
+          if (requestId !== refreshRequestIdRef.current) return;
           setOllamaModels(
             (inventory.models || []).map((m: any) => ({
               name: m.name,
@@ -190,6 +202,7 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
           );
         } else if (currentEngine === 'ollama') {
           const inventory = await api.getOllamaModels();
+          if (requestId !== refreshRequestIdRef.current) return;
           if (!inventory.error && inventory.models) {
             setOllamaModels(inventory.models);
           } else {
@@ -225,6 +238,7 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
     } catch (e) {
       console.error('Failed to refresh models:', e);
     }
+    if (requestId !== refreshRequestIdRef.current) return;
     setLoading(false);
     refreshPartialDownloads();
   }, [api, currentEngine, refreshPartialDownloads, setCurrentModel, setModels]);

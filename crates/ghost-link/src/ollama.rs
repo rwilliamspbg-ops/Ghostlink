@@ -69,6 +69,11 @@ pub struct ChatRequest {
     /// Only sent to models that declare tool-calling support in their template.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tools: Option<Vec<Value>>,
+    /// Structured-output constraint: either the literal string `"json"`, or a
+    /// raw JSON schema object — Ollama applies it directly as a grammar, no
+    /// `{"type": "json_schema", ...}` wrapper like OpenAI/vLLM expect.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub format: Option<Value>,
 }
 
 /// Sampling parameters accepted by Ollama's `/api/generate` and `/api/chat`
@@ -388,6 +393,7 @@ impl OllamaClient {
         repeat_penalty: Option<f32>,
         max_tokens: Option<usize>,
         tools: Option<Vec<Value>>,
+        format: Option<Value>,
     ) -> Result<ChatResponse, Box<dyn Error>> {
         let request = ChatRequest {
             model: model.to_string(),
@@ -401,6 +407,7 @@ impl OllamaClient {
                 num_predict: max_tokens,
             }),
             tools,
+            format,
         };
 
         let resp = self
@@ -452,6 +459,7 @@ impl OllamaClient {
                 num_predict: max_tokens,
             }),
             tools: None,
+            format: None,
         };
 
         let resp = self
@@ -943,6 +951,7 @@ mod tests {
                 num_predict: Some(256),
             }),
             tools: None,
+            format: None,
         };
         let value = serde_json::to_value(&request).expect("serialize ChatRequest");
         assert!(

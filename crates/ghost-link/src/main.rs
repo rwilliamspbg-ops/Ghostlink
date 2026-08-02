@@ -1486,6 +1486,8 @@ struct BackendState {
     vllm_client: vllm::VllmClient,
     ollama_available: Arc<tokio::sync::Mutex<bool>>,
     settings: RuntimeSettings,
+    mcp_registry: Arc<mcp::McpRegistry>,
+    pending_tool_calls: Arc<tokio::sync::Mutex<HashMap<String, PendingToolCall>>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1552,8 +1554,6 @@ impl Default for RuntimeSettings {
         }
     }
 }
-
-struct ToolDispatcher;
 
 fn build_cluster_topology_json(cluster: &ClusterState) -> serde_json::Value {
     let nodes = cluster.nodes();
@@ -1663,37 +1663,1010 @@ fn build_inference_engines_json(active: InferenceEngine) -> serde_json::Value {
     })
 }
 
-impl ToolDispatcher {
-    fn dispatch(tool_name: &str, _args: &serde_json::Value) -> ToolResult {
-        match tool_name {
-            "calculator" => ToolResult {
+/// Converts resolved MCP tool schemas into the OpenAI-style function-tool
+/// JSON Ollama and vLLM both expect in their `tools` request field.
+fn mcp_tools_to_openai_json(tools: &[mcp::McpToolSchema]) -> Vec<serde_json::Value> {
+    tools
+        .iter()
+        .map(|tool| {
+            serde_json::json!({
+                "type": "function",
+                "function": {
+                    "name": tool.name,
+                    "description": tool.description,
+                    "parameters": tool.input_schema,
+                }
+            })
+        })
+        .collect()
+}
+
+/// Invokes a real MCP tool by name (matched against the caller's already
+/// slot-resolved `tools` catalog) and reports the outcome in the GUI's
+/// `ToolResult` shape — shared by every engine's tool-calling loop so
+/// "unknown tool" / "not connected" / actual-failure all render the same way
+/// regardless of whether the model called it via the native TOOL_CALL: shim
+/// or Ollama/vLLM's own OpenAI-style tool_calls.
+async fn invoke_mcp_tool(
+    mcp_registry: &mcp::McpRegistry,
+    tools: &[mcp::McpToolSchema],
+    tool_name: &str,
+    args: serde_json::Value,
+) -> ToolResult {
+    match tools.iter().find(|t| t.name == tool_name) {
+        Some(schema) => match mcp_registry
+            .call_tool(&schema.server, tool_name, args)
+            .await
+        {
+            Some(outcome) if outcome.success => ToolResult {
                 tool: tool_name.to_string(),
-                result: "42 (Calculated via Rust built-in tool)".to_string(),
+                result: outcome.result.to_string(),
                 success: true,
             },
-            "web_search" => ToolResult {
+            Some(outcome) => ToolResult {
                 tool: tool_name.to_string(),
-                result: "Ghostlink is a high-performance distributed LLM inference fabric."
-                    .to_string(),
+                result: outcome
+                    .error
+                    .unwrap_or_else(|| "tool call failed".to_string()),
+                success: false,
+            },
+            None => ToolResult {
+                tool: tool_name.to_string(),
+                result: "tool server is not connected".to_string(),
+                success: false,
+            },
+        },
+        None => ToolResult {
+            tool: tool_name.to_string(),
+            result: format!("unknown tool '{tool_name}'"),
+            success: false,
+        },
+    }
+}
+
+/// Stashes a paused tool call under a fresh request_id and returns the info
+/// the GUI needs to render its Approve/Deny prompt. The full `pending` value
+/// (with everything needed to resume) stays server-side in
+/// `BackendState::pending_tool_calls`, keyed by that same id.
+async fn stash_pending_tool_call(
+    store: &tokio::sync::Mutex<HashMap<String, PendingToolCall>>,
+    pending: PendingToolCall,
+) -> PendingToolCallInfo {
+    let request_id = uuid::Uuid::new_v4().to_string();
+    let info = match &pending {
+        PendingToolCall::Native {
+            tool, server, args, ..
+        }
+        | PendingToolCall::Ollama {
+            tool, server, args, ..
+        }
+        | PendingToolCall::Vllm {
+            tool, server, args, ..
+        } => PendingToolCallInfo {
+            request_id: request_id.clone(),
+            tool: tool.clone(),
+            server: server.clone(),
+            args: args.clone(),
+        },
+    };
+    store.lock().await.insert(request_id, pending);
+    info
+}
+
+struct NativeToolLoopOutcome {
+    text: String,
+    real_inference: bool,
+    tokens: Option<u32>,
+    tokens_per_sec: Option<f32>,
+    latency_ms: Option<f32>,
+    tool_results: Vec<ToolResult>,
+}
+
+/// Either the loop finished (an answer, or an exhausted/errored turn), or it
+/// hit a `requires_confirmation` tool and paused - `pending` carries every
+/// last thing needed to resume the exact same loop later, once the user
+/// approves or denies the call, without redoing the generation that led here.
+enum NativeLoopStep {
+    Done(NativeToolLoopOutcome),
+    NeedsConfirmation(Box<PendingToolCall>),
+}
+
+/// Model-agnostic tool calling for the Native (llama-server) engine: injects
+/// `mcp::toolcall`'s TOOL_CALL: instructions into the prompt, and on each
+/// generation either returns the model's plain-text final answer or, if it
+/// asked for a tool, dispatches the call to the real connected MCP server and
+/// feeds the result back as an "Observation" before generating again — up to
+/// `mcp::toolcall::MAX_TOOL_ITERATIONS` round-trips. llama-server's
+/// `/v1/chat/completions` wraps whatever we send as a single "user" turn (see
+/// `generate_with_llama_server`), so the whole scratchpad is just plain text
+/// re-sent each iteration rather than a real multi-turn message array.
+///
+/// Takes its starting scratchpad/tool_results/iteration budget as parameters
+/// (rather than always starting empty) so `resume_native_tool_call` can drive
+/// the exact same loop body picking up right where a paused confirmation left
+/// off, instead of duplicating this logic.
+#[allow(clippy::too_many_arguments)]
+async fn native_tool_loop_core(
+    native_engine_client: &native_engine::NativeEngineClient,
+    mcp_registry: &mcp::McpRegistry,
+    model: &str,
+    native_engine: &str,
+    user_message: &str,
+    tool_instructions: &str,
+    tools: &[mcp::McpToolSchema],
+    exec_tokens: usize,
+    temp: f32,
+    top_p: f32,
+    top_k: usize,
+    penalty: f32,
+    mut scratchpad: String,
+    mut tool_results: Vec<ToolResult>,
+    mut iterations_left: usize,
+) -> NativeLoopStep {
+    while iterations_left > 0 {
+        iterations_left -= 1;
+        let prompt = format!("{tool_instructions}Question: {user_message}\n{scratchpad}");
+
+        let gen = match native_engine_client
+            .generate(
+                model,
+                &prompt,
+                exec_tokens,
+                temp,
+                top_p,
+                top_k,
+                penalty,
+                native_engine,
+                None,
+                false,
+                None,
+            )
+            .await
+        {
+            Ok(gen) => gen,
+            Err(err) => {
+                return NativeLoopStep::Done(NativeToolLoopOutcome {
+                    text: format!(
+                        "Ghostlink native fabric backend processed model '{model}' with {exec_tokens} estimated tokens. Native error: {err}"
+                    ),
+                    real_inference: false,
+                    tokens: None,
+                    tokens_per_sec: None,
+                    latency_ms: None,
+                    tool_results,
+                });
+            }
+        };
+
+        let tokens = gen
+            .tokens_generated
+            .or_else(|| Some((gen.text.split_whitespace().count() as u32).max(1)));
+
+        let Some(call) = mcp::toolcall::extract_tool_call(&gen.text) else {
+            // Plain-text answer with no tool call - the model is done.
+            return NativeLoopStep::Done(NativeToolLoopOutcome {
+                text: gen.text,
+                real_inference: gen.real_inference,
+                tokens,
+                tokens_per_sec: gen.tokens_per_sec,
+                latency_ms: gen.latency_ms,
+                tool_results,
+            });
+        };
+
+        if let Some(schema) = tools.iter().find(|t| t.name == call.tool) {
+            if mcp_registry.requires_confirmation(&schema.server).await {
+                return NativeLoopStep::NeedsConfirmation(Box::new(PendingToolCall::Native {
+                    model: model.to_string(),
+                    native_engine: native_engine.to_string(),
+                    tool_instructions: tool_instructions.to_string(),
+                    user_message: user_message.to_string(),
+                    scratchpad,
+                    tools: tools.to_vec(),
+                    exec_tokens,
+                    temp,
+                    top_p,
+                    top_k,
+                    penalty,
+                    iterations_left,
+                    tool: call.tool.clone(),
+                    server: schema.server.clone(),
+                    args: call.args.clone(),
+                    last_model_text: gen.text.clone(),
+                    tool_results_so_far: tool_results,
+                }));
+            }
+        }
+
+        let outcome = invoke_mcp_tool(mcp_registry, tools, &call.tool, call.args.clone()).await;
+        let observation_value = if outcome.success {
+            serde_json::from_str(&outcome.result)
+                .unwrap_or_else(|_| serde_json::json!({ "content": outcome.result }))
+        } else {
+            serde_json::json!({ "error": outcome.result })
+        };
+        let observation = mcp::toolcall::format_observation(&call.tool, &observation_value);
+        tool_results.push(outcome);
+
+        scratchpad.push_str(&format!(
+            "\nAssistant: {}\n{}",
+            gen.text.trim(),
+            observation
+        ));
+    }
+
+    // MAX_TOOL_ITERATIONS exhausted without a plain-text final answer - surface
+    // whatever the model last said rather than looping forever.
+    NativeLoopStep::Done(NativeToolLoopOutcome {
+        text: format!(
+            "{}\n\n(stopped after {} tool round-trips without a final answer)",
+            scratchpad.trim(),
+            mcp::toolcall::MAX_TOOL_ITERATIONS
+        ),
+        real_inference: true,
+        tokens: None,
+        tokens_per_sec: None,
+        latency_ms: None,
+        tool_results,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_native_tool_loop(
+    native_engine_client: &native_engine::NativeEngineClient,
+    mcp_registry: &mcp::McpRegistry,
+    model: &str,
+    user_message: &str,
+    exec_tokens: usize,
+    temp: f32,
+    top_p: f32,
+    top_k: usize,
+    penalty: f32,
+    native_engine: &str,
+    tools: &[mcp::McpToolSchema],
+) -> NativeLoopStep {
+    let tool_instructions = mcp::toolcall::build_tool_instructions(tools);
+    native_tool_loop_core(
+        native_engine_client,
+        mcp_registry,
+        model,
+        native_engine,
+        user_message,
+        &tool_instructions,
+        tools,
+        exec_tokens,
+        temp,
+        top_p,
+        top_k,
+        penalty,
+        String::new(),
+        Vec::new(),
+        mcp::toolcall::MAX_TOOL_ITERATIONS,
+    )
+    .await
+}
+
+/// Resumes a paused `PendingToolCall::Native` after the user approves or
+/// denies it: builds the observation (real tool result, or a denial per
+/// `mcp::toolcall::format_denial`), folds it into the saved scratchpad, and
+/// re-enters `native_tool_loop_core` with the remaining iteration budget -
+/// which may itself pause again on a further confirmation-gated call.
+async fn resume_native_tool_loop(
+    native_engine_client: &native_engine::NativeEngineClient,
+    mcp_registry: &mcp::McpRegistry,
+    pending: PendingToolCall,
+    approve: bool,
+) -> NativeLoopStep {
+    let PendingToolCall::Native {
+        model,
+        native_engine,
+        tool_instructions,
+        user_message,
+        mut scratchpad,
+        tools,
+        exec_tokens,
+        temp,
+        top_p,
+        top_k,
+        penalty,
+        iterations_left,
+        tool,
+        server,
+        args,
+        last_model_text,
+        mut tool_results_so_far,
+    } = pending
+    else {
+        unreachable!("resume_native_tool_loop called with a non-Native PendingToolCall");
+    };
+
+    let observation = if approve {
+        let outcome = mcp_registry.call_tool(&server, &tool, args).await;
+        let result = match outcome {
+            Some(outcome) if outcome.success => ToolResult {
+                tool: tool.clone(),
+                result: outcome.result.to_string(),
                 success: true,
             },
-            "terminal" => ToolResult {
-                tool: tool_name.to_string(),
-                result: "System: All nodes operational. Kernel bypass active.".to_string(),
-                success: true,
+            Some(outcome) => ToolResult {
+                tool: tool.clone(),
+                result: outcome
+                    .error
+                    .unwrap_or_else(|| "tool call failed".to_string()),
+                success: false,
             },
-            "code_execution" => ToolResult {
-                tool: tool_name.to_string(),
-                result: "Output: Processed tensor batch in 2.4ms".to_string(),
-                success: true,
+            None => ToolResult {
+                tool: tool.clone(),
+                result: "tool server is not connected".to_string(),
+                success: false,
             },
-            _ => ToolResult {
-                tool: tool_name.to_string(),
-                result: format!("Tool '{}' executed successfully.", tool_name),
-                success: true,
-            },
+        };
+        let observation_value = if result.success {
+            serde_json::from_str(&result.result)
+                .unwrap_or_else(|_| serde_json::json!({ "content": result.result }))
+        } else {
+            serde_json::json!({ "error": result.result })
+        };
+        let observation = mcp::toolcall::format_observation(&tool, &observation_value);
+        tool_results_so_far.push(result);
+        observation
+    } else {
+        tool_results_so_far.push(ToolResult {
+            tool: tool.clone(),
+            result: "the user denied permission to run this tool".to_string(),
+            success: false,
+        });
+        mcp::toolcall::format_denial(&tool)
+    };
+
+    scratchpad.push_str(&format!(
+        "\nAssistant: {}\n{}",
+        last_model_text.trim(),
+        observation
+    ));
+
+    native_tool_loop_core(
+        native_engine_client,
+        mcp_registry,
+        &model,
+        &native_engine,
+        &user_message,
+        &tool_instructions,
+        &tools,
+        exec_tokens,
+        temp,
+        top_p,
+        top_k,
+        penalty,
+        scratchpad,
+        tool_results_so_far,
+        iterations_left,
+    )
+    .await
+}
+
+struct OllamaChatOutcome {
+    text: String,
+    tool_results: Vec<ToolResult>,
+}
+
+/// `GuiChatRequest.response_format` is documented (and Native/vLLM both
+/// expect it) as OpenAI's `{"type": "json_schema", "json_schema": {"schema":
+/// {...}}}` / `{"type": "json_object"}` shape. Ollama's own `format` field
+/// wants the raw schema directly, or the literal string `"json"` - confirmed
+/// live: sending the OpenAI wrapper as-is produced no constraint at all,
+/// while unwrapping it to the bare schema produced correct structured JSON.
+/// Unwrapping here lets callers send one consistent shape regardless of
+/// which engine is active.
+fn normalize_response_format_for_ollama(value: serde_json::Value) -> serde_json::Value {
+    let Some(obj) = value.as_object() else {
+        return value;
+    };
+    match obj.get("type").and_then(|t| t.as_str()) {
+        Some("json_schema") => obj
+            .get("json_schema")
+            .and_then(|s| s.get("schema"))
+            .cloned()
+            .unwrap_or(value.clone()),
+        Some("json_object") => serde_json::Value::String("json".to_string()),
+        _ => value.clone(),
+    }
+}
+
+enum OllamaLoopStep {
+    Done(OllamaChatOutcome),
+    NeedsConfirmation(Box<PendingToolCall>),
+}
+
+/// Parses one Ollama-shaped raw tool call (`{"function": {"name", "arguments"}}`)
+/// into a (name, args) pair. Ollama sends already-parsed argument objects
+/// (unlike OpenAI/vLLM's JSON-encoded string) - tolerates a string form too in
+/// case a particular model template emits one anyway.
+fn parse_ollama_tool_call(call: &serde_json::Value) -> (String, serde_json::Value) {
+    let name = call
+        .get("function")
+        .and_then(|f| f.get("name"))
+        .and_then(|n| n.as_str())
+        .unwrap_or_default()
+        .to_string();
+    let raw_args = call
+        .get("function")
+        .and_then(|f| f.get("arguments"))
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+    let args = match raw_args {
+        serde_json::Value::String(s) => serde_json::from_str(&s).unwrap_or(serde_json::Value::Null),
+        other => other,
+    };
+    (name, args)
+}
+
+/// Works through a batch of tool calls Ollama requested in one turn, in
+/// order, appending each real result as a "tool" role message. Stops and
+/// returns the confirmation-gated call (plus whatever calls in the batch
+/// hadn't been reached yet) the moment one needs approval, rather than
+/// silently skipping the gate for later calls in the same batch.
+async fn ollama_process_call_batch(
+    mcp_registry: &mcp::McpRegistry,
+    tools: &[mcp::McpToolSchema],
+    calls: Vec<serde_json::Value>,
+    messages: &mut Vec<ollama::ChatMessage>,
+    tool_results: &mut Vec<ToolResult>,
+) -> Option<(String, String, serde_json::Value, Vec<serde_json::Value>)> {
+    let mut iter = calls.into_iter();
+    while let Some(call) = iter.next() {
+        let (name, args) = parse_ollama_tool_call(&call);
+        if let Some(schema) = tools.iter().find(|t| t.name == name) {
+            if mcp_registry.requires_confirmation(&schema.server).await {
+                return Some((name, schema.server.clone(), args, iter.collect()));
+            }
+        }
+        let outcome = invoke_mcp_tool(mcp_registry, tools, &name, args).await;
+        messages.push(ollama::ChatMessage {
+            role: "tool".to_string(),
+            content: outcome.result.clone(),
+            tool_calls: None,
+        });
+        tool_results.push(outcome);
+    }
+    None
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn ollama_chat_loop_core(
+    ollama_client: &ollama::OllamaClient,
+    mcp_registry: &mcp::McpRegistry,
+    model: &str,
+    tools: &[mcp::McpToolSchema],
+    openai_tools: &Option<Vec<serde_json::Value>>,
+    response_format: &Option<serde_json::Value>,
+    temp: f32,
+    top_p: f32,
+    top_k: usize,
+    penalty: f32,
+    max_tokens: usize,
+    mut messages: Vec<ollama::ChatMessage>,
+    mut tool_results: Vec<ToolResult>,
+    mut iterations_left: usize,
+) -> Result<OllamaLoopStep, String> {
+    while iterations_left > 0 {
+        iterations_left -= 1;
+        let response = ollama_client
+            .chat(
+                model,
+                &messages,
+                Some(temp),
+                Some(top_p),
+                Some(top_k),
+                Some(penalty),
+                Some(max_tokens),
+                openai_tools.clone(),
+                response_format.clone(),
+            )
+            .await
+            .map_err(|err| err.to_string())?;
+
+        let requested_calls = response.message.tool_calls.clone().unwrap_or_default();
+        if requested_calls.is_empty() {
+            return Ok(OllamaLoopStep::Done(OllamaChatOutcome {
+                text: response.message.content,
+                tool_results,
+            }));
+        }
+
+        // Ollama's protocol expects the assistant's own tool_calls turn echoed
+        // back into history before any "tool" role replies, same as OpenAI's.
+        messages.push(response.message.clone());
+
+        if let Some((tool, server, args, remaining_calls)) = ollama_process_call_batch(
+            mcp_registry,
+            tools,
+            requested_calls,
+            &mut messages,
+            &mut tool_results,
+        )
+        .await
+        {
+            return Ok(OllamaLoopStep::NeedsConfirmation(Box::new(
+                PendingToolCall::Ollama {
+                    model: model.to_string(),
+                    messages,
+                    tools: tools.to_vec(),
+                    temp,
+                    top_p,
+                    top_k,
+                    penalty,
+                    max_tokens,
+                    response_format: response_format.clone(),
+                    iterations_left,
+                    tool,
+                    server,
+                    args,
+                    tool_results_so_far: tool_results,
+                    remaining_calls,
+                },
+            )));
         }
     }
+
+    Ok(OllamaLoopStep::Done(OllamaChatOutcome {
+        text: format!(
+            "(stopped after {} tool round-trips without a final answer)",
+            mcp::toolcall::MAX_TOOL_ITERATIONS
+        ),
+        tool_results,
+    }))
+}
+
+/// Real tool calling for Ollama: unlike Native's text-scratchpad TOOL_CALL:
+/// shim, Ollama's own `/api/chat` natively parses OpenAI-style function
+/// tools and returns `tool_calls` on the message when the model's template
+/// supports it — so this drives the actual assistant/tool message protocol
+/// instead of reimplementing ReAct-over-plain-text.
+#[allow(clippy::too_many_arguments)]
+async fn run_ollama_chat(
+    ollama_client: &ollama::OllamaClient,
+    mcp_registry: &mcp::McpRegistry,
+    model: &str,
+    user_message: &str,
+    temp: f32,
+    top_p: f32,
+    top_k: usize,
+    penalty: f32,
+    max_tokens: usize,
+    tools: &[mcp::McpToolSchema],
+    response_format: Option<serde_json::Value>,
+) -> Result<OllamaLoopStep, String> {
+    let messages = vec![ollama::ChatMessage {
+        role: "user".to_string(),
+        content: user_message.to_string(),
+        tool_calls: None,
+    }];
+
+    let openai_tools = if tools.is_empty() {
+        None
+    } else {
+        Some(mcp_tools_to_openai_json(tools))
+    };
+
+    let response_format = response_format.map(normalize_response_format_for_ollama);
+
+    ollama_chat_loop_core(
+        ollama_client,
+        mcp_registry,
+        model,
+        tools,
+        &openai_tools,
+        &response_format,
+        temp,
+        top_p,
+        top_k,
+        penalty,
+        max_tokens,
+        messages,
+        Vec::new(),
+        mcp::toolcall::MAX_TOOL_ITERATIONS,
+    )
+    .await
+}
+
+/// Resumes a paused `PendingToolCall::Ollama` after approve/deny: appends the
+/// real result (or a denial) as a "tool" role message, finishes working
+/// through any other calls left in that same batch, then re-enters
+/// `ollama_chat_loop_core` with the remaining iteration budget.
+async fn resume_ollama_chat(
+    ollama_client: &ollama::OllamaClient,
+    mcp_registry: &mcp::McpRegistry,
+    pending: PendingToolCall,
+    approve: bool,
+) -> Result<OllamaLoopStep, String> {
+    let PendingToolCall::Ollama {
+        model,
+        mut messages,
+        tools,
+        temp,
+        top_p,
+        top_k,
+        penalty,
+        max_tokens,
+        response_format,
+        iterations_left,
+        tool,
+        server: _,
+        args,
+        mut tool_results_so_far,
+        remaining_calls,
+    } = pending
+    else {
+        unreachable!("resume_ollama_chat called with a non-Ollama PendingToolCall");
+    };
+
+    let outcome = if approve {
+        invoke_mcp_tool(mcp_registry, &tools, &tool, args).await
+    } else {
+        ToolResult {
+            tool: tool.clone(),
+            result: "the user denied permission to run this tool".to_string(),
+            success: false,
+        }
+    };
+    messages.push(ollama::ChatMessage {
+        role: "tool".to_string(),
+        content: outcome.result.clone(),
+        tool_calls: None,
+    });
+    tool_results_so_far.push(outcome);
+
+    if let Some((next_tool, next_server, next_args, next_remaining)) = ollama_process_call_batch(
+        mcp_registry,
+        &tools,
+        remaining_calls,
+        &mut messages,
+        &mut tool_results_so_far,
+    )
+    .await
+    {
+        return Ok(OllamaLoopStep::NeedsConfirmation(Box::new(
+            PendingToolCall::Ollama {
+                model,
+                messages,
+                tools,
+                temp,
+                top_p,
+                top_k,
+                penalty,
+                max_tokens,
+                response_format,
+                iterations_left,
+                tool: next_tool,
+                server: next_server,
+                args: next_args,
+                tool_results_so_far,
+                remaining_calls: next_remaining,
+            },
+        )));
+    }
+
+    let openai_tools = if tools.is_empty() {
+        None
+    } else {
+        Some(mcp_tools_to_openai_json(&tools))
+    };
+
+    ollama_chat_loop_core(
+        ollama_client,
+        mcp_registry,
+        &model,
+        &tools,
+        &openai_tools,
+        &response_format,
+        temp,
+        top_p,
+        top_k,
+        penalty,
+        max_tokens,
+        messages,
+        tool_results_so_far,
+        iterations_left,
+    )
+    .await
+}
+
+struct VllmChatOutcome {
+    text: String,
+    tool_results: Vec<ToolResult>,
+}
+
+enum VllmLoopStep {
+    Done(VllmChatOutcome),
+    NeedsConfirmation(Box<PendingToolCall>),
+}
+
+/// Works through vLLM tool calls requested in one turn, in order, appending
+/// each real result as a `tool_call_id`-matched "tool" role message. Stops
+/// and returns the confirmation-gated call (plus whichever calls in the
+/// batch hadn't been reached yet) the moment one needs approval.
+async fn vllm_process_call_batch(
+    mcp_registry: &mcp::McpRegistry,
+    tools: &[mcp::McpToolSchema],
+    calls: Vec<vllm::VllmToolCall>,
+    messages: &mut Vec<serde_json::Value>,
+    tool_results: &mut Vec<ToolResult>,
+) -> Option<(
+    String,
+    String,
+    serde_json::Value,
+    Option<String>,
+    Vec<vllm::VllmToolCall>,
+)> {
+    let mut iter = calls.into_iter();
+    while let Some(call) = iter.next() {
+        let args: serde_json::Value =
+            serde_json::from_str(&call.function.arguments).unwrap_or(serde_json::Value::Null);
+        if let Some(schema) = tools.iter().find(|t| t.name == call.function.name) {
+            if mcp_registry.requires_confirmation(&schema.server).await {
+                return Some((
+                    call.function.name,
+                    schema.server.clone(),
+                    args,
+                    call.id,
+                    iter.collect(),
+                ));
+            }
+        }
+        let outcome = invoke_mcp_tool(mcp_registry, tools, &call.function.name, args).await;
+        messages.push(serde_json::json!({
+            "role": "tool",
+            "tool_call_id": call.id,
+            "content": outcome.result.clone(),
+        }));
+        tool_results.push(outcome);
+    }
+    None
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn vllm_chat_loop_core(
+    vllm_client: &vllm::VllmClient,
+    mcp_registry: &mcp::McpRegistry,
+    model: &str,
+    tools: &[mcp::McpToolSchema],
+    openai_tools: &Option<Vec<serde_json::Value>>,
+    response_format: &Option<serde_json::Value>,
+    temp: f32,
+    top_p: f32,
+    top_k: usize,
+    penalty: f32,
+    max_tokens: usize,
+    mut messages: Vec<serde_json::Value>,
+    mut tool_results: Vec<ToolResult>,
+    mut iterations_left: usize,
+) -> Result<VllmLoopStep, String> {
+    while iterations_left > 0 {
+        iterations_left -= 1;
+        let result = vllm_client
+            .chat(
+                model,
+                messages.clone(),
+                temp,
+                top_p,
+                top_k,
+                penalty,
+                max_tokens,
+                openai_tools.clone(),
+                response_format.clone(),
+            )
+            .await
+            .map_err(|err| err.to_string())?;
+
+        if result.tool_calls.is_empty() {
+            return Ok(VllmLoopStep::Done(VllmChatOutcome {
+                text: result.content,
+                tool_results,
+            }));
+        }
+
+        // Echo the assistant's own tool_calls turn back into history before
+        // any "tool" role replies, per the OpenAI protocol vLLM follows.
+        messages.push(serde_json::json!({
+            "role": "assistant",
+            "content": result.content,
+            "tool_calls": result.tool_calls.iter().map(|c| serde_json::json!({
+                "id": c.id,
+                "type": "function",
+                "function": { "name": c.function.name, "arguments": c.function.arguments }
+            })).collect::<Vec<_>>(),
+        }));
+
+        if let Some((tool, server, args, call_id, remaining_calls)) = vllm_process_call_batch(
+            mcp_registry,
+            tools,
+            result.tool_calls,
+            &mut messages,
+            &mut tool_results,
+        )
+        .await
+        {
+            return Ok(VllmLoopStep::NeedsConfirmation(Box::new(
+                PendingToolCall::Vllm {
+                    model: model.to_string(),
+                    messages,
+                    tools: tools.to_vec(),
+                    temp,
+                    top_p,
+                    top_k,
+                    penalty,
+                    max_tokens,
+                    response_format: response_format.clone(),
+                    iterations_left,
+                    tool,
+                    server,
+                    args,
+                    call_id,
+                    tool_results_so_far: tool_results,
+                    remaining_calls,
+                },
+            )));
+        }
+    }
+
+    Ok(VllmLoopStep::Done(VllmChatOutcome {
+        text: format!(
+            "(stopped after {} tool round-trips without a final answer)",
+            mcp::toolcall::MAX_TOOL_ITERATIONS
+        ),
+        tool_results,
+    }))
+}
+
+/// Real tool calling for vLLM: its OpenAI-compatible server natively parses
+/// `tools`/`tool_choice` and returns `tool_calls` on the assistant message,
+/// same protocol shape as OpenAI itself (unlike Ollama, replies need a
+/// matching `tool_call_id` per call).
+#[allow(clippy::too_many_arguments)]
+async fn run_vllm_chat(
+    vllm_client: &vllm::VllmClient,
+    mcp_registry: &mcp::McpRegistry,
+    model: &str,
+    user_message: &str,
+    temp: f32,
+    top_p: f32,
+    top_k: usize,
+    penalty: f32,
+    max_tokens: usize,
+    tools: &[mcp::McpToolSchema],
+    response_format: Option<serde_json::Value>,
+) -> Result<VllmLoopStep, String> {
+    let messages = vec![serde_json::json!({ "role": "user", "content": user_message })];
+
+    let openai_tools = if tools.is_empty() {
+        None
+    } else {
+        Some(mcp_tools_to_openai_json(tools))
+    };
+
+    vllm_chat_loop_core(
+        vllm_client,
+        mcp_registry,
+        model,
+        tools,
+        &openai_tools,
+        &response_format,
+        temp,
+        top_p,
+        top_k,
+        penalty,
+        max_tokens,
+        messages,
+        Vec::new(),
+        mcp::toolcall::MAX_TOOL_ITERATIONS,
+    )
+    .await
+}
+
+/// Resumes a paused `PendingToolCall::Vllm` after approve/deny: appends the
+/// real result (or a denial) as a `tool_call_id`-matched "tool" role message,
+/// finishes any other calls left in that batch, then re-enters
+/// `vllm_chat_loop_core` with the remaining iteration budget.
+async fn resume_vllm_chat(
+    vllm_client: &vllm::VllmClient,
+    mcp_registry: &mcp::McpRegistry,
+    pending: PendingToolCall,
+    approve: bool,
+) -> Result<VllmLoopStep, String> {
+    let PendingToolCall::Vllm {
+        model,
+        mut messages,
+        tools,
+        temp,
+        top_p,
+        top_k,
+        penalty,
+        max_tokens,
+        response_format,
+        iterations_left,
+        tool,
+        args,
+        call_id,
+        mut tool_results_so_far,
+        remaining_calls,
+        ..
+    } = pending
+    else {
+        unreachable!("resume_vllm_chat called with a non-Vllm PendingToolCall");
+    };
+
+    let outcome = if approve {
+        invoke_mcp_tool(mcp_registry, &tools, &tool, args).await
+    } else {
+        ToolResult {
+            tool: tool.clone(),
+            result: "the user denied permission to run this tool".to_string(),
+            success: false,
+        }
+    };
+    messages.push(serde_json::json!({
+        "role": "tool",
+        "tool_call_id": call_id,
+        "content": outcome.result.clone(),
+    }));
+    tool_results_so_far.push(outcome);
+
+    if let Some((next_tool, next_server, next_args, next_call_id, next_remaining)) =
+        vllm_process_call_batch(
+            mcp_registry,
+            &tools,
+            remaining_calls,
+            &mut messages,
+            &mut tool_results_so_far,
+        )
+        .await
+    {
+        return Ok(VllmLoopStep::NeedsConfirmation(Box::new(
+            PendingToolCall::Vllm {
+                model,
+                messages,
+                tools,
+                temp,
+                top_p,
+                top_k,
+                penalty,
+                max_tokens,
+                response_format,
+                iterations_left,
+                tool: next_tool,
+                server: next_server,
+                args: next_args,
+                call_id: next_call_id,
+                tool_results_so_far,
+                remaining_calls: next_remaining,
+            },
+        )));
+    }
+
+    let openai_tools = if tools.is_empty() {
+        None
+    } else {
+        Some(mcp_tools_to_openai_json(&tools))
+    };
+
+    vllm_chat_loop_core(
+        vllm_client,
+        mcp_registry,
+        &model,
+        &tools,
+        &openai_tools,
+        &response_format,
+        temp,
+        top_p,
+        top_k,
+        penalty,
+        max_tokens,
+        messages,
+        tool_results_so_far,
+        iterations_left,
+    )
+    .await
 }
 
 fn models_path() -> PathBuf {
@@ -1891,7 +2864,19 @@ struct GuiChatRequest {
     stream: Option<bool>,
     #[allow(dead_code)]
     mcp: Option<serde_json::Value>,
+    /// OpenAI-style `response_format` (e.g. `{"type": "json_schema", "json_schema": {...}}`),
+    /// forwarded to llama-server for the Native engine — see `run_native_tool_loop`'s
+    /// sibling plain-generation path in `handle_gui_chat`.
+    #[serde(default)]
+    response_format: Option<serde_json::Value>,
 }
+
+#[derive(Debug, Deserialize)]
+struct ToolConfirmRequest {
+    request_id: String,
+    approve: bool,
+}
+
 #[derive(Debug, Deserialize)]
 struct ModelLoadRequest {
     model: String,
@@ -2001,6 +2986,85 @@ struct ToolResult {
     tool: String,
     result: String,
     success: bool,
+}
+
+/// Resumable state for a tool call that hit a `requires_confirmation` MCP
+/// server (terminal, code_execution, ...) and paused mid-turn instead of
+/// auto-executing. Keyed by request_id in `BackendState::pending_tool_calls`
+/// and consumed by `POST /api/inference/chat/tool-confirm`. Each engine
+/// carries whatever it needs to resume its own protocol: Native's flat
+/// text scratchpad, Ollama/vLLM's structured message history.
+#[derive(Debug)]
+enum PendingToolCall {
+    Native {
+        model: String,
+        native_engine: String,
+        tool_instructions: String,
+        user_message: String,
+        scratchpad: String,
+        tools: Vec<mcp::McpToolSchema>,
+        exec_tokens: usize,
+        temp: f32,
+        top_p: f32,
+        top_k: usize,
+        penalty: f32,
+        iterations_left: usize,
+        tool: String,
+        server: String,
+        args: serde_json::Value,
+        last_model_text: String,
+        tool_results_so_far: Vec<ToolResult>,
+    },
+    Ollama {
+        model: String,
+        messages: Vec<ollama::ChatMessage>,
+        tools: Vec<mcp::McpToolSchema>,
+        temp: f32,
+        top_p: f32,
+        top_k: usize,
+        penalty: f32,
+        max_tokens: usize,
+        response_format: Option<serde_json::Value>,
+        iterations_left: usize,
+        tool: String,
+        server: String,
+        args: serde_json::Value,
+        tool_results_so_far: Vec<ToolResult>,
+        /// A single turn can request several tool calls at once - these are
+        /// the ones still unprocessed after the one awaiting confirmation, so
+        /// resume can keep working through the same batch in order instead of
+        /// dropping them.
+        remaining_calls: Vec<serde_json::Value>,
+    },
+    Vllm {
+        model: String,
+        messages: Vec<serde_json::Value>,
+        tools: Vec<mcp::McpToolSchema>,
+        temp: f32,
+        top_p: f32,
+        top_k: usize,
+        penalty: f32,
+        max_tokens: usize,
+        response_format: Option<serde_json::Value>,
+        iterations_left: usize,
+        tool: String,
+        server: String,
+        args: serde_json::Value,
+        call_id: Option<String>,
+        tool_results_so_far: Vec<ToolResult>,
+        remaining_calls: Vec<vllm::VllmToolCall>,
+    },
+}
+
+/// Info about a paused tool call surfaced to the GUI so it can render the
+/// "Approve / Deny" prompt — mirrors the frontend's `PendingToolCall` type
+/// in `store.ts` exactly (`request_id`/`tool`/`server`/`args`).
+#[derive(Serialize)]
+struct PendingToolCallInfo {
+    request_id: String,
+    tool: String,
+    server: String,
+    args: serde_json::Value,
 }
 
 fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
@@ -2206,6 +3270,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                     &settings.native_engine,
                     None,
                     false,
+                    None,
                 )
                 .await
             {
@@ -3340,6 +4405,19 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         Json(build_inference_engines_json(backend.inference_backend))
     }
 
+    async fn handle_mcp_servers(
+        State(state): State<Arc<Mutex<BackendState>>>,
+    ) -> Json<serde_json::Value> {
+        let registry = {
+            let backend = lock_state(&state);
+            Arc::clone(&backend.mcp_registry)
+        };
+        match registry.list_all_servers().await {
+            Ok(servers) => Json(serde_json::json!({ "servers": servers })),
+            Err(err) => Json(serde_json::json!({ "servers": [], "error": err })),
+        }
+    }
+
     async fn handle_gui_ollama_health(
         State(state): State<Arc<Mutex<BackendState>>>,
     ) -> Json<serde_json::Value> {
@@ -3727,6 +4805,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                 req.repeat_penalty,
                 req.max_tokens,
                 None,
+                None,
             )
             .await
         {
@@ -3743,21 +4822,22 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
     ) -> axum::response::Response {
         let started = Instant::now();
 
-        let mut tool_results = Vec::new();
-        // Performance optimization: avoid cloning potentially large MCP payloads
-        // and dispatch tools without async-await state machine overhead.
-        // Expected impact: lower per-request CPU and latency for tool-heavy chat calls.
-        let empty_tool_args = serde_json::Value::Null;
-        if let Some(mcp) = req.mcp.as_ref() {
-            if let Some(tools) = mcp.get("tools").and_then(|t| t.as_array()) {
-                tool_results = Vec::with_capacity(tools.len());
-                for tool_val in tools {
-                    if let Some(tool_name) = tool_val.as_str() {
-                        tool_results.push(ToolDispatcher::dispatch(tool_name, &empty_tool_args));
-                    }
-                }
-            }
-        }
+        // Legacy chat "tool slot" names the GUI's tool checkboxes send (calculator,
+        // file_operations, ...) - resolved against real MCP servers below, then
+        // dispatched via whichever protocol the active engine actually speaks
+        // (native TOOL_CALL: prompt shim, Ollama/vLLM's own OpenAI-style tools).
+        let enabled_tool_slots: Vec<String> = req
+            .mcp
+            .as_ref()
+            .and_then(|mcp| mcp.get("tools"))
+            .and_then(|t| t.as_array())
+            .map(|tools| {
+                tools
+                    .iter()
+                    .filter_map(|v| v.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default();
 
         let (
             current_model,
@@ -3768,6 +4848,8 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             native_engine_client,
             vllm_client,
             settings,
+            mcp_registry,
+            pending_tool_calls,
         ) = {
             let backend = lock_state(&state);
             let inference_backend = InferenceEngine::parse(&backend.settings.inference_backend);
@@ -3780,8 +4862,23 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                 backend.native_engine_client.clone(),
                 backend.vllm_client.clone(),
                 backend.settings.clone(),
+                Arc::clone(&backend.mcp_registry),
+                Arc::clone(&backend.pending_tool_calls),
             )
         };
+
+        // Real MCP-backed tools: resolve each enabled slot to its connected
+        // server, then to that server's actual tool schemas. Confirmation-
+        // gated servers (terminal, code_execution, ...) are included here too
+        // — the gate is enforced at invocation time (see invoke_mcp_tool's
+        // callers pausing via PendingToolCall), not by hiding the tool from
+        // the model entirely.
+        let mut enabled_tools: Vec<mcp::McpToolSchema> = Vec::new();
+        for slot in &enabled_tool_slots {
+            if let Some(server_name) = mcp_registry.server_for_slot(slot).await {
+                enabled_tools.extend(mcp_registry.tool_schemas_for_server(&server_name).await);
+            }
+        }
 
         let token_estimate = req.message.split_whitespace().count().clamp(1, 1024);
         let temp = req.temperature.unwrap_or(settings.temperature);
@@ -3800,6 +4897,8 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         let mut gen_tokens: Option<u32> = None;
         let mut gen_tps: Option<f32> = None;
         let mut gen_latency_ms: Option<f32> = None;
+        let mut tool_results: Vec<ToolResult> = Vec::new();
+        let mut pending_tool_call: Option<PendingToolCallInfo> = None;
 
         let (response_text, real_inference, backend_used) = match inference_backend {
             InferenceEngine::Ollama => {
@@ -3836,8 +4935,10 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                     Ok(available_models) => {
                         let effective_model = resolve_model(&current_model, &available_models);
                         if let Some(model_name) = effective_model {
-                            match ollama_client
-                                .generate(
+                            if !enabled_tools.is_empty() || req.response_format.is_some() {
+                                match run_ollama_chat(
+                                    &ollama_client,
+                                    &mcp_registry,
                                     &model_name,
                                     &req.message,
                                     temp,
@@ -3845,25 +4946,72 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                                     top_k,
                                     penalty,
                                     exec_tokens,
+                                    &enabled_tools,
+                                    req.response_format.clone(),
                                 )
                                 .await
-                            {
-                                Ok(text) => {
-                                    if model_name != current_model {
-                                        let mut backend = lock_state(&state);
-                                        backend.current_model = model_name;
+                                {
+                                    Ok(OllamaLoopStep::Done(outcome)) => {
+                                        if model_name != current_model {
+                                            let mut backend = lock_state(&state);
+                                            backend.current_model = model_name;
+                                        }
+                                        let text = outcome.text.trim().to_string();
+                                        gen_tokens = Some(
+                                            (text.split_whitespace().count() as u32).max(1),
+                                        );
+                                        tool_results = outcome.tool_results;
+                                        (text, true, InferenceEngine::Ollama.as_str())
                                     }
-                                    let text = text.trim().to_string();
-                                    gen_tokens =
-                                        Some((text.split_whitespace().count() as u32).max(1));
-                                    (text, true, InferenceEngine::Ollama.as_str())
+                                    Ok(OllamaLoopStep::NeedsConfirmation(pending)) => {
+                                        if model_name != current_model {
+                                            let mut backend = lock_state(&state);
+                                            backend.current_model = model_name;
+                                        }
+                                        pending_tool_call = Some(
+                                            stash_pending_tool_call(&pending_tool_calls, *pending)
+                                                .await,
+                                        );
+                                        (String::new(), true, InferenceEngine::Ollama.as_str())
+                                    }
+                                    Err(err) => {
+                                        let fallback = format!(
+                                            "Ollama chat failed for model '{}': {}",
+                                            model_name, err
+                                        );
+                                        (fallback, false, InferenceEngine::Ollama.as_str())
+                                    }
                                 }
-                                Err(err) => {
-                                    let fallback = format!(
-                                        "Ollama generate failed for model '{}': {}",
-                                        model_name, err
-                                    );
-                                    (fallback, false, InferenceEngine::Ollama.as_str())
+                            } else {
+                                match ollama_client
+                                    .generate(
+                                        &model_name,
+                                        &req.message,
+                                        temp,
+                                        top_p,
+                                        top_k,
+                                        penalty,
+                                        exec_tokens,
+                                    )
+                                    .await
+                                {
+                                    Ok(text) => {
+                                        if model_name != current_model {
+                                            let mut backend = lock_state(&state);
+                                            backend.current_model = model_name;
+                                        }
+                                        let text = text.trim().to_string();
+                                        gen_tokens =
+                                            Some((text.split_whitespace().count() as u32).max(1));
+                                        (text, true, InferenceEngine::Ollama.as_str())
+                                    }
+                                    Err(err) => {
+                                        let fallback = format!(
+                                            "Ollama generate failed for model '{}': {}",
+                                            model_name, err
+                                        );
+                                        (fallback, false, InferenceEngine::Ollama.as_str())
+                                    }
                                 }
                             }
                         } else {
@@ -3894,6 +5042,40 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                     }
                 }
             }
+            InferenceEngine::Native if !enabled_tools.is_empty() => {
+                let step = run_native_tool_loop(
+                    &native_engine_client,
+                    &mcp_registry,
+                    &current_model,
+                    &req.message,
+                    exec_tokens,
+                    temp,
+                    top_p,
+                    top_k,
+                    penalty,
+                    &settings.native_engine,
+                    &enabled_tools,
+                )
+                .await;
+                match step {
+                    NativeLoopStep::Done(outcome) => {
+                        gen_tokens = outcome.tokens;
+                        gen_tps = outcome.tokens_per_sec;
+                        gen_latency_ms = outcome.latency_ms;
+                        tool_results = outcome.tool_results;
+                        (
+                            outcome.text,
+                            outcome.real_inference,
+                            InferenceEngine::Native.as_str(),
+                        )
+                    }
+                    NativeLoopStep::NeedsConfirmation(pending) => {
+                        pending_tool_call =
+                            Some(stash_pending_tool_call(&pending_tool_calls, *pending).await);
+                        (String::new(), true, InferenceEngine::Native.as_str())
+                    }
+                }
+            }
             InferenceEngine::Native => {
                 match native_engine_client
                     .generate(
@@ -3907,6 +5089,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                         &settings.native_engine,
                         None,
                         false,
+                        req.response_format.clone(),
                     )
                     .await
                 {
@@ -3929,6 +5112,43 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                         ),
                         false,
                         InferenceEngine::Native.as_str(),
+                    ),
+                }
+            }
+            InferenceEngine::Vllm if !enabled_tools.is_empty() || req.response_format.is_some() => {
+                match run_vllm_chat(
+                    &vllm_client,
+                    &mcp_registry,
+                    &current_model,
+                    &req.message,
+                    temp,
+                    top_p,
+                    top_k,
+                    penalty,
+                    exec_tokens,
+                    &enabled_tools,
+                    req.response_format.clone(),
+                )
+                .await
+                {
+                    Ok(VllmLoopStep::Done(outcome)) => {
+                        let text = outcome.text.trim().to_string();
+                        gen_tokens = Some((text.split_whitespace().count() as u32).max(1));
+                        tool_results = outcome.tool_results;
+                        (text, true, InferenceEngine::Vllm.as_str())
+                    }
+                    Ok(VllmLoopStep::NeedsConfirmation(pending)) => {
+                        pending_tool_call =
+                            Some(stash_pending_tool_call(&pending_tool_calls, *pending).await);
+                        (String::new(), true, InferenceEngine::Vllm.as_str())
+                    }
+                    Err(err) => (
+                        format!(
+                            "vLLM backend processed model '{}' with {} estimated tokens. vLLM error: {}",
+                            current_model, exec_tokens, err
+                        ),
+                        false,
+                        InferenceEngine::Vllm.as_str(),
                     ),
                 }
             }
@@ -4029,19 +5249,13 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             (request_seq, session_id, metrics_json)
         };
 
-        let mut final_response = response_text;
-        if !tool_results.is_empty() {
-            final_response.push_str("\n\nTools used:");
-            for res in &tool_results {
-                final_response.push_str("\n- **");
-                final_response.push_str(&res.tool);
-                final_response.push_str("**: ");
-                final_response.push_str(&res.result);
-            }
-        }
-
+        // No "Tools used:" text footer here: every engine's tool results are
+        // now real (see run_native_tool_loop/run_ollama_chat/run_vllm_chat)
+        // and already woven into the model's own final answer, so appending
+        // them again would just duplicate the content. The GUI instead
+        // renders `tool_results` below as its own badge per message.
         let mut response = serde_json::json!({
-            "response": final_response,
+            "response": response_text,
             "request_id": format!("req-{}", request_id),
             "session_id": session_id,
             "model": current_model,
@@ -4070,10 +5284,16 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             }
         }
 
+        if let Some(pending) = pending_tool_call {
+            if let Some(response_object) = response.as_object_mut() {
+                response_object.insert("pending_tool_call".to_string(), serde_json::json!(pending));
+            }
+        }
+
         request_tracker.decrement().await;
 
         if req.stream.unwrap_or(false) {
-            let tokens: Vec<String> = final_response
+            let tokens: Vec<String> = response_text
                 .split_whitespace()
                 .map(|s| format!("{} ", s))
                 .collect();
@@ -4091,6 +5311,130 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         } else {
             Json(response).into_response()
         }
+    }
+
+    /// Resumes a chat turn that paused on a `requires_confirmation` MCP
+    /// server (see the `NeedsConfirmation` cases in `handle_gui_chat`). Looks
+    /// up the saved `PendingToolCall` by `request_id`, then dispatches to
+    /// whichever engine's resume function matches its variant - approving
+    /// runs the real tool for the first time (it was never auto-executed);
+    /// denying feeds back `mcp::toolcall::format_denial` instead.
+    async fn handle_tool_confirm(
+        State(state): State<Arc<Mutex<BackendState>>>,
+        Json(req): Json<ToolConfirmRequest>,
+    ) -> Json<serde_json::Value> {
+        let (native_engine_client, ollama_client, vllm_client, mcp_registry, pending_tool_calls) = {
+            let backend = lock_state(&state);
+            (
+                backend.native_engine_client.clone(),
+                backend.ollama_client.clone(),
+                backend.vllm_client.clone(),
+                Arc::clone(&backend.mcp_registry),
+                Arc::clone(&backend.pending_tool_calls),
+            )
+        };
+
+        let pending = {
+            let mut store = pending_tool_calls.lock().await;
+            store.remove(&req.request_id)
+        };
+
+        let Some(pending) = pending else {
+            return Json(serde_json::json!({
+                "error": format!(
+                    "no pending tool call with request_id '{}' (already resolved, or the server restarted)",
+                    req.request_id
+                )
+            }));
+        };
+
+        let mut tool_results: Vec<ToolResult> = Vec::new();
+        let mut pending_tool_call: Option<PendingToolCallInfo> = None;
+
+        let (response_text, backend_used): (String, &str) = match &pending {
+            PendingToolCall::Native { .. } => {
+                match resume_native_tool_loop(
+                    &native_engine_client,
+                    &mcp_registry,
+                    pending,
+                    req.approve,
+                )
+                .await
+                {
+                    NativeLoopStep::Done(outcome) => {
+                        tool_results = outcome.tool_results;
+                        (outcome.text, InferenceEngine::Native.as_str())
+                    }
+                    NativeLoopStep::NeedsConfirmation(next_pending) => {
+                        pending_tool_call =
+                            Some(stash_pending_tool_call(&pending_tool_calls, *next_pending).await);
+                        (String::new(), InferenceEngine::Native.as_str())
+                    }
+                }
+            }
+            PendingToolCall::Ollama { .. } => {
+                match resume_ollama_chat(&ollama_client, &mcp_registry, pending, req.approve).await
+                {
+                    Ok(OllamaLoopStep::Done(outcome)) => {
+                        tool_results = outcome.tool_results;
+                        (
+                            outcome.text.trim().to_string(),
+                            InferenceEngine::Ollama.as_str(),
+                        )
+                    }
+                    Ok(OllamaLoopStep::NeedsConfirmation(next_pending)) => {
+                        pending_tool_call =
+                            Some(stash_pending_tool_call(&pending_tool_calls, *next_pending).await);
+                        (String::new(), InferenceEngine::Ollama.as_str())
+                    }
+                    Err(err) => (
+                        format!("Ollama chat failed while resuming: {err}"),
+                        InferenceEngine::Ollama.as_str(),
+                    ),
+                }
+            }
+            PendingToolCall::Vllm { .. } => {
+                match resume_vllm_chat(&vllm_client, &mcp_registry, pending, req.approve).await {
+                    Ok(VllmLoopStep::Done(outcome)) => {
+                        tool_results = outcome.tool_results;
+                        (
+                            outcome.text.trim().to_string(),
+                            InferenceEngine::Vllm.as_str(),
+                        )
+                    }
+                    Ok(VllmLoopStep::NeedsConfirmation(next_pending)) => {
+                        pending_tool_call =
+                            Some(stash_pending_tool_call(&pending_tool_calls, *next_pending).await);
+                        (String::new(), InferenceEngine::Vllm.as_str())
+                    }
+                    Err(err) => (
+                        format!("vLLM chat failed while resuming: {err}"),
+                        InferenceEngine::Vllm.as_str(),
+                    ),
+                }
+            }
+        };
+
+        let mut response = serde_json::json!({
+            "response": response_text,
+            "inference_backend": backend_used,
+        });
+
+        if !tool_results.is_empty() {
+            if let Some(obj) = response.as_object_mut() {
+                obj.insert("tool_results".to_string(), serde_json::json!(tool_results));
+                let tools_used: Vec<String> = tool_results.iter().map(|r| r.tool.clone()).collect();
+                obj.insert("tools_used".to_string(), serde_json::json!(tools_used));
+            }
+        }
+
+        if let Some(pending) = pending_tool_call {
+            if let Some(obj) = response.as_object_mut() {
+                obj.insert("pending_tool_call".to_string(), serde_json::json!(pending));
+            }
+        }
+
+        Json(response)
     }
 
     async fn handle_runtime_detection(
@@ -4563,8 +5907,17 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
 
     let mut settings = load_settings();
 
-    // Auto-compute ngl from GPU VRAM if still at default (-1)
-    if settings.ngl < 0 {
+    // Auto-compute ngl from GPU VRAM only when the caller hasn't already told
+    // us what to do. `-1` is ambiguous on its own: it's both RuntimeSettings'
+    // unconfigured default AND launch-native.ps1's deliberate "offload every
+    // layer llama-server can fit" sentinel (see its own GHOSTLINK_LLAMA_NGL
+    // comment) — load_settings() just copied that env var verbatim into
+    // settings.ngl above, so gating on `settings.ngl < 0` alone can't tell
+    // "nobody configured this" from "-1 was the explicit choice", and ends up
+    // silently downgrading every native launch to a conservative 12-layer
+    // partial offload instead of the full offload that was actually
+    // requested. Only guess when no one set the env var at all.
+    if settings.ngl < 0 && std::env::var("GHOSTLINK_LLAMA_NGL").is_err() {
         let ngl = if profile.node_resources.vram_gb >= 12.0 {
             40
         } else if profile.node_resources.vram_gb >= 8.0 {
@@ -4624,6 +5977,9 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         Some(settings.vllm_api_key.clone()),
     );
     let ollama_available = Arc::new(tokio::sync::Mutex::new(false));
+    let mcp_registry = Arc::new(mcp::McpRegistry::new(mcp::McpConfigManager::new(
+        mcp::default_config_path(),
+    )));
     let compute_config_manager = backend_config::ConfigManager::new("ghostlink.toml");
     let compute_config = compute_config_manager
         .load_compute_config()
@@ -4689,12 +6045,22 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         vllm_client,
         ollama_available,
         settings,
+        mcp_registry: Arc::clone(&mcp_registry),
+        pending_tool_calls: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
     }));
 
     // Background CPU/RAM/GPU sampler — keeps /api/metrics non-blocking.
     host_metrics::ensure_host_sampler();
 
     rt.block_on(async {
+        // Connects every enabled server in mcp_servers.toml (spawning stdio
+        // child processes, some of which pull an npx package on first run) —
+        // done in the background so a slow/misconfigured server can't delay
+        // the API from coming up and serving everything else.
+        tokio::spawn(async move {
+            mcp_registry.connect_enabled().await;
+        });
+
         let app = Router::new()
             .route("/v1/chat/completions", post(handle_chat_completions))
             .route("/v1/models", get(handle_models))
@@ -4766,7 +6132,12 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             .route("/api/security/pqc/state", get(handle_gui_pqc_state))
             .route("/api/security/audit-log", get(handle_gui_audit_log))
             .route("/api/inference/chat", post(handle_gui_chat))
+            .route(
+                "/api/inference/chat/tool-confirm",
+                post(handle_tool_confirm),
+            )
             .route("/api/inference/engines", get(handle_inference_engines))
+            .route("/api/mcp/servers", get(handle_mcp_servers))
             // Accept GET/POST/PUT for settings — some clients issue PUT and previously got 405.
             .route(
                 "/api/settings",
@@ -6827,6 +8198,7 @@ mod backend_config;
 mod backend_registry;
 mod host_metrics;
 mod inference_engine;
+mod mcp;
 mod native_engine;
 mod ollama;
 mod runtime;
@@ -6910,6 +8282,10 @@ mod tests {
             vllm_client: vllm::VllmClient::new("http://127.0.0.1:8000".to_string(), None),
             ollama_available: Arc::new(tokio::sync::Mutex::new(false)),
             settings: RuntimeSettings::default(),
+            mcp_registry: Arc::new(mcp::McpRegistry::new(mcp::McpConfigManager::new(
+                std::env::temp_dir().join("ghostlink-test-mcp-servers.toml"),
+            ))),
+            pending_tool_calls: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
         }))
     }
 

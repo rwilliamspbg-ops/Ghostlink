@@ -1,7 +1,7 @@
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION};
 use reqwest::Client;
 use serde::Deserialize;
-use serde_json::json;
+use serde_json::{json, Value};
 use std::error::Error;
 
 #[derive(Clone, Debug)]
@@ -33,7 +33,36 @@ struct ChatChoice {
 
 #[derive(Debug, Deserialize)]
 struct ChatMessage {
-    content: String,
+    // `None` (not just empty) whenever the response is tool_calls-only —
+    // vLLM's OpenAI-compatible server sends a literal JSON `null` there,
+    // which fails to deserialize into a non-Option `String`.
+    #[serde(default)]
+    content: Option<String>,
+    #[serde(default)]
+    tool_calls: Option<Vec<VllmToolCall>>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct VllmToolCall {
+    #[serde(default)]
+    pub id: Option<String>,
+    pub function: VllmFunctionCall,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct VllmFunctionCall {
+    pub name: String,
+    /// Raw JSON-encoded string per the OpenAI tool-call shape (not a nested
+    /// object) — callers must `serde_json::from_str` this themselves.
+    #[serde(default)]
+    pub arguments: String,
+}
+
+/// Result of a tool-aware chat turn: the model's text (possibly empty when
+/// it only requested tools) plus any tool calls it asked for.
+pub struct VllmChatResult {
+    pub content: String,
+    pub tool_calls: Vec<VllmToolCall>,
 }
 
 impl VllmClient {
@@ -107,8 +136,72 @@ impl VllmClient {
             .choices
             .into_iter()
             .next()
-            .map(|choice| choice.message.content)
+            .and_then(|choice| choice.message.content)
             .unwrap_or_default())
+    }
+
+    /// Tool- and structured-output-aware chat turn. `messages` is passed
+    /// through as raw OpenAI-shaped JSON (system/user/assistant/tool roles)
+    /// since a tool follow-up turn needs to echo back the assistant's own
+    /// `tool_calls` plus a `tool` role reply per call — a fixed message
+    /// struct can't represent that without duplicating this shape anyway.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn chat(
+        &self,
+        model: &str,
+        messages: Vec<Value>,
+        temperature: f32,
+        top_p: f32,
+        top_k: usize,
+        repeat_penalty: f32,
+        max_tokens: usize,
+        tools: Option<Vec<Value>>,
+        response_format: Option<Value>,
+    ) -> Result<VllmChatResult, Box<dyn Error>> {
+        let mut payload = json!({
+            "model": model,
+            "messages": messages,
+            "stream": false,
+            "temperature": temperature.clamp(0.0, 2.0),
+            "top_p": top_p.clamp(0.0, 1.0),
+            "top_k": top_k.clamp(1, 200),
+            "repetition_penalty": repeat_penalty.clamp(0.0, 2.0),
+            "max_tokens": max_tokens,
+        });
+
+        if let Some(obj) = payload.as_object_mut() {
+            if let Some(tools) = tools {
+                obj.insert("tools".to_string(), json!(tools));
+            }
+            if let Some(response_format) = response_format {
+                obj.insert("response_format".to_string(), response_format);
+            }
+        }
+
+        let resp = self
+            .request(
+                self.client
+                    .post(format!("{}/v1/chat/completions", self.base_url)),
+            )
+            .json(&payload)
+            .send()
+            .await?;
+        let resp = resp.error_for_status()?;
+        let payload: ChatCompletionResponse = resp.json().await?;
+        let message = payload
+            .choices
+            .into_iter()
+            .next()
+            .map(|choice| choice.message)
+            .unwrap_or(ChatMessage {
+                content: None,
+                tool_calls: None,
+            });
+
+        Ok(VllmChatResult {
+            content: message.content.unwrap_or_default(),
+            tool_calls: message.tool_calls.unwrap_or_default(),
+        })
     }
 
     fn request(&self, builder: reqwest::RequestBuilder) -> reqwest::RequestBuilder {

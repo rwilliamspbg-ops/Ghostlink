@@ -66,22 +66,38 @@ impl InferenceEngine {
                 model_listing: true,
                 model_load: true,
                 model_unload: true,
-                structured_outputs: false,
-                tool_calls: false,
+                // Forwarded as Ollama's own `format` field (grammar-constrained
+                // decoding) - see run_ollama_chat.
+                structured_outputs: true,
+                // Ollama natively parses OpenAI-style function tools and
+                // returns `tool_calls` for templates that support it - see
+                // run_ollama_chat, which drives that protocol for real
+                // (not the native-engine TOOL_CALL: text shim).
+                tool_calls: true,
             },
             Self::Native => InferenceEngineCapabilities {
                 streaming: true,
                 model_listing: false,
                 model_load: true,
                 model_unload: true,
-                structured_outputs: false,
-                tool_calls: false,
+                // Forwarded as llama-server's `response_format` (grammar-
+                // constrained JSON-schema decoding) - see GuiChatRequest's
+                // `response_format` field and generate_with_llama_server.
+                structured_outputs: true,
+                // Wired via the model-agnostic TOOL_CALL: prompt shim in
+                // mcp::toolcall (see handle_gui_chat's native tool-calling
+                // loop) rather than a native OpenAI-style tools API.
+                tool_calls: true,
             },
             Self::Vllm => InferenceEngineCapabilities {
                 streaming: true,
                 model_listing: true,
                 model_load: true,
                 model_unload: false,
+                // Both forwarded to vLLM's OpenAI-compatible server as real
+                // `response_format`/`tools` request fields - see run_vllm_chat.
+                // (Previously claimed here but not actually implemented in
+                // VllmClient::generate, which never sent either field.)
                 structured_outputs: true,
                 tool_calls: true,
             },

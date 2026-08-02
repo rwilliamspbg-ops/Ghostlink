@@ -65,6 +65,14 @@ const API_KEY_STORAGE_KEY = 'ghostlink-api-key';
 export class GhostlinkAPI {
   private http: AxiosInstance;
   private requestTimeout = [5000, 120000] as const;
+  // Tool-calling turns (initial send and tool-confirm resume) can run several
+  // full generate() rounds plus a real MCP tool call each, on top of however
+  // long the model itself takes - confirmed live at just over 2 minutes with
+  // a reasoning model and a Docker MCP gateway call, past the 120s default
+  // above. That silently aborted the request client-side with no error and no
+  // UI update, leaving a stale "Approval needed" prompt even though the
+  // backend had actually finished. Give both call sites real headroom.
+  private toolCallTimeout = 300000;
   private circuitBreaker: CircuitBreakerState = {
     failures: 0,
     successes: 0,
@@ -400,7 +408,12 @@ export class GhostlinkAPI {
 
         return { success: true, data: { response: fullText, truncated } };
       } else {
-        const response = await this.http.post('/api/inference/chat', payload);
+        // Non-streaming is also the path tool-calling always takes (see
+        // useStreaming above) - give it the longer tool-call budget rather
+        // than the default 120s.
+        const response = await this.http.post('/api/inference/chat', payload, {
+          timeout: this.toolCallTimeout,
+        });
         return { success: true, data: response.data };
       }
     } catch (error: any) {
@@ -413,10 +426,11 @@ export class GhostlinkAPI {
    *  the same chat turn on the backend. */
   async confirmToolCall(requestId: string, approve: boolean) {
     try {
-      const response = await this.http.post('/api/inference/chat/tool-confirm', {
-        request_id: requestId,
-        approve,
-      });
+      const response = await this.http.post(
+        '/api/inference/chat/tool-confirm',
+        { request_id: requestId, approve },
+        { timeout: this.toolCallTimeout }
+      );
       return { success: true, data: response.data };
     } catch (error: any) {
       return { success: false, error: error.response?.data?.error || error.message };
