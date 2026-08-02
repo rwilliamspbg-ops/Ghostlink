@@ -487,7 +487,13 @@ describe('GhostlinkAPI', () => {
             { role: 'assistant', content: 'hello' },
             { role: 'user', content: 'and then?' },
           ],
-        })
+        }),
+        // Tool-calling turns can run several full generate() rounds plus a
+        // real MCP tool call each - the default 120s timeout aborted a real
+        // confirm-resume client-side with no error after just over 2 minutes,
+        // so the non-streaming send path (which tool-calling always takes)
+        // gets a longer budget. See GhostlinkAPI.toolCallTimeout.
+        expect.objectContaining({ timeout: 300000 })
       );
     });
 
