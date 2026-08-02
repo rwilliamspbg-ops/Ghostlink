@@ -247,6 +247,36 @@ describe('GhostlinkAPI', () => {
       expect(result.success).toBe(true);
       expect(mockAxiosInstance.post).toHaveBeenCalledWith('/api/workers/w1/disconnect');
     });
+
+    it('should fetch cluster topology', async () => {
+      mockAxiosInstance.get.mockResolvedValue({
+        data: {
+          summary: { node_count: 2, active_nodes: 2, total_vram_gb: 24, total_system_memory_gb: 48 },
+          nodes: [
+            {
+              id: 'node-a',
+              label: 'node-a',
+              compute_capability: 'cpu',
+              vram_gb: 0,
+              system_memory_gb: 16,
+              status: 'Active',
+              latency_us: 0,
+              throughput_gbps: 0,
+              latency_history_us: [],
+              throughput_history_gbps: [],
+              ip_address: '127.0.0.1',
+            },
+          ],
+          edges: [],
+        },
+      });
+
+      const result = await api.getClusterTopology();
+
+      expect(result.topology?.summary.node_count).toBe(2);
+      expect(result.topology?.nodes[0].label).toBe('node-a');
+      expect(mockAxiosInstance.get).toHaveBeenCalledWith('/api/cluster/topology');
+    });
   });
 
   describe('Settings Operations', () => {
@@ -393,6 +423,21 @@ describe('GhostlinkAPI', () => {
       const result = await api.getMetrics();
       
       expect(result.metrics.throughput).toBe(100);
+    });
+  });
+
+  describe('Inference Engines', () => {
+    it('should fall back to Ollama descriptors when the endpoint is missing', async () => {
+      const error: any = new Error('Not Found');
+      error.response = { status: 404 };
+      mockAxiosInstance.get.mockRejectedValue(error);
+
+      const result = await api.getInferenceEngines();
+
+      expect(result.current).toBe('ollama');
+      expect(result.engines).toHaveLength(3);
+      expect(result.engines[0].name).toBe('ollama');
+      expect(mockAxiosInstance.get).toHaveBeenCalledWith('/api/inference/engines');
     });
   });
 

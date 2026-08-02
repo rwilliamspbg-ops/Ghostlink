@@ -18,6 +18,7 @@ import {
 } from 'lucide-react';
 import { Settings as SettingsType } from '../store';
 import { GhostlinkAPI } from '../api';
+import { useInferenceEngines } from '../hooks/useInferenceEngines';
 
 type BackendInfo = {
   name: string;
@@ -37,6 +38,10 @@ export const SettingsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
   const [validationErrors, setValidationErrors] = useState<Record<string, string>>({});
   const [backends, setBackends] = useState<BackendInfo[]>([]);
   const [currentBackend, setCurrentBackend] = useState<string>('cpu');
+  const { engines: inferenceEngines, selectedEngine, engineHealth } = useInferenceEngines(
+    api,
+    settings?.inference_backend || null
+  );
   const [backendLoading, setBackendLoading] = useState(false);
   const [switchingBackend, setSwitchingBackend] = useState<string | null>(null);
   const [restartRequired, setRestartRequired] = useState(false);
@@ -49,6 +54,7 @@ export const SettingsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
     if (settings.temperature !== undefined && (settings.temperature < 0 || settings.temperature > 2)) errs.temperature = 'Temperature must be 0-2';
     if (settings.top_p !== undefined && (settings.top_p < 0 || settings.top_p > 1)) errs.top_p = 'Top P must be 0-1';
     if (settings.api_host && !/^[\w.*:-]+$/.test(settings.api_host)) errs.api_host = 'Invalid host format';
+    if (settings.inference_backend === 'vllm' && settings.vllm_base_url && !/^https?:\/\//.test(settings.vllm_base_url)) errs.vllm_base_url = 'vLLM URL must start with http:// or https://';
     setValidationErrors(errs);
     return Object.keys(errs).length === 0;
   };
@@ -156,6 +162,18 @@ export const SettingsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
       </div>
     );
   }
+
+  const engineOptions = inferenceEngines.map((engine) => ({ value: engine.name, label: engine.label }));
+  const capabilityRows = selectedEngine
+    ? [
+        { label: 'Streaming', enabled: selectedEngine.capabilities.streaming },
+        { label: 'Model listing', enabled: selectedEngine.capabilities.model_listing },
+        { label: 'Model load', enabled: selectedEngine.capabilities.model_load },
+        { label: 'Model unload', enabled: selectedEngine.capabilities.model_unload },
+        { label: 'Structured outputs', enabled: selectedEngine.capabilities.structured_outputs },
+        { label: 'Tool calls', enabled: selectedEngine.capabilities.tool_calls },
+      ]
+    : [];
 
   const Section = ({ title, icon: Icon, children }: { title: string; icon: any; children: React.ReactNode }) => (
     <div className="bg-slate-900/50 border border-slate-800 rounded-3xl p-6 space-y-6">
@@ -374,7 +392,7 @@ export const SettingsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                     <div className="flex items-center gap-2 text-xs text-slate-500 bg-slate-900/50 rounded-xl p-3">
                       <Info size={14} />
                       <span>
-                        Backend is auto-detected at startup. Override with <code className="text-blue-400 bg-slate-800 px-1.5 py-0.5 rounded font-mono">GHOSTLINK_INFERENCE_BACKEND=native|ollama</code> env var.
+                        Backend is auto-detected at startup. Override with <code className="text-blue-400 bg-slate-800 px-1.5 py-0.5 rounded font-mono">GHOSTLINK_INFERENCE_BACKEND=native|ollama|vllm</code> env var.
                         {' '}
                         <a href="https://github.com/ghostlink/ghostlink/blob/main/docs/RUNTIMES.md" target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:underline ml-1">
                           Docs
@@ -387,31 +405,99 @@ export const SettingsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
             </Section>
 
             {/* Inference Runtime Section */}
-            <Section title="Inference Runtime" icon={Cpu}>
+            <Section title="Inference Engine" icon={Cpu}>
               <SelectField
                 label="Backend"
                 desc="Inference engine backend"
                 value={settings.inference_backend}
-                options={[
-                  { value: 'ollama', label: 'Ollama' },
-                  { value: 'native', label: 'Native (legacy)' },
-                ]}
+                options={engineOptions}
                 onChange={(v) => update('inference_backend', v)}
               />
+
+              {selectedEngine && (
+                <div className="rounded-2xl border border-slate-800 bg-slate-950/60 p-4 space-y-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <p className="text-xs uppercase tracking-wider text-slate-500">Selected Engine</p>
+                      <p className="text-sm font-bold text-slate-100">{selectedEngine.label}</p>
+                    </div>
+                    <span className="px-2 py-0.5 rounded text-xs font-medium bg-blue-500/10 text-blue-400">
+                      {selectedEngine.status}
+                    </span>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
+                    {capabilityRows.map(({ label, enabled }) => (
+                      <div key={label} className="flex items-center justify-between px-3 py-2 rounded-xl bg-slate-900/70 border border-slate-800">
+                        <span className="text-slate-400">{label}</span>
+                        <span className={enabled ? 'text-emerald-400 font-medium' : 'text-slate-500'}>
+                          {enabled ? 'Supported' : 'Not supported'}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+
+                  {selectedEngine.default_base_url && (
+                    <p className="text-[10px] text-slate-500">
+                      Default endpoint: <span className="font-mono text-slate-300">{selectedEngine.default_base_url}</span>
+                    </p>
+                  )}
+
+                  {(selectedEngine.name === 'ollama' || selectedEngine.name === 'vllm') && (
+                    <div className="flex items-center justify-between px-3 py-2 rounded-xl bg-slate-900/70 border border-slate-800 text-xs">
+                      <span className="text-slate-400">Connectivity probe</span>
+                      <span className={engineHealth?.reachable ? 'text-emerald-400 font-medium' : 'text-orange-400 font-medium'}>
+                        {engineHealth?.reachable ? `Reachable · ${engineHealth.model_count ?? 0} models` : 'Unavailable'}
+                      </span>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {settings.inference_backend === 'vllm' && (
+                <InputField
+                  label="vLLM Base URL"
+                  desc="Base URL for the vLLM OpenAI-compatible server"
+                  value={settings.vllm_base_url || ''}
+                  onChange={(v) => update('vllm_base_url', v)}
+                  placeholder="http://127.0.0.1:8000"
+                />
+              )}
+
+              {validationErrors.vllm_base_url && (
+                <p className="text-xs text-red-400">{validationErrors.vllm_base_url}</p>
+              )}
+
+              {settings.inference_backend === 'vllm' && (
+                <InputField
+                  label="vLLM API Key"
+                  desc="Optional bearer token for protected vLLM deployments"
+                  value={settings.vllm_api_key || ''}
+                  onChange={(v) => update('vllm_api_key', v)}
+                  type="password"
+                />
+              )}
             </Section>
 
             {/* Runtime Section */}
-            <Section title="Inference Runtime" icon={Cpu}>
-              <SelectField
-                label="Backend"
-                desc="Inference engine backend"
-                value={settings.inference_backend}
-                options={[
-                  { value: 'ollama', label: 'Ollama' },
-                  { value: 'native', label: 'Native (legacy)' },
-                ]}
-                onChange={(v) => update('inference_backend', v)}
-              />
+            <Section title="Engine Connection" icon={Cpu}>
+              {settings.inference_backend === 'native' ? (
+                <InputField
+                  label="Llama Server URL"
+                  desc="Native engine endpoint used by the lightweight local path"
+                  value={settings.llama_server_url || ''}
+                  onChange={(v) => update('llama_server_url', v)}
+                  placeholder="http://127.0.0.1:8080/completion"
+                />
+              ) : settings.inference_backend === 'vllm' ? (
+                <div className="rounded-2xl border border-slate-800 bg-slate-950/60 p-4 text-sm text-slate-400">
+                  vLLM uses the configured OpenAI-compatible endpoint and inherits model availability from the remote server.
+                </div>
+              ) : (
+                <div className="rounded-2xl border border-slate-800 bg-slate-950/60 p-4 text-sm text-slate-400">
+                  Ollama uses the local daemon connection configured by the launcher or <span className="font-mono text-slate-300">OLLAMA_BASE_URL</span>.
+                </div>
+              )}
             </Section>
 
             {/* Sampling Section */}

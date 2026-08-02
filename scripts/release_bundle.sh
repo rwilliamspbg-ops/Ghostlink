@@ -12,6 +12,13 @@ fi
 mkdir -p "$OUT_DIR"
 cd "$ROOT_DIR"
 
+NODE_BIN="$(command -v node || true)"
+NPM_BIN="$(command -v npm || true)"
+if [[ -z "$NODE_BIN" || -z "$NPM_BIN" ]]; then
+  echo "node and npm are required to build the GUI release artifacts" >&2
+  exit 1
+fi
+
 echo "[release] build ghost-link release binary"
 cargo build --release -p ghost-link
 
@@ -23,8 +30,19 @@ fi
 
 cp "$BIN_PATH" "$OUT_DIR/"
 
+echo "[release] build ghostlink_gui_modern frontend"
+pushd "$ROOT_DIR/ghostlink_gui_modern" >/dev/null
+if [[ ! -d node_modules ]]; then
+  "$NPM_BIN" ci
+fi
+"$NPM_BIN" run build
+popd >/dev/null
+
+mkdir -p "$OUT_DIR/gui"
+cp -R "$ROOT_DIR/ghostlink_gui_modern/dist" "$OUT_DIR/gui/"
+
 pushd "$OUT_DIR" >/dev/null
-sha256sum ghost-link > SHA256SUMS
+find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS
 
 if [[ "$SIGN_MODE" == "unsigned" ]]; then
   echo "[release] unsigned mode selected; skipping GPG signature"

@@ -26,6 +26,8 @@ import {
 } from 'lucide-react';
 import { useAppStore } from '../store';
 import { GhostlinkAPI } from '../api';
+import { InferenceEngineDescriptor } from '../types/engines';
+import { useInferenceEngines } from '../hooks/useInferenceEngines';
 
 interface Message {
   role: 'user' | 'assistant';
@@ -96,10 +98,14 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
   const [tools, setTools] = useState<Tool[]>(AVAILABLE_TOOLS);
   const [sessions, setSessions] = useState<Session[]>([]);
   const [sessionsLoading, setSessionsLoading] = useState(false);
+  const { engines: inferenceEngines, currentEngine, selectedEngine } = useInferenceEngines(api);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const modelSelectorRef = useRef<HTMLDivElement>(null);
   const sessionsRef = useRef<HTMLDivElement>(null);
+
+  const toolCallsSupported = selectedEngine?.capabilities.tool_calls ?? true;
+  const structuredOutputsSupported = selectedEngine?.capabilities.structured_outputs ?? false;
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -142,6 +148,12 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
   useEffect(() => {
     loadSessions();
   }, [loadSessions]);
+
+  useEffect(() => {
+    if (!toolCallsSupported) {
+      setTools((prev) => prev.map((tool) => (tool.enabled ? { ...tool, enabled: false } : tool)));
+    }
+  }, [toolCallsSupported]);
 
   const handleSaveSession = async () => {
     if (messages.length === 0) return;
@@ -207,7 +219,9 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
     setStreamingId(assistantId);
     setMessages((prev) => [...prev, { role: 'assistant', content: '', id: assistantId, timestamp: '', model: currentModel || undefined }]);
 
-    const enabledTools = tools.filter((t) => t.enabled).map((t) => t.name);
+    const enabledTools = toolCallsSupported
+      ? tools.filter((t) => t.enabled).map((t) => t.name)
+      : [];
 
     const result = await api.sendMessage({
       message: messageText,
@@ -217,7 +231,7 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
       penalty: 1.1,
       max_tokens: maxTokens,
       system_prompt: systemPrompt,
-      mcp: { tools: enabledTools },
+      mcp: toolCallsSupported ? { tools: enabledTools } : undefined,
       stream: true,
       model: currentModel === 'none' ? undefined : currentModel,
     }, (token: string) => {
@@ -267,6 +281,10 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
   };
 
   const toggleTool = (name: string) => {
+    if (!toolCallsSupported) {
+      setError(`${selectedEngine?.label || 'Current engine'} does not support tool calling.`);
+      return;
+    }
     setTools(tools.map(t => t.name === name ? { ...t, enabled: !t.enabled } : t));
   };
 
@@ -404,6 +422,13 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
             </div>
           </div>
         <div className="flex items-center gap-2">
+            {selectedEngine && (
+              <div className="hidden md:flex items-center gap-2 px-2.5 py-1 rounded-lg bg-slate-900 text-[10px] font-bold uppercase tracking-wider text-slate-400 border border-slate-800">
+                <span>{selectedEngine.label}</span>
+                {!toolCallsSupported && <span className="text-orange-400">No tool calls</span>}
+                {structuredOutputsSupported && <span className="text-emerald-400">Structured outputs</span>}
+              </div>
+            )}
             <button className="p-2 rounded-lg hover:bg-slate-900 text-slate-400 hover:text-white transition">
                 <LayoutGrid size={18} />
             </button>
@@ -519,6 +544,12 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
               ))}
           </div>
 
+          {!toolCallsSupported && (
+            <div className="mb-2 px-3 py-2 rounded-2xl bg-orange-500/10 border border-orange-500/20 text-xs text-orange-300">
+              {selectedEngine?.label || 'Current engine'} does not support tool calling. Tool selections are disabled for this chat engine.
+            </div>
+          )}
+
           <div className="relative bg-slate-900 border border-slate-800 rounded-3xl p-2 shadow-2xl focus-within:border-slate-700 transition-all duration-300">
             <textarea
               value={input}
@@ -537,7 +568,9 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
             <div className="absolute left-3 bottom-3 flex items-center gap-1">
                 <button
                     onClick={() => setShowTools(!showTools)}
-                    className={`p-2 rounded-xl transition ${showTools ? 'bg-slate-800 text-blue-400' : 'text-slate-500 hover:text-slate-300 hover:bg-slate-800'}`}
+                  disabled={!toolCallsSupported}
+                  title={toolCallsSupported ? 'Select tools' : 'Tool calling is unavailable for this engine'}
+                  className={`p-2 rounded-xl transition ${showTools ? 'bg-slate-800 text-blue-400' : 'text-slate-500 hover:text-slate-300 hover:bg-slate-800'} ${!toolCallsSupported ? 'opacity-40 cursor-not-allowed hover:bg-transparent hover:text-slate-500' : ''}`}
                 >
                     <Plus size={20} />
                 </button>

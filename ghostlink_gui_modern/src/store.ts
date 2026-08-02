@@ -40,6 +40,10 @@ export interface Session {
 
 export interface Settings {
   inference_backend: string;
+  native_engine?: string;
+  llama_server_url?: string;
+  vllm_base_url?: string;
+  vllm_api_key?: string;
   api_host: string;
   api_port: number;
   gui_port: number;

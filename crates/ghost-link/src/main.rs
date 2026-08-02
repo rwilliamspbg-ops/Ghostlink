@@ -5,6 +5,7 @@
 //! - `join` - Broadcast discovery frame to join cluster
 //! - `dashboard` - Display ASCII cluster dashboard
 
+use crate::inference_engine::InferenceEngine;
 use crate::runtime::Runtime;
 use anyhow::Result;
 use ghostlink_core::autotune::AutoTuner;
@@ -111,39 +112,6 @@ impl FlowTransportMode {
             Self::InMemory => "inmem",
             Self::TcpLoopback => "tcp",
             Self::Xdp => "xdp",
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum InferenceBackend {
-    Ollama,
-    Native,
-}
-
-impl InferenceBackend {
-    #[allow(dead_code)]
-    fn from_env() -> Self {
-        Self::parse(
-            &std::env::var("GHOSTLINK_INFERENCE_BACKEND").unwrap_or_else(|_| "ollama".to_string()),
-        )
-    }
-
-    /// Parse a backend name the same way regardless of whether it came from
-    /// an env var (startup) or a live settings update (runtime). This is the
-    /// single place backend-name strings get interpreted so the two paths
-    /// can't silently disagree.
-    fn parse(raw: &str) -> Self {
-        match raw.trim().to_ascii_lowercase().as_str() {
-            "native" | "fabric" => Self::Native,
-            _ => Self::Ollama,
-        }
-    }
-
-    const fn as_str(self) -> &'static str {
-        match self {
-            Self::Ollama => "ollama",
-            Self::Native => "native",
         }
     }
 }
@@ -1462,9 +1430,10 @@ struct BackendState {
     started_at: Instant,
     backend_url: String,
     cluster: Arc<ClusterState>,
-    inference_backend: InferenceBackend,
+    inference_backend: InferenceEngine,
     native_engine_client: native_engine::NativeEngineClient,
     ollama_client: ollama::OllamaClient,
+    vllm_client: vllm::VllmClient,
     ollama_available: Arc<tokio::sync::Mutex<bool>>,
     settings: RuntimeSettings,
 }
@@ -1477,6 +1446,8 @@ struct RuntimeSettings {
     model_path: String,
     models_dir: String,
     llama_server_url: String,
+    vllm_base_url: String,
+    vllm_api_key: String,
     llama_port: u16,
     api_host: String,
     api_port: u16,
@@ -1507,6 +1478,8 @@ impl Default for RuntimeSettings {
             model_path: String::new(),
             models_dir: "models".to_string(),
             llama_server_url: "http://127.0.0.1:8080/completion".to_string(),
+            vllm_base_url: "http://127.0.0.1:8000".to_string(),
+            vllm_api_key: String::new(),
             llama_port: 8080,
             api_host: "127.0.0.1".to_string(),
             api_port: 8003,
@@ -1531,6 +1504,114 @@ impl Default for RuntimeSettings {
 }
 
 struct ToolDispatcher;
+
+fn build_cluster_topology_json(cluster: &ClusterState) -> serde_json::Value {
+    let nodes = cluster.nodes();
+    let topology_nodes = nodes
+        .iter()
+        .map(|node| {
+            let metrics = cluster.get_metrics(&node.id);
+            let status = metrics
+                .as_ref()
+                .map(|m| format!("{:?}", m.status))
+                .unwrap_or_else(|| "Unknown".to_string());
+            let latency_us = metrics.as_ref().map(|m| m.avg_latency_us).unwrap_or(0.0);
+            let throughput_gbps = metrics.as_ref().map(|m| m.throughput_gbps).unwrap_or(0.0);
+            let latency_history_us = metrics
+                .as_ref()
+                .map(|m| m.latency_history_us.iter().copied().collect::<Vec<_>>())
+                .unwrap_or_default();
+            let throughput_history_gbps = metrics
+                .as_ref()
+                .map(|m| {
+                    m.throughput_history_gbps
+                        .iter()
+                        .copied()
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            let ip_address = metrics
+                .as_ref()
+                .and_then(|m| m.ip_address)
+                .map(|addr| addr.ip().to_string());
+            let streaming_layers = metrics
+                .as_ref()
+                .and_then(|m| m.streaming_layers)
+                .map(|(start, end)| serde_json::json!({ "start": start, "end": end }));
+
+            serde_json::json!({
+                "id": node.id,
+                "label": node.gpu_name.clone().unwrap_or_else(|| node.id.clone()),
+                "compute_capability": node.compute_capability,
+                "vram_gb": node.vram_gb,
+                "system_memory_gb": node.system_memory_gb,
+                "status": status,
+                "latency_us": latency_us,
+                "throughput_gbps": throughput_gbps,
+                "latency_history_us": latency_history_us,
+                "throughput_history_gbps": throughput_history_gbps,
+                "ip_address": ip_address,
+                "streaming_layers": streaming_layers,
+            })
+        })
+        .collect::<Vec<_>>();
+
+    let edges = if let Some(root) = nodes.first() {
+        nodes
+            .iter()
+            .skip(1)
+            .map(|node| {
+                let metrics = cluster.get_metrics(&node.id);
+                serde_json::json!({
+                    "from": root.id,
+                    "to": node.id,
+                    "latency_us": metrics.as_ref().map(|m| m.avg_latency_us).unwrap_or(0.0),
+                    "throughput_gbps": metrics.as_ref().map(|m| m.throughput_gbps).unwrap_or(0.0),
+                })
+            })
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
+
+    serde_json::json!({
+        "summary": {
+            "node_count": nodes.len(),
+            "active_nodes": cluster.active_nodes().len(),
+            "total_vram_gb": cluster.total_vram_gb(),
+            "total_system_memory_gb": cluster.total_system_memory_gb(),
+        },
+        "nodes": topology_nodes,
+        "edges": edges,
+    })
+}
+
+fn build_metrics_history_json(
+    host: &host_metrics::HostSnapshot,
+    inf: &host_metrics::InferenceSnapshot,
+    node_count: usize,
+    backend_name: &str,
+) -> serde_json::Value {
+    if host_metrics::metrics_history(1).is_empty() {
+        host_metrics::record_metrics_point(host, inf, node_count, backend_name);
+    }
+
+    serde_json::json!({
+        "history": host_metrics::metrics_history(60)
+    })
+}
+
+fn build_inference_engines_json(active: InferenceEngine) -> serde_json::Value {
+    let engines = InferenceEngine::all()
+        .into_iter()
+        .map(|engine| engine.descriptor(active))
+        .collect::<Vec<_>>();
+
+    serde_json::json!({
+        "current": active.as_str(),
+        "engines": engines,
+    })
+}
 
 impl ToolDispatcher {
     fn dispatch(tool_name: &str, _args: &serde_json::Value) -> ToolResult {
@@ -1659,10 +1740,27 @@ fn load_settings() -> RuntimeSettings {
     {
         std::env::set_var("GHOSTLINK_NATIVE_ENGINE", settings.native_engine.trim());
     }
+    if std::env::var("GHOSTLINK_VLLM_BASE_URL")
+        .map(|v| v.trim().is_empty())
+        .unwrap_or(true)
+        && !settings.vllm_base_url.trim().is_empty()
+    {
+        std::env::set_var("GHOSTLINK_VLLM_BASE_URL", settings.vllm_base_url.trim());
+    }
+    if std::env::var("GHOSTLINK_VLLM_API_KEY")
+        .map(|v| v.trim().is_empty())
+        .unwrap_or(true)
+        && !settings.vllm_api_key.trim().is_empty()
+    {
+        std::env::set_var("GHOSTLINK_VLLM_API_KEY", settings.vllm_api_key.trim());
+    }
 
     if let Ok(val) = std::env::var("GHOSTLINK_INFERENCE_BACKEND") {
         let v = val.trim().to_ascii_lowercase();
-        if v == "native" || v == "ollama" {
+        if matches!(
+            InferenceEngine::parse(&v),
+            InferenceEngine::Native | InferenceEngine::Ollama | InferenceEngine::Vllm
+        ) {
             settings.inference_backend = v;
         }
     }
@@ -1677,6 +1775,15 @@ fn load_settings() -> RuntimeSettings {
         if !v.is_empty() {
             settings.llama_server_url = v;
         }
+    }
+    if let Ok(val) = std::env::var("GHOSTLINK_VLLM_BASE_URL") {
+        let v = val.trim().to_string();
+        if !v.is_empty() {
+            settings.vllm_base_url = v;
+        }
+    }
+    if let Ok(val) = std::env::var("GHOSTLINK_VLLM_API_KEY") {
+        settings.vllm_api_key = val.trim().to_string();
     }
     if let Ok(val) = std::env::var("GHOSTLINK_LLAMA_NGL") {
         if let Ok(n) = val.trim().parse::<i32>() {
@@ -1911,6 +2018,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             inference_backend,
             native_engine_client,
             ollama_client,
+            vllm_client,
             settings,
         ) = {
             let mut backend = lock_state(&state);
@@ -1927,6 +2035,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                 backend.inference_backend,
                 backend.native_engine_client.clone(),
                 backend.ollama_client.clone(),
+                backend.vllm_client.clone(),
                 backend.settings.clone(),
             )
         };
@@ -2004,7 +2113,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         }
 
         let (response_text, real_inference, backend_used) = match inference_backend {
-            InferenceBackend::Ollama => {
+            InferenceEngine::Ollama => {
                 let ollama_temp = temp;
                 let ollama_top_p = top_p;
                 let ollama_top_k = top_k;
@@ -2024,29 +2133,34 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                     )
                     .await
                 {
-                    Ok(text) => (
-                        text,
-                        true,
-                        InferenceBackend::Ollama.as_str(),
-                    ),
+                    Ok(text) => (text, true, InferenceEngine::Ollama.as_str()),
                     Err(err) => (
                         format!(
                             "Ollama generation failed for model '{}': {}",
                             ollama_model, err
                         ),
                         false,
-                        InferenceBackend::Ollama.as_str(),
+                        InferenceEngine::Ollama.as_str(),
                     ),
                 }
             }
-InferenceBackend::Native => match native_engine_client
-            .generate(&model, &prompt, exec_tokens, 0.7, 0.9, 40, 1.1, &settings.native_engine)
-            .await
+            InferenceEngine::Native => match native_engine_client
+                .generate(
+                    &model,
+                    &prompt,
+                    exec_tokens,
+                    0.7,
+                    0.9,
+                    40,
+                    1.1,
+                    &settings.native_engine,
+                )
+                .await
             {
                 Ok(gen) => (
                     gen.text,
                     gen.real_inference,
-                    InferenceBackend::Native.as_str(),
+                    InferenceEngine::Native.as_str(),
                 ),
                 Err(err) => (
                     format!(
@@ -2058,7 +2172,18 @@ InferenceBackend::Native => match native_engine_client
                         err
                     ),
                     false,
-                    InferenceBackend::Native.as_str(),
+                    InferenceEngine::Native.as_str(),
+                ),
+            },
+            InferenceEngine::Vllm => match vllm_client
+                .generate(&model, &prompt, temp, top_p, top_k, penalty, max_tokens)
+                .await
+            {
+                Ok(text) => (text, true, InferenceEngine::Vllm.as_str()),
+                Err(err) => (
+                    format!("vLLM generation failed for model '{}': {}", model, err),
+                    false,
+                    InferenceEngine::Vllm.as_str(),
                 ),
             },
         };
@@ -2309,19 +2434,20 @@ InferenceBackend::Native => match native_engine_client
             return Json(serde_json::json!({ "error": "model cannot be empty" }));
         }
 
-        let (inference_backend, ollama_client, ollama_available) = {
+        let (inference_backend, ollama_client, ollama_available, vllm_client) = {
             let backend = lock_state(&state);
             // Prefer live settings string (updated by Settings UI / runtime select)
             // so load and chat cannot disagree on which backend is active.
-            let inference_backend = InferenceBackend::parse(&backend.settings.inference_backend);
+            let inference_backend = InferenceEngine::parse(&backend.settings.inference_backend);
             (
                 inference_backend,
                 backend.ollama_client.clone(),
                 Arc::clone(&backend.ollama_available),
+                backend.vllm_client.clone(),
             )
         };
 
-        let selected_model = if inference_backend == InferenceBackend::Ollama {
+        let selected_model = if inference_backend == InferenceEngine::Ollama {
             let resolve_model = |requested: &str, available: &[String]| -> Option<String> {
                 if available.iter().any(|m| m == requested) {
                     return Some(requested.to_string());
@@ -2381,6 +2507,44 @@ InferenceBackend::Native => match native_engine_client
                     return Json(serde_json::json!({
                         "error": format!(
                             "model '{}' is not installed in Ollama. Available: {}",
+                            requested_model, available_hint
+                        ),
+                    }));
+                }
+            }
+        } else if inference_backend == InferenceEngine::Vllm {
+            let resolve_model = |requested: &str, available: &[String]| -> Option<String> {
+                if available.iter().any(|m| m == requested) {
+                    return Some(requested.to_string());
+                }
+
+                available
+                    .iter()
+                    .find(|m| m.eq_ignore_ascii_case(requested))
+                    .cloned()
+            };
+
+            let available_models = match vllm_client.list_models().await {
+                Ok(models) => models,
+                Err(err) => {
+                    return Json(serde_json::json!({
+                        "error": format!("failed to query vLLM models: {}", err),
+                    }));
+                }
+            };
+
+            match resolve_model(&requested_model, &available_models) {
+                Some(model_name) => model_name,
+                None => {
+                    let shown = available_models.iter().take(6).cloned().collect::<Vec<_>>();
+                    let available_hint = if shown.is_empty() {
+                        "<no served models>".to_string()
+                    } else {
+                        shown.join(", ")
+                    };
+                    return Json(serde_json::json!({
+                        "error": format!(
+                            "model '{}' is not exposed by vLLM. Available: {}",
                             requested_model, available_hint
                         ),
                     }));
@@ -2466,7 +2630,7 @@ InferenceBackend::Native => match native_engine_client
         }; // <-- state lock dropped here
 
         // Native llama_server requires a real on-disk GGUF — never report fake success.
-        if inference_backend == InferenceBackend::Native
+        if inference_backend == InferenceEngine::Native
             && (native_engine == "llama_server" || native_engine == "llama-server")
         {
             let Some(path) = local_path.clone() else {
@@ -2705,18 +2869,26 @@ InferenceBackend::Native => match native_engine_client
             return Json(serde_json::json!({ "error": "model cannot be empty" }));
         }
 
-        let (inference_backend, ollama_client, ollama_available, native_engine_client, settings) = {
+        let (
+            inference_backend,
+            ollama_client,
+            ollama_available,
+            native_engine_client,
+            vllm_client,
+            settings,
+        ) = {
             let backend = lock_state(&state);
             (
                 backend.inference_backend,
                 backend.ollama_client.clone(),
                 Arc::clone(&backend.ollama_available),
                 backend.native_engine_client.clone(),
+                backend.vllm_client.clone(),
                 backend.settings.clone(),
             )
         };
 
-        if inference_backend == InferenceBackend::Ollama {
+        if inference_backend == InferenceEngine::Ollama {
             if let Err(err) = ollama_client.unload_model(&requested).await {
                 return Json(serde_json::json!({
                     "error": format!("failed to unload model '{}' from ollama: {}", requested, err),
@@ -2724,6 +2896,14 @@ InferenceBackend::Native => match native_engine_client
             }
             let mut available_flag = ollama_available.lock().await;
             *available_flag = true;
+        } else if inference_backend == InferenceEngine::Vllm {
+            if let Ok(models) = vllm_client.list_models().await {
+                if !models.iter().any(|model| model == &requested) {
+                    return Json(serde_json::json!({
+                        "error": format!("model '{}' is not currently exposed by vLLM", requested),
+                    }));
+                }
+            }
         } else if settings.native_engine == "llama_server" {
             // For llama_server, unload means stopping the llama-server process
             if let Err(e) = native_engine_client.unload_model() {
@@ -2814,6 +2994,17 @@ InferenceBackend::Native => match native_engine_client
         Json(serde_json::json!({ "workers": backend.workers }))
     }
 
+    async fn handle_gui_cluster_topology(
+        State(state): State<Arc<Mutex<BackendState>>>,
+    ) -> Json<serde_json::Value> {
+        let cluster = {
+            let backend = lock_state(&state);
+            Arc::clone(&backend.cluster)
+        };
+
+        Json(build_cluster_topology_json(&cluster))
+    }
+
     async fn handle_gui_workers_connect() -> Json<serde_json::Value> {
         Json(serde_json::json!({ "status": "ok", "message": "Connection initiated" }))
     }
@@ -2877,6 +3068,8 @@ InferenceBackend::Native => match native_engine_client
             0.0
         };
 
+        host_metrics::record_metrics_point(&host, &inf, node_count, &backend_name);
+
         Json(serde_json::json!({
             "metrics": {
                 "throughput": inf.tokens_per_sec,
@@ -2898,6 +3091,27 @@ InferenceBackend::Native => match native_engine_client
                 "inference_backend": backend_name,
             }
         }))
+    }
+
+    async fn handle_gui_metrics_history(
+        State(state): State<Arc<Mutex<BackendState>>>,
+    ) -> Json<serde_json::Value> {
+        let host = host_metrics::current_host_snapshot();
+        let (inf, node_count, backend_name) = {
+            let backend = lock_state(&state);
+            let cluster = Arc::clone(&backend.cluster);
+            let node_count = cluster.nodes().len();
+            let inf = backend.inference_metrics.snapshot();
+            let backend_name = backend.inference_backend.as_str().to_string();
+            (inf, node_count, backend_name)
+        };
+
+        Json(build_metrics_history_json(
+            &host,
+            &inf,
+            node_count,
+            &backend_name,
+        ))
     }
 
     async fn handle_gui_sessions(
@@ -3018,6 +3232,7 @@ InferenceBackend::Native => match native_engine_client
         let (inference, native_engine) = match normalized.as_str() {
             "native" | "llama_server" | "llama-server" => ("native", Some("llama_server")),
             "ollama" => ("ollama", None),
+            "vllm" | "vllm-openai" => ("vllm", None),
             "directml" | "cpu" | "cuda" | "rocm" | "vulkan" | "metal" => {
                 ("native", Some("llama_server"))
             }
@@ -3047,7 +3262,7 @@ InferenceBackend::Native => match native_engine_client
 
         let mut backend = lock_state(&state);
         backend.settings.inference_backend = inference.to_string();
-        backend.inference_backend = InferenceBackend::parse(inference);
+        backend.inference_backend = InferenceEngine::parse(inference);
         if let Some(engine) = native_engine {
             backend.settings.native_engine = engine.to_string();
             std::env::set_var("GHOSTLINK_NATIVE_ENGINE", engine);
@@ -3064,6 +3279,13 @@ InferenceBackend::Native => match native_engine_client
             "native_engine": backend.settings.native_engine,
             "current_model": backend.current_model,
         }))
+    }
+
+    async fn handle_inference_engines(
+        State(state): State<Arc<Mutex<BackendState>>>,
+    ) -> Json<serde_json::Value> {
+        let backend = lock_state(&state);
+        Json(build_inference_engines_json(backend.inference_backend))
     }
 
     async fn handle_gui_ollama_health(
@@ -3101,6 +3323,60 @@ InferenceBackend::Native => match native_engine_client
             "detail": if reachable { "Ollama reachable" } else { "Ollama not reachable" },
             "message": if reachable { "Ollama backend connected" } else { "Ollama backend unavailable" }
         }))
+    }
+
+    async fn handle_gui_vllm_health(
+        State(state): State<Arc<Mutex<BackendState>>>,
+    ) -> Json<serde_json::Value> {
+        let vllm_client = {
+            let backend = lock_state(&state);
+            backend.vllm_client.clone()
+        };
+
+        let reachable = vllm_client.health().await.unwrap_or(false);
+        let model_count = if reachable {
+            vllm_client
+                .list_models()
+                .await
+                .map(|models| models.len())
+                .unwrap_or(0)
+        } else {
+            0
+        };
+
+        Json(serde_json::json!({
+            "status": if reachable { "ok" } else { "degraded" },
+            "reachable": reachable,
+            "model_count": model_count,
+            "detail": if reachable { "vLLM reachable" } else { "vLLM not reachable" },
+            "message": if reachable { "vLLM backend connected" } else { "vLLM backend unavailable" }
+        }))
+    }
+
+    async fn handle_gui_vllm_models(
+        State(state): State<Arc<Mutex<BackendState>>>,
+    ) -> Json<serde_json::Value> {
+        let vllm_client = {
+            let backend = lock_state(&state);
+            backend.vllm_client.clone()
+        };
+
+        match vllm_client.list_models().await {
+            Ok(models) => {
+                let models = models
+                    .into_iter()
+                    .map(|name| {
+                        serde_json::json!({
+                            "name": name,
+                            "status": "Ready",
+                            "source": "vllm",
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                Json(serde_json::json!({ "models": models }))
+            }
+            Err(err) => Json(serde_json::json!({ "models": [], "error": err.to_string() })),
+        }
     }
 
     async fn handle_gui_ollama_models(
@@ -3436,10 +3712,11 @@ InferenceBackend::Native => match native_engine_client
             ollama_available,
             inference_backend,
             native_engine_client,
+            vllm_client,
             settings,
         ) = {
             let backend = lock_state(&state);
-            let inference_backend = InferenceBackend::parse(&backend.settings.inference_backend);
+            let inference_backend = InferenceEngine::parse(&backend.settings.inference_backend);
             (
                 backend.current_model.clone(),
                 Arc::clone(&backend.cluster),
@@ -3447,6 +3724,7 @@ InferenceBackend::Native => match native_engine_client
                 Arc::clone(&backend.ollama_available),
                 inference_backend,
                 backend.native_engine_client.clone(),
+                backend.vllm_client.clone(),
                 backend.settings.clone(),
             )
         };
@@ -3470,7 +3748,7 @@ InferenceBackend::Native => match native_engine_client
         let mut gen_latency_ms: Option<f32> = None;
 
         let (response_text, real_inference, backend_used) = match inference_backend {
-            InferenceBackend::Ollama => {
+            InferenceEngine::Ollama => {
                 let resolve_model = |requested: &str, available: &[String]| -> Option<String> {
                     if available.iter().any(|m| m == requested) {
                         return Some(requested.to_string());
@@ -3524,14 +3802,14 @@ InferenceBackend::Native => match native_engine_client
                                     let text = text.trim().to_string();
                                     gen_tokens =
                                         Some((text.split_whitespace().count() as u32).max(1));
-                                    (text, true, InferenceBackend::Ollama.as_str())
+                                    (text, true, InferenceEngine::Ollama.as_str())
                                 }
                                 Err(err) => {
                                     let fallback = format!(
                                         "Ollama generate failed for model '{}': {}",
                                         model_name, err
                                     );
-                                    (fallback, false, InferenceBackend::Ollama.as_str())
+                                    (fallback, false, InferenceEngine::Ollama.as_str())
                                 }
                             }
                         } else {
@@ -3548,21 +3826,21 @@ InferenceBackend::Native => match native_engine_client
                                     current_model, available_hint
                                 ),
                                 false,
-                                InferenceBackend::Ollama.as_str(),
+                                InferenceEngine::Ollama.as_str(),
                             )
                         }
                     }
                     Err(err_text) => {
                         let fallback = format!(
                             "Inference backend '{}' unavailable while listing models: {}",
-                            InferenceBackend::Ollama.as_str(),
+                            InferenceEngine::Ollama.as_str(),
                             err_text
                         );
-                        (fallback, false, InferenceBackend::Ollama.as_str())
+                        (fallback, false, InferenceEngine::Ollama.as_str())
                     }
                 }
             }
-            InferenceBackend::Native => {
+            InferenceEngine::Native => {
                 match native_engine_client
                     .generate(
                         &current_model,
@@ -3585,7 +3863,7 @@ InferenceBackend::Native => match native_engine_client
                         (
                             gen.text,
                             gen.real_inference,
-                            InferenceBackend::Native.as_str(),
+                            InferenceEngine::Native.as_str(),
                         )
                     }
                     Err(err) => (
@@ -3594,10 +3872,28 @@ InferenceBackend::Native => match native_engine_client
                             current_model, exec_tokens, err
                         ),
                         false,
-                        InferenceBackend::Native.as_str(),
+                        InferenceEngine::Native.as_str(),
                     ),
                 }
             }
+            InferenceEngine::Vllm => match vllm_client
+                .generate(&current_model, &req.message, temp, top_p, top_k, penalty, exec_tokens)
+                .await
+            {
+                Ok(text) => {
+                    let text = text.trim().to_string();
+                    gen_tokens = Some((text.split_whitespace().count() as u32).max(1));
+                    (text, true, InferenceEngine::Vllm.as_str())
+                }
+                Err(err) => (
+                    format!(
+                        "vLLM backend processed model '{}' with {} estimated tokens. vLLM error: {}",
+                        current_model, exec_tokens, err
+                    ),
+                    false,
+                    InferenceEngine::Vllm.as_str(),
+                ),
+            },
         };
 
         {
@@ -3879,6 +4175,7 @@ InferenceBackend::Native => match native_engine_client
                             let normalized = match lowered.as_str() {
                                 "native" | "llama_server" | "llama-server" => "native",
                                 "ollama" => "ollama",
+                                "vllm" | "vllm-openai" => "vllm",
                                 other => other,
                             };
                             current.inference_backend = normalized.to_string();
@@ -3889,7 +4186,7 @@ InferenceBackend::Native => match native_engine_client
                             // whatever GHOSTLINK_INFERENCE_BACKEND resolved
                             // to at process startup. Update both so a live
                             // settings change actually takes effect.
-                            backend.inference_backend = InferenceBackend::parse(normalized);
+                            backend.inference_backend = InferenceEngine::parse(normalized);
                             std::env::set_var("GHOSTLINK_INFERENCE_BACKEND", normalized);
                             if normalized == "native" && current.native_engine.trim().is_empty() {
                                 current.native_engine = "llama_server".to_string();
@@ -3916,6 +4213,26 @@ InferenceBackend::Native => match native_engine_client
                         if let Some(v) = value.as_str() {
                             current.llama_server_url = v.to_string();
                             std::env::set_var("GHOSTLINK_LLAMA_SERVER_URL", v);
+                        }
+                    }
+                    "vllm_base_url" => {
+                        if let Some(v) = value.as_str() {
+                            current.vllm_base_url = v.to_string();
+                            backend.vllm_client = vllm::VllmClient::new(
+                                current.vllm_base_url.clone(),
+                                Some(current.vllm_api_key.clone()),
+                            );
+                            std::env::set_var("GHOSTLINK_VLLM_BASE_URL", v);
+                        }
+                    }
+                    "vllm_api_key" => {
+                        if let Some(v) = value.as_str() {
+                            current.vllm_api_key = v.to_string();
+                            backend.vllm_client = vllm::VllmClient::new(
+                                current.vllm_base_url.clone(),
+                                Some(current.vllm_api_key.clone()),
+                            );
+                            std::env::set_var("GHOSTLINK_VLLM_API_KEY", v);
                         }
                     }
                     "llama_port" => {
@@ -4243,9 +4560,13 @@ InferenceBackend::Native => match native_engine_client
 
     // Load settings to get initial inference backend
     let settings = load_settings();
-    let inference_backend = InferenceBackend::parse(&settings.inference_backend);
+    let inference_backend = InferenceEngine::parse(&settings.inference_backend);
     let native_engine_client = native_engine::NativeEngineClient::new();
     let ollama_client = ollama::OllamaClient::new(ollama_url);
+    let vllm_client = vllm::VllmClient::new(
+        settings.vllm_base_url.clone(),
+        Some(settings.vllm_api_key.clone()),
+    );
     let ollama_available = Arc::new(tokio::sync::Mutex::new(false));
     let compute_config_manager = backend_config::ConfigManager::new("ghostlink.toml");
     let compute_config = compute_config_manager
@@ -4274,7 +4595,7 @@ InferenceBackend::Native => match native_engine_client
     let _ = ACTIVE_RUNTIME_SWITCHER.set(runtime_switcher.clone());
 
     println!(
-        "Inference backend selected: {} (set GHOSTLINK_INFERENCE_BACKEND=native|ollama)",
+        "Inference backend selected: {} (set GHOSTLINK_INFERENCE_BACKEND=native|ollama|vllm)",
         inference_backend.as_str()
     );
 
@@ -4309,6 +4630,7 @@ InferenceBackend::Native => match native_engine_client
         inference_backend,
         native_engine_client,
         ollama_client,
+        vllm_client,
         ollama_available,
         settings,
     }));
@@ -4344,7 +4666,9 @@ InferenceBackend::Native => match native_engine_client
                 post(handle_gui_model_unload),
             )
             .route("/api/ollama/health", get(handle_gui_ollama_health))
+            .route("/api/vllm/health", get(handle_gui_vllm_health))
             .route("/api/ollama/models", get(handle_gui_ollama_models))
+            .route("/api/vllm/models", get(handle_gui_vllm_models))
             .route("/api/ollama/pull", post(handle_gui_ollama_pull))
             .route(
                 "/api/ollama/pull/stream",
@@ -4359,6 +4683,7 @@ InferenceBackend::Native => match native_engine_client
             .route("/api/ollama/version", get(handle_gui_ollama_version))
             .route("/api/ollama/chat", post(handle_gui_ollama_chat))
             .route("/api/workers", get(handle_gui_workers))
+            .route("/api/cluster/topology", get(handle_gui_cluster_topology))
             .route("/api/workers/connect", post(handle_gui_workers_connect))
             .route("/api/workers/add", post(handle_gui_workers_add))
             .route("/api/workers/discover", get(handle_gui_workers_discover))
@@ -4367,6 +4692,7 @@ InferenceBackend::Native => match native_engine_client
                 post(handle_gui_workers_disconnect),
             )
             .route("/api/metrics", get(handle_gui_metrics))
+            .route("/api/metrics/history", get(handle_gui_metrics_history))
             .route("/api/sessions", get(handle_gui_sessions))
             .route("/api/sessions/save", post(handle_gui_session_save))
             .route("/api/sessions/:session_id", get(handle_gui_session_load))
@@ -4384,6 +4710,7 @@ InferenceBackend::Native => match native_engine_client
             .route("/api/security/pqc/state", get(handle_gui_pqc_state))
             .route("/api/security/audit-log", get(handle_gui_audit_log))
             .route("/api/inference/chat", post(handle_gui_chat))
+            .route("/api/inference/engines", get(handle_inference_engines))
             // Accept GET/POST/PUT for settings — some clients issue PUT and previously got 405.
             .route(
                 "/api/settings",
@@ -6420,10 +6747,12 @@ mod backend_api;
 mod backend_config;
 mod backend_registry;
 mod host_metrics;
+mod inference_engine;
 mod native_engine;
 mod ollama;
 mod runtime;
 mod runtime_switcher;
+mod vllm;
 
 static ACTIVE_BACKEND_REGISTRY: OnceLock<Arc<backend_registry::BackendRegistry>> = OnceLock::new();
 static ACTIVE_RUNTIME_SWITCHER: OnceLock<runtime_switcher::RuntimeSwitcher> = OnceLock::new();
@@ -6451,7 +6780,10 @@ mod protocol {
 mod tests {
     use super::*;
     use ghostlink_core::host::{AccelerationMode, RuntimeProfile};
+    use ghostlink_core::protocol::NodeResources;
     use std::net::TcpListener;
+    use std::sync::{Arc, Mutex};
+    use std::time::Instant;
 
     fn args(items: &[&str]) -> impl Iterator<Item = String> {
         items
@@ -6461,10 +6793,161 @@ mod tests {
             .into_iter()
     }
 
+    fn env_lock() -> &'static Mutex<()> {
+        static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        ENV_LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    fn test_backend_state() -> Arc<Mutex<BackendState>> {
+        let cluster = Arc::new(ClusterState::new());
+        cluster.register(NodeResources::new("node-a", 0.0, 16.0, "cpu", None));
+        cluster.register(NodeResources::new("node-b", 24.0, 32.0, "cuda", None));
+        cluster.get_metrics_mut("node-a", |metrics| {
+            metrics.record_latency(120.0);
+            metrics.record_throughput(1.2);
+        });
+        cluster.get_metrics_mut("node-b", |metrics| {
+            metrics.record_latency(180.0);
+            metrics.record_throughput(2.4);
+            metrics.set_streaming_layers(0, 24);
+        });
+
+        Arc::new(Mutex::new(BackendState {
+            models: vec![],
+            current_model: "tinyllama".to_string(),
+            workers: vec![],
+            sessions: vec![],
+            queue_depth: 0,
+            chat_requests: 0,
+            last_latency_ms: 0.0,
+            last_tokens_per_sec: 0.0,
+            inference_metrics: host_metrics::InferenceMetrics::default(),
+            started_at: Instant::now(),
+            backend_url: "http://127.0.0.1:8003".to_string(),
+            cluster,
+            inference_backend: InferenceEngine::Vllm,
+            native_engine_client: native_engine::NativeEngineClient::new(),
+            ollama_client: ollama::OllamaClient::new("http://127.0.0.1:11434".to_string()),
+            vllm_client: vllm::VllmClient::new("http://127.0.0.1:8000".to_string(), None),
+            ollama_available: Arc::new(tokio::sync::Mutex::new(false)),
+            settings: RuntimeSettings::default(),
+        }))
+    }
+
     #[test]
     fn test_parse_usize_arg() {
         assert_eq!(parse_usize_arg("42").unwrap(), 42);
         assert!(parse_usize_arg("not-a-number").is_err());
+    }
+
+    #[tokio::test]
+    async fn test_cluster_topology_endpoint_shape() {
+        let state = test_backend_state();
+        let cluster = {
+            let backend = state.lock().unwrap();
+            Arc::clone(&backend.cluster)
+        };
+        let json = build_cluster_topology_json(&cluster);
+
+        assert_eq!(json["summary"]["node_count"].as_u64(), Some(2));
+        assert_eq!(json["summary"]["active_nodes"].as_u64(), Some(2));
+        assert_eq!(json["nodes"].as_array().map(|v| v.len()), Some(2));
+        assert_eq!(json["edges"].as_array().map(|v| v.len()), Some(1));
+        assert!(json["nodes"][1]["latency_history_us"].as_array().is_some());
+        assert!(json["nodes"][1]["throughput_history_gbps"]
+            .as_array()
+            .is_some());
+    }
+
+    #[tokio::test]
+    async fn test_metrics_history_endpoint_shape() {
+        let state = test_backend_state();
+        let host = host_metrics::current_host_snapshot();
+        let (inf, node_count, backend_name) = {
+            let backend = state.lock().unwrap();
+            (
+                backend.inference_metrics.snapshot(),
+                backend.cluster.nodes().len(),
+                backend.inference_backend.as_str().to_string(),
+            )
+        };
+        let json = build_metrics_history_json(&host, &inf, node_count, &backend_name);
+
+        let history = json["history"].as_array().unwrap();
+        assert!(!history.is_empty());
+        assert!(history[0].get("timestamp_ms").is_some());
+        assert!(history[0].get("throughput").is_some());
+        assert!(history[0].get("latency_p95").is_some());
+        assert!(history[0].get("inference_backend").is_some());
+    }
+
+    #[tokio::test]
+    async fn test_inference_engines_endpoint_shape() {
+        let json = build_inference_engines_json(InferenceEngine::Vllm);
+
+        assert_eq!(json.get("current").and_then(|v| v.as_str()), Some("vllm"));
+        let engines = json.get("engines").and_then(|v| v.as_array()).unwrap();
+        assert_eq!(engines.len(), 3);
+        assert_eq!(
+            engines[0].get("name").and_then(|v| v.as_str()),
+            Some("ollama")
+        );
+        assert_eq!(
+            engines[2].get("name").and_then(|v| v.as_str()),
+            Some("vllm")
+        );
+        assert_eq!(
+            engines[2].get("status").and_then(|v| v.as_str()),
+            Some("active")
+        );
+        assert_eq!(
+            engines[2]
+                .get("capabilities")
+                .and_then(|v| v.get("tool_calls"))
+                .and_then(|v| v.as_bool()),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn test_load_settings_applies_vllm_env_overrides() {
+        let _guard = env_lock().lock().expect("env lock poisoned");
+        let settings_path = std::env::temp_dir().join(format!(
+            "ghostlink-settings-{}-{}.json",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+
+        std::env::set_var("GHOSTLINK_SETTINGS_PATH", &settings_path);
+        std::env::remove_var("GHOSTLINK_INFERENCE_BACKEND");
+        std::env::remove_var("GHOSTLINK_VLLM_BASE_URL");
+        std::env::remove_var("GHOSTLINK_VLLM_API_KEY");
+        std::env::set_var("GHOSTLINK_INFERENCE_BACKEND", "vllm");
+        std::env::set_var("GHOSTLINK_VLLM_BASE_URL", "http://127.0.0.1:9000/v1/");
+        std::env::set_var("GHOSTLINK_VLLM_API_KEY", "test-key");
+
+        let settings = load_settings();
+
+        assert_eq!(settings.inference_backend, "vllm");
+        assert_eq!(settings.vllm_base_url, "http://127.0.0.1:9000/v1/");
+        assert_eq!(settings.vllm_api_key, "test-key");
+        assert_eq!(
+            std::env::var("GHOSTLINK_VLLM_BASE_URL").ok(),
+            Some("http://127.0.0.1:9000/v1/".to_string())
+        );
+        assert_eq!(
+            std::env::var("GHOSTLINK_VLLM_API_KEY").ok(),
+            Some("test-key".to_string())
+        );
+
+        let _ = std::fs::remove_file(&settings_path);
+        std::env::remove_var("GHOSTLINK_SETTINGS_PATH");
+        std::env::remove_var("GHOSTLINK_INFERENCE_BACKEND");
+        std::env::remove_var("GHOSTLINK_VLLM_BASE_URL");
+        std::env::remove_var("GHOSTLINK_VLLM_API_KEY");
     }
 
     #[test]

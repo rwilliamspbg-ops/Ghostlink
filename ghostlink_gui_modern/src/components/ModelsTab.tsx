@@ -16,6 +16,7 @@ import {
 } from 'lucide-react';
 import { useAppStore } from '../store';
 import { GhostlinkAPI } from '../api';
+import { useInferenceEngines } from '../hooks/useInferenceEngines';
 
 const POPULAR_MODELS = [
   { id: 'llama3.2:3b', name: 'Llama 3.2 3B Instruct', downloads: 2500000, likes: 120000 },
@@ -43,6 +44,13 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
   const [recommendedLoading, setRecommendedLoading] = useState(false);
   const [detectedRuntime, setDetectedRuntime] = useState<string>('cpu');
   const [availableMemoryGb, setAvailableMemoryGb] = useState<number>(0);
+  const { currentEngine, selectedEngine } = useInferenceEngines(api);
+
+  const engineLabel = selectedEngine?.label || 'Ollama';
+  const canUnload = selectedEngine?.capabilities.model_unload ?? true;
+  const canManageRemoteCatalog = currentEngine === 'ollama';
+  const canShowModelDefinition = currentEngine === 'ollama';
+  const canDownloadLocalModels = currentEngine !== 'vllm';
 
   const searchHF = useCallback(async (query: string) => {
     try {
@@ -106,23 +114,57 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
       if (result.models) {
         setModels(result.models);
         if (result.current_model) setCurrentModel(result.current_model);
-        setOllamaModels(
-          result.models.map((m: any) => ({
-            name: m.name,
-            size: Math.max(0, Number(m.size_gb || 0)) * 1024 * 1024 * 1024,
-            details: {
-              family: m.type || 'unknown',
-              quantization_level: m.quantization || 'unknown',
-            },
-            status: m.status || 'unknown',
-          }))
-        );
+        if (currentEngine === 'vllm') {
+          const inventory = await api.getVllmModels();
+          setOllamaModels(
+            (inventory.models || []).map((m: any) => ({
+              name: m.name,
+              size: 0,
+              details: {
+                family: m.source || 'remote',
+                quantization_level: 'server-managed',
+              },
+              status: m.status || 'Ready',
+              source: m.source || 'vllm',
+            }))
+          );
+        } else if (currentEngine === 'ollama') {
+          const inventory = await api.getOllamaModels();
+          if (!inventory.error && inventory.models) {
+            setOllamaModels(inventory.models);
+          } else {
+            setOllamaModels(
+              result.models.map((m: any) => ({
+                name: m.name,
+                size: Math.max(0, Number(m.size_gb || 0)) * 1024 * 1024 * 1024,
+                details: {
+                  family: m.type || 'unknown',
+                  quantization_level: m.quantization || 'unknown',
+                },
+                status: m.status || 'unknown',
+              }))
+            );
+          }
+        } else {
+          setOllamaModels(
+            result.models.map((m: any) => ({
+              name: m.name,
+              size: Math.max(0, Number(m.size_gb || 0)) * 1024 * 1024 * 1024,
+              details: {
+                family: m.type || 'unknown',
+                quantization_level: m.quantization || 'unknown',
+              },
+              status: m.status || 'unknown',
+              source: 'native',
+            }))
+          );
+        }
       }
     } catch (e) {
       console.error('Failed to refresh models:', e);
     }
     setLoading(false);
-  }, [api, setCurrentModel, setModels]);
+  }, [api, currentEngine, setCurrentModel, setModels]);
 
   useEffect(() => {
     refreshModels();
@@ -150,6 +192,10 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
   };
 
   const handleDeleteModel = async (name: string) => {
+    if (!canManageRemoteCatalog) {
+      setMessage(`${engineLabel} models are server-managed and cannot be deleted from this UI.`);
+      return;
+    }
     if (!window.confirm(`Are you sure you want to delete the model "${name}" from Ollama? This cannot be undone.`)) {
       return;
     }
@@ -176,6 +222,10 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
   };
 
   const handleUnloadModel = async (name: string) => {
+    if (!canUnload) {
+      setMessage(`${engineLabel} does not support model unload from this UI.`);
+      return;
+    }
     setPendingActions(prev => ({ ...prev, [name]: 'unloading' }));
     setMessage(`Unloading ${name}...`);
     try {
@@ -199,6 +249,10 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
   };
 
   const handlePullModel = async (id: string) => {
+    if (!canManageRemoteCatalog) {
+      setMessage(`${engineLabel} inventories are managed by the remote server. Change the server model set outside Ghostlink.`);
+      return;
+    }
     setPendingActions(prev => ({ ...prev, [id]: 'downloading' }));
     setMessage(`Pulling ${id}...`);
 
@@ -223,6 +277,10 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
   };
 
   const handleDownloadHFModel = async (id: string) => {
+    if (!canDownloadLocalModels) {
+      setMessage('Download is disabled while vLLM is selected because the remote server owns its model inventory.');
+      return;
+    }
     setPendingActions(prev => ({ ...prev, [id]: 'downloading' }));
     setMessage(`Downloading ${id}...`);
     setDownloadProgress(prev => ({ ...prev, [id]: 0 }));
@@ -285,6 +343,10 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
   };
 
   const handleShowModelfile = async (name: string) => {
+    if (!canShowModelDefinition) {
+      setMessage(`${engineLabel} does not expose Ollama modelfiles in this UI.`);
+      return;
+    }
     try {
       const result = await api.showOllamaModel(name);
       if (result.info?.modelfile) {
@@ -314,7 +376,7 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
               activeTab === 'local' ? 'bg-blue-600 text-white shadow-lg shadow-blue-500/20' : 'text-slate-400 hover:bg-slate-900'
             }`}
           >
-            Ollama Models
+            {engineLabel} Models
           </button>
           <button
             onClick={() => setActiveTab('recommended')}
@@ -367,17 +429,28 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
             <div className="flex items-center justify-between px-4 py-3 bg-slate-800 rounded-lg">
               <div className="flex items-center gap-3">
                 <Database size={20} className="text-blue-400" />
-                <h2 className="text-lg font-bold text-white">Ollama Models</h2>
+                <h2 className="text-lg font-bold text-white">{engineLabel} Models</h2>
               </div>
               <div className="text-sm text-slate-400">
                 {ollamaModels.length} models available
               </div>
             </div>
+            {currentEngine === 'vllm' && (
+              <div className="px-4 py-3 bg-blue-500/10 border border-blue-500/20 rounded-lg text-sm text-slate-300">
+                vLLM inventory is read from the remote server. Loading a model selects one that is already being served; download, pull, and delete actions are disabled here.
+              </div>
+            )}
             <div className="space-y-2">
               {ollamaModels.length === 0 ? (
                 <div className="text-center py-12 text-slate-500">
                   <Database size={48} className="mx-auto mb-4 text-slate-700" />
-                  <p>No Ollama models found. Pull a model from the list below or run <code>{'ollama pull <model>'}</code></p>
+                  <p>
+                    {currentEngine === 'vllm'
+                      ? 'No vLLM models were reported by the remote server.'
+                      : currentEngine === 'ollama'
+                      ? 'No Ollama models found. Pull a model from the list below or run ollama pull <model>.'
+                      : 'No local native models found. Download a model below or add a GGUF file locally.'}
+                  </p>
                 </div>
               ) : (
                 ollamaModels.map((model: any) => (
@@ -389,13 +462,13 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                           <div>
                             <div className="font-semibold text-white">{model.name}</div>
                             <div className="text-xs text-slate-400">
-                              {(model.size / (1024 * 1024 * 1024)).toFixed(2)} GB • {model.details?.family || 'Unknown'} • {model.details?.quantization_level || 'Unknown'}
+                              {model.size > 0 ? `${(model.size / (1024 * 1024 * 1024)).toFixed(2)} GB • ` : ''}{model.details?.family || 'Unknown'} • {model.details?.quantization_level || 'Unknown'}
                             </div>
                           </div>
                         </div>
                         <div className="flex items-center gap-2">
                           <CheckCircle2 className="h-4 w-4 text-green-500" />
-                          <span className="text-xs text-slate-400">Ready</span>
+                          <span className="text-xs text-slate-400">{model.status || 'Ready'}</span>
                         </div>
                       </div>
                       <div className="flex items-center gap-2">
@@ -404,18 +477,20 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                             <span className="px-3 py-1 bg-blue-600 text-white text-xs font-medium rounded-full">
                               Active
                             </span>
-                            <button
-                              onClick={() => handleUnloadModel(model.name)}
-                              disabled={pendingActions[model.name] === 'unloading' || loading}
-                              className="flex items-center gap-2 px-3 py-1 bg-slate-800 hover:bg-slate-700 text-xs font-medium rounded-full transition"
-                            >
-                              {pendingActions[model.name] === 'unloading' ? (
-                                <Loader size={16} className="mr-1" />
-                              ) : (
-                                <X size={16} />
-                              )}
-                              Unload
-                            </button>
+                            {canUnload && (
+                              <button
+                                onClick={() => handleUnloadModel(model.name)}
+                                disabled={pendingActions[model.name] === 'unloading' || loading}
+                                className="flex items-center gap-2 px-3 py-1 bg-slate-800 hover:bg-slate-700 text-xs font-medium rounded-full transition"
+                              >
+                                {pendingActions[model.name] === 'unloading' ? (
+                                  <Loader size={16} className="mr-1" />
+                                ) : (
+                                  <X size={16} />
+                                )}
+                                Unload
+                              </button>
+                            )}
                           </div>
                         ) : (
                           <button
@@ -431,32 +506,37 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                             Use
                           </button>
                         )}
-                        <button
-                          onClick={() => handleShowModelfile(model.name)}
-                          className="p-1 hover:bg-slate-700 rounded-lg transition text-slate-400 hover:text-white"
-                          title="View Modelfile"
-                        >
-                          <Copy size={16} />
-                        </button>
-                        <button
-                          onClick={() => handleDeleteModel(model.name)}
-                          disabled={pendingActions[model.name] === 'deleting' || loading}
-                          className="p-1 hover:bg-slate-700 rounded-lg transition text-slate-400 hover:text-red-400"
-                          title="Delete from Ollama"
-                        >
-                          {pendingActions[model.name] === 'deleting' ? (
-                            <Loader size={16} className="mr-1" />
-                          ) : (
-                            <Trash2 size={16} />
-                          )}
-                        </button>
+                        {canShowModelDefinition && (
+                          <button
+                            onClick={() => handleShowModelfile(model.name)}
+                            className="p-1 hover:bg-slate-700 rounded-lg transition text-slate-400 hover:text-white"
+                            title="View Modelfile"
+                          >
+                            <Copy size={16} />
+                          </button>
+                        )}
+                        {canManageRemoteCatalog && (
+                          <button
+                            onClick={() => handleDeleteModel(model.name)}
+                            disabled={pendingActions[model.name] === 'deleting' || loading}
+                            className="p-1 hover:bg-slate-700 rounded-lg transition text-slate-400 hover:text-red-400"
+                            title="Delete from Ollama"
+                          >
+                            {pendingActions[model.name] === 'deleting' ? (
+                              <Loader size={16} className="mr-1" />
+                            ) : (
+                              <Trash2 size={16} />
+                            )}
+                          </button>
+                        )}
                       </div>
                     </div>
                   </div>
                 ))
               )}
             </div>
-            <div className="mt-6 p-4 bg-slate-800/50 rounded-lg border border-slate-800">
+            {canManageRemoteCatalog && (
+              <div className="mt-6 p-4 bg-slate-800/50 rounded-lg border border-slate-800">
               <h3 className="text-lg font-bold text-white mb-3">Popular Ollama Models</h3>
               <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
                 {POPULAR_MODELS.map((m) => {
@@ -498,6 +578,7 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                 })}
               </div>
             </div>
+            )}
           </div>
         ) : activeTab === 'recommended' ? (
           <div className="space-y-4">
@@ -540,7 +621,7 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                       </div>
                       <button
                         onClick={() => handlePullModel(model.name)}
-                        disabled={pendingActions[model.name] === 'downloading' || loading}
+                        disabled={pendingActions[model.name] === 'downloading' || loading || !canManageRemoteCatalog}
                         className="inline-flex items-center gap-2 px-4 py-2 bg-slate-800 hover:bg-blue-600 text-white rounded-xl text-xs font-bold transition group-hover:shadow-lg group-hover:shadow-blue-500/20"
                       >
                         {pendingActions[model.name] === 'downloading' ? (
@@ -551,7 +632,7 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                         ) : (
                           <Download size={14} />
                         )}
-                        {pendingActions[model.name] === 'downloading' ? '' : 'Pull'}
+                        {pendingActions[model.name] === 'downloading' ? '' : canManageRemoteCatalog ? 'Pull' : 'Server managed'}
                       </button>
                     </div>
                   </div>
@@ -646,7 +727,7 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                     </div>
                     <button
                       onClick={() => handleDownloadHFModel(m.id)}
-                      disabled={pendingActions[m.id] === 'downloading' || loading}
+                      disabled={pendingActions[m.id] === 'downloading' || loading || !canDownloadLocalModels}
                       className="inline-flex items-center gap-2 px-4 py-2 bg-slate-800 hover:bg-blue-600 text-white rounded-xl text-xs font-bold transition group-hover:shadow-lg group-hover:shadow-blue-500/20"
                     >
                       {pendingActions[m.id] === 'downloading' ? (
@@ -657,7 +738,7 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                       ) : (
                         <Download size={14} />
                       )}
-                      {pendingActions[m.id] === 'downloading' ? '' : 'Download'}
+                      {pendingActions[m.id] === 'downloading' ? '' : canDownloadLocalModels ? 'Download' : 'Server managed'}
                     </button>
                   </div>
                 </div>
