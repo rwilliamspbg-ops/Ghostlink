@@ -568,11 +568,11 @@ mod tests {
 
         // 1. Normal case where N > K
         let entries = vec![
-            entry("entry1", vec![1.0, 0.0]), // similarity = 1.0
-            entry("entry2", vec![0.0, 1.0]), // similarity = 0.0
+            entry("entry1", vec![1.0, 0.0]),     // similarity = 1.0
+            entry("entry2", vec![0.0, 1.0]),     // similarity = 0.0
             entry("entry3", vec![0.707, 0.707]), // similarity = 0.707
-            entry("entry4", vec![-1.0, 0.0]), // similarity = -1.0
-            entry("entry5", vec![0.5, 0.866]), // similarity = 0.5
+            entry("entry4", vec![-1.0, 0.0]),    // similarity = -1.0
+            entry("entry5", vec![0.5, 0.866]),   // similarity = 0.5
         ];
 
         let ranked = rank(&entries, &query, 3);
