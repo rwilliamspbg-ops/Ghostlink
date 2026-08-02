@@ -4,6 +4,62 @@ All notable changes to Ghostlink Studio are documented here.
 
 ---
 
+## [1.3.2] - 2026-08-02 (vLLM Integration & Release Packaging Readiness)
+
+### Added
+
+- New inference engine abstraction in [crates/ghost-link/src/inference_engine.rs](crates/ghost-link/src/inference_engine.rs) with capability descriptors for `ollama`, `native`, and `vllm`.
+- New vLLM client in [crates/ghost-link/src/vllm.rs](crates/ghost-link/src/vllm.rs) for:
+  - health probing
+  - model listing
+  - chat-completion generation via OpenAI-compatible endpoints
+- New GUI/backend routes for engine and observability workflows:
+  - `/api/inference/engines`
+  - `/api/vllm/health`
+  - `/api/vllm/models`
+  - `/api/cluster/topology`
+  - `/api/metrics/history`
+
+### Changed
+
+- Backend inference selection now supports `GHOSTLINK_INFERENCE_BACKEND=vllm` in addition to `ollama|native`.
+- Runtime settings now include vLLM connection fields (`vllm_base_url`, `vllm_api_key`) and propagate them through runtime updates.
+- Control-plane endpoints can now enforce bearer-token auth when control-plane/discovery auth tokens are configured.
+- Release CI workflow in [.github/workflows/release-artifacts.yml](.github/workflows/release-artifacts.yml) now:
+  - installs Node.js dependencies for the GUI
+  - executes Rust, Go, and GUI validation gates before packaging
+- Release bundling script in [scripts/release_bundle.sh](scripts/release_bundle.sh) now:
+  - validates Node.js toolchain presence
+  - builds and packages GUI dist artifacts
+  - generates SHA256 checksums across bundled files
+
+### GUI UX and Test Coverage
+
+- Added capability-aware engine UI behavior across:
+  - [ghostlink_gui_modern/src/components/SettingsTab.tsx](ghostlink_gui_modern/src/components/SettingsTab.tsx)
+  - [ghostlink_gui_modern/src/components/ModelsTab.tsx](ghostlink_gui_modern/src/components/ModelsTab.tsx)
+  - [ghostlink_gui_modern/src/components/ChatTab.tsx](ghostlink_gui_modern/src/components/ChatTab.tsx)
+- Added metrics history visualizations and topology inspection in:
+  - [ghostlink_gui_modern/src/components/MetricsTab.tsx](ghostlink_gui_modern/src/components/MetricsTab.tsx)
+  - [ghostlink_gui_modern/src/components/WorkersTab.tsx](ghostlink_gui_modern/src/components/WorkersTab.tsx)
+- Added/updated tests for engine capabilities, vLLM flows, topology/metrics history, and control-plane auth behaviors.
+
+### Validation
+
+- `cargo fmt --all --check` — OK
+- `cargo clippy --workspace --all-targets -- -D warnings` — OK
+- `cargo test --workspace` — OK
+- `cd control-plane && go test ./...` — OK
+- `cd ghostlink_gui_modern && npm run test -- --reporter=basic` — OK (11 files, 113 tests)
+- `cd ghostlink_gui_modern && npm run build` — OK
+
+### Release Packaging and Signing
+
+- Unsigned and signed bundle paths validated through [scripts/release_bundle.sh](scripts/release_bundle.sh).
+- GPG signing key generated in the development environment and used to produce checksum signature artifacts (`SHA256SUMS.asc`).
+
+---
+
 ## [1.3.1] - 2026-07-22 (Launch Reliability & CI Stabilization)
 
 ### 🔧 Launch Hardening
