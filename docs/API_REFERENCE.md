@@ -39,11 +39,11 @@ A request with no token, an expired JWT, or a wrong value gets `401`:
 
 ```bash
 curl -X POST http://127.0.0.1:8080/api/security/jwt/refresh \
-  -H "Authorization: Bearer $GHOSTLINK_API_KEY"
+  -H "Authorization: Bearer <api-key>"
 ```
 
 ```json
-{ "status": "ok", "token": "eyJhbGciOiJIUzI1NiJ9..." }
+{ "status": "ok", "token": "<jwt-token>" }
 ```
 
 ### Check PQC/TLS state
