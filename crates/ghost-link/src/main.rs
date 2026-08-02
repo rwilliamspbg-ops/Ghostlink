@@ -26,7 +26,8 @@ use ghostlink_core::protocol::NodeResources;
 use ghostlink_core::protocol::{DiscoveryFrame, FrameKind};
 use ghostlink_core::runtime::{
     build_token_schedule, execute_pipeline_tcp_loopback, execute_pipeline_tcp_loopback_with_config,
-    execute_pipeline_with_rebalance_and_measured, DeviceKind, PipelinePlan, TcpTransportConfig,
+    execute_pipeline_with_rebalance_and_measured, execute_pipeline_with_remote_stage,
+    run_stage_worker, DeviceKind, PipelinePlan, TcpTransportConfig,
 };
 use ghostlink_core::xdp::probe_xdp_support;
 use serde::{Deserialize, Serialize};
@@ -126,6 +127,7 @@ struct FlowOptions<'a> {
     transport_mode: FlowTransportMode,
     top_k: usize,
     penalty: f32,
+    remote_addr: Option<SocketAddr>,
 }
 
 fn main() -> Result<()> {
@@ -369,6 +371,9 @@ enum CliCommand {
         node_id: String,
         once: bool,
     },
+    StageWorker {
+        bind: String,
+    },
     Gui {
         args: Vec<String>,
     },
@@ -398,6 +403,7 @@ enum CliCommand {
         transport_mode: FlowTransportMode,
         top_k: usize,
         penalty: f32,
+        remote_addr: Option<SocketAddr>,
     },
     Serve {
         port: u16,
@@ -419,6 +425,7 @@ fn execute_command(command: CliCommand) -> Result<()> {
         CliCommand::Plan => print_plan()?,
         CliCommand::Join { node_id } => print_join(&node_id)?,
         CliCommand::Listen { node_id, once } => print_discovery_listener(&node_id, once)?,
+        CliCommand::StageWorker { bind } => print_stage_worker(&bind)?,
         CliCommand::Gui { args } => launch_mohawk_gui(&args)?,
         CliCommand::GuiCheck { strict } => print_gui_readiness(strict)?,
         CliCommand::GuiDiagnose { strict } => print_gui_diagnostics(strict)?,
@@ -439,6 +446,7 @@ fn execute_command(command: CliCommand) -> Result<()> {
             transport_mode,
             top_k,
             penalty,
+            remote_addr,
         } => print_flow(FlowOptions {
             local_id: &local_id,
             remote_id: &remote_id,
@@ -449,6 +457,7 @@ fn execute_command(command: CliCommand) -> Result<()> {
             transport_mode,
             top_k,
             penalty,
+            remote_addr,
         })?,
         CliCommand::Serve { port, host } => start_openai_api_server(port, &host)?,
         CliCommand::Help => print_help(),
@@ -478,6 +487,12 @@ where
             });
             let once = args.any(|arg| arg == "--once");
             Ok(CliCommand::Listen { node_id, once })
+        }
+        "stage-worker" => {
+            let bind = args.next().unwrap_or_else(|| {
+                env_default_string("GHOSTLINK_STAGE_WORKER_DEFAULT_BIND", "0.0.0.0:9500")
+            });
+            Ok(CliCommand::StageWorker { bind })
         }
         "gui" => Ok(CliCommand::Gui {
             args: args.collect(),
@@ -559,6 +574,17 @@ where
             let transport_mode =
                 parse_flow_transport_mode(cli_transport.as_deref().or(env_transport.as_deref()))?;
 
+            let remaining: Vec<String> = args.collect();
+            let remote_addr = remaining
+                .iter()
+                .position(|a| a == "--remote-addr")
+                .and_then(|i| remaining.get(i + 1))
+                .map(|s| {
+                    s.parse::<SocketAddr>()
+                        .map_err(|e| anyhow::anyhow!("invalid --remote-addr '{s}': {e}"))
+                })
+                .transpose()?;
+
             Ok(CliCommand::Flow {
                 local_id,
                 remote_id,
@@ -569,6 +595,7 @@ where
                 transport_mode,
                 top_k: 40,
                 penalty: 1.1,
+                remote_addr,
             })
         }
         "serve" => {
@@ -1155,11 +1182,13 @@ fn print_flow(opts: FlowOptions) -> Result<()> {
         metrics.record_delivery_ratio(0.97);
         metrics.record_throughput(8.0);
     });
-    cluster.get_metrics_mut(opts.remote_id, |metrics| {
-        metrics.record_latency(3.2);
-        metrics.record_delivery_ratio(0.95);
-        metrics.record_throughput(7.4);
-    });
+    if opts.remote_addr.is_none() {
+        cluster.get_metrics_mut(opts.remote_id, |metrics| {
+            metrics.record_latency(3.2);
+            metrics.record_delivery_ratio(0.95);
+            metrics.record_throughput(7.4);
+        });
+    }
 
     let health_monitor =
         NetworkHealthMonitor::with_runtime_profile(Arc::new(cluster.clone()), &local_profile);
@@ -1188,104 +1217,125 @@ fn print_flow(opts: FlowOptions) -> Result<()> {
     let token_schedule = build_token_schedule(pipeline_plan.stages.len(), schedule_preview_tokens);
     let mut selected_tcp_cfg: Option<TcpTransportConfig> = None;
     let mut effective_transport_mode = opts.transport_mode;
-    let execution = match opts.transport_mode {
-        FlowTransportMode::TcpLoopback => {
-            let base_tcp_cfg = tcp_transport_config_from_env();
-            let tcp_cfg = if is_env_truthy("GHOSTLINK_TCP_AUTOTUNE") {
-                autotune_tcp_transport_config(
+    let execution = if let Some(remote_addr) = opts.remote_addr {
+        println!(
+            "REAL execution: {}'s stage runs on a separate process at {remote_addr} \
+             (start it first with `ghost-link stage-worker {remote_addr}`)",
+            opts.remote_id
+        );
+        execute_pipeline_with_remote_stage(
+            &pipeline_plan,
+            opts.local_id,
+            opts.remote_id,
+            opts.execution_tokens,
+            opts.micro_batch,
+            tcp_transport_config_from_env(),
+            remote_addr,
+        )
+    } else {
+        println!(
+            "SIMULATED execution: single process, no second machine involved. \
+             Pass --remote-addr <host:port> with `ghost-link stage-worker` running there for real cross-process execution."
+        );
+        match opts.transport_mode {
+            FlowTransportMode::TcpLoopback => {
+                let base_tcp_cfg = tcp_transport_config_from_env();
+                let tcp_cfg = if is_env_truthy("GHOSTLINK_TCP_AUTOTUNE") {
+                    autotune_tcp_transport_config(
+                        &pipeline_plan,
+                        opts.execution_tokens,
+                        opts.micro_batch,
+                        base_tcp_cfg,
+                    )?
+                } else {
+                    base_tcp_cfg
+                };
+                selected_tcp_cfg = Some(tcp_cfg.clone());
+                execute_pipeline_tcp_loopback_with_config(
                     &pipeline_plan,
                     opts.execution_tokens,
                     opts.micro_batch,
-                    base_tcp_cfg,
-                )?
-            } else {
-                base_tcp_cfg
-            };
-            selected_tcp_cfg = Some(tcp_cfg.clone());
-            execute_pipeline_tcp_loopback_with_config(
-                &pipeline_plan,
-                opts.execution_tokens,
-                opts.micro_batch,
-                tcp_cfg,
-            )
-        }
-        FlowTransportMode::InMemory => {
-            let rebalance = if enable_inmem_runtime_feedback {
-                Some(&rebalance_trigger)
-            } else {
-                None
-            };
-            let cluster_feedback = if enable_inmem_runtime_feedback {
-                Some(&cluster)
-            } else {
-                None
-            };
-            let placement_feedback = if enable_inmem_runtime_feedback {
-                Some(&placement_context)
-            } else {
-                None
-            };
+                    tcp_cfg,
+                )
+            }
+            FlowTransportMode::InMemory => {
+                let rebalance = if enable_inmem_runtime_feedback {
+                    Some(&rebalance_trigger)
+                } else {
+                    None
+                };
+                let cluster_feedback = if enable_inmem_runtime_feedback {
+                    Some(&cluster)
+                } else {
+                    None
+                };
+                let placement_feedback = if enable_inmem_runtime_feedback {
+                    Some(&placement_context)
+                } else {
+                    None
+                };
 
-            execute_pipeline_with_rebalance_and_measured(
-                &pipeline_plan,
-                opts.execution_tokens,
-                opts.micro_batch,
-                rebalance,
-                cluster_feedback,
-                placement_feedback,
-            )
-        }
-        FlowTransportMode::Xdp => {
-            let interface = xdp_interface_from_env();
-            match probe_xdp_support(&interface) {
-                Ok(()) => {
-                    println!(
-                        "AF_XDP probe succeeded on interface '{}'; using xdp-optimized runtime settings.",
-                        interface
-                    );
-                    let base_tcp_cfg = xdp_optimized_tcp_config();
-                    let tcp_cfg = if xdp_autotune_enabled() {
-                        autotune_tcp_transport_config(
+                execute_pipeline_with_rebalance_and_measured(
+                    &pipeline_plan,
+                    opts.execution_tokens,
+                    opts.micro_batch,
+                    rebalance,
+                    cluster_feedback,
+                    placement_feedback,
+                )
+            }
+            FlowTransportMode::Xdp => {
+                let interface = xdp_interface_from_env();
+                match probe_xdp_support(&interface) {
+                    Ok(()) => {
+                        println!(
+                            "AF_XDP probe succeeded on interface '{}'; using xdp-optimized runtime settings.",
+                            interface
+                        );
+                        let base_tcp_cfg = xdp_optimized_tcp_config();
+                        let tcp_cfg = if xdp_autotune_enabled() {
+                            autotune_tcp_transport_config(
+                                &pipeline_plan,
+                                opts.execution_tokens,
+                                opts.micro_batch,
+                                base_tcp_cfg,
+                            )?
+                        } else {
+                            base_tcp_cfg
+                        };
+                        selected_tcp_cfg = Some(tcp_cfg.clone());
+                        execute_pipeline_tcp_loopback_with_config(
                             &pipeline_plan,
                             opts.execution_tokens,
                             opts.micro_batch,
-                            base_tcp_cfg,
-                        )?
-                    } else {
-                        base_tcp_cfg
-                    };
-                    selected_tcp_cfg = Some(tcp_cfg.clone());
-                    execute_pipeline_tcp_loopback_with_config(
-                        &pipeline_plan,
-                        opts.execution_tokens,
-                        opts.micro_batch,
-                        tcp_cfg,
-                    )
-                }
-                Err(reason) => {
-                    println!(
-                        "AF_XDP unavailable on '{}': {}. Falling back to TCP transport.",
-                        interface, reason
-                    );
-                    effective_transport_mode = FlowTransportMode::TcpLoopback;
-                    let base_tcp_cfg = tcp_transport_config_from_env();
-                    let tcp_cfg = if is_env_truthy("GHOSTLINK_TCP_AUTOTUNE") {
-                        autotune_tcp_transport_config(
+                            tcp_cfg,
+                        )
+                    }
+                    Err(reason) => {
+                        println!(
+                            "AF_XDP unavailable on '{}': {}. Falling back to TCP transport.",
+                            interface, reason
+                        );
+                        effective_transport_mode = FlowTransportMode::TcpLoopback;
+                        let base_tcp_cfg = tcp_transport_config_from_env();
+                        let tcp_cfg = if is_env_truthy("GHOSTLINK_TCP_AUTOTUNE") {
+                            autotune_tcp_transport_config(
+                                &pipeline_plan,
+                                opts.execution_tokens,
+                                opts.micro_batch,
+                                base_tcp_cfg,
+                            )?
+                        } else {
+                            base_tcp_cfg
+                        };
+                        selected_tcp_cfg = Some(tcp_cfg.clone());
+                        execute_pipeline_tcp_loopback_with_config(
                             &pipeline_plan,
                             opts.execution_tokens,
                             opts.micro_batch,
-                            base_tcp_cfg,
-                        )?
-                    } else {
-                        base_tcp_cfg
-                    };
-                    selected_tcp_cfg = Some(tcp_cfg.clone());
-                    execute_pipeline_tcp_loopback_with_config(
-                        &pipeline_plan,
-                        opts.execution_tokens,
-                        opts.micro_batch,
-                        tcp_cfg,
-                    )
+                            tcp_cfg,
+                        )
+                    }
                 }
             }
         }
@@ -5119,6 +5169,29 @@ Auto-tuned local runtime: {} workers, {} acceleration",
         println!("Autotuned distribution nodes: {}", plan.distributions.len());
     }
 
+    Ok(())
+}
+
+fn print_stage_worker(bind: &str) -> Result<()> {
+    let bind_addr: SocketAddr = bind
+        .parse()
+        .map_err(|e| anyhow::anyhow!("invalid bind address '{bind}': {e}"))?;
+
+    println!("Ghost-Link Stage Worker\n");
+    println!("=======================\n");
+    println!("Binding: {bind_addr}");
+    println!("Waiting for one coordinator connection...");
+
+    let listener = std::net::TcpListener::bind(bind_addr)
+        .map_err(|e| anyhow::anyhow!("failed to bind {bind_addr}: {e}"))?;
+
+    let summary = run_stage_worker(listener, &tcp_transport_config_from_env())
+        .map_err(|e| anyhow::anyhow!("stage worker failed: {e}"))?;
+
+    println!(
+        "Done: processed {} batch(es), avg compute {:.2} ms/batch",
+        summary.batches_processed, summary.avg_compute_ms
+    );
     Ok(())
 }
 
