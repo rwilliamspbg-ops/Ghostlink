@@ -1,5 +1,9 @@
 # Palette's Journal
 
+## 2026-08-02 - [Sessions Active Protection & Tooltips]
+**Learning:** Cancelling a running LLM inference session is a highly disruptive action. Sighted users need immediate visual hover tooltips (`title`) to confirm the destructive function of icon-only action triggers, and all users benefit from a non-blocking confirmation dialog (`window.confirm`) to prevent accidental session evictions. Additionally, ensuring these interactive controls have tailored keyboard focus rings guarantees an accessible experience during keyboard navigation.
+**Action:** Always protect cluster session teardowns with clear modal confirmations, intuitive tooltips, and tailored `focus-visible:` focus rings.
+
 ## 2026-07-20 - [Clear Chat Confirmation & Tooltip]
 **Learning:** Destructive actions placed immediately adjacent to common utility actions (like Save and Load) without tooltips or confirmation dialogs lead to high rates of accidental data loss and user frustration. Sighted users need hover tooltips (`title`) to understand icon-only buttons, and all users benefit from a non-blocking confirmation dialog before clearing an active session.
 **Action:** Always add a clear confirmation dialog and descriptive tooltips to header actions that discard user-generated state.
