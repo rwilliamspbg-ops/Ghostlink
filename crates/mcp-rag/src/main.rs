@@ -229,8 +229,19 @@ fn rank<'a>(
             )
         })
         .collect();
+
+    // Optimize document ranking by performing a partial sort to select only the top K elements,
+    // reducing time complexity from O(N log N) to O(N + K log K). This is extremely beneficial
+    // for larger indexes with thousands of elements since top_k is typically small (e.g. 5).
+    if top_k > 0 && scored.len() > top_k {
+        scored.select_nth_unstable_by(top_k - 1, |a, b| {
+            b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal)
+        });
+        scored.truncate(top_k);
+    } else if top_k == 0 {
+        scored.clear();
+    }
     scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
-    scored.truncate(top_k);
     scored
 }
 
@@ -549,5 +560,57 @@ mod tests {
         let corrupt = dir.path().join("corrupt.json");
         std::fs::write(&corrupt, "not valid json").unwrap();
         assert!(RagIndex::load(&corrupt).entries.is_empty());
+    }
+
+    #[test]
+    fn test_rank_partial_sort() {
+        let query = vec![1.0, 0.0];
+
+        // 1. Normal case where N > K
+        let entries = vec![
+            entry("entry1", vec![1.0, 0.0]),     // similarity = 1.0
+            entry("entry2", vec![0.0, 1.0]),     // similarity = 0.0
+            entry("entry3", vec![0.707, 0.707]), // similarity = 0.707
+            entry("entry4", vec![-1.0, 0.0]),    // similarity = -1.0
+            entry("entry5", vec![0.5, 0.866]),   // similarity = 0.5
+        ];
+
+        let ranked = rank(&entries, &query, 3);
+        assert_eq!(ranked.len(), 3);
+        assert_eq!(ranked[0].1.id, "entry1");
+        assert_eq!(ranked[1].1.id, "entry3");
+        assert_eq!(ranked[2].1.id, "entry5");
+
+        // 2. Case where N < K
+        let ranked_small_n = rank(&entries, &query, 10);
+        assert_eq!(ranked_small_n.len(), 5);
+        assert_eq!(ranked_small_n[0].1.id, "entry1");
+        assert_eq!(ranked_small_n[4].1.id, "entry4");
+
+        // 3. Case where N == K
+        let ranked_equal = rank(&entries, &query, 5);
+        assert_eq!(ranked_equal.len(), 5);
+        assert_eq!(ranked_equal[0].1.id, "entry1");
+        assert_eq!(ranked_equal[4].1.id, "entry4");
+
+        // 4. Empty slice
+        let empty_entries: Vec<IndexEntry> = Vec::new();
+        let ranked_empty = rank(&empty_entries, &query, 3);
+        assert!(ranked_empty.is_empty());
+
+        // 4b. top_k == 0 edge case
+        let ranked_zero_k = rank(&entries, &query, 0);
+        assert!(ranked_zero_k.is_empty());
+
+        // 5. Identical scores
+        let identical_entries = vec![
+            entry("a", vec![1.0, 0.0]),
+            entry("b", vec![1.0, 0.0]),
+            entry("c", vec![1.0, 0.0]),
+        ];
+        let ranked_identical = rank(&identical_entries, &query, 2);
+        assert_eq!(ranked_identical.len(), 2);
+        assert!((ranked_identical[0].0 - 1.0).abs() < 1e-6);
+        assert!((ranked_identical[1].0 - 1.0).abs() < 1e-6);
     }
 }
