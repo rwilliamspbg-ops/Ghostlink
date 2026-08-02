@@ -36,7 +36,8 @@ export const SessionsTab: React.FC<{ api: any }> = ({ api }) => {
         <button
           onClick={refreshSessions}
           aria-label="Refresh sessions"
-          className="p-2 rounded-lg hover:bg-slate-900 text-slate-400 hover:text-white transition"
+          title="Refresh sessions"
+          className="p-2 rounded-lg hover:bg-slate-900 text-slate-400 hover:text-white transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
         >
           <RefreshCw size={18} className={loading ? 'animate-spin' : ''} aria-hidden="true" />
         </button>
@@ -75,9 +76,14 @@ export const SessionsTab: React.FC<{ api: any }> = ({ api }) => {
                             {session.status}
                         </div>
                         <button
-                            onClick={() => handleCancel(session.id)}
-                            className="p-2 text-slate-500 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition"
+                            onClick={() => {
+                              if (window.confirm(`Are you sure you want to cancel session ${session.id}? This will immediately terminate the running inference.`)) {
+                                handleCancel(session.id);
+                              }
+                            }}
+                            className="p-2 text-slate-500 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
                             aria-label={`Cancel session ${session.id}`}
+                            title={`Cancel session ${session.id}`}
                         >
                             <XCircle size={18} aria-hidden="true" />
                         </button>
