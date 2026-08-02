@@ -425,7 +425,7 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
             role="tab"
             aria-selected={activeTab === 'local'}
             onClick={() => setActiveTab('local')}
-            className={`px-3 py-1.5 rounded-lg text-sm font-bold transition ${
+            className={`px-3 py-1.5 rounded-lg text-sm font-bold transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none ${
               activeTab === 'local' ? 'bg-blue-600 text-white shadow-lg shadow-blue-500/20' : 'text-slate-400 hover:bg-slate-900'
             }`}
           >
@@ -435,7 +435,7 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
             role="tab"
             aria-selected={activeTab === 'recommended'}
             onClick={() => setActiveTab('recommended')}
-            className={`px-3 py-1.5 rounded-lg text-sm font-bold transition ${
+            className={`px-3 py-1.5 rounded-lg text-sm font-bold transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none ${
               activeTab === 'recommended' ? 'bg-blue-600 text-white shadow-lg shadow-blue-500/20' : 'text-slate-400 hover:bg-slate-900'
             }`}
           >
@@ -445,7 +445,7 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
             role="tab"
             aria-selected={activeTab === 'huggingface'}
             onClick={() => setActiveTab('huggingface')}
-            className={`px-3 py-1.5 rounded-lg text-sm font-bold transition ${
+            className={`px-3 py-1.5 rounded-lg text-sm font-bold transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none ${
               activeTab === 'huggingface' ? 'bg-blue-600 text-white shadow-lg shadow-blue-500/20' : 'text-slate-400 hover:bg-slate-900'
             }`}
           >
@@ -464,13 +464,13 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                 placeholder="Search models..."
                 name="hf-search"
                 id="hf-search"
-                className="pl-8 pr-4 py-2 bg-slate-800 border border-slate-700 rounded-lg text-slate-200 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                className="pl-8 pr-4 py-2 bg-slate-800 border border-slate-700 rounded-lg text-slate-200 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
               />
             </div>
           )}
           <button
             onClick={refreshModels}
-            className="flex items-center gap-2 px-4 py-2 bg-slate-800 hover:bg-blue-600 text-white rounded-xl text-xs font-bold transition group-hover:shadow-lg group-hover:shadow-blue-500/20"
+            className="flex items-center gap-2 px-4 py-2 bg-slate-800 hover:bg-blue-600 text-white rounded-xl text-xs font-bold transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none group-hover:shadow-lg group-hover:shadow-blue-500/20"
           >
             <RefreshCw size={16} aria-hidden="true" /> Refresh
           </button>
@@ -532,7 +532,7 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                             <button
                               onClick={() => handleUnloadModel(model.name)}
                               disabled={pendingActions[model.name] === 'unloading' || loading}
-                              className="flex items-center gap-2 px-3 py-1 bg-slate-800 hover:bg-slate-700 text-xs font-medium rounded-full transition"
+                              className="flex items-center gap-2 px-3 py-1 bg-slate-800 hover:bg-slate-700 text-xs font-medium rounded-full transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
                             >
                               {pendingActions[model.name] === 'unloading' ? (
                                 <Loader size={16} className="mr-1" />
@@ -547,7 +547,7 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                             onClick={() => handleSetModel(model.name)}
                             disabled={pendingActions[model.name] === 'setting' || loading}
                             title={model.usable ? undefined : 'Not downloaded yet — selecting will show an error until it is'}
-                            className="flex items-center gap-2 px-3 py-1 bg-slate-800 hover:bg-blue-600 text-xs font-medium rounded-full transition"
+                            className="flex items-center gap-2 px-3 py-1 bg-slate-800 hover:bg-blue-600 text-xs font-medium rounded-full transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
                           >
                             {pendingActions[model.name] === 'setting' ? (
                               <Loader size={16} className="mr-1" />
@@ -559,7 +559,7 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                         )}
                         <button
                           onClick={() => handleShowModelfile(model.name)}
-                          className="p-1 hover:bg-slate-700 rounded-lg transition text-slate-400 hover:text-white"
+                          className="p-1 hover:bg-slate-700 rounded-lg transition text-slate-400 hover:text-white focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
                           title="View Modelfile"
                           aria-label={`View Modelfile for ${model.name}`}
                         >
@@ -568,7 +568,7 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                         <button
                           onClick={() => handleDeleteModel(model.name)}
                           disabled={pendingActions[model.name] === 'deleting' || loading}
-                          className="p-1 hover:bg-slate-700 rounded-lg transition text-slate-400 hover:text-red-400"
+                          className="p-1 hover:bg-slate-700 rounded-lg transition text-slate-400 hover:text-red-400 focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
                           title="Delete from Ollama"
                           aria-label={`Delete ${model.name} from Ollama`}
                         >
@@ -604,7 +604,7 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                       <button
                         onClick={() => handleDiscardPartial(p.filename)}
                         disabled={discardingPartial === p.filename}
-                        className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-red-600 text-slate-300 hover:text-white text-xs font-bold rounded-lg transition disabled:opacity-50 shrink-0"
+                        className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-red-600 text-slate-300 hover:text-white text-xs font-bold rounded-lg transition disabled:opacity-50 shrink-0 focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
                         aria-label={`Discard interrupted download ${p.filename}`}
                       >
                         {discardingPartial === p.filename ? (
@@ -718,7 +718,7 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                       <button
                         onClick={() => handlePullModel(model.name)}
                         disabled={pendingActions[model.name] === 'downloading' || loading}
-                        className="inline-flex items-center gap-2 px-4 py-2 bg-slate-800 hover:bg-blue-600 text-white rounded-xl text-xs font-bold transition group-hover:shadow-lg group-hover:shadow-blue-500/20"
+                        className="inline-flex items-center gap-2 px-4 py-2 bg-slate-800 hover:bg-blue-600 text-white rounded-xl text-xs font-bold transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none group-hover:shadow-lg group-hover:shadow-blue-500/20"
                       >
                         {pendingActions[model.name] === 'downloading' ? (
                           <>
@@ -769,7 +769,7 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                     <button
                       onClick={() => handleDownloadHFModel(m.id)}
                       disabled={pendingActions[m.id] === 'downloading' || loading}
-                      className="inline-flex items-center gap-2 px-4 py-2 bg-slate-800 hover:bg-blue-600 text-white rounded-xl text-xs font-bold transition group-hover:shadow-lg group-hover:shadow-blue-500/20"
+                      className="inline-flex items-center gap-2 px-4 py-2 bg-slate-800 hover:bg-blue-600 text-white rounded-xl text-xs font-bold transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none group-hover:shadow-lg group-hover:shadow-blue-500/20"
                     >
                       {pendingActions[m.id] === 'downloading' ? (
                         <>
@@ -802,7 +802,7 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
           >
             <div className="flex items-center justify-between p-4 border-b border-slate-800">
               <h3 id="modelfile-modal-title" className="text-lg font-bold text-white">Modelfile</h3>
-              <button ref={modelfileCloseRef} onClick={() => setShowModelfile(null)} className="text-slate-400 hover:text-white" aria-label="Close">
+              <button ref={modelfileCloseRef} onClick={() => setShowModelfile(null)} className="text-slate-400 hover:text-white focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none" aria-label="Close">
                 <X size={20} aria-hidden="true" />
               </button>
             </div>
@@ -812,10 +812,10 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
               </pre>
             </div>
             <div className="flex justify-end gap-2 p-4 border-t border-slate-800">
-              <button onClick={copyModelfile} className="px-4 py-2 bg-blue-600 text-white rounded-lg font-medium hover:bg-blue-700">
+              <button onClick={copyModelfile} className="px-4 py-2 bg-blue-600 text-white rounded-lg font-medium hover:bg-blue-700 focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none">
                 Copy to Clipboard
               </button>
-              <button onClick={() => setShowModelfile(null)} className="px-4 py-2 bg-slate-800 text-white rounded-lg font-medium hover:bg-slate-700">
+              <button onClick={() => setShowModelfile(null)} className="px-4 py-2 bg-slate-800 text-white rounded-lg font-medium hover:bg-slate-700 focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none">
                 Close
               </button>
             </div>
