@@ -19,3 +19,7 @@
 ## 2026-07-31 - [MCP Tab Keyboard Accessibility]
 **Learning:** Custom toggle buttons and control headers in utility panels (like the MCP Servers tab) must have high-contrast focus-visible styles configured. Without them, keyboard users can navigate to the page but are left unable to clearly discern which server toggle or action button currently holds visual focus.
 **Action:** Ensure all button elements inside toggle lists and header actions use `focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none` for excellent keyboard navigation visibility.
+
+## 2026-08-01 - [Interactive Controls Keyboard Visibility]
+**Learning:** Interactive controls like tab lists (e.g., in the Models Dashboard) and control action buttons/inputs (e.g., inside the Cluster Workers dashboard) must use high-contrast focus-visible rings. Relying on default focus styles leads to invisible focused items during tab traversal on dark-theme UI panels, leaving keyboard and screen-reader users completely blind.
+**Action:** Always style all dashboards' custom buttons, tab toggles, and input elements with `focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none`.

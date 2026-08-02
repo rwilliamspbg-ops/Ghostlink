@@ -97,13 +97,13 @@ export const WorkersTab: React.FC<{ api: any }> = ({ api }) => {
                 onClick={() => { setShowAddForm(!showAddForm); setAddError(''); }}
                 aria-haspopup="true"
                 aria-expanded={showAddForm}
-                className="flex items-center gap-2 px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold rounded-lg transition"
+                className="flex items-center gap-2 px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold rounded-lg transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
             >
                 <Plus size={14} aria-hidden="true" /> Add Worker
             </button>
             <button
                 onClick={async () => { const r = await api.discoverPeers(); if (r.success) refreshWorkers(); }}
-                className="flex items-center gap-2 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-white text-xs font-bold rounded-lg transition"
+                className="flex items-center gap-2 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-white text-xs font-bold rounded-lg transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
                 title="Discover peers on network"
             >
                 <RefreshCw size={14} aria-hidden="true" /> Discover
@@ -111,7 +111,7 @@ export const WorkersTab: React.FC<{ api: any }> = ({ api }) => {
             <button
                 onClick={refreshWorkers}
                 aria-label="Refresh workers"
-                className="p-2 rounded-lg hover:bg-slate-900 text-slate-400 hover:text-white transition"
+                className="p-2 rounded-lg hover:bg-slate-900 text-slate-400 hover:text-white transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
             >
                 <RefreshCw size={18} className={loading ? 'animate-spin' : ''} aria-hidden="true" />
             </button>
@@ -133,7 +133,7 @@ export const WorkersTab: React.FC<{ api: any }> = ({ api }) => {
                 placeholder="192.168.1.100"
                 name="host"
                 id="host"
-                className="w-full px-3 py-1.5 bg-slate-800 border border-slate-700 rounded-lg text-sm text-slate-200 placeholder-slate-500 focus:outline-none focus:border-blue-500"
+                className="w-full px-3 py-1.5 bg-slate-800 border border-slate-700 rounded-lg text-sm text-slate-200 placeholder-slate-500 focus:outline-none focus:border-blue-500 focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
               />
             </div>
             <div className="w-24">
@@ -145,12 +145,12 @@ export const WorkersTab: React.FC<{ api: any }> = ({ api }) => {
                 placeholder="8003"
                 name="port"
                 id="port"
-                className="w-full px-3 py-1.5 bg-slate-800 border border-slate-700 rounded-lg text-sm text-slate-200 placeholder-slate-500 focus:outline-none focus:border-blue-500"
+                className="w-full px-3 py-1.5 bg-slate-800 border border-slate-700 rounded-lg text-sm text-slate-200 placeholder-slate-500 focus:outline-none focus:border-blue-500 focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
               />
             </div>
             <button
               onClick={handleAddWorker}
-              className="px-4 py-1.5 bg-green-600 hover:bg-green-500 text-white text-xs font-bold rounded-lg transition"
+              className="px-4 py-1.5 bg-green-600 hover:bg-green-500 text-white text-xs font-bold rounded-lg transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
             >
               Connect
             </button>
@@ -222,7 +222,7 @@ export const WorkersTab: React.FC<{ api: any }> = ({ api }) => {
                             <div className="flex items-end justify-end">
                                 <button
                                   onClick={() => handleDisconnectWorker(worker.id, worker.host)}
-                                  className="p-2 text-slate-500 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition"
+                                  className="p-2 text-slate-500 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
                                   title="Disconnect worker"
                                   aria-label={`Disconnect worker ${worker.host}`}
                                 >
