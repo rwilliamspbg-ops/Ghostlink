@@ -1,5 +1,51 @@
 import axios, { AxiosInstance } from 'axios';
 import { Model, Metric, Session, Worker, Settings, McpServer, WorkspaceEntry } from './store';
+import { createInferenceEngineDescriptors, InferenceEngineDescriptor } from './types/engines';
+
+export interface MetricsHistoryPoint {
+  timestamp_ms: number;
+  throughput: number;
+  cpu: number;
+  memory: number;
+  gpu: number;
+  latency_p50: number;
+  latency_p95: number;
+  active_nodes: number;
+  inference_backend: string;
+}
+
+export interface ClusterTopologyNode {
+  id: string;
+  label: string;
+  compute_capability: string;
+  vram_gb: number;
+  system_memory_gb: number;
+  status: string;
+  latency_us: number;
+  throughput_gbps: number;
+  latency_history_us: number[];
+  throughput_history_gbps: number[];
+  ip_address?: string | null;
+  streaming_layers?: { start: number; end: number } | null;
+}
+
+export interface ClusterTopologyEdge {
+  from: string;
+  to: string;
+  latency_us: number;
+  throughput_gbps: number;
+}
+
+export interface ClusterTopology {
+  summary: {
+    node_count: number;
+    active_nodes: number;
+    total_vram_gb: number;
+    total_system_memory_gb: number;
+  };
+  nodes: ClusterTopologyNode[];
+  edges: ClusterTopologyEdge[];
+}
 
 type CircuitState = 'closed' | 'open' | 'half-open';
 
@@ -435,6 +481,15 @@ export class GhostlinkAPI {
     }
   }
 
+  async getMetricsHistory(): Promise<{ history: MetricsHistoryPoint[]; error?: string }> {
+    try {
+      const response = await this.http.get('/api/metrics/history', { timeout: 4000 });
+      return { history: response.data.history || [] };
+    } catch (error: any) {
+      return { history: [], error: error.message };
+    }
+  }
+
   async getSessions(): Promise<{ sessions: Session[]; error?: string }> {
     try {
       const response = await this.http.get('/api/sessions');
@@ -558,6 +613,15 @@ export class GhostlinkAPI {
     }
   }
 
+  async getClusterTopology(): Promise<{ topology?: ClusterTopology; error?: string }> {
+    try {
+      const response = await this.http.get('/api/cluster/topology');
+      return { topology: response.data };
+    } catch (error: any) {
+      return { error: error.response?.data?.error || error.message };
+    }
+  }
+
   async addWorker(host: string, port: number): Promise<{ success: boolean; error?: string; data?: any }> {
     try {
       const response = await this.http.post('/api/workers/add', { host, port });
@@ -602,6 +666,29 @@ export class GhostlinkAPI {
       };
     } catch (error: any) {
       return { available: [], current: 'cpu', error: error.response?.data?.error || error.message };
+    }
+  }
+
+  async getInferenceEngines(): Promise<{ engines: InferenceEngineDescriptor[]; current: string; error?: string }> {
+    try {
+      const response = await this.http.get('/api/inference/engines');
+      return {
+        engines: response.data.engines || [],
+        current: response.data.current || 'ollama',
+      };
+    } catch (error: any) {
+      if (this.isNotFound(error)) {
+        return {
+          current: 'ollama',
+          engines: createInferenceEngineDescriptors('ollama'),
+        };
+      }
+
+      return {
+        engines: [],
+        current: 'ollama',
+        error: error.response?.data?.error || error.message,
+      };
     }
   }
 
@@ -726,6 +813,40 @@ export class GhostlinkAPI {
       };
     } catch (error: any) {
       return { reachable: false, model_count: 0, error: error.message };
+    }
+  }
+
+  async getVllmHealth(): Promise<{ reachable: boolean; model_count: number; error?: string }> {
+    try {
+      const response = await this.http.get('/api/vllm/health');
+      return {
+        reachable: response.data.reachable,
+        model_count: response.data.model_count,
+      };
+    } catch (error: any) {
+      return { reachable: false, model_count: 0, error: error.message };
+    }
+  }
+
+  async getVllmModels(): Promise<{ models: any[]; error?: string }> {
+    try {
+      const response = await this.http.get('/api/vllm/models');
+      return { models: response.data.models || [] };
+    } catch (error: any) {
+      if (this.isNotFound(error)) {
+        try {
+          const fallback = await this.getModels();
+          const models = (fallback.models || []).map((m: any) => ({
+            name: m.name,
+            status: m.status || 'Ready',
+            source: 'local',
+          }));
+          return { models };
+        } catch (fallbackError: any) {
+          return { models: [], error: fallbackError.message || error.message };
+        }
+      }
+      return { models: [], error: error.message };
     }
   }
 

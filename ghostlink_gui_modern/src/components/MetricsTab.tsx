@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { RefreshCw, Activity, Cpu, Database, Zap, Clock, ShieldCheck, Server, TrendingUp, HeartPulse, Thermometer, Download, Network } from 'lucide-react';
+import { MetricsHistoryPoint } from '../api';
 import {
   ResponsiveContainer,
   LineChart,
@@ -26,6 +27,18 @@ interface BackendStatus {
 export const MetricsTab: React.FC<{ api: any }> = React.memo(({ api }) => {
   const { metrics, setMetrics, metricsHistory, workers } = useAppStore();
   const [loading, setLoading] = React.useState(false);
+  const [history, setHistory] = React.useState<MetricsHistoryPoint[]>([]);
+
+  const refreshHistory = React.useCallback(async () => {
+    const result = api.getMetricsHistory ? await api.getMetricsHistory() : { history: [] };
+    if (!result.error && result.history) {
+      setHistory(result.history);
+    }
+  }, [api]);
+
+  React.useEffect(() => {
+    refreshHistory();
+  }, [refreshHistory]);
   const [backendStatus, setBackendStatus] = useState<BackendStatus | null>(null);
 
   // App.tsx already polls metrics every 5s — only manual refresh here.
@@ -36,6 +49,7 @@ export const MetricsTab: React.FC<{ api: any }> = React.memo(({ api }) => {
       if (!result.error && result.metrics) {
         setMetrics(result.metrics);
       }
+      await refreshHistory();
     } finally {
       setLoading(false);
     }
@@ -120,6 +134,11 @@ export const MetricsTab: React.FC<{ api: any }> = React.memo(({ api }) => {
     ? `${(metrics?.gpu ?? 0).toFixed(0)}% utilized`
     : 'probe unavailable';
 
+  const throughputSparkline = useMemo(() => buildSparkline(history, 'throughput', 220, 56), [history]);
+  const latencySparkline = useMemo(() => buildSparkline(history, 'latency_p95', 220, 56), [history]);
+  const historySummary = history.length > 0
+    ? `${history.length} recent samples`
+    : 'History will appear after metrics polling';
   const utilizationHistory = useMemo(
     () =>
       metricsHistory.map((m) => ({
@@ -303,6 +322,23 @@ export const MetricsTab: React.FC<{ api: any }> = React.memo(({ api }) => {
             )}
           </div>
 
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <HistoryCard
+              title="Throughput Trend"
+              subtitle={historySummary}
+              value={`${(metrics?.throughput ?? 0).toFixed(1)} tok/s`}
+              colorClass="text-cyan-400"
+              path={throughputSparkline}
+            />
+            <HistoryCard
+              title="Latency p95 Trend"
+              subtitle={historySummary}
+              value={`${(metrics?.latency_p95 ?? 0).toFixed(1)} ms`}
+              colorClass="text-red-400"
+              path={latencySparkline}
+            />
+          </div>
+
           <div className="bg-slate-900/50 border border-slate-800 rounded-3xl p-8 relative overflow-hidden">
             <div className="absolute top-0 right-0 p-8 opacity-5">
               <Zap size={120} />
@@ -423,6 +459,72 @@ const StatusRow = ({
   </div>
 );
 
+function buildSparkline(
+  history: MetricsHistoryPoint[],
+  key: 'throughput' | 'latency_p95',
+  width: number,
+  height: number,
+): string {
+  if (history.length === 0) {
+    return '';
+  }
+
+  const values = history.map((point) => Number(point[key]) || 0);
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const range = max - min || 1;
+
+  return values
+    .map((value, index) => {
+      const x = history.length === 1 ? width / 2 : (index / (history.length - 1)) * width;
+      const y = height - ((value - min) / range) * (height - 8) - 4;
+      return `${x},${y}`;
+    })
+    .join(' ');
+}
+
+const HistoryCard = ({
+  title,
+  subtitle,
+  value,
+  colorClass,
+  path,
+}: {
+  title: string;
+  subtitle: string;
+  value: string;
+  colorClass: string;
+  path: string;
+}) => (
+  <div className="bg-slate-900/50 border border-slate-800 rounded-3xl p-6">
+    <div className="flex items-start justify-between gap-4 mb-4">
+      <div>
+        <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">{title}</p>
+        <p className="text-xs text-slate-500 mt-1">{subtitle}</p>
+      </div>
+      <p className={`text-lg font-black ${colorClass}`}>{value}</p>
+    </div>
+    <div className="h-16 rounded-2xl bg-slate-950/80 border border-slate-800 px-2 py-1">
+      <svg viewBox="0 0 220 56" className="w-full h-full" role="img" aria-label={title}>
+        {path ? (
+          <polyline
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="3"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            points={path}
+            className={colorClass}
+          />
+        ) : (
+          <text x="110" y="30" textAnchor="middle" className="fill-slate-600 text-[10px]">
+            Waiting for samples
+          </text>
+        )}
+      </svg>
+    </div>
+  </div>
+);
 // Minimal inline trend line — no charting library needed for a glance-sized
 // sparkline. Renders nothing meaningful until a couple of samples exist.
 const Sparkline: React.FC<{ data: number[]; color: string }> = ({ data, color }) => {

@@ -23,27 +23,11 @@ BINARY_PATH = Path(os.environ.get("CARGO_TARGET_DIR") or ROOT / "target") / "deb
 
 
 API_KEY_PATH = ROOT / "api_key.txt"
-
-
-def _wait_for_api_key(max_wait_s: int = 20) -> str:
-    """The server generates and persists a real API key at startup (see
-    crates/ghost-link/src/auth.rs) — every route but /health now requires
-    it as a bearer token. Polls for the file rather than assuming it's
-    already there the instant the process starts."""
-    deadline = time.time() + max_wait_s
-    while time.time() < deadline:
-        try:
-            key = API_KEY_PATH.read_text(encoding="utf-8").strip()
-            if key:
-                return key
-        except FileNotFoundError:
-            pass
-        time.sleep(0.2)
-    raise RuntimeError(f"API key file never appeared at {API_KEY_PATH}")
+API_KEY_VALUE = "ghostlink-ci-smoke-key"
 
 
 def _auth_headers() -> dict:
-    return {"Authorization": f"Bearer {_wait_for_api_key()}"}
+    return {"Authorization": f"Bearer {API_KEY_VALUE}"}
 
 
 def _get_json(path: str, timeout: float = 5.0, auth: bool = True) -> dict:
@@ -92,10 +76,12 @@ def _build_backend() -> None:
 
 def main() -> int:
     _build_backend()
+    API_KEY_PATH.write_text(API_KEY_VALUE, encoding="utf-8")
 
     proc = subprocess.Popen(
         [str(BINARY_PATH), "serve", HOST, str(PORT)],
         cwd=str(ROOT),
+        env={**os.environ, "GHOSTLINK_API_KEY_PATH": str(API_KEY_PATH)},
         stdout=None,
         stderr=None,
         preexec_fn=None,

@@ -9,12 +9,27 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock, RwLock};
 use std::thread;
 use std::time::{Duration, Instant};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use sysinfo::{CpuRefreshKind, MemoryRefreshKind, RefreshKind, System};
 
 const LATENCY_SAMPLES_CAP: usize = 256;
+const METRICS_HISTORY_CAP: usize = 120;
 const HOST_SAMPLE_MS: u64 = 1500;
 const GPU_CACHE_MS: u64 = 3000;
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct MetricsHistoryPoint {
+    pub timestamp_ms: u64,
+    pub throughput: f32,
+    pub cpu: f32,
+    pub memory: f32,
+    pub gpu: f32,
+    pub latency_p50: f32,
+    pub latency_p95: f32,
+    pub active_nodes: usize,
+    pub inference_backend: String,
+}
 
 #[derive(Debug, Clone)]
 pub struct HostSnapshot {
@@ -177,6 +192,7 @@ struct HostSamplerState {
 }
 
 static HOST: OnceLock<HostSamplerState> = OnceLock::new();
+static HISTORY: OnceLock<Mutex<VecDeque<MetricsHistoryPoint>>> = OnceLock::new();
 
 fn host_state() -> &'static HostSamplerState {
     HOST.get_or_init(|| HostSamplerState {
@@ -190,6 +206,10 @@ fn host_state() -> &'static HostSamplerState {
             None,
         )),
     })
+}
+
+fn history_state() -> &'static Mutex<VecDeque<MetricsHistoryPoint>> {
+    HISTORY.get_or_init(|| Mutex::new(VecDeque::with_capacity(METRICS_HISTORY_CAP)))
 }
 
 /// Ensure background host sampling is running (idempotent).
@@ -219,6 +239,56 @@ pub fn current_host_snapshot() -> HostSnapshot {
         .snap
         .read()
         .map(|g| g.clone())
+        .unwrap_or_default()
+}
+
+pub fn record_metrics_point(
+    host: &HostSnapshot,
+    inf: &InferenceSnapshot,
+    active_nodes: usize,
+    inference_backend: &str,
+) {
+    let timestamp_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+
+    let point = MetricsHistoryPoint {
+        timestamp_ms,
+        throughput: inf.tokens_per_sec,
+        cpu: host.cpu,
+        memory: host.memory,
+        gpu: host.gpu,
+        latency_p50: inf.latency_p50_ms,
+        latency_p95: inf.latency_p95_ms,
+        active_nodes,
+        inference_backend: inference_backend.to_string(),
+    };
+
+    if let Ok(mut history) = history_state().lock() {
+        if history.len() >= METRICS_HISTORY_CAP {
+            history.pop_front();
+        }
+        history.push_back(point);
+    }
+}
+
+pub fn metrics_history(limit: usize) -> Vec<MetricsHistoryPoint> {
+    let limit = limit.clamp(1, METRICS_HISTORY_CAP);
+    history_state()
+        .lock()
+        .map(|history| {
+            history
+                .iter()
+                .rev()
+                .take(limit)
+                .cloned()
+                .collect::<Vec<_>>()
+        })
+        .map(|mut points| {
+            points.reverse();
+            points
+        })
         .unwrap_or_default()
 }
 
@@ -484,5 +554,24 @@ mod tests {
         assert!(s.latency_p50_ms > 0.0);
         assert!(s.samples == 2);
         assert!(s.real_inference);
+    }
+
+    #[test]
+    fn metrics_history_is_bounded_and_ordered() {
+        let host = HostSnapshot::default();
+        let inf = InferenceSnapshot {
+            tokens_per_sec: 10.0,
+            latency_p50_ms: 20.0,
+            latency_p95_ms: 30.0,
+            ..InferenceSnapshot::default()
+        };
+
+        for _ in 0..3 {
+            record_metrics_point(&host, &inf, 1, "native");
+        }
+
+        let history = metrics_history(2);
+        assert_eq!(history.len(), 2);
+        assert!(history[0].timestamp_ms <= history[1].timestamp_ms);
     }
 }

@@ -17,6 +17,7 @@ import {
 } from 'lucide-react';
 import { useAppStore, DownloadProgressEntry } from '../store';
 import { GhostlinkAPI } from '../api';
+import { useInferenceEngines } from '../hooks/useInferenceEngines';
 import { EmptyState, LoadingState } from './StatusViews';
 
 function formatBytes(bytes?: number): string {
@@ -77,6 +78,13 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
   const [recommendedLoading, setRecommendedLoading] = useState(false);
   const [detectedRuntime, setDetectedRuntime] = useState<string>('cpu');
   const [availableMemoryGb, setAvailableMemoryGb] = useState<number>(0);
+  const { currentEngine, selectedEngine } = useInferenceEngines(api);
+
+  const engineLabel = selectedEngine?.label || 'Ollama';
+  const canUnload = selectedEngine?.capabilities.model_unload ?? true;
+  const canManageRemoteCatalog = currentEngine === 'ollama';
+  const canShowModelDefinition = currentEngine === 'ollama';
+  const canDownloadLocalModels = currentEngine !== 'vllm';
   const [partialDownloads, setPartialDownloads] = useState<{ filename: string; size_bytes: number; age_secs: number }[]>([]);
   const [discardingPartial, setDiscardingPartial] = useState<string | null>(null);
 
@@ -165,28 +173,61 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
       if (result.models) {
         setModels(result.models);
         if (result.current_model) setCurrentModel(result.current_model);
-        setOllamaModels(
-          result.models.map((m: any) => ({
-            name: m.name,
-            size: Math.max(0, Number(m.size_gb || 0)) * 1024 * 1024 * 1024,
-            details: {
-              family: m.type || 'unknown',
-              quantization_level: m.quantization || 'unknown',
-            },
-            status: m.status || 'unknown',
-            // Computed in api.getModels() from status + local_path together,
-            // since backend status alone doesn't distinguish a real local
-            // file from a never-downloaded catalog placeholder.
-            usable: !!m.usable,
-          }))
-        );
+        if (currentEngine === 'vllm') {
+          const inventory = await api.getVllmModels();
+          setOllamaModels(
+            (inventory.models || []).map((m: any) => ({
+              name: m.name,
+              size: 0,
+              details: {
+                family: m.source || 'remote',
+                quantization_level: 'server-managed',
+              },
+              status: m.status || 'Ready',
+              source: m.source || 'vllm',
+              usable: true,
+            }))
+          );
+        } else if (currentEngine === 'ollama') {
+          const inventory = await api.getOllamaModels();
+          if (!inventory.error && inventory.models) {
+            setOllamaModels(inventory.models);
+          } else {
+            setOllamaModels(
+              result.models.map((m: any) => ({
+                name: m.name,
+                size: Math.max(0, Number(m.size_gb || 0)) * 1024 * 1024 * 1024,
+                details: {
+                  family: m.type || 'unknown',
+                  quantization_level: m.quantization || 'unknown',
+                },
+                status: m.status || 'unknown',
+                usable: !!m.usable,
+              }))
+            );
+          }
+        } else {
+          setOllamaModels(
+            result.models.map((m: any) => ({
+              name: m.name,
+              size: Math.max(0, Number(m.size_gb || 0)) * 1024 * 1024 * 1024,
+              details: {
+                family: m.type || 'unknown',
+                quantization_level: m.quantization || 'unknown',
+              },
+              status: m.status || 'unknown',
+              source: 'native',
+              usable: !!m.usable,
+            }))
+          );
+        }
       }
     } catch (e) {
       console.error('Failed to refresh models:', e);
     }
     setLoading(false);
     refreshPartialDownloads();
-  }, [api, setCurrentModel, setModels, refreshPartialDownloads]);
+  }, [api, currentEngine, refreshPartialDownloads, setCurrentModel, setModels]);
 
   useEffect(() => {
     refreshModels();
@@ -226,6 +267,10 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
   };
 
   const handleDeleteModel = async (name: string) => {
+    if (!canManageRemoteCatalog) {
+      setMessage(`${engineLabel} models are server-managed and cannot be deleted from this UI.`);
+      return;
+    }
     if (!window.confirm(`Are you sure you want to delete the model "${name}" from Ollama? This cannot be undone.`)) {
       return;
     }
@@ -252,6 +297,10 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
   };
 
   const handleUnloadModel = async (name: string) => {
+    if (!canUnload) {
+      setMessage(`${engineLabel} does not support model unload from this UI.`);
+      return;
+    }
     setPendingActions(prev => ({ ...prev, [name]: 'unloading' }));
     setMessage(`Unloading ${name}...`);
     try {
@@ -275,6 +324,10 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
   };
 
   const handlePullModel = async (id: string) => {
+    if (!canManageRemoteCatalog) {
+      setMessage(`${engineLabel} inventories are managed by the remote server. Change the server model set outside Ghostlink.`);
+      return;
+    }
     setPendingActions(prev => ({ ...prev, [id]: 'downloading' }));
     setMessage(`Pulling ${id}...`);
 
@@ -299,6 +352,10 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
   };
 
   const handleDownloadHFModel = async (id: string) => {
+    if (!canDownloadLocalModels) {
+      setMessage('Download is disabled while vLLM is selected because the remote server owns its model inventory.');
+      return;
+    }
     setPendingActions(prev => ({ ...prev, [id]: 'downloading' }));
     setMessage(`Downloading ${id}...`);
     setDownloadProgress(prev => ({ ...prev, [id]: { progress: 0 } }));
@@ -387,6 +444,10 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
   };
 
   const handleShowModelfile = async (name: string) => {
+    if (!canShowModelDefinition) {
+      setMessage(`${engineLabel} does not expose Ollama modelfiles in this UI.`);
+      return;
+    }
     try {
       const result = await api.showOllamaModel(name);
       if (result.info?.modelfile) {
@@ -482,18 +543,31 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
             <div className="flex items-center justify-between px-4 py-3 bg-slate-800 rounded-lg">
               <div className="flex items-center gap-3">
                 <Database size={20} className="text-blue-400" />
-                <h2 className="text-lg font-bold text-white">My Models</h2>
+                <h2 className="text-lg font-bold text-white">{currentEngine === 'ollama' ? 'My Models' : `${engineLabel} Models`}</h2>
               </div>
               <div className="text-sm text-slate-400">
                 {ollamaModels.length} models available
               </div>
             </div>
+
+            {currentEngine === 'vllm' && (
+              <div className="px-4 py-3 bg-blue-500/10 border border-blue-500/20 rounded-lg text-sm text-slate-300">
+                vLLM inventory is read from the remote server. Loading a model selects one that is already being served; download, pull, and delete actions are disabled here.
+              </div>
+            )}
+
             <div className="space-y-2">
               {ollamaModels.length === 0 ? (
                 <EmptyState
                   icon={Database}
                   title="No models found"
-                  description={<>Drop a .gguf into <code>models/</code>, or pull one from the list below.</>}
+                  description={
+                    currentEngine === 'vllm'
+                      ? 'No vLLM models were reported by the remote server.'
+                      : currentEngine === 'ollama'
+                        ? <>Drop a .gguf into <code>models/</code>, or pull one from the list below.</>
+                        : 'No local native models found. Download a model below or add a GGUF file locally.'
+                  }
                 />
               ) : (
                 ollamaModels.map((model: any) => (
@@ -510,7 +584,12 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                           </div>
                         </div>
                         <div className="flex items-center gap-2">
-                          {model.usable ? (
+                          {currentEngine === 'vllm' ? (
+                            <>
+                              <CheckCircle2 className="h-4 w-4 text-green-500" />
+                              <span className="text-xs text-slate-400">{model.status || 'Ready'}</span>
+                            </>
+                          ) : model.usable ? (
                             <>
                               <CheckCircle2 className="h-4 w-4 text-green-500" />
                               <span className="text-xs text-slate-400">Ready</span>
@@ -529,18 +608,20 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                             <span className="px-3 py-1 bg-blue-600 text-white text-xs font-medium rounded-full">
                               Active
                             </span>
-                            <button
-                              onClick={() => handleUnloadModel(model.name)}
-                              disabled={pendingActions[model.name] === 'unloading' || loading}
-                              className="flex items-center gap-2 px-3 py-1 bg-slate-800 hover:bg-slate-700 text-xs font-medium rounded-full transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
-                            >
-                              {pendingActions[model.name] === 'unloading' ? (
-                                <Loader size={16} className="mr-1" />
-                              ) : (
-                                <X size={16} />
-                              )}
-                              Unload
-                            </button>
+                            {canUnload && (
+                              <button
+                                onClick={() => handleUnloadModel(model.name)}
+                                disabled={pendingActions[model.name] === 'unloading' || loading}
+                                className="flex items-center gap-2 px-3 py-1 bg-slate-800 hover:bg-slate-700 text-xs font-medium rounded-full transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
+                              >
+                                {pendingActions[model.name] === 'unloading' ? (
+                                  <Loader size={16} className="mr-1" />
+                                ) : (
+                                  <X size={16} />
+                                )}
+                                Unload
+                              </button>
+                            )}
                           </div>
                         ) : (
                           <button
@@ -557,27 +638,31 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                             Use
                           </button>
                         )}
-                        <button
-                          onClick={() => handleShowModelfile(model.name)}
-                          className="p-1 hover:bg-slate-700 rounded-lg transition text-slate-400 hover:text-white focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
-                          title="View Modelfile"
-                          aria-label={`View Modelfile for ${model.name}`}
-                        >
-                          <Copy size={16} aria-hidden="true" />
-                        </button>
-                        <button
-                          onClick={() => handleDeleteModel(model.name)}
-                          disabled={pendingActions[model.name] === 'deleting' || loading}
-                          className="p-1 hover:bg-slate-700 rounded-lg transition text-slate-400 hover:text-red-400 focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
-                          title="Delete from Ollama"
-                          aria-label={`Delete ${model.name} from Ollama`}
-                        >
-                          {pendingActions[model.name] === 'deleting' ? (
-                            <Loader size={16} className="mr-1" aria-hidden="true" />
-                          ) : (
-                            <Trash2 size={16} aria-hidden="true" />
-                          )}
-                        </button>
+                        {canShowModelDefinition && (
+                          <button
+                            onClick={() => handleShowModelfile(model.name)}
+                            className="p-1 hover:bg-slate-700 rounded-lg transition text-slate-400 hover:text-white focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
+                            title="View Modelfile"
+                            aria-label={`View Modelfile for ${model.name}`}
+                          >
+                            <Copy size={16} aria-hidden="true" />
+                          </button>
+                        )}
+                        {canManageRemoteCatalog && (
+                          <button
+                            onClick={() => handleDeleteModel(model.name)}
+                            disabled={pendingActions[model.name] === 'deleting' || loading}
+                            className="p-1 hover:bg-slate-700 rounded-lg transition text-slate-400 hover:text-red-400 focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
+                            title="Delete from Ollama"
+                            aria-label={`Delete ${model.name} from Ollama`}
+                          >
+                            {pendingActions[model.name] === 'deleting' ? (
+                              <Loader size={16} className="mr-1" aria-hidden="true" />
+                            ) : (
+                              <Trash2 size={16} aria-hidden="true" />
+                            )}
+                          </button>
+                        )}
                       </div>
                     </div>
                   </div>
@@ -620,64 +705,59 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
               </div>
             )}
 
-            <div className="mt-6 p-4 bg-slate-800/50 rounded-lg border border-slate-800">
-              <h3 className="text-lg font-bold text-white mb-3">Popular Ollama Models</h3>
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
-                {POPULAR_MODELS.map((m) => {
-                  // Exact-name match catches real Ollama pulls; the normalized
-                  // substring check also catches an equivalent local GGUF filed
-                  // under a different name (e.g. "tinyllama" vs the local file
-                  // "tinyllama-1.1b-chat-v1.0.Q2_K") so we don't offer a
-                  // redundant download for a model already on disk. `usable` is
-                  // required so a never-downloaded catalog placeholder sharing
-                  // the name doesn't count as installed.
-                  const normalize = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
-                  const normId = normalize(m.id.split(':')[0]);
-                  const isInstalled = ollamaModels.some(
-                    (om: any) => om.usable && (om.name === m.id || normalize(om.name).includes(normId))
-                  );
-                  const isPending = pendingActions[m.id] === 'downloading';
-                  return (
-                    <button
-                      key={m.id}
-                      onClick={() => handlePullModel(m.id)}
-                      disabled={isInstalled || isPending || loading}
-                      className={`flex flex-col items-center p-3 rounded-xl text-left transition ${
-                        isInstalled
-                          ? 'bg-green-900/30 border border-green-700 cursor-default'
-                          : isPending
-                          ? 'bg-blue-900/30 border border-blue-700 cursor-wait'
-                          : 'bg-slate-800 hover:bg-blue-900/30 border border-slate-700'
-                      }`}
-                    >
-                      <div className="flex items-center gap-2 mb-2">
-                        <span className="font-bold text-slate-200 truncate w-full">{m.name}</span>
-                        {isInstalled && <CheckCircle2 className="h-4 w-4 text-green-500 flex-shrink-0" />}
-                      </div>
-                      <div className="text-xs text-slate-400 truncate w-full font-mono">{m.id}</div>
-                      {isPending && downloadProgress[m.id] !== undefined && (
-                        <div className="mt-2 w-full">
-                          <div className="w-full bg-slate-700 rounded-full h-1.5">
-                            <div
-                              className="bg-blue-500 h-1.5 rounded-full transition-all duration-500"
-                              style={{ width: `${Math.round(downloadProgress[m.id].progress * 100)}%` }}
-                            />
-                          </div>
-                          <div className="mt-1 text-[10px] text-slate-500 font-mono">
-                            {progressLabel(downloadProgress[m.id])}
-                          </div>
+            {canManageRemoteCatalog && (
+              <div className="mt-6 p-4 bg-slate-800/50 rounded-lg border border-slate-800">
+                <h3 className="text-lg font-bold text-white mb-3">Popular Ollama Models</h3>
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+                  {POPULAR_MODELS.map((m) => {
+                    const normalize = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
+                    const normId = normalize(m.id.split(':')[0]);
+                    const isInstalled = ollamaModels.some(
+                      (om: any) => om.usable && (om.name === m.id || normalize(om.name).includes(normId))
+                    );
+                    const isPending = pendingActions[m.id] === 'downloading';
+                    return (
+                      <button
+                        key={m.id}
+                        onClick={() => handlePullModel(m.id)}
+                        disabled={isInstalled || isPending || loading}
+                        className={`flex flex-col items-center p-3 rounded-xl text-left transition ${
+                          isInstalled
+                            ? 'bg-green-900/30 border border-green-700 cursor-default'
+                            : isPending
+                              ? 'bg-blue-900/30 border border-blue-700 cursor-wait'
+                              : 'bg-slate-800 hover:bg-blue-900/30 border border-slate-700'
+                        }`}
+                      >
+                        <div className="flex items-center gap-2 mb-2">
+                          <span className="font-bold text-slate-200 truncate w-full">{m.name}</span>
+                          {isInstalled && <CheckCircle2 className="h-4 w-4 text-green-500 flex-shrink-0" />}
                         </div>
-                      )}
-                      {!isInstalled && !isPending && (
-                        <div className="mt-2 flex items-center gap-1 text-xs text-slate-400">
-                          <Download size={12} /> Pull
-                        </div>
-                      )}
-                    </button>
-                  );
-                })}
+                        <div className="text-xs text-slate-400 truncate w-full font-mono">{m.id}</div>
+                        {isPending && downloadProgress[m.id] !== undefined && (
+                          <div className="mt-2 w-full">
+                            <div className="w-full bg-slate-700 rounded-full h-1.5">
+                              <div
+                                className="bg-blue-500 h-1.5 rounded-full transition-all duration-500"
+                                style={{ width: `${Math.round(downloadProgress[m.id].progress * 100)}%` }}
+                              />
+                            </div>
+                            <div className="mt-1 text-[10px] text-slate-500 font-mono">
+                              {progressLabel(downloadProgress[m.id])}
+                            </div>
+                          </div>
+                        )}
+                        {!isInstalled && !isPending && (
+                          <div className="mt-2 flex items-center gap-1 text-xs text-slate-400">
+                            <Download size={12} /> Pull
+                          </div>
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
               </div>
-            </div>
+            )}
           </div>
         ) : activeTab === 'recommended' ? (
           <div className="space-y-4">
@@ -708,7 +788,7 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                       </div>
                       <div className="min-w-0">
                         <div className="font-bold text-slate-200 truncate">{model.name}</div>
-                        <div className="text-[10px] text-slate-500 font-mono truncate">{model.parameters} • {model.size_gb > 0 ? `${model.size_gb} GB` : 'size unknown'} • {model.quality_tier} • {model.inference_speed}</div>
+                        <div className="text-[10px] text-slate-500 font-mono truncate">{model.parameters} • {model.size_gb} GB • {model.quality_tier} • {model.inference_speed}</div>
                       </div>
                     </div>
                     <div className="flex items-center gap-4 shrink-0">
@@ -717,7 +797,7 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                       </div>
                       <button
                         onClick={() => handlePullModel(model.name)}
-                        disabled={pendingActions[model.name] === 'downloading' || loading}
+                        disabled={pendingActions[model.name] === 'downloading' || loading || !canManageRemoteCatalog}
                         className="inline-flex items-center gap-2 px-4 py-2 bg-slate-800 hover:bg-blue-600 text-white rounded-xl text-xs font-bold transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none group-hover:shadow-lg group-hover:shadow-blue-500/20"
                       >
                         {pendingActions[model.name] === 'downloading' ? (
@@ -728,7 +808,7 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                         ) : (
                           <Download size={14} />
                         )}
-                        {pendingActions[model.name] === 'downloading' ? '' : 'Pull'}
+                        {pendingActions[model.name] === 'downloading' ? '' : canManageRemoteCatalog ? 'Pull' : 'Server managed'}
                       </button>
                     </div>
                   </div>
@@ -768,8 +848,8 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                     </div>
                     <button
                       onClick={() => handleDownloadHFModel(m.id)}
-                      disabled={pendingActions[m.id] === 'downloading' || loading}
                       className="inline-flex items-center gap-2 px-4 py-2 bg-slate-800 hover:bg-blue-600 text-white rounded-xl text-xs font-bold transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none group-hover:shadow-lg group-hover:shadow-blue-500/20"
+                      disabled={pendingActions[m.id] === 'downloading' || loading || !canDownloadLocalModels}
                     >
                       {pendingActions[m.id] === 'downloading' ? (
                         <>
@@ -779,7 +859,7 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                       ) : (
                         <Download size={14} />
                       )}
-                      {pendingActions[m.id] === 'downloading' ? '' : 'Download'}
+                      {pendingActions[m.id] === 'downloading' ? '' : canDownloadLocalModels ? 'Download' : 'Server managed'}
                     </button>
                   </div>
                 </div>

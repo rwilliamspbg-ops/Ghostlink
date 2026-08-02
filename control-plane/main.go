@@ -6,12 +6,51 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/rwilliamspbg-ops/Ghostlink/control-plane/pkg/auth"
 	"github.com/rwilliamspbg-ops/Ghostlink/control-plane/pkg/proxy"
 	"github.com/rwilliamspbg-ops/Ghostlink/control-plane/pkg/ratelimit"
 )
+
+func controlPlaneAuthToken() string {
+	for _, key := range []string{"GHOSTLINK_CONTROL_PLANE_AUTH_TOKEN", "GHOSTLINK_DISCOVERY_AUTH_TOKEN"} {
+		if token := strings.TrimSpace(os.Getenv(key)); token != "" {
+			return token
+		}
+	}
+	return ""
+}
+
+func requireControlPlaneAuth(w http.ResponseWriter, r *http.Request, expectedToken string) bool {
+	if expectedToken == "" {
+		return true
+	}
+
+	authHeader := strings.TrimSpace(r.Header.Get("Authorization"))
+	if authHeader == "" {
+		w.Header().Set("WWW-Authenticate", `******"Ghostlink Control Plane"`)
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return false
+	}
+
+	const bearerPrefix = "Bearer "
+	if !strings.HasPrefix(authHeader, bearerPrefix) {
+		w.Header().Set("WWW-Authenticate", `******"Ghostlink Control Plane"`)
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return false
+	}
+
+	providedToken := strings.TrimSpace(strings.TrimPrefix(authHeader, bearerPrefix))
+	if providedToken != expectedToken {
+		w.Header().Set("WWW-Authenticate", `******"Ghostlink Control Plane"`)
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return false
+	}
+
+	return true
+}
 
 // corsMiddleware mirrors ghost-link's tower_http::cors::CorsLayer::permissive()
 // — the GUI calls this gateway's absolute URL cross-origin (a different port
@@ -78,13 +117,22 @@ func envInt(key string, def int) int {
 // forwarding Authorization through to ghost-link either way.
 func buildHandler(backendURL string, rateLimit int, rateWindow time.Duration, apiKey string) http.Handler {
 	chatProxy := proxy.NewChatProxy(backendURL)
+	authToken := controlPlaneAuthToken()
+	withAuth := func(next http.HandlerFunc) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			if !requireControlPlaneAuth(w, r, authToken) {
+				return
+			}
+			next(w, r)
+		}
+	}
 	limiter := ratelimit.New(rateLimit, rateWindow)
 
 	mux := http.NewServeMux()
 
-	mux.HandleFunc("/v1/chat/completions", chatProxy.HandleChatCompletions)
+	mux.HandleFunc("/v1/chat/completions", withAuth(chatProxy.HandleChatCompletions))
 	// OpenAI model list + any other /v1/* path
-	mux.HandleFunc("/v1/", chatProxy.HandleBackendProxy)
+	mux.HandleFunc("/v1/", withAuth(chatProxy.HandleBackendProxy))
 
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet && r.Method != http.MethodHead {
@@ -93,18 +141,15 @@ func buildHandler(backendURL string, rateLimit int, rateWindow time.Duration, ap
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"status":  "ok",
-			"backend": backendURL,
+			"status":        "ok",
+			"backend":       backendURL,
+			"auth_required": authToken != "",
 		})
 	})
 
 	// Every other GUI route — models, settings, sessions, workers, chat,
-	// MCP, metrics — proxies straight through to ghost-link. Workers used to
-	// be handled by a local in-memory registry here, but that registry had
-	// no knowledge of ghost-link's real UDP peer discovery / cluster state,
-	// so it was a second, disconnected source of truth. Removed in favor of
-	// always deferring to ghost-link's actual implementation.
-	mux.HandleFunc("/api/", chatProxy.HandleBackendProxy)
+	// MCP, metrics — proxies straight through to ghost-link's real backend.
+	mux.HandleFunc("/api/", withAuth(chatProxy.HandleBackendProxy))
 
 	// auth runs inside cors (cors already fully short-circuits OPTIONS
 	// preflight before reaching anything wrapped inside it, so ordering

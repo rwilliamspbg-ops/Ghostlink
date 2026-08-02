@@ -1,9 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"testing"
 	"time"
 )
@@ -29,6 +31,9 @@ func TestHealthEndpoint(t *testing.T) {
 	if resp["backend"] != "http://127.0.0.1:19999" {
 		t.Errorf("expected backend to be reported, got %v", resp["backend"])
 	}
+	if resp["auth_required"] != false {
+		t.Errorf("expected auth_required=false, got %v", resp["auth_required"])
+	}
 }
 
 func TestHealthRejectsPost(t *testing.T) {
@@ -43,9 +48,6 @@ func TestHealthRejectsPost(t *testing.T) {
 	}
 }
 
-// Workers no longer have a local registry — /api/workers must proxy through
-// to the backend exactly like every other /api/* route, since ghost-link
-// owns the real (UDP-discovery-integrated) worker state.
 func TestWorkersProxiesToBackend(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/workers" {
@@ -135,10 +137,6 @@ func TestRateLimitingIsolatesByClient(t *testing.T) {
 	}
 }
 
-// Regression test for the exact bug fixed in proxy.forward: a buffered
-// io.Copy would never call Flush, silently turning SSE streaming back into
-// a wait-then-dump. httptest.ResponseRecorder tracks Flush() calls via its
-// Flushed field, so this fails if the flush-per-chunk fix ever regresses.
 func TestStreamingResponsesAreFlushed(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		flusher, ok := w.(http.Flusher)
@@ -168,5 +166,82 @@ func TestStreamingResponsesAreFlushed(t *testing.T) {
 	}
 	if w.Body.String() == "" {
 		t.Fatal("expected streamed body content to reach the client")
+	}
+}
+
+func TestControlPlaneMutationsRequireBearerToken(t *testing.T) {
+	const token = "test-control-plane-token"
+	if err := os.Setenv("GHOSTLINK_CONTROL_PLANE_AUTH_TOKEN", token); err != nil {
+		t.Fatalf("set env: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.Unsetenv("GHOSTLINK_CONTROL_PLANE_AUTH_TOKEN")
+	})
+
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer backend.Close()
+
+	handler := buildHandler(backend.URL, 1000, time.Second, "")
+
+	body := []byte(`{"id":"secured-node"}`)
+	createReq := httptest.NewRequest("POST", "/api/workers", bytes.NewReader(body))
+	createResp := httptest.NewRecorder()
+	handler.ServeHTTP(createResp, createReq)
+	if createResp.Code != http.StatusUnauthorized {
+		t.Fatalf("expected unauthenticated POST to be rejected, got %d", createResp.Code)
+	}
+
+	createReq = httptest.NewRequest("POST", "/api/workers", bytes.NewReader(body))
+	createReq.Header.Set("Authorization", "Bearer "+token)
+	createResp = httptest.NewRecorder()
+	handler.ServeHTTP(createResp, createReq)
+	if createResp.Code != http.StatusOK {
+		t.Fatalf("expected authenticated POST to succeed, got %d", createResp.Code)
+	}
+
+	listReq := httptest.NewRequest("GET", "/api/workers", nil)
+	listResp := httptest.NewRecorder()
+	handler.ServeHTTP(listResp, listReq)
+	if listResp.Code != http.StatusUnauthorized {
+		t.Fatalf("expected unauthenticated GET to be rejected, got %d", listResp.Code)
+	}
+
+	deleteReq := httptest.NewRequest("DELETE", "/api/workers/secured-node", nil)
+	deleteResp := httptest.NewRecorder()
+	handler.ServeHTTP(deleteResp, deleteReq)
+	if deleteResp.Code != http.StatusUnauthorized {
+		t.Fatalf("expected unauthenticated DELETE to be rejected, got %d", deleteResp.Code)
+	}
+
+	healthReq := httptest.NewRequest("GET", "/health", nil)
+	healthResp := httptest.NewRecorder()
+	handler.ServeHTTP(healthResp, healthReq)
+	if healthResp.Code != http.StatusOK {
+		t.Fatalf("expected health endpoint to stay open, got %d", healthResp.Code)
+	}
+
+	var healthPayload map[string]any
+	if err := json.Unmarshal(healthResp.Body.Bytes(), &healthPayload); err != nil {
+		t.Fatalf("invalid health payload: %v", err)
+	}
+	if healthPayload["auth_required"] != true {
+		t.Fatalf("expected auth_required=true, got %v", healthPayload["auth_required"])
+	}
+}
+
+func TestControlPlaneTokenFallbackUsesDiscoveryToken(t *testing.T) {
+	const token = "fallback-token"
+	if err := os.Setenv("GHOSTLINK_DISCOVERY_AUTH_TOKEN", token); err != nil {
+		t.Fatalf("set env: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.Unsetenv("GHOSTLINK_DISCOVERY_AUTH_TOKEN")
+	})
+
+	if got := controlPlaneAuthToken(); got != token {
+		t.Fatalf("expected discovery token fallback, got %q", got)
 	}
 }

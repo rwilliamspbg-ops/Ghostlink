@@ -5,7 +5,7 @@
 //! - Live metrics (latency, delivery ratio, throughput)
 //! - Fault detection and recovery
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -14,6 +14,8 @@ use std::time::{Duration, Instant};
 use arc_swap::ArcSwap;
 
 pub use crate::protocol::NodeResources;
+
+const NODE_HISTORY_CAP: usize = 32;
 
 /// Node status enumeration
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -66,6 +68,11 @@ pub struct NodeMetrics {
     /// Throughput in GB/s
     pub throughput_gbps: f32,
 
+    /// Recent latency history in microseconds
+    pub latency_history_us: VecDeque<f32>,
+    /// Recent throughput history in GB/s
+    pub throughput_history_gbps: VecDeque<f32>,
+
     /// Current used VRAM in GB
     pub used_vram_gb: f32,
     /// Available VRAM in GB
@@ -100,6 +107,8 @@ impl Default for NodeMetrics {
             latency_samples: 0,
             delivery_ratio: 1.0,
             throughput_gbps: 0.0,
+            latency_history_us: VecDeque::with_capacity(NODE_HISTORY_CAP),
+            throughput_history_gbps: VecDeque::with_capacity(NODE_HISTORY_CAP),
             used_vram_gb: 0.0,
             available_vram_gb: 0.0,
             streaming_layers: None,
@@ -136,6 +145,8 @@ impl NodeMetrics {
             latency_samples: 0,
             delivery_ratio: 1.0,
             throughput_gbps: 0.0,
+            latency_history_us: VecDeque::with_capacity(NODE_HISTORY_CAP),
+            throughput_history_gbps: VecDeque::with_capacity(NODE_HISTORY_CAP),
             used_vram_gb: 0.0,
             available_vram_gb: vram_gb,
             streaming_layers: None,
@@ -160,6 +171,11 @@ impl NodeMetrics {
         } else {
             self.avg_latency_us = self.avg_latency_us * 0.9 + latency_us * 0.1;
         }
+
+        if self.latency_history_us.len() >= NODE_HISTORY_CAP {
+            self.latency_history_us.pop_front();
+        }
+        self.latency_history_us.push_back(latency_us);
     }
 
     /// Update metrics with new delivery ratio sample
@@ -177,6 +193,11 @@ impl NodeMetrics {
     pub fn record_throughput(&mut self, throughput_gbps: f32) {
         // Exponential moving average with alpha=0.1
         self.throughput_gbps = self.throughput_gbps * 0.9 + throughput_gbps * 0.1;
+
+        if self.throughput_history_gbps.len() >= NODE_HISTORY_CAP {
+            self.throughput_history_gbps.pop_front();
+        }
+        self.throughput_history_gbps.push_back(throughput_gbps);
     }
 
     /// Update used VRAM
@@ -552,6 +573,21 @@ mod tests {
         thread::sleep(Duration::from_secs(6));
 
         assert!(cluster.check_heartbeat_timeout("node-a"));
+    }
+
+    #[test]
+    fn node_metrics_keep_recent_latency_and_throughput_history() {
+        let mut metrics = NodeMetrics::default();
+
+        for idx in 0..40 {
+            metrics.record_latency(idx as f32);
+            metrics.record_throughput(idx as f32 / 10.0);
+        }
+
+        assert_eq!(metrics.latency_history_us.len(), NODE_HISTORY_CAP);
+        assert_eq!(metrics.throughput_history_gbps.len(), NODE_HISTORY_CAP);
+        assert_eq!(metrics.latency_history_us.front().copied(), Some(8.0));
+        assert_eq!(metrics.throughput_history_gbps.back().copied(), Some(3.9));
     }
 
     #[test]

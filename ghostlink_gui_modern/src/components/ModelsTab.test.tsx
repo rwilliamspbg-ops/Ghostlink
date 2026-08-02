@@ -4,7 +4,7 @@ import { ModelsTab } from './ModelsTab';
 import { useAppStore } from '../store';
 import { GhostlinkAPI } from '../api';
 
-function createMockApi(): GhostlinkAPI {
+function createMockApi(engine: 'ollama' | 'vllm' | 'native' = 'ollama'): GhostlinkAPI {
   const api = new GhostlinkAPI('http://localhost:8003');
   vi.spyOn(api, 'getModels').mockResolvedValue({
     models: [
@@ -19,10 +19,73 @@ function createMockApi(): GhostlinkAPI {
       { name: 'mistral-7b', size: 7 * 1024 * 1024 * 1024, details: { family: 'mistral', quantization_level: 'Q8_0' } },
     ],
   });
+  vi.spyOn(api, 'getVllmModels').mockResolvedValue({
+    models: [
+      { name: 'meta-llama/Meta-Llama-3.1-8B-Instruct', status: 'Ready', source: 'vllm' },
+      { name: 'mistral-7b', status: 'Ready', source: 'vllm' },
+    ],
+  });
   vi.spyOn(api, 'loadModel').mockResolvedValue({ success: true, data: {} });
   vi.spyOn(api, 'unloadModel').mockResolvedValue({ success: true, data: {} });
   vi.spyOn(api, 'deleteModel').mockResolvedValue({ success: true, data: {} });
   vi.spyOn(api, 'searchHuggingFace').mockResolvedValue({ models: [{ id: 'test/model', name: 'Test Model', downloads: 1000, likes: 50 }] });
+  vi.spyOn(api, 'getRuntimes').mockResolvedValue({
+    available_runtimes: [{ runtime: 'cpu', memory_gb: 16, is_primary: true, is_available: true }],
+  });
+  vi.spyOn(api, 'getModelRecommendations').mockResolvedValue({
+    recommended_models: [
+      { name: 'phi3:mini', parameters: '3.8B', size_gb: 2.2, quality_tier: 'Balanced', inference_speed: 'Fast', reason: 'Fits in available memory' },
+    ],
+    detected_runtime: 'cpu',
+    available_memory_gb: 16,
+  });
+  vi.spyOn(api, 'getInferenceEngines').mockResolvedValue({
+    current: engine,
+    engines: [
+      {
+        name: 'ollama',
+        label: 'Ollama',
+        status: engine === 'ollama' ? 'active' : 'ready',
+        default_base_url: 'http://127.0.0.1:11434',
+        capabilities: {
+          streaming: true,
+          model_listing: true,
+          model_load: true,
+          model_unload: true,
+          structured_outputs: false,
+          tool_calls: false,
+        },
+      },
+      {
+        name: 'vllm',
+        label: 'vLLM',
+        status: engine === 'vllm' ? 'active' : 'ready',
+        default_base_url: 'http://127.0.0.1:8000',
+        capabilities: {
+          streaming: true,
+          model_listing: true,
+          model_load: true,
+          model_unload: false,
+          structured_outputs: true,
+          tool_calls: true,
+        },
+      },
+      {
+        name: 'native',
+        label: 'Native',
+        status: engine === 'native' ? 'active' : 'ready',
+        default_base_url: null,
+        capabilities: {
+          streaming: true,
+          model_listing: false,
+          model_load: true,
+          model_unload: true,
+          structured_outputs: false,
+          tool_calls: false,
+        },
+      },
+    ],
+  });
   return api;
 }
 
@@ -112,5 +175,20 @@ describe('ModelsTab', () => {
     await waitFor(() => {
       expect(api.loadModel).toHaveBeenCalled();
     });
+  });
+
+  it('shows vLLM inventory and hides unsupported management actions', async () => {
+    const api = createMockApi('vllm');
+    render(<ModelsTab api={api} />);
+
+    await waitFor(() => {
+      expect(screen.getAllByText(/vLLM\s+Models/).length).toBeGreaterThan(0);
+      expect(screen.getByText(/vLLM inventory is read from the remote server/i)).toBeInTheDocument();
+      expect(screen.getByText('meta-llama/Meta-Llama-3.1-8B-Instruct')).toBeInTheDocument();
+    });
+
+    expect(screen.queryByTitle('Delete from Ollama')).not.toBeInTheDocument();
+    expect(screen.queryByTitle('View Modelfile')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Unload' })).not.toBeInTheDocument();
   });
 });

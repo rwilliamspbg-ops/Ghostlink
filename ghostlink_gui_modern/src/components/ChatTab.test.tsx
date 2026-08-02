@@ -4,11 +4,59 @@ import { ChatTab } from './ChatTab';
 import { useAppStore } from '../store';
 import { GhostlinkAPI } from '../api';
 
-function createMockApi(): GhostlinkAPI {
+function createMockApi(engine: 'ollama' | 'native' | 'vllm' = 'ollama'): GhostlinkAPI {
   const api = new GhostlinkAPI('http://localhost:8003');
   vi.spyOn(api, 'getModels').mockResolvedValue({ models: [], current_model: 'none' });
   vi.spyOn(api, 'sendMessage').mockResolvedValue({ success: true, data: { response: 'Hello from test' } });
   vi.spyOn(api, 'loadModel').mockResolvedValue({ success: true, data: {} });
+  vi.spyOn(api, 'listSessions').mockResolvedValue({ sessions: [] });
+  vi.spyOn(api, 'getInferenceEngines').mockResolvedValue({
+    current: engine,
+    engines: [
+      {
+        name: 'ollama',
+        label: 'Ollama',
+        status: engine === 'ollama' ? 'active' : 'ready',
+        default_base_url: 'http://127.0.0.1:11434',
+        capabilities: {
+          streaming: true,
+          model_listing: true,
+          model_load: true,
+          model_unload: true,
+          structured_outputs: false,
+          tool_calls: false,
+        },
+      },
+      {
+        name: 'native',
+        label: 'Native',
+        status: engine === 'native' ? 'active' : 'ready',
+        default_base_url: null,
+        capabilities: {
+          streaming: true,
+          model_listing: false,
+          model_load: true,
+          model_unload: true,
+          structured_outputs: false,
+          tool_calls: false,
+        },
+      },
+      {
+        name: 'vllm',
+        label: 'vLLM',
+        status: engine === 'vllm' ? 'active' : 'ready',
+        default_base_url: 'http://127.0.0.1:8000',
+        capabilities: {
+          streaming: true,
+          model_listing: true,
+          model_load: true,
+          model_unload: false,
+          structured_outputs: true,
+          tool_calls: true,
+        },
+      },
+    ],
+  });
   return api;
 }
 
@@ -70,6 +118,23 @@ describe('ChatTab', () => {
     const api = createMockApi();
     render(<ChatTab api={api} />);
     expect(screen.getByText('llama-3-8b')).toBeInTheDocument();
+  });
+
+  it('disables tool calling controls when the engine lacks tool support', async () => {
+    const api = createMockApi('native');
+    render(<ChatTab api={api} />);
+
+    expect(await screen.findByText(/No tool calls/i)).toBeInTheDocument();
+    expect(screen.getByText(/does not support tool calling/i)).toBeInTheDocument();
+    expect(screen.getByTitle('Tool calling is unavailable for this engine')).toBeDisabled();
+  });
+
+  it('shows structured output support for vllm', async () => {
+    const api = createMockApi('vllm');
+    render(<ChatTab api={api} />);
+
+    expect(await screen.findByText('Structured outputs')).toBeInTheDocument();
+    expect(screen.getByText('vLLM')).toBeInTheDocument();
   });
 
   describe('voice input', () => {

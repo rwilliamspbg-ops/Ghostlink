@@ -63,6 +63,41 @@ function createMockApi() {
       },
     }),
     switchBackend: vi.fn().mockResolvedValue({ success: true, restart_required: false }),
+    getOllamaHealth: vi.fn().mockResolvedValue({ reachable: true, model_count: 3 }),
+    getVllmHealth: vi.fn().mockResolvedValue({ reachable: true, model_count: 2 }),
+    getInferenceEngines: vi.fn().mockResolvedValue({
+      current: 'ollama',
+      engines: [
+        {
+          name: 'ollama',
+          label: 'Ollama',
+          status: 'active',
+          default_base_url: 'http://127.0.0.1:11434',
+          capabilities: {
+            streaming: true,
+            model_listing: true,
+            model_load: true,
+            model_unload: true,
+            structured_outputs: false,
+            tool_calls: false,
+          },
+        },
+        {
+          name: 'vllm',
+          label: 'vLLM',
+          status: 'ready',
+          default_base_url: 'http://127.0.0.1:8000',
+          capabilities: {
+            streaming: true,
+            model_listing: true,
+            model_load: true,
+            model_unload: false,
+            structured_outputs: true,
+            tool_calls: true,
+          },
+        },
+      ],
+    }),
   };
 }
 
@@ -114,6 +149,7 @@ describe('SettingsTab', () => {
     });
 
     expect(api.getBackends).toHaveBeenCalled();
+    expect(api.getInferenceEngines).toHaveBeenCalled();
   });
 
   it('switches backend when the switch button is clicked', async () => {
@@ -130,6 +166,30 @@ describe('SettingsTab', () => {
 
     await waitFor(() => {
       expect(api.switchBackend).toHaveBeenCalledWith('cpu');
+    });
+  });
+
+  it('renders capability-aware engine details from the API', async () => {
+    const api = createMockApi();
+
+    render(<SettingsTab api={api} />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Inference Engine')).toBeInTheDocument();
+      expect(screen.getByText('Selected Engine')).toBeInTheDocument();
+      expect(screen.getByText('Streaming')).toBeInTheDocument();
+      expect(screen.getByText('Default endpoint:')).toBeInTheDocument();
+      expect(screen.getByText('Reachable · 3 models')).toBeInTheDocument();
+    });
+
+    fireEvent.change(screen.getByLabelText('Backend'), { target: { value: 'vllm' } });
+
+    await waitFor(() => {
+      expect(screen.getByLabelText('vLLM Base URL')).toBeInTheDocument();
+      expect(screen.getByLabelText('vLLM API Key')).toBeInTheDocument();
+      expect(screen.getByText('Structured outputs')).toBeInTheDocument();
+      expect(screen.getAllByText('Supported').length).toBeGreaterThan(0);
+      expect(screen.getByText('Reachable · 2 models')).toBeInTheDocument();
     });
   });
 });

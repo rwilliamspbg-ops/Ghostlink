@@ -1,11 +1,15 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { RefreshCw, Server, Shield, Cpu, Activity, Power, Plus, HeartPulse } from 'lucide-react';
+import { ClusterTopology } from '../api';
 import { useAppStore } from '../store';
 import { EmptyState } from './StatusViews';
 
 export const WorkersTab: React.FC<{ api: any }> = ({ api }) => {
   const { workers, setWorkers } = useAppStore();
   const [loading, setLoading] = useState(false);
+  const [topology, setTopology] = useState<ClusterTopology | null>(null);
+  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+  const [historyWindow, setHistoryWindow] = useState<8 | 16 | 32>(16);
   const healthyCount = useMemo(
     () => workers.filter((w) => w.status?.toLowerCase() === 'connected').length,
     [workers]
@@ -15,11 +19,61 @@ export const WorkersTab: React.FC<{ api: any }> = ({ api }) => {
   const [addPort, setAddPort] = useState('8003');
   const [addError, setAddError] = useState('');
 
+  const topologyLayout = useMemo(() => {
+    if (!topology?.nodes?.length) return [];
+    const centerX = 170;
+    const centerY = 110;
+    const radius = Math.max(40, 90 - topology.nodes.length * 2);
+    return topology.nodes.map((node, index) => {
+      if (index === 0) {
+        return { ...node, x: centerX, y: centerY, root: true };
+      }
+      const angle = ((index - 1) / Math.max(1, topology.nodes.length - 1)) * Math.PI * 2 - Math.PI / 2;
+      return {
+        ...node,
+        x: centerX + Math.cos(angle) * radius,
+        y: centerY + Math.sin(angle) * radius,
+        root: false,
+      };
+    });
+  }, [topology]);
+
+  const selectedNode = useMemo(() => {
+    if (!topology?.nodes?.length) return null;
+    return topology.nodes.find((node) => node.id === selectedNodeId) || topology.nodes[0];
+  }, [selectedNodeId, topology]);
+
+  const buildSparkline = (values: number[], width: number, height: number) => {
+    if (!values.length) return '';
+    const min = Math.min(...values);
+    const max = Math.max(...values);
+    const range = max - min || 1;
+    return values
+      .map((value, index) => {
+        const x = values.length === 1 ? width / 2 : (index / (values.length - 1)) * width;
+        const y = height - ((value - min) / range) * (height - 6) - 3;
+        return `${x},${y}`;
+      })
+      .join(' ');
+  };
+
   const refreshWorkers = async () => {
     setLoading(true);
-    const result = await api.getWorkers();
+    const [result, topologyResult] = await Promise.all([
+      api.getWorkers(),
+      api.getClusterTopology ? api.getClusterTopology() : Promise.resolve({ topology: null }),
+    ]);
     if (!result.error) {
       setWorkers(result.workers);
+    }
+    if (!topologyResult.error && topologyResult.topology) {
+      setTopology(topologyResult.topology);
+      setSelectedNodeId((current) => {
+        if (current && topologyResult.topology.nodes.some((node: any) => node.id === current)) {
+          return current;
+        }
+        return topologyResult.topology.nodes[0]?.id || null;
+      });
     }
     setLoading(false);
   };
@@ -161,6 +215,114 @@ export const WorkersTab: React.FC<{ api: any }> = ({ api }) => {
 
       <div className="flex-1 overflow-y-auto p-6">
         <div className="max-w-5xl mx-auto">
+            {topology && (
+              <div className="mb-6 bg-slate-900/50 border border-slate-800 rounded-3xl p-6 overflow-hidden">
+                <div className="flex items-start justify-between gap-4 mb-6">
+                  <div>
+                    <h3 className="text-lg font-bold text-white">Logical Topology</h3>
+                    <p className="text-xs text-slate-500 mt-1">
+                      {topology.summary.active_nodes}/{topology.summary.node_count} active nodes · {topology.summary.total_vram_gb.toFixed(1)} GB cluster VRAM · {topology.summary.total_system_memory_gb.toFixed(1)} GB system memory
+                    </p>
+                  </div>
+                  <div className="text-right text-xs text-slate-500">
+                    <div>{topology.edges.length} interconnects</div>
+                    <div>{topology.nodes.length > 0 ? topology.nodes[0].label : 'No root'} root node</div>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 lg:grid-cols-[360px,1fr] gap-6">
+                  <div className="rounded-3xl bg-slate-950/80 border border-slate-800 p-4">
+                    <svg viewBox="0 0 340 220" className="w-full h-[220px]" role="img" aria-label="Cluster topology graph">
+                      {topologyLayout.slice(1).map((node) => (
+                        <line
+                          key={`edge-${node.id}`}
+                          x1={170}
+                          y1={110}
+                          x2={node.x}
+                          y2={node.y}
+                          stroke="rgba(59,130,246,0.35)"
+                          strokeWidth="2"
+                        />
+                      ))}
+                      {topologyLayout.map((node) => (
+                        <g key={node.id} transform={`translate(${node.x}, ${node.y})`}>
+                          <circle
+                            r={node.root ? 26 : 20}
+                            className={selectedNode?.id === node.id ? 'fill-cyan-500/20 stroke-cyan-400' : node.root ? 'fill-blue-500/20 stroke-blue-400' : 'fill-slate-900 stroke-slate-500'}
+                            strokeWidth="2"
+                          />
+                          <text x="0" y="4" textAnchor="middle" className="fill-white text-[10px] font-bold">
+                            {node.label.slice(0, 8)}
+                          </text>
+                        </g>
+                      ))}
+                    </svg>
+                  </div>
+
+                  <div className="space-y-4">
+                    <div className="flex flex-wrap gap-2">
+                      {topology.nodes.map((node) => (
+                        <button
+                          key={node.id}
+                          onClick={() => setSelectedNodeId(node.id)}
+                          className={`px-3 py-2 rounded-xl text-xs font-bold transition border ${selectedNode?.id === node.id ? 'bg-cyan-500/10 text-cyan-300 border-cyan-500/30' : 'bg-slate-950/60 text-slate-400 border-slate-800 hover:text-white hover:border-slate-700'}`}
+                        >
+                          {node.label}
+                        </button>
+                      ))}
+                    </div>
+
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="text-xs text-slate-500">
+                        Focus node detail and recent history window
+                      </div>
+                      <div className="flex items-center gap-2">
+                        {[8, 16, 32].map((size) => (
+                          <button
+                            key={size}
+                            onClick={() => setHistoryWindow(size as 8 | 16 | 32)}
+                            className={`px-2.5 py-1 rounded-lg text-[10px] font-bold transition ${historyWindow === size ? 'bg-blue-600 text-white' : 'bg-slate-900 text-slate-400 hover:text-white'}`}
+                          >
+                            {size}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    {selectedNode && (
+                      <div className="rounded-2xl border border-slate-800 bg-slate-950/60 px-4 py-4 flex items-start justify-between gap-4">
+                        <div className="min-w-0 flex-1">
+                          <div className="text-sm font-bold text-slate-100">{selectedNode.label}</div>
+                          <div className="text-[10px] text-slate-500 font-mono">
+                            {selectedNode.compute_capability} · {selectedNode.vram_gb.toFixed(1)} GB VRAM · {selectedNode.system_memory_gb.toFixed(1)} GB RAM
+                            {selectedNode.ip_address ? ` · ${selectedNode.ip_address}` : ''}
+                          </div>
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-3">
+                            <MiniTrend
+                              label="Latency"
+                              value={selectedNode.latency_us > 0 ? `${selectedNode.latency_us.toFixed(0)} us` : 'No latency yet'}
+                              colorClass="text-orange-400"
+                              points={buildSparkline((selectedNode.latency_history_us || []).slice(-historyWindow), 120, 28)}
+                            />
+                            <MiniTrend
+                              label="Throughput"
+                              value={selectedNode.throughput_gbps > 0 ? `${selectedNode.throughput_gbps.toFixed(2)} GB/s` : 'No throughput yet'}
+                              colorClass="text-cyan-400"
+                              points={buildSparkline((selectedNode.throughput_history_gbps || []).slice(-historyWindow), 120, 28)}
+                            />
+                          </div>
+                        </div>
+                        <div className="text-right text-xs text-slate-400">
+                          <div>{selectedNode.status}</div>
+                          <div>{selectedNode.latency_us > 0 ? `${selectedNode.latency_us.toFixed(0)} us` : 'No latency yet'}</div>
+                          <div>{selectedNode.throughput_gbps > 0 ? `${selectedNode.throughput_gbps.toFixed(2)} GB/s` : 'No throughput yet'}</div>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
             {workers.length === 0 ? (
               <EmptyState
                 icon={Server}
@@ -168,76 +330,112 @@ export const WorkersTab: React.FC<{ api: any }> = ({ api }) => {
                 description="Add a worker by host/port, or discover peers on the local network."
               />
             ) : (
-            <div className="grid grid-cols-1 gap-4">
-              {workers.map((worker) => (
-                <div key={worker.id} className="bg-slate-900/50 border border-slate-800 rounded-3xl p-6 hover:border-slate-700 transition-all relative overflow-hidden group">
-                  <div className="absolute top-0 right-0 p-4">
-                      <div className="flex items-center gap-2 px-3 py-1 bg-green-500/10 text-green-400 rounded-full text-[10px] font-bold">
-                          <div className="w-1.5 h-1.5 bg-green-400 rounded-full animate-pulse"></div>
-                          {worker.status}
+              <div className="grid grid-cols-1 gap-4">
+                {workers.map((worker) => (
+                  <div key={worker.id} className="bg-slate-900/50 border border-slate-800 rounded-3xl p-6 hover:border-slate-700 transition-all relative overflow-hidden group">
+                    <div className="absolute top-0 right-0 p-4">
+                        <div className="flex items-center gap-2 px-3 py-1 bg-green-500/10 text-green-400 rounded-full text-[10px] font-bold">
+                            <div className="w-1.5 h-1.5 bg-green-400 rounded-full animate-pulse"></div>
+                            {worker.status}
+                        </div>
+                    </div>
+
+                    <div className="flex items-start gap-5">
+                      <div className="p-4 bg-slate-800 rounded-2xl text-slate-400 group-hover:bg-blue-600 group-hover:text-white transition-colors">
+                        <Server size={28} />
                       </div>
-                  </div>
 
-                  <div className="flex items-start gap-5">
-                    <div className="p-4 bg-slate-800 rounded-2xl text-slate-400 group-hover:bg-blue-600 group-hover:text-white transition-colors">
-                      <Server size={28} />
-                    </div>
+                      <div className="flex-1">
+                          <div className="flex flex-col mb-6">
+                              <h3 className="text-lg font-bold text-slate-100">{worker.host}</h3>
+                              <p className="text-xs text-slate-500 font-mono">ID: {worker.id}</p>
+                          </div>
 
-                    <div className="flex-1">
-                        <div className="flex flex-col mb-6">
-                            <h3 className="text-lg font-bold text-slate-100">{worker.host}</h3>
-                            <p className="text-xs text-slate-500 font-mono">ID: {worker.id}</p>
-                        </div>
-
-                        <div className="grid grid-cols-2 md:grid-cols-4 gap-6">
-                            <div className="space-y-1">
-                                <div className="flex items-center gap-1.5 text-slate-500">
-                                    <Cpu size={12} />
-                                    <span className="text-[10px] font-bold uppercase tracking-wider">Resources</span>
-                                </div>
-                                <p className="text-sm font-bold text-slate-200">{worker.threads} Threads</p>
-                            </div>
-                            <div className="space-y-1">
-                                <div className="flex items-center gap-1.5 text-slate-500">
-                                    <Activity size={12} />
-                                    <span className="text-[10px] font-bold uppercase tracking-wider">Current Load</span>
-                                </div>
-                                <div className="flex items-center gap-2">
-                                    <div className="flex-1 h-1.5 bg-slate-800 rounded-full overflow-hidden">
-                                        <div
-                                            className="h-full bg-blue-500 transition-all duration-500"
-                                            style={{ width: `${worker.load}%` }}
-                                        ></div>
-                                    </div>
-                                    <span className="text-sm font-bold text-slate-200">{worker.load}%</span>
-                                </div>
-                            </div>
-                            <div className="space-y-1">
-                                <div className="flex items-center gap-1.5 text-slate-500">
-                                    <Shield size={12} />
-                                    <span className="text-[10px] font-bold uppercase tracking-wider">Model</span>
-                                </div>
-                                <p className="text-sm font-bold text-slate-200 truncate">{worker.model}</p>
-                            </div>
-                            <div className="flex items-end justify-end">
-                                <button
-                                  onClick={() => handleDisconnectWorker(worker.id, worker.host)}
-                                  className="p-2 text-slate-500 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
-                                  title="Disconnect worker"
-                                  aria-label={`Disconnect worker ${worker.host}`}
-                                >
-                                    <Power size={20} aria-hidden="true" />
-                                </button>
-                            </div>
-                        </div>
+                          <div className="grid grid-cols-2 md:grid-cols-4 gap-6">
+                              <div className="space-y-1">
+                                  <div className="flex items-center gap-1.5 text-slate-500">
+                                      <Cpu size={12} />
+                                      <span className="text-[10px] font-bold uppercase tracking-wider">Resources</span>
+                                  </div>
+                                  <p className="text-sm font-bold text-slate-200">{worker.threads} Threads</p>
+                              </div>
+                              <div className="space-y-1">
+                                  <div className="flex items-center gap-1.5 text-slate-500">
+                                      <Activity size={12} />
+                                      <span className="text-[10px] font-bold uppercase tracking-wider">Current Load</span>
+                                  </div>
+                                  <div className="flex items-center gap-2">
+                                      <div className="flex-1 h-1.5 bg-slate-800 rounded-full overflow-hidden">
+                                          <div
+                                              className="h-full bg-blue-500 transition-all duration-500"
+                                              style={{ width: `${worker.load}%` }}
+                                          ></div>
+                                      </div>
+                                      <span className="text-sm font-bold text-slate-200">{worker.load}%</span>
+                                  </div>
+                              </div>
+                              <div className="space-y-1">
+                                  <div className="flex items-center gap-1.5 text-slate-500">
+                                      <Shield size={12} />
+                                      <span className="text-[10px] font-bold uppercase tracking-wider">Model</span>
+                                  </div>
+                                  <p className="text-sm font-bold text-slate-200 truncate">{worker.model}</p>
+                              </div>
+                              <div className="flex items-end justify-end">
+                                  <button
+                                    onClick={() => handleDisconnectWorker(worker.id, worker.host)}
+                                    className="p-2 text-slate-500 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
+                                    title="Disconnect worker"
+                                    aria-label={`Disconnect worker ${worker.host}`}
+                                  >
+                                      <Power size={20} aria-hidden="true" />
+                                  </button>
+                              </div>
+                          </div>
+                      </div>
                     </div>
                   </div>
-                </div>
-              ))}
-            </div>
+                ))}
+              </div>
             )}
         </div>
       </div>
     </div>
   );
 };
+
+const MiniTrend = ({
+  label,
+  value,
+  colorClass,
+  points,
+}: {
+  label: string;
+  value: string;
+  colorClass: string;
+  points: string;
+}) => (
+  <div className="rounded-xl border border-slate-800 bg-slate-900/70 px-3 py-2">
+    <div className="flex items-center justify-between gap-2 mb-1">
+      <span className="text-[10px] uppercase tracking-wider text-slate-500 font-bold">{label}</span>
+      <span className={`text-[10px] font-bold ${colorClass}`}>{value}</span>
+    </div>
+    <svg viewBox="0 0 120 28" className="w-full h-7" role="img" aria-label={`${label} trend`}>
+      {points ? (
+        <polyline
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2.5"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          points={points}
+          className={colorClass}
+        />
+      ) : (
+        <text x="60" y="18" textAnchor="middle" className="fill-slate-600 text-[8px]">
+          Waiting
+        </text>
+      )}
+    </svg>
+  </div>
+);

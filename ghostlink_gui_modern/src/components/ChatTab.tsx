@@ -26,9 +26,11 @@ import {
   GitCompare,
   Pencil,
   Mic,
+  LayoutGrid,
 } from 'lucide-react';
 import { useAppStore, ChatMessage } from '../store';
 import { GhostlinkAPI } from '../api';
+import { useInferenceEngines } from '../hooks/useInferenceEngines';
 
 type Message = ChatMessage;
 
@@ -228,6 +230,7 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
   const [tools, setTools] = useState<Tool[]>([]);
   const [sessions, setSessions] = useState<Session[]>([]);
   const [sessionsLoading, setSessionsLoading] = useState(false);
+  const { selectedEngine } = useInferenceEngines(api);
   const [confirmingId, setConfirmingId] = useState<string | null>(null);
 
   // Compare Mode: send one turn to two models at once and render the
@@ -320,6 +323,9 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
   const modelSelectorRef = useRef<HTMLDivElement>(null);
   const sessionsRef = useRef<HTMLDivElement>(null);
 
+  const toolCallsSupported = selectedEngine?.capabilities.tool_calls ?? true;
+  const structuredOutputsSupported = selectedEngine?.capabilities.structured_outputs ?? false;
+
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   };
@@ -366,6 +372,12 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
   useEffect(() => {
     loadSessions();
   }, [loadSessions]);
+
+  useEffect(() => {
+    if (!toolCallsSupported) {
+      setTools((prev) => prev.map((tool) => (tool.enabled ? { ...tool, enabled: false } : tool)));
+    }
+  }, [toolCallsSupported]);
 
   const handleSaveSession = async () => {
     if (messages.length === 0) return;
@@ -550,10 +562,12 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
     setStreamingId(assistantId);
     setMessages((prev) => [...prev, { role: 'assistant', content: '', id: assistantId, timestamp: '', model: currentModel || undefined }]);
 
+    const enabledTools = toolCallsSupported
+      ? tools.filter((t) => t.enabled).map((t) => t.name)
+      : [];
     genStartRef.current = Date.now();
     genTokenCountRef.current = 0;
 
-    const enabledTools = tools.filter((t) => t.enabled).map((t) => t.name);
     // Tool calls, their real results, and any pending-confirmation card only ever
     // arrive on the plain JSON response — the token-streaming SSE path only ever
     // sends {token} chunks. So a turn with tools enabled skips streaming in
@@ -569,7 +583,7 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
       penalty: 1.1,
       max_tokens: maxTokens,
       system_prompt: systemPrompt,
-      mcp: { tools: enabledTools },
+      mcp: toolCallsSupported ? { tools: enabledTools } : undefined,
       stream: useStreaming,
       model: currentModel === 'none' ? undefined : currentModel,
     }, (token: string) => {
@@ -720,6 +734,10 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
   };
 
   const toggleTool = (name: string) => {
+    if (!toolCallsSupported) {
+      setError(`${selectedEngine?.label || 'Current engine'} does not support tool calling.`);
+      return;
+    }
     setTools(tools.map(t => t.name === name ? { ...t, enabled: !t.enabled } : t));
   };
 
@@ -963,6 +981,16 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
             </div>
           </div>
         <div className="flex items-center gap-2">
+            {selectedEngine && (
+              <div className="hidden md:flex items-center gap-2 px-2.5 py-1 rounded-lg bg-slate-900 text-[10px] font-bold uppercase tracking-wider text-slate-400 border border-slate-800">
+                <span>{selectedEngine.label}</span>
+                {!toolCallsSupported && <span className="text-orange-400">No tool calls</span>}
+                {structuredOutputsSupported && <span className="text-emerald-400">Structured outputs</span>}
+              </div>
+            )}
+            <button className="p-2 rounded-lg hover:bg-slate-900 text-slate-400 hover:text-white transition">
+                <LayoutGrid size={18} />
+            </button>
             {(() => {
                 const ratio = conversationTokenLimit > 0 ? historyTokens / conversationTokenLimit : 0;
                 const tone = ratio >= 0.9
@@ -1248,6 +1276,12 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
               ))}
           </div>
 
+          {!toolCallsSupported && (
+            <div className="mb-2 px-3 py-2 rounded-2xl bg-orange-500/10 border border-orange-500/20 text-xs text-orange-300">
+              {selectedEngine?.label || 'Current engine'} does not support tool calling. Tool selections are disabled for this chat engine.
+            </div>
+          )}
+
           <div
             className="relative bg-slate-900 border border-slate-800 rounded-3xl p-2 shadow-2xl focus-within:border-slate-700 transition-all duration-300"
             onKeyDown={(e) => { if (e.key === 'Escape') setShowTools(false); }}
@@ -1273,10 +1307,12 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
             <div className="absolute left-3 bottom-3 flex items-center gap-1">
                 <button
                     onClick={() => setShowTools(!showTools)}
+                    disabled={!toolCallsSupported}
+                    title={toolCallsSupported ? 'Select tools' : 'Tool calling is unavailable for this engine'}
                     aria-haspopup="menu"
                     aria-expanded={showTools}
                     aria-label="Capabilities"
-                    className={`p-2 rounded-xl transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none ${showTools ? 'bg-slate-800 text-blue-400' : 'text-slate-500 hover:text-slate-300 hover:bg-slate-800'}`}
+                    className={`p-2 rounded-xl transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none ${showTools ? 'bg-slate-800 text-blue-400' : 'text-slate-500 hover:text-slate-300 hover:bg-slate-800'} ${!toolCallsSupported ? 'opacity-40 cursor-not-allowed hover:bg-transparent hover:text-slate-500' : ''}`}
                 >
                     <Plus size={20} aria-hidden="true" />
                 </button>

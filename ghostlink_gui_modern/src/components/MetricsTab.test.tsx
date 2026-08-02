@@ -5,7 +5,32 @@ import { useAppStore } from '../store';
 
 function createMockApi(overrides: Partial<Record<string, any>> = {}) {
   return {
-    getMetrics: vi.fn().mockResolvedValue({ metrics: null }),
+    getMetrics: vi.fn().mockResolvedValue({
+      metrics: {
+        throughput: 128.5,
+        cpu: 42,
+        memory: 58,
+        gpu: 71,
+        latency_p50: 32,
+        latency_p95: 84,
+        active_nodes: 2,
+        total_vram_gb: 16,
+        total_memory_gb: 32,
+        used_memory_gb: 18,
+        gpu_available: true,
+        real_inference: true,
+        samples: 5,
+        uptime_s: 600,
+        inference_backend: 'vllm',
+      },
+    }),
+    getMetricsHistory: vi.fn().mockResolvedValue({
+      history: [
+        { timestamp_ms: 1, throughput: 100, cpu: 30, memory: 50, gpu: 60, latency_p50: 40, latency_p95: 90, active_nodes: 2, inference_backend: 'vllm' },
+        { timestamp_ms: 2, throughput: 120, cpu: 35, memory: 52, gpu: 62, latency_p50: 38, latency_p95: 86, active_nodes: 2, inference_backend: 'vllm' },
+        { timestamp_ms: 3, throughput: 128, cpu: 42, memory: 58, gpu: 71, latency_p50: 32, latency_p95: 84, active_nodes: 2, inference_backend: 'vllm' },
+      ],
+    }),
     getBackends: vi.fn().mockResolvedValue({ available: [], current: 'cpu' }),
     getBackendStatus: vi.fn().mockResolvedValue({ status: undefined }),
     ...overrides,
@@ -15,9 +40,42 @@ function createMockApi(overrides: Partial<Record<string, any>> = {}) {
 describe('MetricsTab', () => {
   beforeEach(() => {
     useAppStore.setState({
-      metrics: null,
-      metricsHistory: [],
+      metrics: {
+        throughput: 128.5,
+        cpu: 42,
+        memory: 58,
+        gpu: 71,
+        latency_p50: 32,
+        latency_p95: 84,
+        active_nodes: 2,
+        total_vram_gb: 16,
+        total_memory_gb: 32,
+        used_memory_gb: 18,
+        gpu_available: true,
+        real_inference: true,
+        samples: 5,
+        uptime_s: 600,
+        inference_backend: 'vllm',
+      },
+      metricsHistory: [
+        { t: 1, throughput: 100, cpu: 30, memory: 50, gpu: 60, latency_p50: 40, latency_p95: 90 },
+        { t: 2, throughput: 120, cpu: 35, memory: 52, gpu: 62, latency_p50: 38, latency_p95: 86 },
+        { t: 3, throughput: 128, cpu: 42, memory: 58, gpu: 71, latency_p50: 32, latency_p95: 84 },
+      ],
       workers: [],
+    });
+  });
+
+  it('renders trend cards from metrics history', async () => {
+    const api = createMockApi();
+    render(<MetricsTab api={api} />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Throughput Trend')).toBeInTheDocument();
+      expect(screen.getByText('Latency p95 Trend')).toBeInTheDocument();
+      expect(screen.getAllByText('3 recent samples').length).toBeGreaterThan(0);
+      expect(screen.getByLabelText('Throughput Trend')).toBeInTheDocument();
+      expect(screen.getByLabelText('Latency p95 Trend')).toBeInTheDocument();
     });
   });
 
@@ -90,12 +148,12 @@ describe('MetricsTab', () => {
   it('disables CSV export with no history and enables it once samples exist', () => {
     const api = createMockApi();
     const { rerender } = render(<MetricsTab api={api} />);
-    expect(screen.getByLabelText('Export metrics history as CSV')).toBeDisabled();
+    expect(screen.getByLabelText('Export metrics history as CSV')).not.toBeDisabled();
 
     useAppStore.setState({
-      metricsHistory: [{ t: Date.now(), throughput: 10, cpu: 5, memory: 5, gpu: 0, latency_p50: 1, latency_p95: 2 }],
+      metricsHistory: [],
     });
     rerender(<MetricsTab api={api} />);
-    expect(screen.getByLabelText('Export metrics history as CSV')).not.toBeDisabled();
+    expect(screen.getByLabelText('Export metrics history as CSV')).toBeDisabled();
   });
 });

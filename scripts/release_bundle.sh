@@ -16,6 +16,13 @@ fi
 mkdir -p "$OUT_DIR"
 cd "$ROOT_DIR"
 
+NODE_BIN="$(command -v node || true)"
+NPM_BIN="$(command -v npm || true)"
+if [[ -z "$NODE_BIN" || -z "$NPM_BIN" ]]; then
+  echo "node and npm are required to build the GUI release artifacts" >&2
+  exit 1
+fi
+
 echo "[release] build ghost-link release binary"
 cargo build --release -p ghost-link
 
@@ -42,12 +49,25 @@ fi
 
 cp "$SRC_BIN" "$OUT_DIR/$BIN_NAME"
 
+echo "[release] build ghostlink_gui_modern frontend"
+pushd "$ROOT_DIR/ghostlink_gui_modern" >/dev/null
+if [[ ! -d node_modules ]]; then
+  "$NPM_BIN" ci
+fi
+"$NPM_BIN" run build
+popd >/dev/null
+
+mkdir -p "$OUT_DIR/gui"
+cp -R "$ROOT_DIR/ghostlink_gui_modern/dist" "$OUT_DIR/gui/"
+
 pushd "$OUT_DIR" >/dev/null
 if command -v sha256sum >/dev/null 2>&1; then
-  sha256sum "$BIN_NAME" > "$SUMS_NAME"
+  find . -type f ! -name "$SUMS_NAME" -print0 | sort -z | xargs -0 sha256sum > "$SUMS_NAME"
 else
   # macOS has no sha256sum by default; shasum -a 256 is the equivalent.
-  shasum -a 256 "$BIN_NAME" > "$SUMS_NAME"
+  while IFS= read -r -d '' file; do
+    shasum -a 256 "$file"
+  done < <(find . -type f ! -name "$SUMS_NAME" -print0 | sort -z) > "$SUMS_NAME"
 fi
 
 if [[ "$SIGN_MODE" == "unsigned" ]]; then
