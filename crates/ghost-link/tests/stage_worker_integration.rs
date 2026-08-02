@@ -10,16 +10,25 @@
 
 use std::io::Read;
 use std::process::{Command, Stdio};
+use std::net::TcpListener;
 use std::time::Duration;
 
 #[test]
 fn flow_remote_addr_executes_across_real_processes() {
     let bin = env!("CARGO_BIN_EXE_ghost-link");
-    let bind_addr = "127.0.0.1:19733";
+    // Avoid fixed-port collisions on shared CI runners.
+    let bind_addr = {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .expect("failed to reserve an ephemeral loopback port");
+        listener
+            .local_addr()
+            .expect("failed to read ephemeral bind address")
+            .to_string()
+    };
 
     let mut worker = Command::new(bin)
         .arg("stage-worker")
-        .arg(bind_addr)
+        .arg(&bind_addr)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -40,7 +49,7 @@ fn flow_remote_addr_executes_across_real_processes() {
             "4",
             "tcp",
             "--remote-addr",
-            bind_addr,
+            &bind_addr,
         ])
         .output()
         .expect("failed to run flow child process");
@@ -50,12 +59,19 @@ fn flow_remote_addr_executes_across_real_processes() {
         .expect("stage-worker did not exit after handling the coordinator");
 
     let mut worker_stdout = String::new();
+    let mut worker_stderr = String::new();
     worker
         .stdout
         .take()
         .expect("worker stdout was not piped")
         .read_to_string(&mut worker_stdout)
         .expect("failed to read worker stdout");
+    worker
+        .stderr
+        .take()
+        .expect("worker stderr was not piped")
+        .read_to_string(&mut worker_stderr)
+        .expect("failed to read worker stderr");
 
     let flow_stdout = String::from_utf8_lossy(&flow_output.stdout);
 
@@ -67,7 +83,7 @@ fn flow_remote_addr_executes_across_real_processes() {
     );
     assert!(
         worker_status.success(),
-        "stage-worker process exited with {worker_status:?}\nstdout:\n{worker_stdout}"
+        "stage-worker process exited with {worker_status:?}\nstdout:\n{worker_stdout}\nstderr:\n{worker_stderr}"
     );
 
     assert!(
