@@ -112,6 +112,10 @@ impl McpConfigManager {
         Ok(file.servers)
     }
 
+    // Only called from set_enabled() below, which itself has no caller yet
+    // (see McpRegistry::set_enabled's doc comment) - kept for that same
+    // planned GUI enable/disable toggle rather than deleted.
+    #[allow(dead_code)]
     pub fn save(&self, servers: &[McpServerConfig]) -> Result<(), String> {
         for server in servers {
             validate_server(server)?;
@@ -127,6 +131,7 @@ impl McpConfigManager {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn set_enabled(&self, name: &str, enabled: bool) -> Result<(), String> {
         let mut servers = self.load()?;
         let server = servers

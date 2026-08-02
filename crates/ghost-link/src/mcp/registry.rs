@@ -120,6 +120,12 @@ impl McpRegistry {
     /// Toggles a server's `enabled` flag in `mcp_servers.toml` and takes effect
     /// immediately: connects it now if enabling, or tears it down now if
     /// disabling — so the GUI doesn't need a Ghostlink restart to see the change.
+    ///
+    /// No route calls this yet (the MCP tab's per-server toggle, if/when
+    /// added, is the natural caller) - `GET /api/mcp/servers` only reads
+    /// status today. Kept rather than deleted since it's fully correct and
+    /// ready for that follow-up.
+    #[allow(dead_code)]
     pub async fn set_enabled(&self, name: &str, enabled: bool) -> Result<(), String> {
         self.config_manager.set_enabled(name, enabled)?;
 
@@ -150,6 +156,7 @@ impl McpRegistry {
     /// ever applied to the *spawned child process* — this (main) process
     /// never inherits them, so out-of-band checks (e.g. "is rag's Ollama
     /// actually reachable") can't just read `std::env::var` directly.
+    #[allow(dead_code)]
     pub fn env_var_for(&self, server_name: &str, key: &str) -> Option<String> {
         let configs = self.config_manager.load().ok()?;
         let config = configs.into_iter().find(|c| c.name == server_name)?;
@@ -181,6 +188,12 @@ impl McpRegistry {
             .unwrap_or(false)
     }
 
+    // No graceful-shutdown hook exists anywhere in ghost-link's main() yet
+    // (Ctrl+C just drops the process today) - kept ready for when one is
+    // added, rather than deleted, since leaving spawned MCP child processes
+    // (npx/docker/etc.) running past ghost-link's own exit is exactly the
+    // bug this would fix.
+    #[allow(dead_code)]
     pub async fn shutdown_all(&self) {
         let mut servers = self.servers.write().await;
         for (_, handle) in servers.drain() {

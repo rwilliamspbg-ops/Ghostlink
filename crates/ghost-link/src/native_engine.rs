@@ -784,6 +784,11 @@ impl NativeEngineClient {
         // llama_cpp/simulated paths below, which have no slot concept.
         id_slot: Option<i64>,
         cache_prompt: bool,
+        // OpenAI-style `response_format` (e.g. `{"type": "json_schema", ...}`),
+        // forwarded to llama-server's chat-completions endpoint when present.
+        // Ignored by the llama_cpp/simulated paths, which have no grammar
+        // support wired up.
+        response_format: Option<serde_json::Value>,
     ) -> Result<NativeGeneration, String> {
         if model.trim().is_empty() {
             return Err("model cannot be empty".to_string());
@@ -816,6 +821,7 @@ impl NativeEngineClient {
                         repeat_penalty,
                         id_slot,
                         cache_prompt,
+                        response_format,
                     )
                     .await?;
                 if gen.latency_ms.is_none() {
@@ -938,6 +944,7 @@ impl NativeEngineClient {
         // invention.
         id_slot: Option<i64>,
         cache_prompt: bool,
+        response_format: Option<serde_json::Value>,
     ) -> Result<NativeGeneration, String> {
         let base_url = Self::get_llama_base_url();
 
@@ -958,7 +965,7 @@ impl NativeEngineClient {
         // Try chat completion endpoint first (for models with chat templates)
         let chat_url = format!("{base_url}/v1/chat/completions");
 
-        let chat_payload = serde_json::json!({
+        let mut chat_payload = serde_json::json!({
             "model": model,
             "messages": [
                 {"role": "system", "content": system_prompt},
@@ -973,6 +980,24 @@ impl NativeEngineClient {
             "id_slot": id_slot.unwrap_or(-1),
             "cache_prompt": cache_prompt
         });
+
+        if let Some(response_format) = response_format {
+            if let Some(obj) = chat_payload.as_object_mut() {
+                obj.insert("response_format".to_string(), response_format);
+                // Grammar-constrained decoding forces the final token stream
+                // into schema shape regardless, but hybrid-reasoning models
+                // (e.g. Qwen3.5) otherwise spend the entire max_tokens budget
+                // on <think> content before ever reaching it — confirmed live
+                // against llama-server: with thinking on, a 400-token budget
+                // ran out mid-reasoning and returned empty content; with it
+                // off, the very next call returned valid schema JSON in 22
+                // tokens. Non-reasoning models simply ignore this field.
+                obj.insert(
+                    "chat_template_kwargs".to_string(),
+                    serde_json::json!({ "enable_thinking": false }),
+                );
+            }
+        }
 
         // Reuse the shared, connection-pooled client instead of building a new
         // one (and a new TCP connection) per request; apply the configurable
@@ -1159,6 +1184,7 @@ impl NativeEngineClient {
                     repeat_penalty,
                     id_slot,
                     cache_prompt,
+                    None,
                 )
                 .await?;
             let single = futures::stream::once(async move { Ok(gen.text) });
@@ -1456,6 +1482,7 @@ mod tests {
                         "simulated",
                         None,
                         false,
+                        None,
                     )
                     .await
             })
@@ -1538,6 +1565,7 @@ mod tests {
                         "llama_server",
                         Some(0),
                         true,
+                        None,
                     )
                     .await
             })
@@ -1583,6 +1611,7 @@ mod tests {
                         "llama_cpp",
                         None,
                         false,
+                        None,
                     )
                     .await
             })

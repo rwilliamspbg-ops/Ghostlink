@@ -78,7 +78,14 @@ pub struct McpToolSchema {
 
 #[derive(Debug, Clone)]
 pub struct ToolCallOutcome {
+    // Callers already know which server/tool they invoked (they pass both in
+    // as call_tool()'s own arguments), so these two are currently write-only
+    // - kept on the struct because they're the natural place to carry that
+    // context if a future caller needs to fan a batch of outcomes out without
+    // holding onto the original request.
+    #[allow(dead_code)]
     pub server: String,
+    #[allow(dead_code)]
     pub tool: String,
     pub result: Value,
     pub success: bool,
@@ -96,6 +103,13 @@ pub struct McpServerHandle {
     /// binary itself elsewhere). `rmcp`'s own Drop-time cleanup only kills this one
     /// process, which is not enough when it's a shim that spawned its own children
     /// (e.g. `cmd /C npx ...` → node.exe) — see `shutdown()`.
+    //
+    // `shutdown()` (and the process-tree kill it does) has no caller yet:
+    // there's no graceful-shutdown hook anywhere in ghost-link's main() today
+    // (Ctrl+C just drops the process), so spawned MCP servers are currently
+    // orphaned on exit regardless of this field. Tracked as a follow-up
+    // rather than bundled into this change.
+    #[allow(dead_code)]
     child_pid: Option<u32>,
 }
 
@@ -226,6 +240,7 @@ impl McpServerHandle {
         }
     }
 
+    #[allow(dead_code)]
     pub async fn shutdown(self) {
         let pid = self.child_pid;
         let name = self.name.clone();
@@ -243,6 +258,7 @@ impl McpServerHandle {
     }
 }
 
+#[allow(dead_code)]
 #[cfg(windows)]
 async fn kill_process_tree(pid: u32, server_name: &str) {
     let output = tokio::process::Command::new("taskkill")
@@ -254,6 +270,7 @@ async fn kill_process_tree(pid: u32, server_name: &str) {
     }
 }
 
+#[allow(dead_code)]
 #[cfg(not(windows))]
 async fn kill_process_tree(pid: u32, server_name: &str) {
     let output = tokio::process::Command::new("kill")
