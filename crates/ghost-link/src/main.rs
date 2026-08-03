@@ -1507,6 +1507,13 @@ struct BackendState {
     settings: RuntimeSettings,
     mcp_registry: Arc<mcp::McpRegistry>,
     pending_tool_calls: Arc<tokio::sync::Mutex<HashMap<String, PendingToolCall>>>,
+    /// Belongs to a real-download-progress feature independently lost to the
+    /// same ea8d56c bad merge as everything restored in this PR —
+    /// `handle_gui_model_download_progress` still reports status from
+    /// `backend.models` instead of this tracker, so it's currently
+    /// write-only. Out of scope here; restoring its writer/reader pair is
+    /// tracked as separate follow-up work.
+    #[allow(dead_code)]
     download_progress: HashMap<String, DownloadProgressInfo>,
     /// Serializes the full model load/unload sequence end to end — the
     /// llama-server stage/kill/spawn dance in `NativeEngineClient::load_model_into_slot`
@@ -1519,6 +1526,11 @@ struct BackendState {
     /// `backend.current_model = selected_model` write was a plain
     /// last-writer-wins race with no relation to which process actually
     /// survived the taskkill/spawn collision.
+    ///
+    /// Also independently lost to ea8d56c: nothing currently calls
+    /// `.lock()` on this — the fix this field describes isn't wired into
+    /// `/api/models/load` yet. Same follow-up as `download_progress` above.
+    #[allow(dead_code)]
     model_lifecycle_lock: Arc<tokio::sync::Mutex<()>>,
     /// Custom inference backends registered via `backend_plugin` — checked
     /// by the OpenAI-compatible REST handlers before falling through to the
