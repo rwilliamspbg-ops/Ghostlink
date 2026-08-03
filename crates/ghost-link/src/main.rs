@@ -1533,6 +1533,59 @@ struct BackendState {
     /// setting and only takes effect on next restart; this field is what
     /// `/api/security/pqc/state` actually reports.
     enable_tls_active: bool,
+    /// Real security-relevant events (failed auth, tool-call approvals,
+    /// PQC/JWT actions) for `/api/security/audit-log` — was previously
+    /// hardcoded to always return an empty list. In-memory only (resets on
+    /// restart) and capped at `AUDIT_LOG_CAP`; a genuinely persistent trail
+    /// would need an append-only file, which is a bigger step than this
+    /// first real version takes.
+    audit_log: std::collections::VecDeque<AuditLogEntry>,
+}
+
+/// One row for the GUI's Security tab audit log — field names/shape match
+/// what `SecurityTab.tsx` already expects (it predates a real backend for
+/// this and was rendering against a permanently-empty list).
+#[derive(Debug, Clone, Serialize)]
+struct AuditLogEntry {
+    event: String,
+    /// "SUCCESS"/"AUTHENTICATED" render green in the GUI; anything else
+    /// (e.g. "FAILED", "DENIED") renders as a yellow warning badge.
+    status: String,
+    ip: String,
+    /// RFC3339 — the GUI does `new Date(e.time)` on this directly.
+    time: String,
+    detail: Option<String>,
+}
+
+const AUDIT_LOG_CAP: usize = 500;
+
+/// Appends one entry and trims from the front once over `AUDIT_LOG_CAP` —
+/// split out from `record_audit_event` so it's unit-testable against a bare
+/// `VecDeque` without needing to construct a full `BackendState`.
+fn push_audit_entry(log: &mut std::collections::VecDeque<AuditLogEntry>, entry: AuditLogEntry) {
+    log.push_back(entry);
+    while log.len() > AUDIT_LOG_CAP {
+        log.pop_front();
+    }
+}
+
+fn record_audit_event(
+    backend: &mut BackendState,
+    event: &str,
+    status: &str,
+    ip: String,
+    detail: Option<String>,
+) {
+    push_audit_entry(
+        &mut backend.audit_log,
+        AuditLogEntry {
+            event: event.to_string(),
+            status: status.to_string(),
+            ip,
+            time: chrono::Utc::now().to_rfc3339(),
+            detail,
+        },
+    );
 }
 
 /// Real byte-level progress for an in-flight (or just-finished) model download.
@@ -3428,7 +3481,7 @@ fn detect_node_id() -> String {
 
 fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
     use axum::{
-        extract::{Path, Query, Request, State},
+        extract::{ConnectInfo, Path, Query, Request, State},
         http::StatusCode,
         middleware::{self, Next},
         response::{
@@ -3453,7 +3506,12 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
     /// Guards every route except `/health` behind a real bearer token
     /// (the persisted API key itself, or a JWT issued from it — see
     /// `auth.rs`). Replaces having no auth check anywhere on this server.
-    async fn auth_middleware(req: Request, next: Next) -> axum::response::Response {
+    async fn auth_middleware(
+        State(state): State<Arc<Mutex<BackendState>>>,
+        ConnectInfo(addr): ConnectInfo<SocketAddr>,
+        req: Request,
+        next: Next,
+    ) -> axum::response::Response {
         if req.uri().path() == "/health" {
             return next.run(req).await;
         }
@@ -3466,16 +3524,25 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
 
         match token {
             Some(t) if auth::verify_bearer_token(t) => next.run(req).await,
-            _ => (
-                StatusCode::UNAUTHORIZED,
-                Json(serde_json::json!({
-                    "error": {
-                        "message": "missing or invalid Authorization: Bearer <token> — see the API key printed at server startup, or POST /api/security/jwt/refresh with it to get a short-lived token",
-                        "type": "unauthorized"
-                    }
-                })),
-            )
-                .into_response(),
+            _ => {
+                record_audit_event(
+                    &mut lock_state(&state),
+                    "auth",
+                    "FAILED",
+                    addr.ip().to_string(),
+                    Some(format!("{} {}", req.method(), req.uri().path())),
+                );
+                (
+                    StatusCode::UNAUTHORIZED,
+                    Json(serde_json::json!({
+                        "error": {
+                            "message": "missing or invalid Authorization: Bearer <token> — see the API key printed at server startup, or POST /api/security/jwt/refresh with it to get a short-lived token",
+                            "type": "unauthorized"
+                        }
+                    })),
+                )
+                    .into_response()
+            }
         }
     }
 
@@ -5445,6 +5512,352 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         }
     }
 
+    // --- Workspace file API (Editor tab) ---
+    //
+    // Separate from the `file_operations` MCP server (which is sandboxed to
+    // `./mcp_workspace` and only reachable by the model mid tool-call): these
+    // routes let the GUI itself browse/open/save real project files directly,
+    // confined to GHOSTLINK_WORKSPACE_ROOT (defaults to the launch directory).
+
+    /// Files/dirs over this size are refused by both read and write — plenty
+    /// for source files, guards against loading a huge binary/log into the
+    /// in-browser editor.
+    const MAX_WORKSPACE_FILE_BYTES: u64 = 5 * 1024 * 1024;
+
+    fn workspace_root() -> std::path::PathBuf {
+        std::env::var("GHOSTLINK_WORKSPACE_ROOT")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|_| {
+                std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+            })
+    }
+
+    /// Resolves a client-supplied relative path against the workspace root
+    /// and rejects anything that escapes it. Canonicalizing both sides and
+    /// checking the prefix is what actually catches `..` traversal and
+    /// symlink escapes — a naive string check on the raw path does not.
+    fn resolve_workspace_path(
+        root: &std::path::Path,
+        rel: &str,
+    ) -> Result<std::path::PathBuf, String> {
+        let rel = rel.trim_start_matches(['/', '\\']);
+        let canon_root = root
+            .canonicalize()
+            .map_err(|e| format!("workspace root: {e}"))?;
+        if rel.is_empty() {
+            return Ok(canon_root);
+        }
+        let candidate = canon_root.join(rel);
+        let resolved = if candidate.exists() {
+            candidate.canonicalize().map_err(|e| e.to_string())?
+        } else {
+            // A not-yet-existing file (e.g. the target of a fresh write) can't
+            // be canonicalized itself — canonicalize its parent instead and
+            // reattach the file name, which still catches `..` in `rel`.
+            let parent = candidate.parent().ok_or("invalid path")?;
+            let canon_parent = parent
+                .canonicalize()
+                .map_err(|_| "parent directory does not exist".to_string())?;
+            canon_parent.join(candidate.file_name().ok_or("invalid path")?)
+        };
+        if !resolved.starts_with(&canon_root) {
+            return Err("path escapes workspace root".to_string());
+        }
+        Ok(resolved)
+    }
+
+    #[derive(serde::Serialize)]
+    struct WorkspaceEntry {
+        name: String,
+        path: String,
+        is_dir: bool,
+        size: u64,
+    }
+
+    async fn handle_workspace_tree(
+        Query(params): Query<HashMap<String, String>>,
+    ) -> Json<serde_json::Value> {
+        let root = workspace_root();
+        let rel = params.get("path").map(|s| s.as_str()).unwrap_or("");
+        let dir = match resolve_workspace_path(&root, rel) {
+            Ok(p) => p,
+            Err(e) => return Json(serde_json::json!({ "error": e })),
+        };
+        if !dir.is_dir() {
+            return Json(serde_json::json!({ "error": "not a directory" }));
+        }
+        let canon_root = match root.canonicalize() {
+            Ok(p) => p,
+            Err(e) => return Json(serde_json::json!({ "error": format!("workspace root: {e}") })),
+        };
+        let read_dir = match std::fs::read_dir(&dir) {
+            Ok(rd) => rd,
+            Err(e) => return Json(serde_json::json!({ "error": e.to_string() })),
+        };
+        let mut entries: Vec<WorkspaceEntry> = Vec::new();
+        for entry in read_dir.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            // Keeps the tree readable — skip VCS/build/dependency noise the
+            // user is never going to open in a code editor pane.
+            if name.starts_with('.') || matches!(name.as_str(), "node_modules" | "target" | "dist")
+            {
+                continue;
+            }
+            let metadata = match entry.metadata() {
+                Ok(m) => m,
+                Err(_) => continue,
+            };
+            let entry_path = entry.path();
+            let rel_path = entry_path
+                .strip_prefix(&canon_root)
+                .unwrap_or(&entry_path)
+                .to_string_lossy()
+                .replace('\\', "/");
+            entries.push(WorkspaceEntry {
+                name,
+                path: rel_path,
+                is_dir: metadata.is_dir(),
+                size: metadata.len(),
+            });
+        }
+        entries.sort_by(|a, b| {
+            b.is_dir
+                .cmp(&a.is_dir)
+                .then(a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+        });
+        Json(serde_json::json!({ "path": rel, "entries": entries }))
+    }
+
+    async fn handle_workspace_file_read(
+        Query(params): Query<HashMap<String, String>>,
+    ) -> Json<serde_json::Value> {
+        let rel = match params.get("path") {
+            Some(p) if !p.trim().is_empty() => p.clone(),
+            _ => return Json(serde_json::json!({ "error": "path query parameter is required" })),
+        };
+        let root = workspace_root();
+        let file_path = match resolve_workspace_path(&root, &rel) {
+            Ok(p) => p,
+            Err(e) => return Json(serde_json::json!({ "error": e })),
+        };
+        let metadata = match std::fs::metadata(&file_path) {
+            Ok(m) => m,
+            Err(e) => return Json(serde_json::json!({ "error": e.to_string() })),
+        };
+        if metadata.is_dir() {
+            return Json(serde_json::json!({ "error": "path is a directory" }));
+        }
+        if metadata.len() > MAX_WORKSPACE_FILE_BYTES {
+            return Json(serde_json::json!({
+                "error": format!("file exceeds {}MB limit", MAX_WORKSPACE_FILE_BYTES / (1024 * 1024))
+            }));
+        }
+        let bytes = match std::fs::read(&file_path) {
+            Ok(b) => b,
+            Err(e) => return Json(serde_json::json!({ "error": e.to_string() })),
+        };
+        match String::from_utf8(bytes) {
+            Ok(content) => Json(serde_json::json!({ "path": rel, "content": content })),
+            Err(_) => {
+                Json(serde_json::json!({ "error": "file is not valid UTF-8 text (binary?)" }))
+            }
+        }
+    }
+
+    #[derive(serde::Deserialize)]
+    struct WorkspaceFileWriteRequest {
+        path: String,
+        content: String,
+    }
+
+    async fn handle_workspace_file_write(
+        Json(req): Json<WorkspaceFileWriteRequest>,
+    ) -> Json<serde_json::Value> {
+        if req.path.trim().is_empty() {
+            return Json(serde_json::json!({ "error": "path is required" }));
+        }
+        if req.content.len() as u64 > MAX_WORKSPACE_FILE_BYTES {
+            return Json(serde_json::json!({
+                "error": format!("content exceeds {}MB limit", MAX_WORKSPACE_FILE_BYTES / (1024 * 1024))
+            }));
+        }
+        let root = workspace_root();
+        let file_path = match resolve_workspace_path(&root, &req.path) {
+            Ok(p) => p,
+            Err(e) => return Json(serde_json::json!({ "error": e })),
+        };
+        if file_path.is_dir() {
+            return Json(serde_json::json!({ "error": "path is a directory" }));
+        }
+        match std::fs::write(&file_path, req.content.as_bytes()) {
+            Ok(_) => Json(serde_json::json!({ "status": "ok", "path": req.path })),
+            Err(e) => Json(serde_json::json!({ "error": e.to_string() })),
+        }
+    }
+
+    // --- Repo-aware chat context (RAG auto-index) ---
+    //
+    // Walks the workspace root and feeds each eligible text file into the
+    // `rag` MCP server's index_document tool directly (not via a chat
+    // completion — asking a model to call index_document once per file over
+    // a ReAct loop would be slow and unreliable), so chat gets repo context
+    // without the user calling index_document by hand. A soft "skipped"
+    // status, not an error, when `rag` isn't connected — most installs won't
+    // have it configured (disabled by default, needs a pulled embedding model).
+
+    /// Bounds a single indexing pass so it can't turn into a multi-minute
+    /// crawl (or feed gigabytes into the embedding model) on a large repo —
+    /// generous enough for typical project sizes once noise dirs are excluded.
+    const INDEX_MAX_FILES: usize = 400;
+    /// Tighter than MAX_WORKSPACE_FILE_BYTES (the editor's read/write cap) —
+    /// indexing many large files is slow and not useful for MVP repo context.
+    const INDEX_MAX_FILE_BYTES: u64 = 200 * 1024;
+    const INDEX_MAX_TOTAL_BYTES: u64 = 4 * 1024 * 1024;
+
+    fn is_index_noise_dir(name: &str) -> bool {
+        name.starts_with('.')
+            || matches!(
+                name,
+                "node_modules"
+                    | "target"
+                    | "dist"
+                    | "build"
+                    | "third_party"
+                    | "logs"
+                    | "artifacts"
+                    | "benchmarks"
+                    | "models"
+                    | "mcp_workspace"
+                    | "tmp"
+                    | "_archived"
+            )
+    }
+
+    fn collect_index_candidates(
+        dir: &std::path::Path,
+        out: &mut Vec<std::path::PathBuf>,
+        total_bytes: &mut u64,
+    ) {
+        if out.len() >= INDEX_MAX_FILES || *total_bytes >= INDEX_MAX_TOTAL_BYTES {
+            return;
+        }
+        let Ok(read_dir) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in read_dir.flatten() {
+            if out.len() >= INDEX_MAX_FILES || *total_bytes >= INDEX_MAX_TOTAL_BYTES {
+                return;
+            }
+            let name = entry.file_name().to_string_lossy().to_string();
+            let Ok(metadata) = entry.metadata() else {
+                continue;
+            };
+            if metadata.is_dir() {
+                if is_index_noise_dir(&name) {
+                    continue;
+                }
+                collect_index_candidates(&entry.path(), out, total_bytes);
+            } else {
+                if name.starts_with('.') {
+                    continue;
+                }
+                if metadata.len() == 0 || metadata.len() > INDEX_MAX_FILE_BYTES {
+                    continue;
+                }
+                *total_bytes += metadata.len();
+                out.push(entry.path());
+            }
+        }
+    }
+
+    async fn handle_workspace_index(
+        State(state): State<Arc<Mutex<BackendState>>>,
+    ) -> Json<serde_json::Value> {
+        let mcp_registry = {
+            let backend = lock_state(&state);
+            Arc::clone(&backend.mcp_registry)
+        };
+
+        let servers = match mcp_registry.list_all_servers().await {
+            Ok(s) => s,
+            Err(err) => return Json(serde_json::json!({ "status": "error", "error": err })),
+        };
+        let rag_connected = servers.iter().any(|s| s.name == "rag" && s.connected);
+        if !rag_connected {
+            return Json(serde_json::json!({
+                "status": "skipped",
+                "reason": "rag MCP server is not connected (disabled) — see mcp_servers.toml"
+            }));
+        }
+
+        // `rag`'s own MCP handshake never actually touches Ollama (its tools
+        // are registered eagerly, connectivity is only checked lazily on the
+        // first embed call) — so `rag_connected` above is true even on a
+        // native-llama.cpp-only machine with no Ollama running at all. Probe
+        // Ollama directly here so that case still gets the same graceful
+        // "skipped" response instead of a wall of per-file failures.
+        let ollama_url = mcp_registry
+            .env_var_for("rag", "OLLAMA_URL")
+            .filter(|u| !u.is_empty())
+            .unwrap_or_else(|| "http://127.0.0.1:11434".to_string());
+        let ollama_reachable = ollama::OllamaClient::new(ollama_url.clone())
+            .health()
+            .await
+            .unwrap_or(false);
+        if !ollama_reachable {
+            return Json(serde_json::json!({
+                "status": "skipped",
+                "reason": format!("Ollama isn't reachable at {ollama_url} — is `ollama serve` running?")
+            }));
+        }
+
+        let root = match workspace_root().canonicalize() {
+            Ok(p) => p,
+            Err(e) => {
+                return Json(
+                    serde_json::json!({ "status": "error", "error": format!("workspace root: {e}") }),
+                )
+            }
+        };
+
+        let mut candidates = Vec::new();
+        let mut total_bytes = 0u64;
+        collect_index_candidates(&root, &mut candidates, &mut total_bytes);
+        let capped = candidates.len() >= INDEX_MAX_FILES || total_bytes >= INDEX_MAX_TOTAL_BYTES;
+
+        let mut indexed = 0usize;
+        let mut failed = 0usize;
+        for path in &candidates {
+            let Ok(bytes) = std::fs::read(path) else {
+                failed += 1;
+                continue;
+            };
+            // Binary files fail UTF-8 decoding — silently skip them rather
+            // than counting as a failure, same as the file-read route.
+            let Ok(text) = String::from_utf8(bytes) else {
+                continue;
+            };
+            let rel = path
+                .strip_prefix(&root)
+                .unwrap_or(path)
+                .to_string_lossy()
+                .replace('\\', "/");
+            let args = serde_json::json!({ "text": text, "id": rel, "source": rel });
+            match mcp_registry.call_tool("rag", "index_document", args).await {
+                Some(outcome) if outcome.success => indexed += 1,
+                _ => failed += 1,
+            }
+        }
+
+        Json(serde_json::json!({
+            "status": "ok",
+            "scanned": candidates.len(),
+            "indexed": indexed,
+            "failed": failed,
+            "capped": capped,
+        }))
+    }
+
     async fn handle_gui_queue() -> Json<serde_json::Value> {
         Json(serde_json::json!({ "status": "ok", "depth": 0 }))
     }
@@ -5454,10 +5867,31 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
     /// token (`auth_middleware` gates every route but `/health`) — no
     /// separate credential to check here, just mint a fresh short-lived
     /// token signed with the same API key that got them past the gate.
-    async fn handle_gui_jwt_refresh() -> Json<serde_json::Value> {
+    async fn handle_gui_jwt_refresh(
+        State(state): State<Arc<Mutex<BackendState>>>,
+        ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    ) -> Json<serde_json::Value> {
         match auth::issue_jwt("ghostlink-client") {
-            Ok(token) => Json(serde_json::json!({ "status": "ok", "token": token })),
-            Err(err) => Json(serde_json::json!({ "status": "error", "error": err })),
+            Ok(token) => {
+                record_audit_event(
+                    &mut lock_state(&state),
+                    "jwt_refresh",
+                    "SUCCESS",
+                    addr.ip().to_string(),
+                    None,
+                );
+                Json(serde_json::json!({ "status": "ok", "token": token }))
+            }
+            Err(err) => {
+                record_audit_event(
+                    &mut lock_state(&state),
+                    "jwt_refresh",
+                    "FAILED",
+                    addr.ip().to_string(),
+                    Some(err.clone()),
+                );
+                Json(serde_json::json!({ "status": "error", "error": err }))
+            }
         }
     }
 
@@ -5467,12 +5901,20 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
     /// response rather than implying it's already live.
     async fn handle_gui_pqc_enable(
         State(state): State<Arc<Mutex<BackendState>>>,
+        ConnectInfo(addr): ConnectInfo<SocketAddr>,
     ) -> Json<serde_json::Value> {
         let backend = &mut *lock_state(&state);
         let mut current = backend.settings.clone();
         current.enable_tls = true;
         backend.settings = current.clone();
         save_settings(&current);
+        record_audit_event(
+            backend,
+            "pqc_enable",
+            "SUCCESS",
+            addr.ip().to_string(),
+            Some("enable_tls persisted; takes effect on restart".to_string()),
+        );
         Json(serde_json::json!({
             "status": "ok",
             "enabled": true,
@@ -5506,8 +5948,13 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         }))
     }
 
-    async fn handle_gui_audit_log() -> Json<serde_json::Value> {
-        Json(serde_json::json!({ "entries": [] }))
+    async fn handle_gui_audit_log(
+        State(state): State<Arc<Mutex<BackendState>>>,
+    ) -> Json<serde_json::Value> {
+        let backend = lock_state(&state);
+        // Most-recent-first — a log feed reads top-to-bottom as newest-first.
+        let entries: Vec<&AuditLogEntry> = backend.audit_log.iter().rev().collect();
+        Json(serde_json::json!({ "entries": entries }))
     }
 
     async fn handle_gui_runtime_select(
@@ -6491,6 +6938,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
     /// denying feeds back `mcp::toolcall::format_denial` instead.
     async fn handle_tool_confirm(
         State(state): State<Arc<Mutex<BackendState>>>,
+        ConnectInfo(addr): ConnectInfo<SocketAddr>,
         Json(req): Json<ToolConfirmRequest>,
     ) -> Json<serde_json::Value> {
         let (native_engine_client, ollama_client, vllm_client, mcp_registry, pending_tool_calls) = {
@@ -6517,6 +6965,19 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                 )
             }));
         };
+
+        let (tool_name, server_name) = match &pending {
+            PendingToolCall::Native { tool, server, .. } => (tool.clone(), server.clone()),
+            PendingToolCall::Ollama { tool, server, .. } => (tool.clone(), server.clone()),
+            PendingToolCall::Vllm { tool, server, .. } => (tool.clone(), server.clone()),
+        };
+        record_audit_event(
+            &mut lock_state(&state),
+            "tool_confirm",
+            if req.approve { "APPROVED" } else { "DENIED" },
+            addr.ip().to_string(),
+            Some(format!("{tool_name} @ {server_name}")),
+        );
 
         let mut tool_results: Vec<ToolResult> = Vec::new();
         let mut pending_tool_call: Option<PendingToolCallInfo> = None;
@@ -7297,6 +7758,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         model_lifecycle_lock: Arc::new(tokio::sync::Mutex::new(())),
         plugin_registry: backend_plugin::BackendPluginRegistry::from_env(),
         enable_tls_active: use_tls,
+        audit_log: std::collections::VecDeque::new(),
     }));
 
     // Background CPU/RAM/GPU sampler — keeps /api/metrics non-blocking.
@@ -7334,6 +7796,11 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                 }
             });
         }
+
+        // Cloned before `.with_state(state)` below consumes `state` — the
+        // auth middleware needs its own `State` extraction (to record
+        // failed-auth attempts to the audit log) via `from_fn_with_state`.
+        let auth_mw_state = Arc::clone(&state);
 
         let app = Router::new()
             .route("/v1/chat/completions", post(handle_chat_completions))
@@ -7437,12 +7904,21 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                 "/api/backends/:name/status",
                 get(backend_api::handle_backend_status),
             )
+            .route("/api/workspace/tree", get(handle_workspace_tree))
+            .route(
+                "/api/workspace/file",
+                get(handle_workspace_file_read).put(handle_workspace_file_write),
+            )
+            .route("/api/workspace/index", post(handle_workspace_index))
             .with_state(state)
             // Auth runs inside CORS (added first here = innermost = runs
             // *after* CORS on the way in), so a browser's CORS preflight
             // OPTIONS request is still handled without needing a bearer
             // token — matches how CORS preflight is expected to work.
-            .layer(middleware::from_fn(auth_middleware))
+            .layer(middleware::from_fn_with_state(
+                auth_mw_state,
+                auth_middleware,
+            ))
             .layer(CorsLayer::permissive())
             .layer(tower_governor::GovernorLayer {
                 config: governor_conf,
@@ -9608,6 +10084,7 @@ mod tests {
             model_lifecycle_lock: Arc::new(tokio::sync::Mutex::new(())),
             enable_tls_active: false,
             plugin_registry: backend_plugin::BackendPluginRegistry::from_env(),
+            audit_log: std::collections::VecDeque::new(),
         }))
     }
 
@@ -9620,6 +10097,41 @@ mod tests {
         std::env::set_var("GHOSTLINK_NODE_ID", "test-node-explicit");
         assert_eq!(detect_node_id(), "test-node-explicit");
         std::env::remove_var("GHOSTLINK_NODE_ID");
+    }
+
+    fn audit_entry(event: &str) -> AuditLogEntry {
+        AuditLogEntry {
+            event: event.to_string(),
+            status: "SUCCESS".to_string(),
+            ip: "127.0.0.1".to_string(),
+            time: chrono::Utc::now().to_rfc3339(),
+            detail: None,
+        }
+    }
+
+    #[test]
+    fn push_audit_entry_appends_in_order() {
+        let mut log = std::collections::VecDeque::new();
+        push_audit_entry(&mut log, audit_entry("first"));
+        push_audit_entry(&mut log, audit_entry("second"));
+        assert_eq!(log.len(), 2);
+        assert_eq!(log[0].event, "first");
+        assert_eq!(log[1].event, "second");
+    }
+
+    #[test]
+    fn push_audit_entry_trims_oldest_once_over_cap() {
+        let mut log = std::collections::VecDeque::new();
+        for i in 0..(AUDIT_LOG_CAP + 10) {
+            push_audit_entry(&mut log, audit_entry(&format!("event-{i}")));
+        }
+        assert_eq!(log.len(), AUDIT_LOG_CAP, "must never grow past the cap");
+        // The oldest 10 were pushed out; the front is now event-10.
+        assert_eq!(log.front().unwrap().event, "event-10");
+        assert_eq!(
+            log.back().unwrap().event,
+            format!("event-{}", AUDIT_LOG_CAP + 9)
+        );
     }
 
     #[test]
