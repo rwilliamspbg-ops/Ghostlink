@@ -87,9 +87,18 @@ public class GhostlinkTrustAllCerts {
     )
 }
 
-function Wait-Http([string]$Url, [string]$Label, [int]$TimeoutSec = 60) {
+# Optional $Proc: the background process this check is waiting on. Without
+# it, a process that crashes right after starting (e.g. Vite exiting on a
+# missing module) is invisible until the full timeout elapses. When given,
+# every poll first checks $Proc.HasExited so a dead process fails fast
+# instead of burning the rest of TimeoutSec.
+function Wait-Http([string]$Url, [string]$Label, [int]$TimeoutSec = 60, [System.Diagnostics.Process]$Proc = $null) {
     $deadline = (Get-Date).AddSeconds($TimeoutSec)
     while ((Get-Date) -lt $deadline) {
+        if ($Proc -and $Proc.HasExited) {
+            Write-Err "$Label process exited (code $($Proc.ExitCode)) before becoming ready: $Url"
+            return $false
+        }
         try {
             if ($IsPwshCore) {
                 $resp = Invoke-WebRequest -Uri $Url -UseBasicParsing -TimeoutSec 3 -SkipCertificateCheck -ErrorAction Stop
@@ -265,7 +274,7 @@ $apiProc = Start-Process -FilePath $ApiBin -ArgumentList @("serve", $ApiHost, $A
     -WorkingDirectory $RootDir -PassThru -WindowStyle Hidden `
     -RedirectStandardOutput $apiLog -RedirectStandardError (Join-Path $LogDir "ghostlink_api.err.log")
 
-if (-not (Wait-Http "${ApiScheme}://${ApiHost}:${ApiPort}/health" "Ghostlink API" 90)) {
+if (-not (Wait-Http "${ApiScheme}://${ApiHost}:${ApiPort}/health" "Ghostlink API" 90 $apiProc)) {
     Write-Host "  Last API log lines:" -ForegroundColor DarkGray
     Get-Content $apiLog -Tail 30 -ErrorAction SilentlyContinue
     exit 1
@@ -296,7 +305,7 @@ $cpProc = Start-Process -FilePath $ControlPlaneBin `
     -WorkingDirectory $ControlPlaneDir -PassThru -WindowStyle Hidden `
     -RedirectStandardOutput $cpLog -RedirectStandardError (Join-Path $LogDir "control_plane.err.log")
 
-if (-not (Wait-Http "http://${ApiHost}:${ControlPlanePort}/health" "Control-plane" 30)) {
+if (-not (Wait-Http "http://${ApiHost}:${ControlPlanePort}/health" "Control-plane" 30 $cpProc)) {
     Write-Host "  Last control-plane log lines:" -ForegroundColor DarkGray
     Get-Content $cpLog -Tail 30 -ErrorAction SilentlyContinue
     exit 1
@@ -328,8 +337,46 @@ Write-Step "Starting React GUI (port $GuiPort)"
 $GuiDir = Join-Path $RootDir "ghostlink_gui_modern"
 Push-Location $GuiDir
 try {
+    # A directory-existence check can't see node_modules drifting out of sync
+    # with package.json/package-lock.json -- e.g. a dependency added via git
+    # pull that's already in package-lock.json but was never actually
+    # npm-installed into this tree. node_modules/.package-lock.json is npm's
+    # own record of what's actually installed, so diff it against the repo's
+    # package-lock.json (skipping optional deps that don't apply to this
+    # platform) to catch any such drift.
+    $needNpmInstall = $false
     if (-not (Test-Path (Join-Path $GuiDir "node_modules"))) {
-        Write-Warn "Installing npm packages (first run only)..."
+        $needNpmInstall = $true
+    } else {
+        $driftScript = @'
+const fs = require('fs');
+function platformOk(info) {
+    if (info.os && !info.os.includes(process.platform)) return false;
+    if (info.cpu && !info.cpu.includes(process.arch)) return false;
+    return true;
+}
+try {
+    const want = JSON.parse(fs.readFileSync('package-lock.json', 'utf8')).packages || {};
+    const have = JSON.parse(fs.readFileSync('node_modules/.package-lock.json', 'utf8')).packages || {};
+    for (const [name, info] of Object.entries(want)) {
+        if (name === '') continue;
+        if (info.optional && !platformOk(info)) continue;
+        const haveInfo = have[name];
+        if (!haveInfo || haveInfo.version !== info.version) process.exit(1);
+    }
+    process.exit(0);
+} catch (e) {
+    process.exit(1);
+}
+'@
+        $driftScript | node -
+        if ($LASTEXITCODE -ne 0) {
+            $needNpmInstall = $true
+            Write-Warn "node_modules out of sync with package-lock.json - reinstalling..."
+        }
+    }
+    if ($needNpmInstall) {
+        Write-Warn "Installing npm packages..."
         npm install --legacy-peer-deps *>> (Join-Path $LogDir "ghostlink_frontend_install.log")
         if ($LASTEXITCODE -ne 0) { Write-Err "npm install failed - see logs\ghostlink_frontend_install.log"; exit 1 }
     }
@@ -342,7 +389,7 @@ try {
     Pop-Location
 }
 
-if (-not (Wait-Http "http://${ApiHost}:${GuiPort}" "React Frontend" 60)) {
+if (-not (Wait-Http "http://${ApiHost}:${GuiPort}" "React Frontend" 60 $guiProc)) {
     Write-Host "  Last frontend log lines:" -ForegroundColor DarkGray
     Get-Content $guiLog -Tail 30 -ErrorAction SilentlyContinue
     exit 1
