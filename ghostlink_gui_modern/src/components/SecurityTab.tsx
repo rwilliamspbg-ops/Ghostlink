@@ -107,11 +107,11 @@ export const SecurityTab: React.FC<{ api: any }> = ({ api }) => {
                 onChange={(e) => setApiKeyInput(e.target.value)}
                 placeholder="Paste the API key printed at server startup"
                 aria-label="API key"
-                className="flex-1 bg-slate-950 border border-slate-800 rounded-xl px-4 py-2.5 text-sm font-mono text-slate-200 placeholder:text-slate-600 focus:outline-none focus:border-blue-500"
+                className="flex-1 bg-slate-950 border border-slate-800 rounded-xl px-4 py-2.5 text-sm font-mono text-slate-200 placeholder:text-slate-600 focus:outline-none focus:border-blue-500 focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
               />
               <button
                 onClick={() => setShowApiKey(!showApiKey)}
-                className="px-3 text-slate-500 hover:text-white transition"
+                className="px-3 text-slate-500 hover:text-white transition rounded-xl focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
                 aria-label={showApiKey ? 'Hide API key' : 'Show API key'}
                 aria-pressed={showApiKey}
               >
@@ -119,7 +119,7 @@ export const SecurityTab: React.FC<{ api: any }> = ({ api }) => {
               </button>
               <button
                 onClick={handleSaveApiKey}
-                className="px-5 py-2.5 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-sm font-bold transition"
+                className="px-5 py-2.5 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-sm font-bold transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
               >
                 {apiKeySaved ? 'Saved' : 'Save'}
               </button>
@@ -144,7 +144,7 @@ export const SecurityTab: React.FC<{ api: any }> = ({ api }) => {
                   <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Active Session Token</span>
                   <button
                     onClick={() => setShowShowToken(!showToken)}
-                    className="text-slate-500 hover:text-white transition"
+                    className="text-slate-500 hover:text-white transition rounded-lg focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
                     aria-label={showToken ? 'Hide token' : 'Show token'}
                     aria-pressed={showToken}
                   >
@@ -159,7 +159,7 @@ export const SecurityTab: React.FC<{ api: any }> = ({ api }) => {
               <button
                 onClick={handleRefresh}
                 disabled={loading}
-                className="w-full flex items-center justify-center gap-2 py-3 bg-slate-800 hover:bg-slate-700 text-white rounded-xl text-sm font-bold transition"
+                className="w-full flex items-center justify-center gap-2 py-3 bg-slate-800 hover:bg-slate-700 text-white rounded-xl text-sm font-bold transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
               >
                 <RefreshCw size={16} className={loading ? 'animate-spin' : ''} aria-hidden="true" />
                 Refresh Token
@@ -206,7 +206,7 @@ export const SecurityTab: React.FC<{ api: any }> = ({ api }) => {
                 <button
                   onClick={handlePqc}
                   disabled={loading}
-                  className="w-full py-3 bg-purple-600 hover:bg-purple-500 text-white rounded-xl text-sm font-bold transition shadow-lg shadow-purple-500/20"
+                  className="w-full py-3 bg-purple-600 hover:bg-purple-500 text-white rounded-xl text-sm font-bold transition shadow-lg shadow-purple-500/20 focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
                 >
                   Enable HTTPS + PQC-Hybrid TLS
                 </button>
@@ -220,7 +220,7 @@ export const SecurityTab: React.FC<{ api: any }> = ({ api }) => {
                 <h3 className="font-bold text-slate-100">Security Audit Log</h3>
                 <button
                   onClick={async () => { const result = await api.getAuditLog(); if (result.entries) setAuditLog(result.entries); }}
-                  className="p-2 hover:bg-slate-800 rounded-lg transition text-slate-500 hover:text-white"
+                  className="p-2 hover:bg-slate-800 rounded-lg transition text-slate-500 hover:text-white focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
                   aria-label="Refresh audit log"
                 >
                   <RefreshCw size={14} aria-hidden="true" />
