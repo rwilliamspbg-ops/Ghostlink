@@ -101,6 +101,14 @@ spinner() {
 # on-timeout diagnostic (e.g. "GHOSTLINK_API_PORT"). Omit for checks where
 # no such override applies.
 #
+# Optional 6th/7th args: the PID of the background process this check is
+# waiting on, and its log file. Without these, a process that crashes right
+# after backgrounding (e.g. Vite exiting on a missing module) is invisible
+# until the full timeout elapses — the caller just sees a generic "timeout"
+# with no hint that the process is long dead. When given, every poll first
+# checks the PID; the moment it's gone, this returns immediately with the
+# log tail instead of waiting out the rest of timeout_s.
+#
 # -k/--insecure is passed unconditionally: it's a no-op against plain http://
 # targets and required against https:// ones, since ghost-link's TLS listener
 # (see get_api_scheme below) uses a self-signed loopback cert curl won't
@@ -111,11 +119,21 @@ wait_for_http() {
     local timeout_s="${3:-120}"
     local body_marker="${4:-}"
     local override_var="${5:-}"
+    local watch_pid="${6:-}"
+    local watch_log="${7:-}"
     local start
     start=$(date +%s)
     local body
 
     while true; do
+        if [ -n "$watch_pid" ] && ! kill -0 "$watch_pid" 2>/dev/null; then
+            printf "\r${CLEAR_LINE}  ${RED}✗${NC} ${WHITE}%s${NC} ${RED}process exited${NC} before becoming ready: %s\n" "$label" "$url"
+            if [ -n "$watch_log" ] && [ -f "$watch_log" ]; then
+                echo -e "  ${DIM}Last lines of ${watch_log}:${NC}"
+                tail -40 "$watch_log" 2>/dev/null || true
+            fi
+            return 1
+        fi
         if [ -n "$body_marker" ]; then
             body=$(curl -skf "$url" 2>/dev/null || true)
             if [ -n "$body" ] && echo "$body" | grep -qF "$body_marker"; then
@@ -135,6 +153,9 @@ wait_for_http() {
                 else
                     echo -e "  ${DIM}A different service is likely already bound to this port. Free it, or override the port for this service and retry.${NC}"
                 fi
+            elif [ -n "$watch_log" ] && [ -f "$watch_log" ]; then
+                echo -e "  ${DIM}Process is still running but never became ready. Last lines of ${watch_log}:${NC}"
+                tail -40 "$watch_log" 2>/dev/null || true
             fi
             return 1
         fi
@@ -1110,7 +1131,7 @@ start_services() {
         # any web app already bound to this port that happens to have its own
         # /health route). /v1/models includes "owned_by":"llamacpp", which is
         # distinctive enough that nothing else plausibly returns it.
-        if ! wait_for_http "http://127.0.0.1:${LLAMA_PORT}/v1/models" "llama-server" 90 "llamacpp" "GHOSTLINK_LLAMA_SERVER_PORT"; then
+        if ! wait_for_http "http://127.0.0.1:${LLAMA_PORT}/v1/models" "llama-server" 90 "llamacpp" "GHOSTLINK_LLAMA_SERVER_PORT" "$LLAMA_PID" "/tmp/ghostlink_llama_server.log"; then
             echo -e "  ${RED}✗${NC} llama-server failed — see /tmp/ghostlink_llama_server.log"
             echo -e "  ${DIM}Tip: ensure port ${LLAMA_PORT} is free (another web app there will fool a bare health check).${NC}"
             return 1
@@ -1173,16 +1194,14 @@ start_services() {
     if is_wsl; then
         api_wait=180
     fi
-    if ! wait_for_http "${API_SCHEME}://${BACKEND_HOST}:${BACKEND_PORT}/health" "Ghostlink API" "$api_wait" "inference_backend" "GHOSTLINK_API_PORT"; then
+    if ! wait_for_http "${API_SCHEME}://${BACKEND_HOST}:${BACKEND_PORT}/health" "Ghostlink API" "$api_wait" "inference_backend" "GHOSTLINK_API_PORT" "$API_PID" "/tmp/ghostlink_api.log"; then
         echo -e "  ${RED}✗${NC} API failed — see /tmp/ghostlink_api.log"
         echo -e "  ${DIM}Tip: ensure port ${BACKEND_PORT} is free and ghost-link is a Linux binary under WSL.${NC}"
-        tail -40 /tmp/ghostlink_api.log 2>/dev/null || true
         return 1
     fi
-    if ! wait_for_http "${API_SCHEME}://${BACKEND_HOST}:${BACKEND_PORT}/api/health" "API /api/health" 30 "inference_backend" "GHOSTLINK_API_PORT"; then
+    if ! wait_for_http "${API_SCHEME}://${BACKEND_HOST}:${BACKEND_PORT}/api/health" "API /api/health" 30 "inference_backend" "GHOSTLINK_API_PORT" "$API_PID" "/tmp/ghostlink_api.log"; then
         echo -e "  ${RED}✗${NC} /api/health failed — wrong process on :${BACKEND_PORT} or outdated binary"
         echo -e "  ${DIM}Check: curl -ik ${API_SCHEME}://${BACKEND_HOST}:${BACKEND_PORT}/api/health${NC}"
-        tail -40 /tmp/ghostlink_api.log 2>/dev/null || true
         return 1
     fi
 
@@ -1204,11 +1223,11 @@ start_services() {
             API_PID=$!
             API_LAUNCH_MODE="cargo"
 
-            if ! wait_for_http "${API_SCHEME}://${BACKEND_HOST}:${BACKEND_PORT}/health" "Ghostlink API (cargo fallback)" 90 "inference_backend" "GHOSTLINK_API_PORT"; then
+            if ! wait_for_http "${API_SCHEME}://${BACKEND_HOST}:${BACKEND_PORT}/health" "Ghostlink API (cargo fallback)" 90 "inference_backend" "GHOSTLINK_API_PORT" "$API_PID" "/tmp/ghostlink_api.log"; then
                 echo -e "  ${RED}✗${NC} API failed after cargo fallback — see /tmp/ghostlink_api.log"
                 return 1
             fi
-            if ! wait_for_http "${API_SCHEME}://${BACKEND_HOST}:${BACKEND_PORT}/api/health" "API /api/health (cargo fallback)" 30 "inference_backend" "GHOSTLINK_API_PORT"; then
+            if ! wait_for_http "${API_SCHEME}://${BACKEND_HOST}:${BACKEND_PORT}/api/health" "API /api/health (cargo fallback)" 30 "inference_backend" "GHOSTLINK_API_PORT" "$API_PID" "/tmp/ghostlink_api.log"; then
                 echo -e "  ${RED}✗${NC} /api/health failed after cargo fallback"
                 return 1
             fi
@@ -1280,21 +1299,45 @@ start_services() {
     echo -e "  ${DIM}Node: ${NODE_BIN}${NC}"
 
     cd "$PROJECT_ROOT/ghostlink_gui_modern" || return 1
-    # Windows node_modules (from launch.bat) lack Linux optional natives (e.g. @rollup/rollup-linux-x64-gnu)
+    # A directory-existence check can't see node_modules drifting out of sync
+    # with package.json/package-lock.json — e.g. node_modules copied over from
+    # a different OS (Windows launch.bat) missing that platform's optional
+    # natives (@rollup/rollup-linux-x64-gnu), or a dependency added via git
+    # pull that's already in package-lock.json but was never actually
+    # npm-installed into this tree. node_modules/.package-lock.json is npm's
+    # own record of what's actually installed, so diff it against the repo's
+    # package-lock.json (skipping optional deps that don't apply to this
+    # platform) to catch any such drift, not just the one case previously
+    # special-cased here.
     local need_npm_install=0
-    local platform_marker=".ghostlink-npm-platform"
-    local want_platform
-    want_platform="$(host_os_family)-$(uname -m)"
     if [ ! -d "node_modules" ]; then
         need_npm_install=1
-    elif [ "$(cat "$platform_marker" 2>/dev/null || true)" != "$want_platform" ]; then
+    elif ! PATH="$(dirname "$NODE_BIN"):$PATH" "$NODE_BIN" - <<'EOF'
+const fs = require('fs');
+
+function platformOk(info) {
+    if (info.os && !info.os.includes(process.platform)) return false;
+    if (info.cpu && !info.cpu.includes(process.arch)) return false;
+    return true;
+}
+
+try {
+    const want = JSON.parse(fs.readFileSync('package-lock.json', 'utf8')).packages || {};
+    const have = JSON.parse(fs.readFileSync('node_modules/.package-lock.json', 'utf8')).packages || {};
+    for (const [name, info] of Object.entries(want)) {
+        if (name === '') continue;
+        if (info.optional && !platformOk(info)) continue;
+        const haveInfo = have[name];
+        if (!haveInfo || haveInfo.version !== info.version) process.exit(1);
+    }
+    process.exit(0);
+} catch (e) {
+    process.exit(1);
+}
+EOF
+    then
         need_npm_install=1
-        echo -e "  ${YELLOW}node_modules platform mismatch (need ${want_platform}) — reinstalling...${NC}"
-    elif [ "$(host_os_family)" = "linux" ] \
-        && [ ! -d "node_modules/@rollup/rollup-linux-x64-gnu" ] \
-        && [ ! -d "node_modules/@rollup/rollup-linux-x64-musl" ]; then
-        need_npm_install=1
-        echo -e "  ${YELLOW}Missing Linux rollup binary — reinstalling npm packages...${NC}"
+        echo -e "  ${YELLOW}node_modules out of sync with package-lock.json — reinstalling...${NC}"
     fi
     if [ "$need_npm_install" -eq 1 ]; then
         progress_bar 1 3
@@ -1310,7 +1353,6 @@ start_services() {
             tail -40 /tmp/ghostlink_frontend_install.log 2>/dev/null || true
             return 1
           }
-        printf '%s\n' "$want_platform" >"$platform_marker"
     else
         progress_bar 1 3
         echo " ${GREEN}Dependencies cached${NC}         "
@@ -1330,7 +1372,7 @@ start_services() {
     GUI_PID=$!
     cd "$PROJECT_ROOT" || true
 
-    if ! wait_for_http "http://127.0.0.1:${GUI_PORT}" "React Frontend" 60; then
+    if ! wait_for_http "http://127.0.0.1:${GUI_PORT}" "React Frontend" 60 "" "" "$GUI_PID" "/tmp/ghostlink_frontend.log"; then
         return 1
     fi
     progress_bar 3 3
