@@ -123,6 +123,35 @@ Tested default vs. this host's documented 4GB-VRAM-tier recommendation
 | Decode (200 tok, short prompt) | 75.0 tok/s avg | 75.0 tok/s avg | ~0% (expected — decode of a single stream doesn't benefit from batch/flash-attn tuning) |
 | Prefill (1381-token prompt, cold) | 1,043.5 tok/s | 1,169.7 tok/s | +12% (expected direction — matches `LOCAL_INFERENCE_TUNING.md`) |
 
+### Cross-model chat throughput — 2026-08-03 follow-up, same host
+
+Real generation numbers across three locally-downloaded models, prompted by a
+live report of ~2-minute chat timeouts on `Qwen3.5-9B-Q4_K_M`. Same prompt
+("List ten uses for a smartphone, one per line.", 11-token prompt), same
+`n_predict=150`, one discarded warm-up completion per model first (avoids
+first-call Vulkan shader-compile skew) — single run per model, not the
+multi-round averages the rest of this doc uses, so treat deltas here with the
+same skepticism the noisy-host section above asks for.
+
+| Model | Size on disk | Quant | Load time | Prefill | Decode |
+|---|---|---|---|---|---|
+| `Qwen3.5-9B-Q4_K_M` | 5.6 GB | Q4_K_M | 14.1 s | ~6.0 tok/s | ~11.2 tok/s |
+| `Meta-Llama-3-8B-Instruct-IQ3_M` | 3.8 GB | IQ3_M | 9.9 s | 43.4 tok/s | 12.8 tok/s |
+| `Llama-3.2-1B-Instruct-IQ3_M` | 657 MB | IQ3_M | 4.3 s | 375.3 tok/s | 74.8 tok/s |
+
+Confirmed this is genuine GPU work, not a silent CPU fallback:
+`Get-Counter '\GPU Engine(*)\Utilization Percentage'` showed the
+`llama-server` process's `engtype_compute` instance at ~29% during the
+`Qwen3.5-9B` generation.
+
+Caveat: this compares model *and* architecture together (Qwen3.5 vs Llama-3),
+not quantization in isolation — no Q3_K build of `Qwen3.5-9B` itself was on
+disk to test, so it's not a controlled same-model comparison. Still, at a
+similar parameter count (8B vs 9B) the more-compressed IQ3_M build's 7x
+prefill advantage over Q4_K_M is a large enough gap that quantization is
+clearly doing real work here, on top of whatever the architecture difference
+contributes.
+
 ### What wasn't run
 
 - **Flamegraph**: `cargo-flamegraph` 0.6.13 is installed, but Windows profiling
