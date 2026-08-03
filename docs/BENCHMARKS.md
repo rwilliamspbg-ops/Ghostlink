@@ -135,111 +135,212 @@ Tested default vs. this host's documented 4GB-VRAM-tier recommendation
 - AF_XDP kernel-bypass — not implemented on Windows, out of scope here.
 
 
-## In-Memory Transport Benchmarks — UNVERIFIED, pending a real run on this hardware
+## Full-Spectrum Session Benchmark — 2026-08-03 (Linux mini PC, no dedicated GPU)
 
-Like the Multi-Node table below, these two tables cannot be traced to any
-real run in this repo: no date, no methodology, and the model list
-(`orca-mini`, `mistral`, `llama2-7b`) and hardware (8-core Intel/AMD,
-RTX 4090) don't match anything actually exercised in the "Full-Spectrum
-Session Benchmark" above, which is real and used `Llama-3.2-1B-Instruct`
-on an AMD integrated GPU. Leaving them here as a placeholder to replace,
-not evidence of past measurement — treat everything below as
-**unverified**:
+Real, measured results from a genuinely different hardware class than
+every other entry in this document — a low-power consumer mini PC with no
+dedicated GPU, running native Linux rather than Windows. This is the real
+Linux data point [ENTERPRISE_PLAN.md](ENTERPRISE_PLAN.md)'s Track A flagged
+as missing (this is also the same host used for the real two-machine LAN
+benchmark in the Multi-Node Performance section below).
 
-### CPU Configuration (8-core Intel/AMD) — unverified placeholder
+### Hardware
 
-| Model | Throughput | Latency P50 | Latency P95 | Memory Usage |
-|-------|------------|-------------|-------------|--------------|
-| orca-mini (3B) | ~600K tokens/s | 1.2ms | 3.5ms | 2.0 GB |
-| mistral (7B) | ~450K tokens/s | 1.8ms | 5.2ms | 6.0 GB |
-| llama2-7b (7B) | ~420K tokens/s | 2.0ms | 5.8ms | 6.0 GB |
+| | |
+|---|---|
+| Host | `Desk-Mini` |
+| CPU | 4 logical cores (Intel Alder Lake-N) |
+| System RAM | 14.9 GB |
+| GPU | Alder Lake-N UHD Graphics (integrated), Vulkan, 0.0 GB dedicated VRAM reported |
+| OS | Linux |
+| Build | `cargo build --release` (workspace default `lto = "thin"`, `codegen-units = 1`) |
 
-### GPU Configuration (NVIDIA RTX 4090) — unverified placeholder
+Detected via `ghost-link probe local-node` (same command used for the
+Multi-Node Performance entry below).
 
-| Model | Throughput | Latency P50 | Latency P95 | Memory Usage |
-|-------|------------|-------------|-------------|--------------|
-| orca-mini (3B) | ~2.1M tokens/s | 0.4ms | 1.1ms | 2.0 GB |
-| mistral (7B) | ~1.6M tokens/s | 0.6ms | 1.8ms | 6.0 GB |
-| llama2-7b (7B) | ~1.5M tokens/s | 0.7ms | 2.0ms | 6.0 GB |
+### Methodology note: contention explains the primitives, but not the full pipeline
 
-Do not cite these tables. `scripts/flow_perf_snapshot.py` and
+The first `cargo bench`/`flow_perf_snapshot.py` run on this host ran while
+`launch.sh`'s own servers (API, control-plane, llama-server, Vite dev
+server) were still up, competing for all 4 cores. That run showed Criterion
+reporting "Performance has regressed +20-40%" on nearly every primitive
+relative to this host's previously-stored baseline — a real, expected
+effect of CPU contention. After stopping every Ghostlink process and
+re-running clean, most primitives improved as expected (raw logs below).
+
+The full-pipeline `flow_perf_snapshot.py` numbers did **not** follow that
+pattern — the "clean" run's average throughput was *lower* than the
+contended run's (tcp: 76.5k clean vs. 114.4k contended tok/s; inmem: 134.4k
+clean vs. 178.2k contended tok/s), and both runs show an enormous
+run-to-run spread within their own 5 samples (clean inmem alone:
+77.5k-187.4k tok/s, a 2.4x range). On this specific low-power 4-core host,
+5 runs isn't enough for a stable mean, and other confounds (thermal
+throttling on an N-series chip, memory-bandwidth sharing with the
+integrated GPU) likely dominate over whatever contention stopping the
+app's own servers removed. Treat every number below as directional for "a
+weak consumer-grade mini PC," not a tight estimate — this host is noisier
+than the AMD laptop profile above, which was already flagged as noisy.
+
+### Primitives (Criterion, clean run — background services stopped)
+
+| Benchmark | Time |
+|---|---|
+| `ring/push_pop_round_trip/st` | 3.15-3.22 ns |
+| `ring/push_only/st` | 5.07-5.15 ns |
+| `ring/spsc_throughput/mt` | 12.15-12.83 ns |
+| `protocol/encode` | 85.1-86.3 ns |
+| `protocol/decode` | 101.4-104.0 ns |
+| `protocol/round_trip` | 204.0-212.6 ns |
+| `planning/33_layers_2_nodes` | 140.1-141.0 ns |
+| `planning/80_layers_8_nodes` | 334.2-342.4 ns |
+| `planning/80_layers_8_nodes_autotuned` | 424.6-428.6 ns |
+| `cluster/register_update` | 235.3-237.3 ns |
+| `cluster/nodes_snapshot_10` | 30.8-31.4 ns |
+| `cluster/total_vram_10` | 927-935 ps |
+| `cluster/calculate_cluster_health_10` | 45.1-47.0 ns |
+| `autotune/detect_runtime_profile_fast` | 106.9-108.8 ns |
+| `autotune/detect_runtime_profile_full` | 19.18-20.48 ms |
+| `autotune/load_balance_80_layers_autotuned` | 1.616-1.632 µs |
+| `autotune/accelerator_scale_f32_slice` | 2.186-2.224 µs |
+
+`fabric_*` benchmarks (present in the Windows laptop entry above) did not
+appear in this run's output on this host — noted rather than guessed at;
+worth checking whether that's a platform feature gate or a suite change
+before assuming anything from their absence.
+
+### Full pipeline (`scripts/flow_perf_snapshot.py`, `exec_tokens=512 micro_batch=8`, release build)
+
+| Run | Mode | Throughput (avg) | Throughput (min-max) | P95 (avg) |
+|---|---|---|---|---|
+| Contended (app servers running) | tcp | 114,429.68 tok/s | 78,979.10-134,124.42 | 4.58 ms |
+| Contended (app servers running) | inmem | 178,194.78 tok/s | 82,469.41-272,413.03 | 3.56 ms |
+| Clean (servers stopped) | tcp | 76,455.51 tok/s | 63,534.12-89,957.73 | 6.78 ms |
+| Clean (servers stopped) | inmem | 134,359.68 tok/s | 77,473.96-187,417.62 | 4.10 ms |
+
+Compared against `docs/PERF_BASELINE.json` (256,020 tok/s tcp / 506,809
+tok/s inmem, captured on different, more powerful hardware): this host's
+clean-run numbers land roughly 70-73% below that baseline — far outside the
+45%/40% drop tolerances defined there. That's not a regression; it's
+confirmation that a 4-core integrated-graphics mini PC is a genuinely
+different performance tier from whatever machine set that baseline. The
+honest takeaway from this host isn't a specific throughput figure (the
+spread above is too wide to trust any single number) — it's that Ghostlink
+runs correctly end-to-end on real, low-power, no-dedicated-GPU Linux
+hardware, which is itself a useful data point for the project's "runs on
+whatever's already on your LAN" positioning.
+
+Raw logs (on the Desk-Mini host itself, not committed to this repo):
+`~/criterion_desk_mini.log` / `~/flow_perf_desk_mini.log` (contended run)
+and `~/criterion_desk_mini_clean.log` / `~/flow_perf_desk_mini_clean.log`
+(clean run).
+
+## Other hardware profiles
+
+Real, measured single-node numbers now exist in this document for three
+hardware classes: an AMD integrated GPU laptop (Windows), an Intel
+i7-14700K (Linux/WSL2, see the README's own
+[Performance section](../README.md#performance)), and a low-power Linux
+mini PC with no dedicated GPU (above). This repo previously carried
+fabricated placeholder tables here for CPU/GPU configurations (8-core
+Intel/AMD, RTX 4090) and model throughput that were never actually run —
+they've been removed rather than left as bait for anyone skimming this
+doc. Still missing: a discrete NVIDIA/AMD GPU, Apple Silicon, and a
+server-class CPU. If you benchmark Ghostlink on one of those,
+`scripts/flow_perf_snapshot.py` and
 `cargo bench -p ghostlink-core --bench criterion` are the repo's real,
-runnable benchmark tools — see the Full-Spectrum session above for what
-their real output looks like.
+runnable benchmark tools (see the Full-Spectrum sessions above for exact
+invocations and output format) — a PR adding a dated, methodology-labeled
+entry for a new hardware class is a genuinely useful contribution.
 
 ---
 
 ## Multi-Node Performance
 
-### LAN Performance (1 Gbps Ethernet) — UNVERIFIED, pending a real multi-host run
+### Real two-machine LAN run — 2026-08-03
 
-The table below predates this session's investigation and cannot be traced
-to any real run: no date, no host inventory, no methodology, and — more
-fundamentally — until the `stage-worker`/`flow --remote-addr` work landed
-(see [DEPLOYMENT.md's Stage 3b](DEPLOYMENT.md#stage-3b-real-cross-machine-flow-execution)),
-`flow` never actually reached a second machine at all, so no version of
-Ghost-Link could have produced these particular numbers. Leaving it here
-with this label rather than deleting it, so it's clear this is a
-placeholder to replace, not evidence of past measurement:
+The first real entry for this section, replacing the fabricated 2/3/4-node
+placeholder table this repo used to carry (see git history) — that table
+predated `stage-worker`/`flow --remote-addr` even existing, so no version
+of Ghost-Link could have produced it.
 
-| Node Count | Throughput | Latency | Notes |
-|------------|------------|---------|-------|
-| 2 nodes | ~580K tokens/s | 2.5ms | TCP transport — **unverified placeholder** |
-| 3 nodes | ~550K tokens/s | 3.2ms | TCP transport — **unverified placeholder** |
-| 4 nodes | ~520K tokens/s | 4.1ms | TCP transport — **unverified placeholder** |
+**Hardware — two genuinely separate machines on the same residential LAN:**
 
-Do not cite this table. To get real numbers, run
-[`scripts/remote_flow_benchmark.py`](../scripts/remote_flow_benchmark.py)
-across two physical machines on your own network (see below).
+| | Coordinator (local) | Remote (`stage-worker`) |
+|---|---|---|
+| Host | Windows 11 laptop | `Desk-Mini` (Linux) |
+| CPU | 16 logical cores | 4 logical cores (Intel Alder Lake-N) |
+| System RAM | 27.6 GB | 14.9 GB |
+| GPU | AMD Radeon 860M (integrated), 4.0 GB VRAM, DirectML | Alder Lake-N UHD Graphics (integrated), Vulkan, 0.0 GB dedicated VRAM reported |
+| Network | Wi-Fi | unknown (not confirmed Ethernet vs. Wi-Fi) |
 
-### Real cross-process benchmark harness
+ICMP round-trip between the two over this LAN measured 8-14ms
+(`ping Desk-Mini`), consistent with the TCP bridge-write latency below.
 
-`scripts/remote_flow_benchmark.py` drives the genuine `stage-worker` /
-`flow --remote-addr` path repeatedly and summarizes real measured
-throughput and remote round-trip time (`avg_bridge_write_ms`) — not
-placeholder constants. Real two-machine LAN numbers require hardware this
-session doesn't have access to (one dev machine, not a two-node LAN), so
-none are published here yet; running it is the way to replace the
-placeholder table above with real data.
-
-What *was* verified on this single machine — a same-host loopback smoke
-test, proving the harness and the underlying transport work end-to-end,
-explicitly **not** a network benchmark (no real NIC, no real latency):
+**A real capacity-modeling caveat, stated plainly**: `print_flow` (the code
+behind the `flow` subcommand this harness drives) hardcodes the local
+node's declared capacity to a minimum of 16GB
+(`crates/ghost-link/src/main.rs`, `print_flow`, `.max(16.0)`) for its fixed
+60-layer/30GB synthetic scenario — that's a demo-scenario convenience, not
+a claim about this laptop's real ~4GB VRAM. Desk-Mini's real probed
+capacity (`ghost-link probe local-node`) is 0.0 GB dedicated VRAM / 14.9 GB
+system RAM — an integrated-GPU mini PC that could not actually hold a
+meaningful share of a real 30B-class model's weights. Passing that real
+number to `--remote-vram-gb` produces a degenerate all-or-nothing
+placement (whichever side has more declared capacity absorbs the entire
+synthetic workload, leaving the other with zero assigned stages — this
+also happened during setup with the *opposite* value: `--remote-vram-gb
+32` handed all 60 layers to Desk-Mini and none to the coordinator, which
+then hard-errored). `--remote-vram-gb 16` was used here as a **declared
+test input to force a genuine two-node split**, not as a claim about
+Desk-Mini's real capability. This is the same limitation
+[DEPLOYMENT.md's Stage 3b](DEPLOYMENT.md#stage-3b-real-cross-machine-flow-execution)
+already documents: per-stage compute is a synthetic timing proxy, not real
+model math — what this benchmark actually validates is the **real
+cross-machine transport** (genuine `TcpStream::connect`, real framed
+batches, real measured round-trip latency), not real distributed LLM
+throughput.
 
 ```bash
-python scripts/remote_flow_benchmark.py --spawn-local-worker \
-  --remote-addr 127.0.0.1:19748 --runs 3 --exec-tokens 32 --micro-batch 4
+python scripts/remote_flow_benchmark.py --remote-addr <desk-mini-ip>:9500 \
+  --runs 5 --release --remote-vram-gb 16 --remote-mem-gb 14.9
 ```
 
-| Runs | Throughput (avg) | P95 | Remote bridge-write (avg) |
-|---|---|---|---|
-| 3 | 21,621 tok/s | 0.38 ms | 0.19 ms |
+(worker side, restarted fresh before each one-shot run:
+`GHOSTLINK_TCP_AUTH_TOKEN=local-token ghost-link stage-worker 0.0.0.0:9500`)
 
-Low run count and tiny `exec-tokens` (32) — this is a smoke test
-confirming the path works, not a tuned performance number; don't compare it
-against the Full-Spectrum session's in-process numbers above, which use a
-much larger token count and a different code path entirely.
+| Runs | Throughput (avg) | Throughput (min-max) | P95 (avg) | Remote bridge-write (avg) | Remote bridge-write (min-max) |
+|---|---|---|---|---|---|
+| 5 | 337.4 tok/s | 253.4-385.2 tok/s | 19.50 ms | 12.11 ms | 10.37-15.77 ms |
 
-For a real LAN run: on a second machine, run
-`GHOSTLINK_TCP_AUTH_TOKEN=<token> ghost-link stage-worker <bind-addr>`,
-then on the coordinator run the script without `--spawn-local-worker`,
-pointing `--remote-addr` at that machine. The script pauses between runs
-so you can restart the (one-shot) worker each time.
+Every run's `stage_stats` confirms 2 pipeline stages — stage 0 (local,
+compute-only, ~0.008ms, zero bridge-write) and stage 1 (Desk-Mini, zero
+compute, 10.4-15.8ms bridge-write) — meaning every run genuinely crossed
+the real network for its remote stage, not a loopback shortcut. Raw output:
+`tmp/remote_flow_benchmark/` (`summary.json` + one `remote-N.json` per run).
+
+The absolute throughput number here (`tokens/sec` of the synthetic pipeline
+harness) isn't comparable to the Full-Spectrum session's in-process numbers
+above — different code path, different hardware pair, and a much lower
+`exec_tokens`/`micro_batch` (this harness's defaults: 256/4). The real
+signal is `remote_bridge_write_ms`: a genuine ~10-16ms round-trip write
+cost to a physically separate machine over Wi-Fi, in the same range as raw
+ICMP RTT to that host.
 
 ### Notes on Multi-Node Performance
 
-- Throughput decreases slightly with more nodes due to network overhead
-- Latency increases linearly with node count
-- Network bandwidth is the primary bottleneck for multi-node setups
-
-These three notes above are inherited from the same placeholder as the
-table and are directional assumptions, not measurements — treat them as
-hypotheses to check once real multi-host numbers exist, not established
-fact.
+- The one real run above used exactly 2 nodes; scaling trends across 3+
+  nodes are still untested hypotheses, not measurements.
+- Bridge-write latency here tracks network RTT closely (10-16ms TCP vs.
+  8-14ms ICMP) — on this LAN, transport overhead is dominated by the
+  network hop itself, not Ghostlink's framing/serialization.
 
 ---
 
 ## Memory Requirements
+
+Reference values for common quantization sizes, not measured on Ghostlink
+hardware — use these for capacity planning, not as a Ghostlink-specific
+throughput/latency claim.
 
 ### Model Memory Footprint
 
@@ -261,19 +362,36 @@ fact.
 
 ## Benchmark Methodology
 
-### Test Configuration
+This section previously described a generic test configuration (a
+24-core/RTX 4090 desktop, synthetic 10K-token prompts) that no number in
+this document was actually produced on or with — it's been replaced with
+the methodology the real entries above actually use.
 
-- **Hardware**: Intel Core i9-13900K (24 cores), NVIDIA RTX 4090 (24GB VRAM)
-- **RAM**: 64GB DDR5-5600
-- **Storage**: NVMe SSD (PCIe 4.0 x4)
-- **Network**: 1 Gbps Ethernet
+### Tools
+
+- `cargo bench -p ghostlink-core --bench criterion` — primitive-level
+  microbenchmarks (ring buffer, protocol encode/decode, planning, cluster).
+- `scripts/flow_perf_snapshot.py` — full pipeline throughput/latency,
+  matched against `docs/PERF_BASELINE.json` / `PERF_BASELINE_STRESS.json`
+  for drift detection (`scripts/check_perf_drift.py`).
+- `scripts/remote_flow_benchmark.py` — real cross-process/cross-machine
+  `stage-worker` benchmark harness.
+- Full invocations and real output are in the Full-Spectrum Session
+  Benchmark above; see [TESTING.md](TESTING.md) for the broader test/bench
+  workflow this repo expects before a release.
 
 ### Test Procedure
 
-1. Load model into memory
-2. Run inference on synthetic prompts (10K tokens)
-3. Measure throughput and latency
-4. Repeat 3 times and average results
+1. Build in release mode (`cargo build --release`; workspace already sets
+   `lto = "thin"`, `codegen-units = 1`).
+2. Run the tool for the layer being measured (primitive vs. full pipeline
+   vs. cross-process), matching `exec_tokens`/`micro_batch` to whatever
+   baseline you're comparing against — mismatched parameters produce a
+   number that looks like drift but isn't (see the Full-Spectrum session's
+   own note on this).
+3. Prefer multiple interleaved runs over a single run before drawing any
+   conclusion — this repo's own dev hardware showed 5-80% run-to-run swings
+   on some benchmarks (see "Methodology note: this host is noisy" above).
 
 ### Metrics
 
@@ -300,9 +418,12 @@ fact.
 
 ### Multi-Node Optimization
 
-1. **Use fast network**: 10 Gbps recommended for multi-node
-2. **Minimize nodes**: More nodes = more network overhead
-3. **Balance load**: Distribute layers evenly across nodes
+Untested hypotheses pending the real multi-node LAN benchmark above — not
+yet backed by measurement on this project:
+
+1. Faster networks should help more nodes scale better.
+2. Fewer nodes should mean less network overhead.
+3. Balancing layers evenly across nodes should improve utilization.
 
 ---
 
@@ -325,6 +446,10 @@ fact.
 
 ## See Also
 
-- [README.md](../README.md) - Project overview and installation
-- [IMPLEMENTATION_GUIDE.md](../IMPLEMENTATION_GUIDE.md) - Code structure
-- [GHOSTLINK_FIX_PLAN.md](../GHOSTLINK_FIX_PLAN.md) - Remediation plan
+- [README.md](../README.md) - Project overview, installation, and headline
+  Performance numbers
+- [ROADMAP.md](ROADMAP.md) - Competitive strategy, including the real
+  distributed-inference work this document's Multi-Node section depends on
+- [DEPLOYMENT.md](DEPLOYMENT.md) - Cross-machine deployment, including the
+  `stage-worker` path used by `scripts/remote_flow_benchmark.py`
+- [TESTING.md](TESTING.md) - Full test/bench workflow
