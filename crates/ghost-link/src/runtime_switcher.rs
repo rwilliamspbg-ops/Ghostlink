@@ -57,7 +57,6 @@ impl Default for SwitchingConfig {
 /// Request tracking for draining, plus admission control matching however
 /// many concurrent slots the currently-running llama-server actually has.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct RequestTracker {
     in_flight: Arc<Mutex<usize>>,
     slot_semaphore: Arc<Semaphore>,
@@ -74,7 +73,6 @@ impl Default for RequestTracker {
     }
 }
 
-#[allow(dead_code)]
 impl RequestTracker {
     /// Create a new request tracker. Slot capacity starts at whatever
     /// `GHOSTLINK_PARALLEL_SLOTS` currently says (same env var

@@ -1489,8 +1489,6 @@ struct BackendState {
     current_model: String,
     workers: Vec<WorkerRecord>,
     sessions: Vec<SessionRecord>,
-    #[allow(dead_code)]
-    queue_depth: usize,
     chat_requests: u64,
     last_latency_ms: f32,
     last_tokens_per_sec: f32,
@@ -1614,6 +1612,14 @@ struct RuntimeSettings {
     gui_port: u16,
     threads: usize,
     ctx_size: usize,
+    /// Concurrent llama-server inference slots (`-np`). `1` matches every
+    /// prior release's behavior exactly; raising it lets ghost-link serve
+    /// more than one generation at a time, bounded by
+    /// `RequestTracker::acquire_slot`. `#[serde(default = "...")]` so
+    /// settings.json files saved before this field existed still
+    /// deserialize instead of falling back to the full default.
+    #[serde(default = "default_parallel_slots")]
+    parallel_slots: usize,
     temperature: f32,
     top_p: f32,
     top_k: usize,
@@ -1714,7 +1720,8 @@ impl Default for RuntimeSettings {
             api_port: 8003,
             gui_port: 5173,
             threads: 4,
-            ctx_size: 4096,
+            ctx_size: DEFAULT_CTX_SIZE,
+            parallel_slots: DEFAULT_PARALLEL_SLOTS,
             temperature: 0.7,
             top_p: 0.9,
             top_k: 40,
@@ -2959,6 +2966,15 @@ fn load_settings() -> RuntimeSettings {
     {
         std::env::set_var("GHOSTLINK_VLLM_API_KEY", settings.vllm_api_key.trim());
     }
+    if std::env::var("GHOSTLINK_PARALLEL_SLOTS")
+        .map(|v| v.trim().is_empty())
+        .unwrap_or(true)
+    {
+        std::env::set_var(
+            "GHOSTLINK_PARALLEL_SLOTS",
+            settings.parallel_slots.to_string(),
+        );
+    }
 
     if let Ok(val) = std::env::var("GHOSTLINK_INFERENCE_BACKEND") {
         let v = val.trim().to_ascii_lowercase();
@@ -3647,6 +3663,10 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
 
         let request_tracker = active_runtime_switcher().request_tracker().clone();
         request_tracker.increment().await;
+        // Bounds real concurrent llama-server calls to `parallel_slots`
+        // instead of firing every admitted request at it unbounded; dropped
+        // automatically when this function returns.
+        let _slot_permit = request_tracker.acquire_slot().await;
 
         let (temp, top_p, top_k, penalty) = sanitize_generation_params(
             req.temperature.unwrap_or(0.7),
@@ -5885,7 +5905,12 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
     }
 
     async fn handle_gui_queue() -> Json<serde_json::Value> {
-        Json(serde_json::json!({ "status": "ok", "depth": 0 }))
+        let request_tracker = active_runtime_switcher().request_tracker().clone();
+        Json(serde_json::json!({
+            "status": "ok",
+            "depth": request_tracker.queue_depth().await,
+            "slot_capacity": request_tracker.slot_capacity(),
+        }))
     }
 
     /// Real JWT issuance (was a hardcoded `"new-token-123"`). Reaching this
@@ -7322,6 +7347,24 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                             current.ctx_size = v as usize;
                         }
                     }
+                    "parallel_slots" => {
+                        if let Some(v) = value.as_u64() {
+                            current.parallel_slots = (v as usize).clamp(1, 64);
+                            // Mirrors llama_server_url's existing precedent
+                            // below: takes effect on the *next* model load
+                            // for llama-server's own -np flag.
+                            std::env::set_var(
+                                "GHOSTLINK_PARALLEL_SLOTS",
+                                current.parallel_slots.to_string(),
+                            );
+                            // Takes effect immediately for ghost-link's own
+                            // admission control, independent of when the
+                            // model next reloads.
+                            active_runtime_switcher()
+                                .request_tracker()
+                                .resize_slots(current.parallel_slots);
+                        }
+                    }
                     "enable_tls" => {
                         if let Some(v) = value.as_bool() {
                             // Takes effect on next server restart — the
@@ -7763,7 +7806,6 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             load: 35,
         }],
         sessions: vec![],
-        queue_depth: 0,
         chat_requests: 0,
         last_latency_ms: 0.0,
         last_tokens_per_sec: 0.0,
@@ -10087,7 +10129,6 @@ mod tests {
             current_model: "tinyllama".to_string(),
             workers: vec![],
             sessions: vec![],
-            queue_depth: 0,
             chat_requests: 0,
             last_latency_ms: 0.0,
             last_tokens_per_sec: 0.0,
