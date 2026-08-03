@@ -280,6 +280,16 @@ Write-Ok "API ready (PID $($apiProc.Id))"
 Write-Step "Starting control-plane (port $ControlPlanePort)"
 $env:PORT = $ControlPlanePort
 $env:GHOSTLINK_BACKEND_URL = "${ApiScheme}://${ApiHost}:${ApiPort}"
+# control-plane's WorkingDirectory below is $ControlPlaneDir, but
+# auth.LoadAPIKey() defaults to reading "api_key.txt" relative to cwd —
+# and ghost-link (started above with -WorkingDirectory $RootDir) writes
+# that file to $RootDir, not $ControlPlaneDir. Without this, control-plane
+# silently never finds the key, which doesn't just skip its own edge auth
+# check (tolerable — ghost-link's own auth still applies end to end) but
+# also means requests that should be rejected for free by that edge check
+# fall through and consume rate-limit budget instead, so ordinary polling
+# load can trip the rate limiter far sooner than it's supposed to.
+$env:GHOSTLINK_API_KEY_PATH = Join-Path $RootDir "api_key.txt"
 
 $cpLog = Join-Path $LogDir "control_plane.log"
 $cpProc = Start-Process -FilePath $ControlPlaneBin `

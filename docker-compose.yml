@@ -44,6 +44,14 @@ services:
       GHOSTLINK_INFERENCE_BACKEND: native
       GHOSTLINK_NATIVE_ENGINE: llama_server
       GHOSTLINK_LLAMA_SERVER_URL: http://llama-server:8080/completion
+      # Shared with control-plane below via the ghostlink-api-key volume, so
+      # control-plane's own auth.LoadAPIKey() can find the same key instead
+      # of silently coming up empty (each service is its own container with
+      # its own filesystem, so the default relative "api_key.txt" path never
+      # lines up between them on its own).
+      GHOSTLINK_API_KEY_PATH: /shared/api_key.txt
+    volumes:
+      - ghostlink-api-key:/shared
     networks:
       - ghostlink-network
     depends_on:
@@ -71,6 +79,15 @@ services:
     environment:
       PORT: "8000"
       GHOSTLINK_BACKEND_URL: http://ghostlink-api:8003
+      # See the matching comment on ghostlink-api's GHOSTLINK_API_KEY_PATH
+      # above — without this, control-plane's edge auth check silently
+      # no-ops (empty key = skip), which also means requests that should
+      # be rejected for free by that check fall through and consume
+      # rate-limit budget instead, so ordinary traffic can trip the
+      # limiter far sooner than intended.
+      GHOSTLINK_API_KEY_PATH: /shared/api_key.txt
+    volumes:
+      - ghostlink-api-key:/shared
     networks:
       - ghostlink-network
     depends_on:
@@ -106,3 +123,6 @@ services:
 networks:
   ghostlink-network:
     driver: bridge
+
+volumes:
+  ghostlink-api-key:

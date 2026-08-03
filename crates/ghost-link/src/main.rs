@@ -8132,10 +8132,27 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         // Per-IP request rate limiting — protects the API from runaway
         // clients/retry loops. Applied as the outermost layer so it gates
         // requests before CORS/auth do any work.
+        //
+        // This sits behind control-plane's own proxy (the GUI never talks
+        // to this port directly), which means every request — from every
+        // browser tab, every user — arrives here already collapsed onto
+        // control-plane's own source address. The old per_second(2) /
+        // burst_size(30) config was sized as if this were a genuine per-
+        // client limit; in practice it was a global ceiling on the whole
+        // gateway. A single page mount alone fires ~8 concurrent requests
+        // (settings, models, sessions, metrics, workers, backends, mcp
+        // servers), and steady-state polling (metrics+sessions every 3s,
+        // workers every 15s) adds ~0.7 req/s per open tab on top of that —
+        // two tabs, or a couple of reloads in quick succession, was enough
+        // to permanently exhaust the 30-token bucket (15s to refill at
+        // 2/s) and made ordinary GUI usage indistinguishable from a
+        // runaway client. Sized here to comfortably absorb a few tabs'
+        // worth of simultaneous mount bursts plus their steady polling,
+        // while still catching an actually-pathological tight retry loop.
         let governor_conf = std::sync::Arc::new(
             tower_governor::governor::GovernorConfigBuilder::default()
-                .per_second(2)
-                .burst_size(30)
+                .per_second(20)
+                .burst_size(60)
                 .finish()
                 .expect("static governor config is always valid"),
         );
