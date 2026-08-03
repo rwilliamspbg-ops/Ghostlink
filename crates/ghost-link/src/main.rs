@@ -8144,14 +8144,25 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         // servers), and steady-state polling (metrics+sessions every 3s,
         // workers every 15s) adds ~0.7 req/s per open tab on top of that —
         // two tabs, or a couple of reloads in quick succession, was enough
-        // to permanently exhaust the 30-token bucket (15s to refill at
-        // 2/s) and made ordinary GUI usage indistinguishable from a
-        // runaway client. Sized here to comfortably absorb a few tabs'
-        // worth of simultaneous mount bursts plus their steady polling,
-        // while still catching an actually-pathological tight retry loop.
+        // to permanently exhaust the 30-token bucket and made ordinary GUI
+        // usage indistinguishable from a runaway client.
+        //
+        // NOTE: `per_second(N)` is *not* "N requests per second" — despite
+        // the name, it sets the replenishment *interval* ("one element of
+        // the quota is replenished every N seconds", per tower_governor's
+        // own docs), so a bigger N means a *slower* refill. A prior fix
+        // here set `.per_second(20)`, intending ~20 req/s of sustained
+        // throughput, and instead configured 1 token per 20 seconds —
+        // 10x slower than the original `.per_second(2)` it was replacing.
+        // `.per_millisecond(N)` is the method that actually takes a rate
+        // in the usual sense once inverted: `per_millisecond(50)` = one
+        // token every 50ms = 20 tokens/sec sustained, comfortably above
+        // a few tabs' worth of steady polling while still catching an
+        // actually-pathological tight retry loop. `burst_size` is
+        // unaffected by this mixup — it's already a plain token count.
         let governor_conf = std::sync::Arc::new(
             tower_governor::governor::GovernorConfigBuilder::default()
-                .per_second(20)
+                .per_millisecond(50)
                 .burst_size(60)
                 .finish()
                 .expect("static governor config is always valid"),
