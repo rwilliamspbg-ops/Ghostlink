@@ -4359,46 +4359,72 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             return Err("No GGUF files found in this repository. Try a GGUF-quantized variant (e.g. lmstudio-community/Meta-Llama-3-8B-Instruct-GGUF).".to_string());
         }
 
-        let filename = &gguf_files[0];
-        let file_url = format!(
-            "https://huggingface.co/{}/resolve/main/{}",
-            model_id, filename
-        );
-        let dest_path = models_dir.join(filename);
+        // Pick a quantization that fits this machine's VRAM instead of
+        // blindly taking whatever file the repo listed first, and pull every
+        // shard of a split GGUF instead of just one.
+        let vram_gb = detect_runtime_profile("hf-download").node_resources.vram_gb;
+        let groups = group_gguf_shards(&gguf_files);
+        let chosen_files = select_best_gguf_group(&groups, vram_gb)
+            .ok_or_else(|| "No usable GGUF file found in this repository".to_string())?;
 
-        if dest_path.exists() {
-            return Ok(dest_path.to_string_lossy().to_string());
+        let mut first_dest_path: Option<std::path::PathBuf> = None;
+        for filename in &chosen_files {
+            let file_url = format!(
+                "https://huggingface.co/{}/resolve/main/{}",
+                model_id, filename
+            );
+            // `filename` comes straight from the remote HuggingFace API response
+            // (`rfilename`) and may contain nested-path separators or, in the
+            // worst case, an absolute path. `PathBuf::join` silently discards the
+            // base directory when given an absolute path, and any path
+            // separators could otherwise let a crafted repo write outside
+            // `models_dir`. Only the file's base name is ever meaningful here.
+            let safe_filename = std::path::Path::new(filename.as_str())
+                .file_name()
+                .map(|f| f.to_string_lossy().into_owned())
+                .filter(|f| !f.is_empty())
+                .unwrap_or_else(|| "download.gguf".to_string());
+            let dest_path = models_dir.join(&safe_filename);
+
+            if !dest_path.exists() {
+                let resp = client
+                    .get(&file_url)
+                    .send()
+                    .await
+                    .map_err(|e| format!("Download error: {}", e))?;
+
+                if !resp.status().is_success() {
+                    return Err(format!("Failed to download file (HTTP {})", resp.status()));
+                }
+
+                if let Some(parent) = dest_path.parent() {
+                    fs::create_dir_all(parent).map_err(|e| format!("Dir error: {}", e))?;
+                }
+                let mut file = tokio::fs::File::create(&dest_path)
+                    .await
+                    .map_err(|e| format!("File error: {}", e))?;
+                let mut stream = resp;
+                while let Some(chunk) = stream
+                    .chunk()
+                    .await
+                    .map_err(|e| format!("Stream error: {}", e))?
+                {
+                    file.write_all(&chunk)
+                        .await
+                        .map_err(|e| format!("Write error: {}", e))?;
+                }
+                file.flush().await.ok();
+            }
+
+            if first_dest_path.is_none() {
+                first_dest_path = Some(dest_path);
+            }
         }
 
-        let resp = client
-            .get(&file_url)
-            .send()
-            .await
-            .map_err(|e| format!("Download error: {}", e))?;
-
-        if !resp.status().is_success() {
-            return Err(format!("Failed to download file (HTTP {})", resp.status()));
-        }
-
-        if let Some(parent) = dest_path.parent() {
-            fs::create_dir_all(parent).map_err(|e| format!("Dir error: {}", e))?;
-        }
-        let mut file = tokio::fs::File::create(&dest_path)
-            .await
-            .map_err(|e| format!("File error: {}", e))?;
-        let mut stream = resp;
-        while let Some(chunk) = stream
-            .chunk()
-            .await
-            .map_err(|e| format!("Stream error: {}", e))?
-        {
-            file.write_all(&chunk)
-                .await
-                .map_err(|e| format!("Write error: {}", e))?;
-        }
-        file.flush().await.ok();
-
-        Ok(dest_path.to_string_lossy().to_string())
+        Ok(first_dest_path
+            .expect("chosen_files is non-empty")
+            .to_string_lossy()
+            .to_string())
     }
 
     async fn handle_models(
@@ -10356,6 +10382,87 @@ mod tests {
         let map = build_device_map(&profile, "amdgpu", "n2");
         assert_eq!(map.get("amdgpu"), Some(&DeviceKind::Gpu));
         assert_eq!(map.get("n2"), Some(&DeviceKind::Gpu));
+    }
+
+    #[test]
+    fn quant_rank_orders_common_tags_by_size() {
+        assert!(quant_rank("MODEL-Q2_K.GGUF") < quant_rank("MODEL-Q4_K_M.GGUF"));
+        assert!(quant_rank("MODEL-Q4_K_M.GGUF") < quant_rank("MODEL-Q8_0.GGUF"));
+        assert!(quant_rank("MODEL-Q8_0.GGUF") < quant_rank("MODEL-F16.GGUF"));
+        // Longest-match tie-break: "Q3_K_M" must not be misread via a
+        // hypothetical shorter overlapping tag.
+        assert_eq!(
+            quant_rank("MODEL-Q3_K_M.GGUF"),
+            quant_rank("model-q3_k_m.gguf".to_uppercase().as_str())
+        );
+        assert_eq!(quant_rank("MODEL-UNKNOWNQUANT.GGUF"), None);
+    }
+
+    #[test]
+    fn target_quant_rank_scales_down_for_low_vram() {
+        let high = target_quant_rank_for_vram(24.0);
+        let mid = target_quant_rank_for_vram(8.0);
+        let low = target_quant_rank_for_vram(2.0);
+        assert!(low < mid);
+        assert!(mid <= high);
+    }
+
+    #[test]
+    fn select_best_gguf_group_picks_fitting_quant_not_first_listed() {
+        // Regression: previously `download_hf_model` always took whatever
+        // file HuggingFace's API listed first, regardless of size. A repo
+        // commonly lists a large quant before smaller ones.
+        let files = vec![
+            "model-F16.gguf".to_string(),
+            "model-Q8_0.gguf".to_string(),
+            "model-Q4_K_M.gguf".to_string(),
+            "model-Q2_K.gguf".to_string(),
+        ];
+        let groups = group_gguf_shards(&files);
+        // Below 4GB VRAM should land on a small/mid quant, never blindly on
+        // F16 (index 0, and the largest/most likely to fail to load).
+        let chosen = select_best_gguf_group(&groups, 3.5).expect("a group should be chosen");
+        assert_ne!(chosen, vec!["model-F16.gguf".to_string()]);
+        let rank = quant_rank(&chosen[0].to_ascii_uppercase()).expect("known tag");
+        assert!(
+            rank <= quant_rank("Q4_K_M").unwrap(),
+            "expected a Q4_K_M-or-smaller pick for 3.5GB VRAM, got rank {rank}"
+        );
+
+        // Higher VRAM should land on a noticeably bigger quant than the
+        // low-VRAM case, confirming the target actually scales with VRAM
+        // rather than always converging on the same answer.
+        let chosen_high = select_best_gguf_group(&groups, 24.0).expect("a group should be chosen");
+        let rank_high = quant_rank(&chosen_high[0].to_ascii_uppercase()).expect("known tag");
+        assert!(rank_high > rank);
+    }
+
+    #[test]
+    fn group_gguf_shards_keeps_split_files_together_in_order() {
+        // Regression: previously only the first shard of a split GGUF was
+        // ever downloaded, leaving an unloadable partial model on disk.
+        let files = vec![
+            "model-Q8_0-00002-of-00003.gguf".to_string(),
+            "model-Q4_K_M.gguf".to_string(),
+            "model-Q8_0-00001-of-00003.gguf".to_string(),
+            "model-Q8_0-00003-of-00003.gguf".to_string(),
+        ];
+        let groups = group_gguf_shards(&files);
+        let split_group = groups
+            .iter()
+            .find(|g| g.len() > 1)
+            .expect("the Q8_0 split set should be grouped together");
+        assert_eq!(
+            split_group,
+            &vec![
+                "model-Q8_0-00001-of-00003.gguf".to_string(),
+                "model-Q8_0-00002-of-00003.gguf".to_string(),
+                "model-Q8_0-00003-of-00003.gguf".to_string(),
+            ]
+        );
+        assert!(groups
+            .iter()
+            .any(|g| g == &vec!["model-Q4_K_M.gguf".to_string()]));
     }
 
     #[test]
