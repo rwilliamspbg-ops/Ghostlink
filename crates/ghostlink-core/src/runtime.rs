@@ -800,7 +800,6 @@ fn _write_transport_batch_inner(
     let source_stage_u16 = source_stage as u16;
 
     frame_buf.clear();
-    let payload_bytes_count = batch.payload.len() * 4;
     let header_size = if session.is_some() {
         // source_stage(2) + batch_id(8) + tokens(4) + payload_len(4) + tag_present(1) + session_id(8) + generation(8)
         2 + 8 + 4 + 4 + 1 + 8 + 8
@@ -810,7 +809,8 @@ fn _write_transport_batch_inner(
     } else {
         2 + 8 + 4 + 4 + 1
     };
-    frame_buf.reserve(header_size + payload_bytes_count);
+    // Reserve space ONLY for the header to avoid large intermediate allocation/capacity checks.
+    frame_buf.reserve(header_size);
     frame_buf.extend_from_slice(&source_stage_u16.to_le_bytes());
     frame_buf.extend_from_slice(&batch_id.to_le_bytes());
     frame_buf.extend_from_slice(&tokens.to_le_bytes());
@@ -835,9 +835,13 @@ fn _write_transport_batch_inner(
         frame_buf.push(0); // No auth
     }
 
+    // Zero-Copy Transport Optimization: By writing the header and the float payload
+    // separately directly to the underlying BufWriter, we completely avoid copying
+    // the entire multi-kilobyte/megabyte float slice payload into the intermediate
+    // scratch frame_buf vector. This yields a massive reduction in memory bandwidth and CPU cycles.
     let payload_bytes = payload_as_le_bytes(&batch.payload);
-    frame_buf.extend_from_slice(payload_bytes.as_ref());
     writer.write_all(frame_buf)?;
+    writer.write_all(payload_bytes.as_ref())?;
 
     Ok(())
 }
