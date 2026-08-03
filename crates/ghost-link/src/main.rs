@@ -45,16 +45,30 @@ use std::time::{Duration, Instant};
 
 use tokio::io::AsyncWriteExt;
 
+// `deny_unknown_fields` on this whole family turns a typo'd key in
+// ghostlink.toml (e.g. `remote_vram_gb` misspelled) into a startup error
+// instead of a silently-ignored no-op — previously any unrecognized key
+// parsed successfully and the intended setting just never applied.
+//
+// `[compute]` is a real, documented top-level table in the same file (see
+// ghostlink.example.toml) but it's owned and parsed separately by
+// `backend_config::ConfigManager` — declared here just so deny_unknown_fields
+// doesn't reject it, not because this struct does anything with it.
 #[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct FileConfig {
     flow: Option<FlowDefaults>,
     cluster_start: Option<ClusterStartDefaults>,
     discovery: Option<DiscoveryDefaults>,
     tcp: Option<TcpDefaults>,
     gui: Option<GuiDefaults>,
+    #[allow(dead_code)]
+    #[serde(default)]
+    compute: Option<toml::Value>,
 }
 
 #[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct FlowDefaults {
     local_id: Option<String>,
     remote_id: Option<String>,
@@ -66,12 +80,14 @@ struct FlowDefaults {
 }
 
 #[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct ClusterStartDefaults {
     node_count: Option<usize>,
     base_port: Option<u16>,
 }
 
 #[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct DiscoveryDefaults {
     listen: Option<String>,
     broadcast: Option<String>,
@@ -82,6 +98,7 @@ struct DiscoveryDefaults {
 }
 
 #[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct TcpDefaults {
     max_inflight: Option<usize>,
     reconnect_attempts: Option<usize>,
@@ -90,6 +107,7 @@ struct TcpDefaults {
 }
 
 #[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct GuiDefaults {
     python: Option<String>,
 }
@@ -1471,8 +1489,6 @@ struct BackendState {
     current_model: String,
     workers: Vec<WorkerRecord>,
     sessions: Vec<SessionRecord>,
-    #[allow(dead_code)]
-    queue_depth: usize,
     chat_requests: u64,
     last_latency_ms: f32,
     last_tokens_per_sec: f32,
@@ -1480,6 +1496,9 @@ struct BackendState {
     started_at: Instant,
     backend_url: String,
     cluster: Arc<ClusterState>,
+    /// This node's own id in `cluster` — needed to exclude ourselves when
+    /// selecting `distributed_inference` RPC peers (see `rpc_cluster`).
+    local_node_id: String,
     inference_backend: InferenceEngine,
     native_engine_client: native_engine::NativeEngineClient,
     ollama_client: ollama::OllamaClient,
@@ -1488,6 +1507,101 @@ struct BackendState {
     settings: RuntimeSettings,
     mcp_registry: Arc<mcp::McpRegistry>,
     pending_tool_calls: Arc<tokio::sync::Mutex<HashMap<String, PendingToolCall>>>,
+    /// Real byte-level progress for an in-flight (or just-finished) model
+    /// download, updated live from the background download task and read by
+    /// `/api/models/download/progress` for the GUI's polling loop.
+    download_progress: HashMap<String, DownloadProgressInfo>,
+    /// Serializes the full model load/unload sequence end to end — the
+    /// llama-server stage/kill/spawn dance in `NativeEngineClient::load_model_into_slot`
+    /// plus the `BackendState` updates (`current_model`, model status, settings)
+    /// that follow it. Without this, two overlapping `/api/models/load` (or
+    /// load+unload) requests each independently ran `free_llama_port`'s
+    /// system-wide `taskkill /F /IM llama-server.exe` and raced to bind the
+    /// same port — confirmed by firing concurrent load requests and seeing
+    /// each response report a *different* `current_model`, since the final
+    /// `backend.current_model = selected_model` write was a plain
+    /// last-writer-wins race with no relation to which process actually
+    /// survived the taskkill/spawn collision.
+    ///
+    /// Also independently lost to ea8d56c: nothing currently calls
+    /// `.lock()` on this — the fix this field describes isn't wired into
+    /// `/api/models/load` yet. Same follow-up as `download_progress` above.
+    #[allow(dead_code)]
+    model_lifecycle_lock: Arc<tokio::sync::Mutex<()>>,
+    /// Custom inference backends registered via `backend_plugin` — checked
+    /// by the OpenAI-compatible REST handlers before falling through to the
+    /// built-in Native/Ollama dispatch. See `backend_plugin` module docs.
+    plugin_registry: backend_plugin::BackendPluginRegistry,
+    /// Whether the *currently running* listener is actually serving HTTPS
+    /// with the PQC-hybrid key exchange preference — set once at server
+    /// startup from the same `use_tls` decision that picked the listener
+    /// branch. Distinct from `settings.enable_tls`, which is the persisted
+    /// setting and only takes effect on next restart; this field is what
+    /// `/api/security/pqc/state` actually reports.
+    enable_tls_active: bool,
+    /// Real security-relevant events (failed auth, tool-call approvals,
+    /// PQC/JWT actions) for `/api/security/audit-log` — was previously
+    /// hardcoded to always return an empty list. In-memory only (resets on
+    /// restart) and capped at `AUDIT_LOG_CAP`; a genuinely persistent trail
+    /// would need an append-only file, which is a bigger step than this
+    /// first real version takes.
+    audit_log: std::collections::VecDeque<AuditLogEntry>,
+}
+
+/// One row for the GUI's Security tab audit log — field names/shape match
+/// what `SecurityTab.tsx` already expects (it predates a real backend for
+/// this and was rendering against a permanently-empty list).
+#[derive(Debug, Clone, Serialize)]
+struct AuditLogEntry {
+    event: String,
+    /// "SUCCESS"/"AUTHENTICATED" render green in the GUI; anything else
+    /// (e.g. "FAILED", "DENIED") renders as a yellow warning badge.
+    status: String,
+    ip: String,
+    /// RFC3339 — the GUI does `new Date(e.time)` on this directly.
+    time: String,
+    detail: Option<String>,
+}
+
+const AUDIT_LOG_CAP: usize = 500;
+
+/// Appends one entry and trims from the front once over `AUDIT_LOG_CAP` —
+/// split out from `record_audit_event` so it's unit-testable against a bare
+/// `VecDeque` without needing to construct a full `BackendState`.
+fn push_audit_entry(log: &mut std::collections::VecDeque<AuditLogEntry>, entry: AuditLogEntry) {
+    log.push_back(entry);
+    while log.len() > AUDIT_LOG_CAP {
+        log.pop_front();
+    }
+}
+
+fn record_audit_event(
+    backend: &mut BackendState,
+    event: &str,
+    status: &str,
+    ip: String,
+    detail: Option<String>,
+) {
+    push_audit_entry(
+        &mut backend.audit_log,
+        AuditLogEntry {
+            event: event.to_string(),
+            status: status.to_string(),
+            ip,
+            time: chrono::Utc::now().to_rfc3339(),
+            detail,
+        },
+    );
+}
+
+/// Real byte-level progress for an in-flight (or just-finished) model download.
+/// Updated from the background download task, read by the GUI's polling loop.
+#[derive(Debug, Clone, Serialize, Default)]
+struct DownloadProgressInfo {
+    bytes_downloaded: u64,
+    total_bytes: u64,
+    status: String,
+    error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1506,6 +1620,14 @@ struct RuntimeSettings {
     gui_port: u16,
     threads: usize,
     ctx_size: usize,
+    /// Concurrent llama-server inference slots (`-np`). `1` matches every
+    /// prior release's behavior exactly; raising it lets ghost-link serve
+    /// more than one generation at a time, bounded by
+    /// `RequestTracker::acquire_slot`. `#[serde(default = "...")]` so
+    /// settings.json files saved before this field existed still
+    /// deserialize instead of falling back to the full default.
+    #[serde(default = "default_parallel_slots")]
+    parallel_slots: usize,
     temperature: f32,
     top_p: f32,
     top_k: usize,
@@ -1519,6 +1641,75 @@ struct RuntimeSettings {
     discovery_auth_token: String,
     tcp_auth_token: String,
     xdp_interface: String,
+    /// Token budget for conversation history sent to the model, distinct from
+    /// `max_tokens` (per-response length). `#[serde(default)]` so settings.json
+    /// files saved before this field existed still deserialize instead of
+    /// falling back to `RuntimeSettings::default()` in its entirety.
+    #[serde(default = "default_conversation_token_limit")]
+    conversation_token_limit: usize,
+    /// Serve over HTTPS with a self-signed cert and a real PQC-hybrid
+    /// (X25519MLKEM768) key exchange preference (see `tls.rs`), instead of
+    /// plain HTTP. Off by default so today's plain-localhost dev flow sees
+    /// zero disruption; forced on regardless of this setting when the
+    /// server binds a non-loopback address (`tls::is_loopback_host`),
+    /// since that's the LAN/remote scenario PQC-hybrid TLS protects.
+    /// `#[serde(default)]` (false) so settings.json files saved before
+    /// this field existed still deserialize.
+    #[serde(default)]
+    enable_tls: bool,
+    /// When true and the cluster has other nodes advertising
+    /// `contribute_compute`, the native engine launches with `--rpc`/`-ts`
+    /// so llama.cpp's own RPC backend splits the model across them — real
+    /// cross-process model-parallel inference (see `rpc_cluster`), not this
+    /// crate's synthetic pipeline-benchmark transport. Off by default: a
+    /// single-node deployment sees zero behavior change.
+    #[serde(default)]
+    distributed_inference: bool,
+    /// When true, this node runs `ggml-rpc-server` (see `rpc_cluster`),
+    /// exposing its own GPU/CPU as a device other cluster members can use
+    /// via `distributed_inference`. SECURITY: that server has no built-in
+    /// authentication (an upstream llama.cpp limitation) — only enable this
+    /// on a network you trust. Off by default.
+    #[serde(default)]
+    contribute_compute: bool,
+    /// Port `ggml-rpc-server` binds to when `contribute_compute` is on, and
+    /// the port advertised to peers (UDP/mDNS discovery) so they can reach
+    /// it. `#[serde(default = "...")]` so it survives a settings.json saved
+    /// before this field existed.
+    #[serde(default = "default_rpc_port")]
+    rpc_port: u16,
+}
+
+fn default_rpc_port() -> u16 {
+    50052
+}
+
+// Kept as named constants (rather than inlined in both `RuntimeSettings::default()`
+// and `default_conversation_token_limit()`) so the two defaults can't drift out
+// of sync — see the derivation below.
+const DEFAULT_CTX_SIZE: usize = 4096;
+const DEFAULT_MAX_TOKENS: usize = 2048;
+const DEFAULT_PARALLEL_SLOTS: usize = 1;
+
+fn default_parallel_slots() -> usize {
+    DEFAULT_PARALLEL_SLOTS
+}
+/// Slack reserved on top of `max_tokens` for role/formatting overhead —
+/// mirrors the per-message `+ 4` in `build_conversation_prompt`, just applied
+/// once at the whole-budget level here.
+const CONVERSATION_TOKEN_MARGIN: usize = 128;
+
+/// Derived from the *default* `ctx_size`/`max_tokens`, not a flat guess — a
+/// flat number here previously left the stock settings.json tripping the
+/// Settings tab's own "history + max_tokens > ctx_size" warning out of the
+/// box. Still just the *default*: `handle_gui_chat` separately clamps
+/// whatever value ends up in `conversation_token_limit` (default or
+/// user-edited) to `ctx_size` before using it, so a manually misconfigured
+/// value can't overflow the context window either.
+fn default_conversation_token_limit() -> usize {
+    DEFAULT_CTX_SIZE
+        .saturating_sub(DEFAULT_MAX_TOKENS)
+        .saturating_sub(CONVERSATION_TOKEN_MARGIN)
 }
 
 impl Default for RuntimeSettings {
@@ -1537,7 +1728,8 @@ impl Default for RuntimeSettings {
             api_port: 8003,
             gui_port: 5173,
             threads: 4,
-            ctx_size: 4096,
+            ctx_size: DEFAULT_CTX_SIZE,
+            parallel_slots: DEFAULT_PARALLEL_SLOTS,
             temperature: 0.7,
             top_p: 0.9,
             top_k: 40,
@@ -1551,6 +1743,11 @@ impl Default for RuntimeSettings {
             discovery_auth_token: String::new(),
             tcp_auth_token: String::new(),
             xdp_interface: "eth0".to_string(),
+            conversation_token_limit: default_conversation_token_limit(),
+            enable_tls: false,
+            distributed_inference: false,
+            contribute_compute: false,
+            rpc_port: default_rpc_port(),
         }
     }
 }
@@ -2732,6 +2929,30 @@ fn save_persistent_models(models: &[ModelRecord]) {
     }
 }
 
+fn sessions_path() -> PathBuf {
+    std::env::var("GHOSTLINK_SESSIONS_PATH")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("sessions.json"))
+}
+
+fn load_persistent_sessions() -> Vec<SessionRecord> {
+    let path = sessions_path();
+    if path.exists() {
+        if let Ok(data) = fs::read_to_string(path) {
+            if let Ok(sessions) = serde_json::from_str::<Vec<SessionRecord>>(&data) {
+                return sessions;
+            }
+        }
+    }
+    vec![]
+}
+
+fn save_persistent_sessions(sessions: &[SessionRecord]) {
+    if let Ok(data) = serde_json::to_string_pretty(sessions) {
+        let _ = fs::write(sessions_path(), data);
+    }
+}
+
 fn load_settings() -> RuntimeSettings {
     let path = settings_path();
     let mut settings = if path.exists() {
@@ -2776,6 +2997,15 @@ fn load_settings() -> RuntimeSettings {
         && !settings.vllm_api_key.trim().is_empty()
     {
         std::env::set_var("GHOSTLINK_VLLM_API_KEY", settings.vllm_api_key.trim());
+    }
+    if std::env::var("GHOSTLINK_PARALLEL_SLOTS")
+        .map(|v| v.trim().is_empty())
+        .unwrap_or(true)
+    {
+        std::env::set_var(
+            "GHOSTLINK_PARALLEL_SLOTS",
+            settings.parallel_slots.to_string(),
+        );
     }
 
     if let Ok(val) = std::env::var("GHOSTLINK_INFERENCE_BACKEND") {
@@ -2894,6 +3124,10 @@ struct ModelDeleteRequest {
     model: String,
 }
 #[derive(Debug, Deserialize)]
+struct DiscardPartialRequest {
+    filename: String,
+}
+#[derive(Debug, Deserialize)]
 struct OllamaModelRequest {
     model: String,
 }
@@ -2958,14 +3192,23 @@ struct WorkerRecord {
     threads: usize,
     load: u8,
 }
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 struct SessionRecord {
     id: String,
+    #[serde(default)]
+    name: String,
     model: String,
     status: String,
     throughput: usize,
     latency: u32,
     tokens: usize,
+    // Only returned by the single-session load endpoint — the list endpoint
+    // (`/api/sessions`, shared with SessionsTab's active-session view)
+    // builds its own trimmed JSON rather than serializing this field, so
+    // listing saved chats doesn't ship every message body over the wire
+    // just to render a summary card.
+    #[serde(default)]
+    messages: Vec<serde_json::Value>,
 }
 #[derive(Debug, Serialize)]
 struct ChatCompletionResponse {
@@ -2980,6 +3223,65 @@ struct Choice {
     index: usize,
     message: serde_json::Value,
     finish_reason: String,
+}
+
+/// OpenAI's legacy (non-chat) completions request: a plain `prompt` string
+/// rather than a `messages` array. `handle_completions` mirrors
+/// `handle_chat_completions` almost exactly, just skipping the
+/// last-message extraction step since there's nothing to extract from.
+#[derive(Debug, Deserialize)]
+struct CompletionRequest {
+    model: String,
+    prompt: String,
+    #[allow(dead_code)]
+    stream: Option<bool>,
+    temperature: Option<f32>,
+    top_p: Option<f32>,
+    top_k: Option<usize>,
+    penalty: Option<f32>,
+    max_tokens: Option<usize>,
+}
+#[derive(Debug, Serialize)]
+struct CompletionResponse {
+    id: String,
+    object: String,
+    created: u64,
+    model: String,
+    choices: Vec<CompletionChoice>,
+}
+#[derive(Debug, Serialize)]
+struct CompletionChoice {
+    text: String,
+    index: usize,
+    finish_reason: String,
+}
+
+/// `/v1/embeddings`'s `input` field is `Value` rather than
+/// `String`/`Vec<String>` because the real API accepts either a single
+/// string or an array of strings — `handle_embeddings` normalizes both
+/// into the same code path rather than needing two request types.
+#[derive(Debug, Deserialize)]
+struct EmbeddingsRequest {
+    model: String,
+    input: serde_json::Value,
+}
+#[derive(Debug, Serialize)]
+struct EmbeddingsResponse {
+    object: String,
+    data: Vec<EmbeddingData>,
+    model: String,
+    usage: EmbeddingsUsage,
+}
+#[derive(Debug, Serialize)]
+struct EmbeddingData {
+    object: String,
+    embedding: Vec<f32>,
+    index: usize,
+}
+#[derive(Debug, Serialize)]
+struct EmbeddingsUsage {
+    prompt_tokens: usize,
+    total_tokens: usize,
 }
 #[derive(Debug, Serialize, Deserialize)]
 struct ToolResult {
@@ -3067,9 +3369,182 @@ struct PendingToolCallInfo {
     args: serde_json::Value,
 }
 
+/// Rough size/quality rank for common GGUF quantization tags — higher
+/// means bigger file / higher fidelity. Used to pick a quantization that
+/// actually fits the local machine instead of an arbitrary file from the
+/// repo. Matched by substring against the uppercased filename; ties are
+/// broken by preferring the longest matching tag (so "Q3_K_M" doesn't
+/// get miscategorized by a shorter unrelated prefix).
+fn quant_rank(name_upper: &str) -> Option<i32> {
+    const TIERS: &[(&str, i32)] = &[
+        ("IQ1", 0),
+        ("IQ2_XXS", 1),
+        ("IQ2_XS", 2),
+        ("IQ2_S", 3),
+        ("IQ2_M", 3),
+        ("Q2_K", 3),
+        ("IQ3_XXS", 4),
+        ("IQ3_XS", 5),
+        ("Q3_K_S", 5),
+        ("IQ3_S", 5),
+        ("IQ3_M", 6),
+        ("Q3_K_M", 6),
+        ("Q3_K_L", 7),
+        ("IQ4_XS", 7),
+        ("IQ4_NL", 8),
+        ("Q4_0", 8),
+        ("Q4_1", 8),
+        ("Q4_K_S", 8),
+        ("Q4_K_M", 9),
+        ("Q5_0", 10),
+        ("Q5_1", 10),
+        ("Q5_K_S", 10),
+        ("Q5_K_M", 11),
+        ("Q6_K", 12),
+        ("Q8_0", 13),
+        ("F16", 14),
+        ("BF16", 14),
+        ("F32", 15),
+    ];
+    TIERS
+        .iter()
+        .filter(|(tag, _)| name_upper.contains(tag))
+        .max_by_key(|(tag, _)| tag.len())
+        .map(|(_, rank)| *rank)
+}
+
+/// Target quantization rank (see `quant_rank`) for a given amount of
+/// VRAM — aims for a comfortable sweet spot rather than the smallest or
+/// largest option technically available. Below 4GB in particular, most
+/// 7B+ full-precision or Q6/Q8 files won't fit at all, so favor a much
+/// smaller quantization there rather than picking whatever the repo
+/// happens to list first (previously: always `gguf_files[0]`, with no
+/// regard for size at all).
+fn target_quant_rank_for_vram(vram_gb: f32) -> i32 {
+    if vram_gb >= 16.0 {
+        12 // Q6_K
+    } else if vram_gb >= 12.0 {
+        11 // Q5_K_M
+    } else if vram_gb >= 8.0 || vram_gb >= 4.0 {
+        9 // Q4_K_M — the common "fits almost anywhere with partial offload" sweet spot
+    } else {
+        6 // Q3_K_M / IQ3_M for genuinely constrained VRAM
+    }
+}
+
+/// HuggingFace GGUF repos commonly split a single quantization across
+/// multiple files named `<name>-00001-of-00005.gguf`. Groups filenames
+/// that belong to the same split set together (by filename with the
+/// shard suffix stripped) so all shards of a chosen quantization get
+/// downloaded — previously only `gguf_files[0]` was ever fetched, which
+/// for a split model meant downloading one shard of a multi-file model
+/// and silently leaving it unloadable (llama.cpp requires every shard
+/// alongside the first). Each returned group is sorted by shard index.
+fn group_gguf_shards(files: &[String]) -> Vec<Vec<String>> {
+    use std::collections::BTreeMap;
+
+    let shard_re = |name: &str| -> Option<(String, u32)> {
+        // Matches "...-00001-of-00005.gguf" (case-insensitive "of").
+        let lower = name.to_ascii_lowercase();
+        let gguf_pos = lower.rfind(".gguf")?;
+        let stem = &name[..gguf_pos];
+        let of_pos = stem.to_ascii_lowercase().rfind("-of-")?;
+        let (before_of, after_of) = stem.split_at(of_pos);
+        let _total: u32 = after_of[4..].parse().ok()?;
+        let dash_pos = before_of.rfind('-')?;
+        let shard_idx: u32 = before_of[dash_pos + 1..].parse().ok()?;
+        let base = before_of[..dash_pos].to_string();
+        Some((base, shard_idx))
+    };
+
+    let mut groups: BTreeMap<String, Vec<(u32, String)>> = BTreeMap::new();
+    for file in files {
+        match shard_re(file) {
+            Some((base, idx)) => groups.entry(base).or_default().push((idx, file.clone())),
+            None => groups
+                .entry(file.clone())
+                .or_default()
+                .push((0, file.clone())),
+        }
+    }
+
+    groups
+        .into_values()
+        .map(|mut shards| {
+            shards.sort_by_key(|(idx, _)| *idx);
+            shards.into_iter().map(|(_, name)| name).collect()
+        })
+        .collect()
+}
+
+/// Picks the shard-group whose quantization rank is closest to the
+/// target for the detected VRAM, preferring a rank at or below the
+/// target (safe) over one above it (might not fit) when both are
+/// equally close. Falls back to the smallest available quantization if
+/// none can be ranked (unusual filenames) rather than failing outright.
+fn select_best_gguf_group(groups: &[Vec<String>], vram_gb: f32) -> Option<Vec<String>> {
+    let target = target_quant_rank_for_vram(vram_gb);
+    groups
+        .iter()
+        .filter(|g| !g.is_empty())
+        .min_by_key(|g| {
+            let upper = g[0].to_ascii_uppercase();
+            match quant_rank(&upper) {
+                Some(rank) => {
+                    let diff = (rank - target).abs();
+                    // Prefer <= target over > target on a tie in absolute distance.
+                    (diff, if rank > target { 1 } else { 0 }, rank)
+                }
+                None => (i32::MAX, 1, i32::MAX),
+            }
+        })
+        .cloned()
+        .or_else(|| groups.first().cloned())
+}
+
+/// Best-effort *unique* node id for cluster discovery/registration.
+///
+/// Previously this was the literal string `"studio-api"` for every single
+/// API-server instance, on every machine — harmless for a single node, but
+/// it means any two real Ghostlink installs collide on the same
+/// `ClusterState` key (a `HashMap<String, NodeResources>`), so the second
+/// one to register silently overwrites the first's entry instead of the
+/// cluster ever containing both. `discover_rpc_peers`'s "exclude the local
+/// node id" filter would then exclude *every* peer too, since they'd all
+/// share that id — quietly breaking distributed inference (and clustering
+/// in general) across real hardware, not just in a same-machine test.
+/// Falls back to the old literal only if no hostname signal exists at all.
+fn detect_node_id() -> String {
+    if let Ok(id) = std::env::var("GHOSTLINK_NODE_ID") {
+        let id = id.trim().to_string();
+        if !id.is_empty() {
+            return id;
+        }
+    }
+    for var in ["COMPUTERNAME", "HOSTNAME"] {
+        if let Ok(name) = std::env::var(var) {
+            let name = name.trim().to_string();
+            if !name.is_empty() {
+                return name;
+            }
+        }
+    }
+    if let Ok(output) = std::process::Command::new("hostname").output() {
+        if output.status.success() {
+            let name = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !name.is_empty() {
+                return name;
+            }
+        }
+    }
+    "studio-api".to_string()
+}
+
 fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
     use axum::{
-        extract::{Path, Query, State},
+        extract::{ConnectInfo, Path, Query, Request, State},
+        http::StatusCode,
+        middleware::{self, Next},
         response::{
             sse::{Event, Sse},
             IntoResponse,
@@ -3089,6 +3564,58 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         state.lock().unwrap_or_else(|poison| poison.into_inner())
     }
 
+    /// Guards every route except `/health` behind a real bearer token
+    /// (the persisted API key itself, or a JWT issued from it — see
+    /// `auth.rs`). Replaces having no auth check anywhere on this server.
+    async fn auth_middleware(
+        State(state): State<Arc<Mutex<BackendState>>>,
+        ConnectInfo(addr): ConnectInfo<SocketAddr>,
+        req: Request,
+        next: Next,
+    ) -> axum::response::Response {
+        if req.uri().path() == "/health" {
+            return next.run(req).await;
+        }
+
+        let header = req
+            .headers()
+            .get(axum::http::header::AUTHORIZATION)
+            .and_then(|v| v.to_str().ok());
+        let token = auth::extract_bearer_token(header);
+
+        match token {
+            Some(t) if auth::verify_bearer_token(t) => next.run(req).await,
+            _ => {
+                record_audit_event(
+                    &mut lock_state(&state),
+                    "auth",
+                    "FAILED",
+                    addr.ip().to_string(),
+                    Some(format!("{} {}", req.method(), req.uri().path())),
+                );
+                (
+                    StatusCode::UNAUTHORIZED,
+                    Json(serde_json::json!({
+                        "error": {
+                            "message": "missing or invalid Authorization: Bearer <token> — see the API key printed at server startup, or POST /api/security/jwt/refresh with it to get a short-lived token",
+                            "type": "unauthorized"
+                        }
+                    })),
+                )
+                    .into_response()
+            }
+        }
+    }
+
+    /// Waits for Ctrl+C, then force-tears-down every connected MCP server before
+    /// `axum::serve`'s graceful shutdown lets the process exit. Without this, a
+    /// `cmd /C npx ...`-spawned server's child processes (see mcp::client) would
+    /// otherwise be orphaned when Ghostlink exits.
+    async fn mcp_shutdown_on_ctrl_c(mcp_registry: Arc<mcp::McpRegistry>) {
+        let _ = tokio::signal::ctrl_c().await;
+        mcp_registry.shutdown_all().await;
+    }
+
     fn chat_exec_micro_batch() -> usize {
         env_default_usize(
             "GHOSTLINK_CHAT_MICRO_BATCH",
@@ -3101,10 +3628,71 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         env_default_usize("GHOSTLINK_CHAT_EXEC_TOKENS", default_tokens).clamp(16, 4096)
     }
 
+    /// Upper bound on prompt size accepted by the OpenAI-compatible REST
+    /// endpoints. Generous enough for any realistic context window while
+    /// keeping a single request from forwarding an unbounded payload into
+    /// the wrapped inference backend.
+    const MAX_PROMPT_CHARS: usize = 200_000;
+
+    /// Rejects prompts that are empty/whitespace-only, over the size cap, or
+    /// contain non-whitespace control characters (e.g. embedded ANSI escape
+    /// sequences or NUL bytes) that have no legitimate role in a chat prompt
+    /// and could otherwise reach logs or a terminal-based backend unescaped.
+    fn validate_prompt_text(prompt: &str) -> Result<(), String> {
+        if prompt.trim().is_empty() {
+            return Err("prompt (or messages[].content) must not be empty".to_string());
+        }
+        if prompt.len() > MAX_PROMPT_CHARS {
+            return Err(format!(
+                "prompt exceeds the {MAX_PROMPT_CHARS}-character limit"
+            ));
+        }
+        if let Some(bad) = prompt
+            .chars()
+            .find(|c| c.is_control() && !matches!(c, '\n' | '\r' | '\t'))
+        {
+            return Err(format!(
+                "prompt contains disallowed control character U+{:04X}",
+                bad as u32
+            ));
+        }
+        Ok(())
+    }
+
+    /// Clamps free-form generation parameters to sane ranges — mirrors the
+    /// pre-existing `max_tokens` clamp so a client sending e.g. `top_p: 500`
+    /// or a negative `temperature` can't hang or crash the wrapped backend.
+    fn sanitize_generation_params(
+        temp: f32,
+        top_p: f32,
+        top_k: usize,
+        penalty: f32,
+    ) -> (f32, f32, usize, f32) {
+        (
+            temp.clamp(0.0, 2.0),
+            top_p.clamp(0.0, 1.0),
+            top_k.clamp(1, 500),
+            penalty.clamp(0.0, 2.0),
+        )
+    }
+
+    fn bad_request_json(message: String) -> (StatusCode, Json<serde_json::Value>) {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": { "message": message, "type": "invalid_request_error" }
+            })),
+        )
+    }
+
     async fn handle_chat_completions(
         State(state): State<Arc<Mutex<BackendState>>>,
         Json(req): Json<ChatCompletionRequest>,
-    ) -> Json<ChatCompletionResponse> {
+    ) -> Result<Json<ChatCompletionResponse>, (StatusCode, Json<serde_json::Value>)> {
+        if req.messages.is_empty() {
+            return Err(bad_request_json("messages must not be empty".to_string()));
+        }
+
         let prompt = req
             .messages
             .iter()
@@ -3116,13 +3704,21 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             })
             .unwrap_or_default();
 
+        validate_prompt_text(&prompt).map_err(bad_request_json)?;
+
         let request_tracker = active_runtime_switcher().request_tracker().clone();
         request_tracker.increment().await;
+        // Bounds real concurrent llama-server calls to `parallel_slots`
+        // instead of firing every admitted request at it unbounded; dropped
+        // automatically when this function returns.
+        let _slot_permit = request_tracker.acquire_slot().await;
 
-        let temp = req.temperature.unwrap_or(0.7);
-        let top_p = req.top_p.unwrap_or(0.9);
-        let top_k = req.top_k.unwrap_or(40);
-        let penalty = req.penalty.unwrap_or(1.1);
+        let (temp, top_p, top_k, penalty) = sanitize_generation_params(
+            req.temperature.unwrap_or(0.7),
+            req.top_p.unwrap_or(0.9),
+            req.top_k.unwrap_or(40),
+            req.penalty.unwrap_or(1.1),
+        );
         let max_tokens = req.max_tokens.unwrap_or(1024).clamp(16, 4096);
 
         let (
@@ -3134,6 +3730,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             ollama_client,
             vllm_client,
             settings,
+            plugin_registry,
         ) = {
             let mut backend = lock_state(&state);
             backend.chat_requests = backend.chat_requests.saturating_add(1);
@@ -3151,8 +3748,78 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                 backend.ollama_client.clone(),
                 backend.vllm_client.clone(),
                 backend.settings.clone(),
+                backend.plugin_registry.clone(),
             )
         };
+
+        let gen_started = Instant::now();
+
+        // Custom backend dispatch — checked before the built-in Native/Ollama
+        // match below (left completely unmodified) so registering a plugin
+        // never changes behavior for the two built-in backends. See
+        // `backend_plugin` module docs.
+        if let Some(plugin) = plugin_registry.get(&settings.inference_backend) {
+            let plugin_name = plugin.name().to_string();
+            let result = plugin
+                .generate(backend_plugin::PluginGenerationRequest {
+                    model: model.clone(),
+                    prompt: prompt.clone(),
+                    temperature: temp,
+                    top_p,
+                    top_k,
+                    penalty,
+                    max_tokens,
+                })
+                .await;
+            let gen_latency_ms = gen_started.elapsed().as_secs_f32() * 1000.0;
+
+            let (response_text, tokens_out, real_inference) = match result {
+                Ok(r) => (r.text, r.tokens, true),
+                Err(err) => (
+                    format!("Custom backend '{plugin_name}' error: {err}"),
+                    0,
+                    false,
+                ),
+            };
+            let tokens_per_sec = (gen_latency_ms > 0.0 && tokens_out > 0)
+                .then(|| tokens_out as f32 / (gen_latency_ms / 1000.0));
+
+            {
+                let mut backend = lock_state(&state);
+                backend.last_latency_ms = gen_latency_ms;
+                if let Some(tps) = tokens_per_sec {
+                    backend.last_tokens_per_sec = tps;
+                }
+                backend.inference_metrics.record(
+                    gen_latency_ms,
+                    tokens_out,
+                    tokens_per_sec,
+                    real_inference,
+                );
+            }
+
+            request_tracker.decrement().await;
+
+            return Ok(Json(ChatCompletionResponse {
+                id: format!("chatcmpl-{}", rand::random::<u32>()),
+                object: "chat.completion".to_string(),
+                created: SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs(),
+                model: model.clone(),
+                choices: vec![Choice {
+                    index: 0,
+                    message: serde_json::json!({
+                        "role": "assistant",
+                        "content": response_text,
+                        "backend": plugin_name,
+                        "real_inference": real_inference
+                    }),
+                    finish_reason: "stop".to_string(),
+                }],
+            }));
+        }
 
         let nodes = cluster.nodes();
         let total_vram = cluster.total_vram_gb();
@@ -3326,7 +3993,349 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         });
 
         request_tracker.decrement().await;
-        response
+        Ok(response)
+    }
+
+    /// OpenAI's legacy `/v1/completions` endpoint: same backend dispatch as
+    /// `handle_chat_completions`, just reading a plain `prompt` string
+    /// instead of extracting one from a `messages` array. No session
+    /// context here (this is the stateless REST surface, not the GUI's
+    /// conversation), so no slot/cache-prompt reuse — matches
+    /// `handle_chat_completions`'s existing behavior.
+    async fn handle_completions(
+        State(state): State<Arc<Mutex<BackendState>>>,
+        Json(req): Json<CompletionRequest>,
+    ) -> Result<Json<CompletionResponse>, (StatusCode, Json<serde_json::Value>)> {
+        validate_prompt_text(&req.prompt).map_err(bad_request_json)?;
+        let prompt = req.prompt;
+
+        let request_tracker = active_runtime_switcher().request_tracker().clone();
+        request_tracker.increment().await;
+
+        let (temp, top_p, top_k, penalty) = sanitize_generation_params(
+            req.temperature.unwrap_or(0.7),
+            req.top_p.unwrap_or(0.9),
+            req.top_k.unwrap_or(40),
+            req.penalty.unwrap_or(1.1),
+        );
+        let max_tokens = req.max_tokens.unwrap_or(1024).clamp(16, 4096);
+
+        let (
+            model,
+            cluster,
+            inference_backend,
+            native_engine_client,
+            ollama_client,
+            vllm_client,
+            settings,
+            plugin_registry,
+        ) = {
+            let mut backend = lock_state(&state);
+            backend.chat_requests = backend.chat_requests.saturating_add(1);
+            let model = if req.model.trim().is_empty() {
+                backend.current_model.clone()
+            } else {
+                req.model.clone()
+            };
+            (
+                model,
+                Arc::clone(&backend.cluster),
+                backend.inference_backend,
+                backend.native_engine_client.clone(),
+                backend.ollama_client.clone(),
+                backend.vllm_client.clone(),
+                backend.settings.clone(),
+                backend.plugin_registry.clone(),
+            )
+        };
+
+        let gen_started = Instant::now();
+
+        // Custom backend dispatch — checked before the built-in Native/Ollama
+        // match below (left completely unmodified). See `backend_plugin`
+        // module docs and `handle_chat_completions`'s matching check.
+        if let Some(plugin) = plugin_registry.get(&settings.inference_backend) {
+            let plugin_name = plugin.name().to_string();
+            let result = plugin
+                .generate(backend_plugin::PluginGenerationRequest {
+                    model: model.clone(),
+                    prompt: prompt.clone(),
+                    temperature: temp,
+                    top_p,
+                    top_k,
+                    penalty,
+                    max_tokens,
+                })
+                .await;
+            let gen_latency_ms = gen_started.elapsed().as_secs_f32() * 1000.0;
+
+            let (response_text, tokens_out, real_inference) = match result {
+                Ok(r) => (r.text, r.tokens, true),
+                Err(err) => (
+                    format!("Custom backend '{plugin_name}' error: {err}"),
+                    0,
+                    false,
+                ),
+            };
+            let tokens_per_sec = (gen_latency_ms > 0.0 && tokens_out > 0)
+                .then(|| tokens_out as f32 / (gen_latency_ms / 1000.0));
+
+            {
+                let mut backend = lock_state(&state);
+                backend.last_latency_ms = gen_latency_ms;
+                if let Some(tps) = tokens_per_sec {
+                    backend.last_tokens_per_sec = tps;
+                }
+                backend.inference_metrics.record(
+                    gen_latency_ms,
+                    tokens_out,
+                    tokens_per_sec,
+                    real_inference,
+                );
+            }
+
+            request_tracker.decrement().await;
+
+            return Ok(Json(CompletionResponse {
+                id: format!("cmpl-{}", rand::random::<u32>()),
+                object: "text_completion".to_string(),
+                created: SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs(),
+                model,
+                choices: vec![CompletionChoice {
+                    text: response_text,
+                    index: 0,
+                    finish_reason: "stop".to_string(),
+                }],
+            }));
+        }
+
+        let nodes = cluster.nodes();
+        let total_vram = cluster.total_vram_gb();
+        let layer_count = (total_vram * 2.0).clamp(8.0, 60.0) as usize;
+        let layers: Vec<LayerSpec> = (0..layer_count)
+            .map(|index| LayerSpec {
+                index,
+                vram_gb: (total_vram / (layer_count as f32 + 1.0)).min(0.4),
+                num_weights: 500_000_000 / 60,
+            })
+            .collect();
+
+        let profile = detect_runtime_profile("studio-api");
+        let exec_tokens = chat_exec_token_budget(32);
+        let exec_micro_batch = chat_exec_micro_batch();
+        let mut execution_info = String::new();
+        let result = match assign_layers_with_runtime_profile(&nodes, &layers, &profile) {
+            Ok(assignments) => {
+                let device_map = build_device_map_from_cluster(&profile, &cluster);
+                let pipeline_plan = PipelinePlan::from_assignments(&assignments, &device_map);
+                let pipeline_plan_clone = pipeline_plan.clone();
+
+                let exec_result = if nodes.len() > 1 {
+                    ghostlink_core::runtime::execute_pipeline_distributed(
+                        &pipeline_plan,
+                        exec_tokens,
+                        exec_micro_batch,
+                        tcp_transport_config_from_env(),
+                        &cluster,
+                        None,
+                        None,
+                    )
+                    .ok()
+                } else {
+                    execute_pipeline_tcp_loopback(&pipeline_plan, exec_tokens, exec_micro_batch)
+                        .ok()
+                };
+
+                if let Some(ref exec) = exec_result {
+                    let mut backend = lock_state(&state);
+                    backend.last_latency_ms = exec.avg_token_latency_ms;
+                    let tokens_per_sec = exec.throughput_tokens_per_sec;
+                    backend.last_tokens_per_sec = tokens_per_sec;
+                    backend.inference_metrics.record(
+                        exec.avg_token_latency_ms,
+                        exec.token_count.min(u32::MAX as usize) as u32,
+                        Some(tokens_per_sec),
+                        true,
+                    );
+                    for stage in &exec.stage_stats {
+                        if let Some(stage_p) = pipeline_plan_clone.stages.get(stage.stage_idx) {
+                            backend.cluster.get_metrics_mut(&stage_p.node_id, |m| {
+                                m.record_latency(stage.avg_compute_ms * 1000.0);
+                                m.record_throughput(tokens_per_sec / 1000.0);
+                            });
+                        }
+                    }
+                }
+                exec_result
+            }
+            Err(_) => None,
+        };
+
+        if let Some(exec) = result {
+            execution_info = format!(
+                " (Throughput: {:.2} tok/s, Latency: {:.2} ms)",
+                exec.throughput_tokens_per_sec, exec.avg_token_latency_ms
+            );
+        }
+
+        let response_text = match inference_backend {
+            InferenceEngine::Ollama => ollama_client
+                .generate(&model, &prompt, temp, top_p, top_k, penalty, max_tokens)
+                .await
+                .unwrap_or_else(|err| {
+                    format!("Ollama generation failed for model '{}': {}", model, err)
+                }),
+            InferenceEngine::Native => native_engine_client
+                .generate(
+                    &model,
+                    &prompt,
+                    exec_tokens,
+                    0.7,
+                    0.9,
+                    40,
+                    1.1,
+                    &settings.native_engine,
+                    // Stateless endpoint, no session to pin a slot to —
+                    // matches handle_chat_completions' same behavior.
+                    None,
+                    false,
+                    None,
+                )
+                .await
+                .map(|gen| gen.text)
+                .unwrap_or_else(|err| {
+                    format!(
+                        "Ghostlink native fabric backend error on model '{}'.{} Error: {}",
+                        model, execution_info, err
+                    )
+                }),
+            InferenceEngine::Vllm => vllm_client
+                .generate(&model, &prompt, temp, top_p, top_k, penalty, max_tokens)
+                .await
+                .unwrap_or_else(|err| {
+                    format!("vLLM generation failed for model '{}': {}", model, err)
+                }),
+        };
+
+        let response = Json(CompletionResponse {
+            id: format!("cmpl-{}", rand::random::<u32>()),
+            object: "text_completion".to_string(),
+            created: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs(),
+            model,
+            choices: vec![CompletionChoice {
+                text: response_text,
+                index: 0,
+                finish_reason: "stop".to_string(),
+            }],
+        });
+
+        request_tracker.decrement().await;
+        Ok(response)
+    }
+
+    /// Cheap chars/4 heuristic — no tokenizer wired in, but good enough to
+    /// report a `prompt_tokens`/`total_tokens` usage estimate on
+    /// `/v1/embeddings` responses without pulling in a model-specific vocab.
+    fn estimate_tokens(text: &str) -> usize {
+        (text.chars().count() / 4).max(if text.trim().is_empty() { 0 } else { 1 })
+    }
+
+    /// `/v1/embeddings`'s `input` field accepts either a single string or an
+    /// array of strings per the OpenAI spec — normalizes both into one list so
+    /// the handler has a single code path. Non-string array entries are
+    /// dropped rather than erroring the whole batch; an all-invalid or empty
+    /// input yields an empty `Vec`, which the caller turns into a 400.
+    fn normalize_embeddings_input(input: &serde_json::Value) -> Vec<String> {
+        match input {
+            serde_json::Value::String(s) => vec![s.clone()],
+            serde_json::Value::Array(items) => items
+                .iter()
+                .filter_map(|v| v.as_str().map(str::to_owned))
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// OpenAI's `/v1/embeddings` endpoint, backed by
+    /// `OllamaClient::embeddings()` (already used internally by
+    /// `/api/ollama/embeddings`). The native engine has no embedding
+    /// support today — that would need a second llama-server instance
+    /// launched with `--embedding`, out of scope here — so a native-backend
+    /// request gets a real 501 explaining that, rather than a silent
+    /// failure or a faked response.
+    async fn handle_embeddings(
+        State(state): State<Arc<Mutex<BackendState>>>,
+        Json(req): Json<EmbeddingsRequest>,
+    ) -> axum::response::Response {
+        let inputs = normalize_embeddings_input(&req.input);
+        if inputs.is_empty() {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "error": { "message": "input must be a non-empty string or array of strings", "type": "invalid_request_error" }
+                })),
+            )
+                .into_response();
+        }
+
+        let (inference_backend, ollama_client) = {
+            let backend = lock_state(&state);
+            (backend.inference_backend, backend.ollama_client.clone())
+        };
+
+        if inference_backend != InferenceEngine::Ollama {
+            return (
+                StatusCode::NOT_IMPLEMENTED,
+                Json(serde_json::json!({
+                    "error": {
+                        "message": "embeddings are only available with the Ollama backend today — the native llama-server engine has no embedding support wired in",
+                        "type": "not_implemented"
+                    }
+                })),
+            )
+                .into_response();
+        }
+
+        let mut data = Vec::with_capacity(inputs.len());
+        let mut prompt_tokens = 0usize;
+        for (index, text) in inputs.iter().enumerate() {
+            match ollama_client.embeddings(&req.model, text).await {
+                Ok(embedding) => {
+                    prompt_tokens += estimate_tokens(text);
+                    data.push(EmbeddingData {
+                        object: "embedding".to_string(),
+                        embedding,
+                        index,
+                    });
+                }
+                Err(err) => {
+                    return (
+                        StatusCode::BAD_GATEWAY,
+                        Json(serde_json::json!({
+                            "error": { "message": format!("embedding generation failed: {err}"), "type": "upstream_error" }
+                        })),
+                    )
+                        .into_response();
+                }
+            }
+        }
+
+        Json(EmbeddingsResponse {
+            object: "list".to_string(),
+            data,
+            model: req.model,
+            usage: EmbeddingsUsage {
+                prompt_tokens,
+                total_tokens: prompt_tokens,
+            },
+        })
+        .into_response()
     }
 
     fn detect_quantization(filename: &str) -> String {
@@ -3377,6 +4386,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
     async fn download_hf_model(
         model_id: &str,
         models_dir: &std::path::Path,
+        mut on_progress: impl FnMut(u64, u64) + Send,
     ) -> Result<String, String> {
         let client = reqwest::Client::builder()
             .user_agent("ghostlink/1.0")
@@ -3415,46 +4425,138 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             return Err("No GGUF files found in this repository. Try a GGUF-quantized variant (e.g. lmstudio-community/Meta-Llama-3-8B-Instruct-GGUF).".to_string());
         }
 
-        let filename = &gguf_files[0];
-        let file_url = format!(
-            "https://huggingface.co/{}/resolve/main/{}",
-            model_id, filename
-        );
-        let dest_path = models_dir.join(filename);
+        // Pick a quantization that fits this machine's VRAM instead of
+        // blindly taking whatever file the repo listed first, and pull every
+        // shard of a split GGUF instead of just one.
+        let vram_gb = detect_runtime_profile("hf-download").node_resources.vram_gb;
+        let groups = group_gguf_shards(&gguf_files);
+        let chosen_files = select_best_gguf_group(&groups, vram_gb)
+            .ok_or_else(|| "No usable GGUF file found in this repository".to_string())?;
 
-        if dest_path.exists() {
-            return Ok(dest_path.to_string_lossy().to_string());
-        }
+        // `filename` comes straight from the remote HuggingFace API response
+        // (`rfilename`) and may contain nested-path separators or, in the
+        // worst case, an absolute path. `PathBuf::join` silently discards the
+        // base directory when given an absolute path, and any path
+        // separators could otherwise let a crafted repo write outside
+        // `models_dir`. Only the file's base name is ever meaningful here.
+        let files: Vec<(String, std::path::PathBuf)> = chosen_files
+            .iter()
+            .map(|filename| {
+                let safe_filename = std::path::Path::new(filename.as_str())
+                    .file_name()
+                    .map(|f| f.to_string_lossy().into_owned())
+                    .filter(|f| !f.is_empty())
+                    .unwrap_or_else(|| "download.gguf".to_string());
+                let dest_path = models_dir.join(&safe_filename);
+                (filename.clone(), dest_path)
+            })
+            .collect();
 
-        let resp = client
-            .get(&file_url)
-            .send()
-            .await
-            .map_err(|e| format!("Download error: {}", e))?;
-
-        if !resp.status().is_success() {
-            return Err(format!("Failed to download file (HTTP {})", resp.status()));
-        }
-
-        if let Some(parent) = dest_path.parent() {
-            fs::create_dir_all(parent).map_err(|e| format!("Dir error: {}", e))?;
-        }
-        let mut file = tokio::fs::File::create(&dest_path)
-            .await
-            .map_err(|e| format!("File error: {}", e))?;
-        let mut stream = resp;
-        while let Some(chunk) = stream
-            .chunk()
-            .await
-            .map_err(|e| format!("Stream error: {}", e))?
-        {
-            file.write_all(&chunk)
+        // Sizing pass: HEAD every shard up front so the progress callback can
+        // report a real fraction from the very first update instead of sitting
+        // at an unknowable 0/0 until the last shard finishes.
+        let mut expected_sizes: Vec<u64> = Vec::with_capacity(files.len());
+        let mut total_bytes: u64 = 0;
+        for (filename, _) in &files {
+            let file_url = format!(
+                "https://huggingface.co/{}/resolve/main/{}",
+                model_id, filename
+            );
+            let len = client
+                .head(&file_url)
+                .send()
                 .await
-                .map_err(|e| format!("Write error: {}", e))?;
+                .ok()
+                .and_then(|r| r.content_length())
+                .unwrap_or(0);
+            expected_sizes.push(len);
+            total_bytes += len;
         }
-        file.flush().await.ok();
+        on_progress(0, total_bytes);
 
-        Ok(dest_path.to_string_lossy().to_string())
+        let mut downloaded_bytes: u64 = 0;
+        let mut first_dest_path: Option<std::path::PathBuf> = None;
+        let mut last_report = std::time::Instant::now();
+        for (idx, (filename, dest_path)) in files.iter().enumerate() {
+            let expected_len = expected_sizes[idx];
+            let existing_len = tokio::fs::metadata(dest_path)
+                .await
+                .map(|m| m.len())
+                .unwrap_or(0);
+            // A file only counts as already-downloaded if its size matches what
+            // HuggingFace reports. Previously any existing file — including one
+            // truncated by a dropped connection — was treated as complete and
+            // silently never retried.
+            let already_complete =
+                dest_path.exists() && (expected_len == 0 || existing_len == expected_len);
+
+            if !already_complete {
+                let file_url = format!(
+                    "https://huggingface.co/{}/resolve/main/{}",
+                    model_id, filename
+                );
+                let resp = client
+                    .get(&file_url)
+                    .send()
+                    .await
+                    .map_err(|e| format!("Download error: {}", e))?;
+
+                if !resp.status().is_success() {
+                    return Err(format!("Failed to download file (HTTP {})", resp.status()));
+                }
+
+                if let Some(parent) = dest_path.parent() {
+                    fs::create_dir_all(parent).map_err(|e| format!("Dir error: {}", e))?;
+                }
+                let mut file = tokio::fs::File::create(dest_path)
+                    .await
+                    .map_err(|e| format!("File error: {}", e))?;
+                let mut stream = resp;
+                let mut file_bytes: u64 = 0;
+                while let Some(chunk) = stream
+                    .chunk()
+                    .await
+                    .map_err(|e| format!("Stream error: {}", e))?
+                {
+                    file.write_all(&chunk)
+                        .await
+                        .map_err(|e| format!("Write error: {}", e))?;
+                    file_bytes += chunk.len() as u64;
+                    if last_report.elapsed() >= std::time::Duration::from_millis(200) {
+                        on_progress(downloaded_bytes + file_bytes, total_bytes);
+                        last_report = std::time::Instant::now();
+                    }
+                }
+                file.flush().await.ok();
+                drop(file);
+
+                // The connection can be dropped mid-transfer (client timeout,
+                // network blip) without `chunk()` ever returning an `Err` — the
+                // stream just ends early. Compare against the size HuggingFace
+                // actually advertised instead of trusting an early EOF.
+                if expected_len > 0 && file_bytes != expected_len {
+                    let _ = tokio::fs::remove_file(dest_path).await;
+                    return Err(format!(
+                        "Download incomplete for {}: got {} of {} bytes",
+                        filename, file_bytes, expected_len
+                    ));
+                }
+                downloaded_bytes += file_bytes;
+            } else {
+                downloaded_bytes += existing_len;
+            }
+
+            on_progress(downloaded_bytes, total_bytes);
+
+            if first_dest_path.is_none() {
+                first_dest_path = Some(dest_path.clone());
+            }
+        }
+
+        Ok(first_dest_path
+            .expect("chosen_files is non-empty")
+            .to_string_lossy()
+            .to_string())
     }
 
     async fn handle_models(
@@ -3673,8 +4775,41 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
 
         // Extract model info and settings under the lock, then drop it before
         // the potentially-long blocking load_model_into_slot call.
-        let (native_engine_client, local_path, native_engine, selected_model) = {
+        let (
+            native_engine_client,
+            local_path,
+            native_engine,
+            selected_model,
+            rpc_servers,
+            tensor_split,
+        ) = {
             let mut backend = lock_state(&state);
+
+            // Real cross-process model-parallel inference via llama.cpp's
+            // own RPC backend when enabled and the cluster has other nodes
+            // contributing compute — see `rpc_cluster` module docs. Empty
+            // when disabled or no qualifying peers, which reproduces
+            // single-node behavior exactly.
+            let (rpc_servers, tensor_split) = if backend.settings.distributed_inference {
+                let peers =
+                    rpc_cluster::discover_rpc_peers(&backend.cluster, &backend.local_node_id);
+                if peers.is_empty() {
+                    (None, None)
+                } else {
+                    let local_vram = backend
+                        .cluster
+                        .get_metrics(&backend.local_node_id)
+                        .map(|m| m.vram_gb)
+                        .unwrap_or(0.0);
+                    let split = rpc_cluster::compute_tensor_split(local_vram, &peers);
+                    (
+                        Some(rpc_cluster::rpc_flag_value(&peers)),
+                        Some(rpc_cluster::tensor_split_flag_value(&split)),
+                    )
+                }
+            } else {
+                (None, None)
+            };
 
             // Merge local scans so we can find local_path for locally-downloaded models
             let local = scan_local_models_dir(&backend.settings.models_dir);
@@ -3743,6 +4878,8 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                 local_path,
                 backend.settings.native_engine.clone(),
                 selected,
+                rpc_servers,
+                tensor_split,
             )
         }; // <-- state lock dropped here
 
@@ -3760,7 +4897,11 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             };
 
             let result = tokio::task::spawn_blocking(move || {
-                native_engine_client.load_model_into_slot(&path, None, None)
+                native_engine_client.load_model_into_slot(
+                    &path,
+                    rpc_servers.as_deref(),
+                    tensor_split.as_deref(),
+                )
             })
             .await
             .map_err(|e| format!("task join error: {}", e))
@@ -3774,7 +4915,11 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         } else if let Some(path) = local_path.clone() {
             if native_engine == "llama_server" || native_engine == "llama-server" {
                 let result = tokio::task::spawn_blocking(move || {
-                    native_engine_client.load_model_into_slot(&path, None, None)
+                    native_engine_client.load_model_into_slot(
+                        &path,
+                        rpc_servers.as_deref(),
+                        tensor_split.as_deref(),
+                    )
                 })
                 .await
                 .map_err(|e| format!("task join error: {}", e))
@@ -3822,11 +4967,21 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             let backend = lock_state(&state);
             backend.settings.models_dir.clone()
         };
-        let models_path = std::path::Path::new(&models_dir);
-        fs::create_dir_all(models_path).ok();
+        let models_path = std::path::PathBuf::from(&models_dir);
+        fs::create_dir_all(&models_path).ok();
 
         {
             let mut backend = lock_state(&state);
+            // A download already running for this model — don't start a second
+            // one racing it on the same destination file.
+            if let Some(existing) = backend.download_progress.get(&model_id) {
+                if existing.status == "downloading" {
+                    return Json(serde_json::json!({
+                        "status": "started",
+                        "message": format!("{} is already downloading", model_id),
+                    }));
+                }
+            }
             if !backend.models.iter().any(|m| m.name == model_id) {
                 backend.models.push(ModelRecord {
                     name: model_id.clone(),
@@ -3841,51 +4996,91 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                 m.status = "Downloading".to_string();
                 save_persistent_models(&backend.models);
             }
+            backend.download_progress.insert(
+                model_id.clone(),
+                DownloadProgressInfo {
+                    bytes_downloaded: 0,
+                    total_bytes: 0,
+                    status: "downloading".to_string(),
+                    error: None,
+                },
+            );
         }
 
-        let result = download_hf_model(&model_id, models_path).await;
+        // The actual transfer runs detached from this request/response cycle so
+        // a multi-GB model isn't bound by the frontend's HTTP client timeout —
+        // that used to abort (and silently truncate) any download that took
+        // longer than the client's timeout window. The GUI now polls
+        // /api/models/download/progress for real byte-level progress instead.
+        let spawn_state = Arc::clone(&state);
+        let spawn_model_id = model_id.clone();
+        tokio::spawn(async move {
+            let progress_state = Arc::clone(&spawn_state);
+            let progress_model_id = spawn_model_id.clone();
+            let result =
+                download_hf_model(&spawn_model_id, &models_path, move |downloaded, total| {
+                    let mut backend = lock_state(&progress_state);
+                    if let Some(p) = backend.download_progress.get_mut(&progress_model_id) {
+                        p.bytes_downloaded = downloaded;
+                        p.total_bytes = total;
+                    }
+                })
+                .await;
 
-        match result {
-            Ok(local_path) => {
-                let filename = std::path::Path::new(&local_path)
-                    .file_name()
-                    .unwrap()
-                    .to_string_lossy()
-                    .to_string();
-                let name = filename
-                    .strip_suffix(".gguf")
-                    .unwrap_or(&filename)
-                    .to_string();
-                let size_bytes = fs::metadata(&local_path).map(|m| m.len()).unwrap_or(0);
-                let size_gb = size_bytes as f32 / (1024.0 * 1024.0 * 1024.0);
+            match result {
+                Ok(local_path) => {
+                    let filename = std::path::Path::new(&local_path)
+                        .file_name()
+                        .map(|f| f.to_string_lossy().to_string())
+                        .unwrap_or_else(|| local_path.clone());
+                    let name = filename
+                        .strip_suffix(".gguf")
+                        .unwrap_or(&filename)
+                        .to_string();
+                    let size_bytes = fs::metadata(&local_path).map(|m| m.len()).unwrap_or(0);
+                    let size_gb = size_bytes as f32 / (1024.0 * 1024.0 * 1024.0);
 
-                let mut backend = lock_state(&state);
-                backend.models.retain(|m| m.name != model_id);
-                backend.models.push(ModelRecord {
-                    name,
-                    size_gb,
-                    model_type: "LLM".to_string(),
-                    quantization: detect_quantization(&filename),
-                    status: "Ready".to_string(),
-                    local_path,
-                });
-                save_persistent_models(&backend.models);
-
-                Json(serde_json::json!({
-                    "status": "ok",
-                    "message": format!("model downloaded ({:.2} GB)", size_gb),
-                }))
-            }
-            Err(err) => {
-                let mut backend = lock_state(&state);
-                if let Some(model) = backend.models.iter_mut().find(|m| m.name == model_id) {
-                    model.status = "Failed".to_string();
+                    let mut backend = lock_state(&spawn_state);
+                    backend.models.retain(|m| m.name != spawn_model_id);
+                    backend.models.push(ModelRecord {
+                        name,
+                        size_gb,
+                        model_type: "LLM".to_string(),
+                        quantization: detect_quantization(&filename),
+                        status: "Ready".to_string(),
+                        local_path,
+                    });
+                    save_persistent_models(&backend.models);
+                    backend.download_progress.insert(
+                        spawn_model_id.clone(),
+                        DownloadProgressInfo {
+                            bytes_downloaded: size_bytes,
+                            total_bytes: size_bytes,
+                            status: "completed".to_string(),
+                            error: None,
+                        },
+                    );
                 }
-                save_persistent_models(&backend.models);
-
-                Json(serde_json::json!({ "error": err }))
+                Err(err) => {
+                    let mut backend = lock_state(&spawn_state);
+                    if let Some(model) =
+                        backend.models.iter_mut().find(|m| m.name == spawn_model_id)
+                    {
+                        model.status = "Failed".to_string();
+                    }
+                    save_persistent_models(&backend.models);
+                    if let Some(p) = backend.download_progress.get_mut(&spawn_model_id) {
+                        p.status = "failed".to_string();
+                        p.error = Some(err);
+                    }
+                }
             }
-        }
+        });
+
+        Json(serde_json::json!({
+            "status": "started",
+            "message": format!("Downloading {}", model_id),
+        }))
     }
 
     async fn handle_gui_model_download_progress(
@@ -3902,6 +5097,26 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         }
 
         let backend = lock_state(&state);
+        // Real byte-level progress from the in-flight (or just-finished)
+        // background download task — this is the source of truth whenever
+        // it's available. The model-status heuristic below only covers
+        // entries left over from before this map existed (e.g. across a
+        // server restart mid-download).
+        if let Some(p) = backend.download_progress.get(&model_id) {
+            let progress = if p.total_bytes > 0 {
+                (p.bytes_downloaded as f64 / p.total_bytes as f64).min(1.0)
+            } else {
+                0.0
+            };
+            return Json(serde_json::json!({
+                "progress": progress,
+                "status": p.status,
+                "bytes_downloaded": p.bytes_downloaded,
+                "total_bytes": p.total_bytes,
+                "error": p.error,
+            }));
+        }
+
         if let Some(model) = backend.models.iter().find(|m| m.name == model_id) {
             let (progress, status) = match model.status.as_str() {
                 "Downloading" => (0.0, "downloading"),
@@ -3975,6 +5190,69 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             "status": "ok",
             "model": model_name
         }))
+    }
+
+    // Surfaces `.gguf.part` files left behind by an interrupted download
+    // (see download_hf_model's atomic-rename fix) — previously invisible
+    // dead weight sitting in the models directory with no way to see or
+    // reclaim it from the GUI.
+    async fn handle_gui_models_partial(
+        State(state): State<Arc<Mutex<BackendState>>>,
+    ) -> Json<serde_json::Value> {
+        let models_dir = {
+            let backend = lock_state(&state);
+            backend.settings.models_dir.clone()
+        };
+        let dir = std::path::Path::new(&models_dir);
+        let mut partials = Vec::new();
+        if let Ok(entries) = fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let filename = path.file_name().map(|f| f.to_string_lossy().to_string());
+                let Some(filename) = filename else { continue };
+                if !filename.ends_with(".gguf.part") {
+                    continue;
+                }
+                let metadata = fs::metadata(&path).ok();
+                let size_bytes = metadata.as_ref().map(|m| m.len()).unwrap_or(0);
+                let age_secs = metadata
+                    .and_then(|m| m.modified().ok())
+                    .and_then(|m| m.elapsed().ok())
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                partials.push(serde_json::json!({
+                    "filename": filename,
+                    "size_bytes": size_bytes,
+                    "age_secs": age_secs,
+                }));
+            }
+        }
+        Json(serde_json::json!({ "partial_downloads": partials }))
+    }
+
+    async fn handle_gui_models_partial_discard(
+        State(state): State<Arc<Mutex<BackendState>>>,
+        Json(req): Json<DiscardPartialRequest>,
+    ) -> Json<serde_json::Value> {
+        let models_dir = {
+            let backend = lock_state(&state);
+            backend.settings.models_dir.clone()
+        };
+        // Same defensive stance as the downloader's own filename handling —
+        // only a bare, well-formed `.gguf.part` basename is ever accepted,
+        // never a path that could escape models_dir.
+        let safe_name = std::path::Path::new(&req.filename)
+            .file_name()
+            .map(|f| f.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        if safe_name.is_empty() || !safe_name.ends_with(".gguf.part") {
+            return Json(serde_json::json!({ "status": "error", "error": "invalid filename" }));
+        }
+        let path = std::path::Path::new(&models_dir).join(&safe_name);
+        match fs::remove_file(&path) {
+            Ok(()) => Json(serde_json::json!({ "status": "ok" })),
+            Err(e) => Json(serde_json::json!({ "status": "error", "error": e.to_string() })),
+        }
     }
 
     async fn handle_gui_model_unload(
@@ -4143,8 +5421,86 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         Json(serde_json::json!({ "status": "ok" }))
     }
 
-    async fn handle_gui_workers_discover() -> Json<serde_json::Value> {
-        Json(serde_json::json!({ "status": "ok", "count": 2 }))
+    async fn handle_gui_workers_discover(
+        State(state): State<Arc<Mutex<BackendState>>>,
+    ) -> Json<serde_json::Value> {
+        let (cluster, discovery_broadcast, discovery_auth_token) = {
+            let backend = lock_state(&state);
+            (
+                Arc::clone(&backend.cluster),
+                backend.settings.discovery_broadcast.clone(),
+                backend.settings.discovery_auth_token.clone(),
+            )
+        };
+
+        let broadcast_addr = discovery_broadcast
+            .parse::<SocketAddr>()
+            .unwrap_or_else(|_| SocketAddr::from(([255, 255, 255, 255], DEFAULT_DISCOVERY_PORT)));
+        let auth_token = if discovery_auth_token.is_empty() {
+            None
+        } else {
+            Some(discovery_auth_token)
+        };
+        let local_node = detect_runtime_profile("workers-discover").node_resources;
+
+        // Both discovery paths block on their own recv loop — run them off
+        // the async runtime, concurrently, so neither stalls the other or
+        // other requests. mDNS complements the UDP broadcast fallback for
+        // networks (managed VLANs, cloud VPCs) that filter broadcast but
+        // still carry multicast.
+        let udp_peers_fut = tokio::task::spawn_blocking(move || {
+            let config = UdpDiscoveryConfig {
+                broadcast_addr,
+                auth_token,
+                response_timeout: Duration::from_millis(1200),
+                allow_legacy_crc32: env_default_bool(
+                    "GHOSTLINK_DISCOVERY_ALLOW_LEGACY_CRC32",
+                    false,
+                ),
+                ..UdpDiscoveryConfig::default()
+            };
+            let frame = DiscoveryFrame {
+                kind: FrameKind::Join,
+                node: local_node,
+            };
+            broadcast_and_collect(&frame, &config)
+        });
+        let mdns_peers_fut = tokio::task::spawn_blocking(|| {
+            ghostlink_core::mdns::discover(Duration::from_millis(1200))
+        });
+
+        let (udp_result, mdns_result) = tokio::join!(udp_peers_fut, mdns_peers_fut);
+        let udp_peers = udp_result
+            .unwrap_or_else(|_| Ok(Vec::new()))
+            .unwrap_or_default();
+        let mdns_peers = mdns_result
+            .unwrap_or_else(|_| Ok(Vec::new()))
+            .unwrap_or_else(|err| {
+                tracing::warn!("mdns: discover failed, continuing with UDP results only: {err}");
+                Vec::new()
+            });
+
+        // Dedupe by node id — a peer reachable via both paths should only
+        // count once. UDP wins ties since it carries a real reply address
+        // straight from the socket rather than an mDNS-resolved one.
+        let mut by_id = std::collections::HashMap::new();
+        for (frame, addr) in udp_peers {
+            by_id.insert(frame.node.id.clone(), (frame.node, addr));
+        }
+        for (node, addr) in mdns_peers {
+            by_id.entry(node.id.clone()).or_insert((node, addr));
+        }
+
+        let discovered = by_id.len();
+        for (node, addr) in by_id.into_values() {
+            cluster.register_with_addr(node, Some(addr));
+        }
+
+        Json(serde_json::json!({
+            "status": "ok",
+            "discovered": discovered,
+            "count": cluster.node_count(),
+        }))
     }
 
     async fn handle_gui_workers_disconnect(
@@ -4231,11 +5587,155 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         ))
     }
 
+    /// Prometheus text-exposition-format sibling of `/api/metrics` — same
+    /// underlying snapshot, reformatted for scraping instead of the GUI poll.
+    /// Behind the same bearer-auth middleware as the rest of the API, so a
+    /// Prometheus scrape config needs an `authorization`/`bearer_token` entry.
+    async fn handle_metrics_prometheus(
+        State(state): State<Arc<Mutex<BackendState>>>,
+    ) -> impl IntoResponse {
+        let host = host_metrics::current_host_snapshot();
+
+        let (inf, node_count, cluster_vram, uptime_s, backend_name) = {
+            let backend = lock_state(&state);
+            let cluster = Arc::clone(&backend.cluster);
+            let node_count = cluster.node_count();
+            let cluster_vram = cluster.total_vram_gb();
+            let inf = backend.inference_metrics.snapshot();
+            let uptime_s = backend.started_at.elapsed().as_secs_f32();
+            let backend_name = backend.inference_backend.as_str().to_string();
+            (inf, node_count, cluster_vram, uptime_s, backend_name)
+        };
+
+        let total_vram = if host.total_vram_gb > 0.0 {
+            host.total_vram_gb
+        } else {
+            cluster_vram
+        };
+        let gpu = if host.gpu_available { host.gpu } else { 0.0 };
+
+        let mut body = String::new();
+        let gauge = |body: &mut String, name: &str, help: &str, value: f32| {
+            body.push_str(&format!(
+                "# HELP {name} {help}\n# TYPE {name} gauge\n{name} {value}\n"
+            ));
+        };
+
+        gauge(
+            &mut body,
+            "ghostlink_inference_throughput_tokens_per_second",
+            "Recent tokens generated per second (EMA).",
+            inf.tokens_per_sec,
+        );
+        gauge(
+            &mut body,
+            "ghostlink_cpu_utilization_percent",
+            "Host CPU utilization percent.",
+            host.cpu,
+        );
+        gauge(
+            &mut body,
+            "ghostlink_memory_utilization_percent",
+            "Host memory utilization percent.",
+            host.memory,
+        );
+        gauge(
+            &mut body,
+            "ghostlink_gpu_utilization_percent",
+            "GPU utilization percent (0 when no GPU is available).",
+            gpu,
+        );
+        gauge(
+            &mut body,
+            "ghostlink_inference_latency_p50_milliseconds",
+            "Inference latency, 50th percentile over the recent sample window.",
+            inf.latency_p50_ms,
+        );
+        gauge(
+            &mut body,
+            "ghostlink_inference_latency_p95_milliseconds",
+            "Inference latency, 95th percentile over the recent sample window.",
+            inf.latency_p95_ms,
+        );
+        gauge(
+            &mut body,
+            "ghostlink_cluster_active_nodes",
+            "Number of active cluster nodes.",
+            node_count as f32,
+        );
+        gauge(
+            &mut body,
+            "ghostlink_cluster_total_vram_gb",
+            "Total VRAM available across the cluster, in GB.",
+            total_vram,
+        );
+        gauge(
+            &mut body,
+            "ghostlink_host_total_memory_gb",
+            "Total host system memory, in GB.",
+            host.total_memory_gb,
+        );
+        gauge(
+            &mut body,
+            "ghostlink_host_used_memory_gb",
+            "Used host system memory, in GB.",
+            host.used_memory_gb,
+        );
+        gauge(
+            &mut body,
+            "ghostlink_uptime_seconds",
+            "Seconds since the API server started.",
+            uptime_s,
+        );
+
+        body.push_str(
+            "# HELP ghostlink_inference_samples_total Total inference latency samples recorded since startup.\n\
+             # TYPE ghostlink_inference_samples_total counter\n",
+        );
+        body.push_str(&format!(
+            "ghostlink_inference_samples_total {}\n",
+            inf.samples
+        ));
+
+        body.push_str(
+            "# HELP ghostlink_build_info Static info labels; value is always 1.\n\
+             # TYPE ghostlink_build_info gauge\n",
+        );
+        body.push_str(&format!(
+            "ghostlink_build_info{{inference_backend=\"{backend_name}\"}} 1\n"
+        ));
+
+        (
+            [(
+                axum::http::header::CONTENT_TYPE,
+                "text/plain; version=0.0.4; charset=utf-8",
+            )],
+            body,
+        )
+    }
+
     async fn handle_gui_sessions(
         State(state): State<Arc<Mutex<BackendState>>>,
     ) -> Json<serde_json::Value> {
         let backend = lock_state(&state);
-        Json(serde_json::json!({ "sessions": backend.sessions }))
+        // Summary only — omits `messages` so listing saved chats doesn't ship
+        // every message body over the wire just to render a summary card.
+        let sessions: Vec<serde_json::Value> = backend
+            .sessions
+            .iter()
+            .map(|s| {
+                serde_json::json!({
+                    "id": s.id,
+                    "name": s.name,
+                    "model": s.model,
+                    "status": s.status,
+                    "throughput": s.throughput,
+                    "latency": s.latency,
+                    "tokens": s.tokens,
+                })
+            })
+            .collect();
+        Json(serde_json::json!({ "sessions": sessions }))
     }
 
     async fn handle_gui_session_cancel(Path(session_id): Path<String>) -> Json<serde_json::Value> {
@@ -4247,7 +5747,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         Json(req): Json<serde_json::Value>,
     ) -> Json<serde_json::Value> {
         let session_id = req.get("id").and_then(|v| v.as_str()).unwrap_or("");
-        let _name = req
+        let name = req
             .get("name")
             .and_then(|v| v.as_str())
             .unwrap_or("Unnamed Session");
@@ -4270,16 +5770,19 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         let mut backend = lock_state(&state);
         let session = SessionRecord {
             id: session_id.to_string(),
+            name: name.to_string(),
             model: model.to_string(),
             status: "saved".to_string(),
             throughput: 0,
             latency: 0,
             tokens: messages.len(),
+            messages,
         };
 
         // Remove existing session with same id
         backend.sessions.retain(|s| s.id != session_id);
         backend.sessions.push(session);
+        save_persistent_sessions(&backend.sessions);
 
         Json(serde_json::json!({ "status": "ok", "session_id": session_id }))
     }
@@ -4294,11 +5797,13 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                 "status": "ok",
                 "session": {
                     "id": session.id,
+                    "name": session.name,
                     "model": session.model,
                     "status": session.status,
                     "throughput": session.throughput,
                     "latency": session.latency,
                     "tokens": session.tokens,
+                    "messages": session.messages,
                 }
             }))
         } else {
@@ -4314,30 +5819,461 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         let len_before = backend.sessions.len();
         backend.sessions.retain(|s| s.id != session_id);
         if backend.sessions.len() < len_before {
+            save_persistent_sessions(&backend.sessions);
             Json(serde_json::json!({ "status": "ok", "deleted": true }))
         } else {
             Json(serde_json::json!({ "status": "error", "error": "session not found" }))
         }
     }
 
+    // --- Workspace file API (Editor tab) ---
+    //
+    // Separate from the `file_operations` MCP server (which is sandboxed to
+    // `./mcp_workspace` and only reachable by the model mid tool-call): these
+    // routes let the GUI itself browse/open/save real project files directly,
+    // confined to GHOSTLINK_WORKSPACE_ROOT (defaults to the launch directory).
+
+    /// Files/dirs over this size are refused by both read and write — plenty
+    /// for source files, guards against loading a huge binary/log into the
+    /// in-browser editor.
+    const MAX_WORKSPACE_FILE_BYTES: u64 = 5 * 1024 * 1024;
+
+    fn workspace_root() -> std::path::PathBuf {
+        std::env::var("GHOSTLINK_WORKSPACE_ROOT")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|_| {
+                std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+            })
+    }
+
+    /// Resolves a client-supplied relative path against the workspace root
+    /// and rejects anything that escapes it. Canonicalizing both sides and
+    /// checking the prefix is what actually catches `..` traversal and
+    /// symlink escapes — a naive string check on the raw path does not.
+    fn resolve_workspace_path(
+        root: &std::path::Path,
+        rel: &str,
+    ) -> Result<std::path::PathBuf, String> {
+        let rel = rel.trim_start_matches(['/', '\\']);
+        let canon_root = root
+            .canonicalize()
+            .map_err(|e| format!("workspace root: {e}"))?;
+        if rel.is_empty() {
+            return Ok(canon_root);
+        }
+        let candidate = canon_root.join(rel);
+        let resolved = if candidate.exists() {
+            candidate.canonicalize().map_err(|e| e.to_string())?
+        } else {
+            // A not-yet-existing file (e.g. the target of a fresh write) can't
+            // be canonicalized itself — canonicalize its parent instead and
+            // reattach the file name, which still catches `..` in `rel`.
+            let parent = candidate.parent().ok_or("invalid path")?;
+            let canon_parent = parent
+                .canonicalize()
+                .map_err(|_| "parent directory does not exist".to_string())?;
+            canon_parent.join(candidate.file_name().ok_or("invalid path")?)
+        };
+        if !resolved.starts_with(&canon_root) {
+            return Err("path escapes workspace root".to_string());
+        }
+        Ok(resolved)
+    }
+
+    #[derive(serde::Serialize)]
+    struct WorkspaceEntry {
+        name: String,
+        path: String,
+        is_dir: bool,
+        size: u64,
+    }
+
+    async fn handle_workspace_tree(
+        Query(params): Query<HashMap<String, String>>,
+    ) -> Json<serde_json::Value> {
+        let root = workspace_root();
+        let rel = params.get("path").map(|s| s.as_str()).unwrap_or("");
+        let dir = match resolve_workspace_path(&root, rel) {
+            Ok(p) => p,
+            Err(e) => return Json(serde_json::json!({ "error": e })),
+        };
+        if !dir.is_dir() {
+            return Json(serde_json::json!({ "error": "not a directory" }));
+        }
+        let canon_root = match root.canonicalize() {
+            Ok(p) => p,
+            Err(e) => return Json(serde_json::json!({ "error": format!("workspace root: {e}") })),
+        };
+        let read_dir = match std::fs::read_dir(&dir) {
+            Ok(rd) => rd,
+            Err(e) => return Json(serde_json::json!({ "error": e.to_string() })),
+        };
+        let mut entries: Vec<WorkspaceEntry> = Vec::new();
+        for entry in read_dir.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            // Keeps the tree readable — skip VCS/build/dependency noise the
+            // user is never going to open in a code editor pane.
+            if name.starts_with('.') || matches!(name.as_str(), "node_modules" | "target" | "dist")
+            {
+                continue;
+            }
+            let metadata = match entry.metadata() {
+                Ok(m) => m,
+                Err(_) => continue,
+            };
+            let entry_path = entry.path();
+            let rel_path = entry_path
+                .strip_prefix(&canon_root)
+                .unwrap_or(&entry_path)
+                .to_string_lossy()
+                .replace('\\', "/");
+            entries.push(WorkspaceEntry {
+                name,
+                path: rel_path,
+                is_dir: metadata.is_dir(),
+                size: metadata.len(),
+            });
+        }
+        entries.sort_by(|a, b| {
+            b.is_dir
+                .cmp(&a.is_dir)
+                .then(a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+        });
+        Json(serde_json::json!({ "path": rel, "entries": entries }))
+    }
+
+    async fn handle_workspace_file_read(
+        Query(params): Query<HashMap<String, String>>,
+    ) -> Json<serde_json::Value> {
+        let rel = match params.get("path") {
+            Some(p) if !p.trim().is_empty() => p.clone(),
+            _ => return Json(serde_json::json!({ "error": "path query parameter is required" })),
+        };
+        let root = workspace_root();
+        let file_path = match resolve_workspace_path(&root, &rel) {
+            Ok(p) => p,
+            Err(e) => return Json(serde_json::json!({ "error": e })),
+        };
+        let metadata = match std::fs::metadata(&file_path) {
+            Ok(m) => m,
+            Err(e) => return Json(serde_json::json!({ "error": e.to_string() })),
+        };
+        if metadata.is_dir() {
+            return Json(serde_json::json!({ "error": "path is a directory" }));
+        }
+        if metadata.len() > MAX_WORKSPACE_FILE_BYTES {
+            return Json(serde_json::json!({
+                "error": format!("file exceeds {}MB limit", MAX_WORKSPACE_FILE_BYTES / (1024 * 1024))
+            }));
+        }
+        let bytes = match std::fs::read(&file_path) {
+            Ok(b) => b,
+            Err(e) => return Json(serde_json::json!({ "error": e.to_string() })),
+        };
+        match String::from_utf8(bytes) {
+            Ok(content) => Json(serde_json::json!({ "path": rel, "content": content })),
+            Err(_) => {
+                Json(serde_json::json!({ "error": "file is not valid UTF-8 text (binary?)" }))
+            }
+        }
+    }
+
+    #[derive(serde::Deserialize)]
+    struct WorkspaceFileWriteRequest {
+        path: String,
+        content: String,
+    }
+
+    async fn handle_workspace_file_write(
+        Json(req): Json<WorkspaceFileWriteRequest>,
+    ) -> Json<serde_json::Value> {
+        if req.path.trim().is_empty() {
+            return Json(serde_json::json!({ "error": "path is required" }));
+        }
+        if req.content.len() as u64 > MAX_WORKSPACE_FILE_BYTES {
+            return Json(serde_json::json!({
+                "error": format!("content exceeds {}MB limit", MAX_WORKSPACE_FILE_BYTES / (1024 * 1024))
+            }));
+        }
+        let root = workspace_root();
+        let file_path = match resolve_workspace_path(&root, &req.path) {
+            Ok(p) => p,
+            Err(e) => return Json(serde_json::json!({ "error": e })),
+        };
+        if file_path.is_dir() {
+            return Json(serde_json::json!({ "error": "path is a directory" }));
+        }
+        match std::fs::write(&file_path, req.content.as_bytes()) {
+            Ok(_) => Json(serde_json::json!({ "status": "ok", "path": req.path })),
+            Err(e) => Json(serde_json::json!({ "error": e.to_string() })),
+        }
+    }
+
+    // --- Repo-aware chat context (RAG auto-index) ---
+    //
+    // Walks the workspace root and feeds each eligible text file into the
+    // `rag` MCP server's index_document tool directly (not via a chat
+    // completion — asking a model to call index_document once per file over
+    // a ReAct loop would be slow and unreliable), so chat gets repo context
+    // without the user calling index_document by hand. A soft "skipped"
+    // status, not an error, when `rag` isn't connected — most installs won't
+    // have it configured (disabled by default, needs a pulled embedding model).
+
+    /// Bounds a single indexing pass so it can't turn into a multi-minute
+    /// crawl (or feed gigabytes into the embedding model) on a large repo —
+    /// generous enough for typical project sizes once noise dirs are excluded.
+    const INDEX_MAX_FILES: usize = 400;
+    /// Tighter than MAX_WORKSPACE_FILE_BYTES (the editor's read/write cap) —
+    /// indexing many large files is slow and not useful for MVP repo context.
+    const INDEX_MAX_FILE_BYTES: u64 = 200 * 1024;
+    const INDEX_MAX_TOTAL_BYTES: u64 = 4 * 1024 * 1024;
+
+    fn is_index_noise_dir(name: &str) -> bool {
+        name.starts_with('.')
+            || matches!(
+                name,
+                "node_modules"
+                    | "target"
+                    | "dist"
+                    | "build"
+                    | "third_party"
+                    | "logs"
+                    | "artifacts"
+                    | "benchmarks"
+                    | "models"
+                    | "mcp_workspace"
+                    | "tmp"
+                    | "_archived"
+            )
+    }
+
+    fn collect_index_candidates(
+        dir: &std::path::Path,
+        out: &mut Vec<std::path::PathBuf>,
+        total_bytes: &mut u64,
+    ) {
+        if out.len() >= INDEX_MAX_FILES || *total_bytes >= INDEX_MAX_TOTAL_BYTES {
+            return;
+        }
+        let Ok(read_dir) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in read_dir.flatten() {
+            if out.len() >= INDEX_MAX_FILES || *total_bytes >= INDEX_MAX_TOTAL_BYTES {
+                return;
+            }
+            let name = entry.file_name().to_string_lossy().to_string();
+            let Ok(metadata) = entry.metadata() else {
+                continue;
+            };
+            if metadata.is_dir() {
+                if is_index_noise_dir(&name) {
+                    continue;
+                }
+                collect_index_candidates(&entry.path(), out, total_bytes);
+            } else {
+                if name.starts_with('.') {
+                    continue;
+                }
+                if metadata.len() == 0 || metadata.len() > INDEX_MAX_FILE_BYTES {
+                    continue;
+                }
+                *total_bytes += metadata.len();
+                out.push(entry.path());
+            }
+        }
+    }
+
+    async fn handle_workspace_index(
+        State(state): State<Arc<Mutex<BackendState>>>,
+    ) -> Json<serde_json::Value> {
+        let mcp_registry = {
+            let backend = lock_state(&state);
+            Arc::clone(&backend.mcp_registry)
+        };
+
+        let servers = match mcp_registry.list_all_servers().await {
+            Ok(s) => s,
+            Err(err) => return Json(serde_json::json!({ "status": "error", "error": err })),
+        };
+        let rag_connected = servers.iter().any(|s| s.name == "rag" && s.connected);
+        if !rag_connected {
+            return Json(serde_json::json!({
+                "status": "skipped",
+                "reason": "rag MCP server is not connected (disabled) — see mcp_servers.toml"
+            }));
+        }
+
+        // `rag`'s own MCP handshake never actually touches Ollama (its tools
+        // are registered eagerly, connectivity is only checked lazily on the
+        // first embed call) — so `rag_connected` above is true even on a
+        // native-llama.cpp-only machine with no Ollama running at all. Probe
+        // Ollama directly here so that case still gets the same graceful
+        // "skipped" response instead of a wall of per-file failures.
+        let ollama_url = mcp_registry
+            .env_var_for("rag", "OLLAMA_URL")
+            .filter(|u| !u.is_empty())
+            .unwrap_or_else(|| "http://127.0.0.1:11434".to_string());
+        let ollama_reachable = ollama::OllamaClient::new(ollama_url.clone())
+            .health()
+            .await
+            .unwrap_or(false);
+        if !ollama_reachable {
+            return Json(serde_json::json!({
+                "status": "skipped",
+                "reason": format!("Ollama isn't reachable at {ollama_url} — is `ollama serve` running?")
+            }));
+        }
+
+        let root = match workspace_root().canonicalize() {
+            Ok(p) => p,
+            Err(e) => {
+                return Json(
+                    serde_json::json!({ "status": "error", "error": format!("workspace root: {e}") }),
+                )
+            }
+        };
+
+        let mut candidates = Vec::new();
+        let mut total_bytes = 0u64;
+        collect_index_candidates(&root, &mut candidates, &mut total_bytes);
+        let capped = candidates.len() >= INDEX_MAX_FILES || total_bytes >= INDEX_MAX_TOTAL_BYTES;
+
+        let mut indexed = 0usize;
+        let mut failed = 0usize;
+        for path in &candidates {
+            let Ok(bytes) = std::fs::read(path) else {
+                failed += 1;
+                continue;
+            };
+            // Binary files fail UTF-8 decoding — silently skip them rather
+            // than counting as a failure, same as the file-read route.
+            let Ok(text) = String::from_utf8(bytes) else {
+                continue;
+            };
+            let rel = path
+                .strip_prefix(&root)
+                .unwrap_or(path)
+                .to_string_lossy()
+                .replace('\\', "/");
+            let args = serde_json::json!({ "text": text, "id": rel, "source": rel });
+            match mcp_registry.call_tool("rag", "index_document", args).await {
+                Some(outcome) if outcome.success => indexed += 1,
+                _ => failed += 1,
+            }
+        }
+
+        Json(serde_json::json!({
+            "status": "ok",
+            "scanned": candidates.len(),
+            "indexed": indexed,
+            "failed": failed,
+            "capped": capped,
+        }))
+    }
+
     async fn handle_gui_queue() -> Json<serde_json::Value> {
-        Json(serde_json::json!({ "status": "ok", "depth": 0 }))
+        let request_tracker = active_runtime_switcher().request_tracker().clone();
+        Json(serde_json::json!({
+            "status": "ok",
+            "depth": request_tracker.queue_depth().await,
+            "slot_capacity": request_tracker.slot_capacity(),
+        }))
     }
 
-    async fn handle_gui_jwt_refresh() -> Json<serde_json::Value> {
-        Json(serde_json::json!({ "status": "ok", "token": "new-token-123" }))
+    /// Real JWT issuance (was a hardcoded `"new-token-123"`). Reaching this
+    /// handler at all already proves the caller presented a valid bearer
+    /// token (`auth_middleware` gates every route but `/health`) — no
+    /// separate credential to check here, just mint a fresh short-lived
+    /// token signed with the same API key that got them past the gate.
+    async fn handle_gui_jwt_refresh(
+        State(state): State<Arc<Mutex<BackendState>>>,
+        ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    ) -> Json<serde_json::Value> {
+        match auth::issue_jwt("ghostlink-client") {
+            Ok(token) => {
+                record_audit_event(
+                    &mut lock_state(&state),
+                    "jwt_refresh",
+                    "SUCCESS",
+                    addr.ip().to_string(),
+                    None,
+                );
+                Json(serde_json::json!({ "status": "ok", "token": token }))
+            }
+            Err(err) => {
+                record_audit_event(
+                    &mut lock_state(&state),
+                    "jwt_refresh",
+                    "FAILED",
+                    addr.ip().to_string(),
+                    Some(err.clone()),
+                );
+                Json(serde_json::json!({ "status": "error", "error": err }))
+            }
+        }
     }
 
-    async fn handle_gui_pqc_enable() -> Json<serde_json::Value> {
-        Json(serde_json::json!({ "status": "ok", "enabled": true }))
+    /// Turns on `enable_tls` in persisted settings (was a no-op that always
+    /// reported `enabled: true`). The listener is bound once at server
+    /// startup, so this takes effect on next restart — said plainly in the
+    /// response rather than implying it's already live.
+    async fn handle_gui_pqc_enable(
+        State(state): State<Arc<Mutex<BackendState>>>,
+        ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    ) -> Json<serde_json::Value> {
+        let backend = &mut *lock_state(&state);
+        let mut current = backend.settings.clone();
+        current.enable_tls = true;
+        backend.settings = current.clone();
+        save_settings(&current);
+        record_audit_event(
+            backend,
+            "pqc_enable",
+            "SUCCESS",
+            addr.ip().to_string(),
+            Some("enable_tls persisted; takes effect on restart".to_string()),
+        );
+        Json(serde_json::json!({
+            "status": "ok",
+            "enabled": true,
+            "restart_required": true,
+            "message": "enable_tls saved — restart the server for the HTTPS/PQC-hybrid listener to take effect"
+        }))
     }
 
-    async fn handle_gui_pqc_state() -> Json<serde_json::Value> {
-        Json(serde_json::json!({ "enabled": true, "algorithm": "ml-kem-768" }))
+    /// Reports the real, current server configuration (was hardcoded
+    /// `enabled: true`): whether `enable_tls` is on for THIS running
+    /// process (not just persisted — a setting saved via
+    /// `handle_gui_pqc_enable` doesn't apply until restart, so this
+    /// reflects what's actually serving right now) and the hybrid group
+    /// rustls is configured to prefer whenever TLS is active. This is
+    /// server-level config state, not a genuine per-connection
+    /// introspection of whether a given client actually negotiated the
+    /// hybrid group — independently verifiable via `openssl s_client
+    /// -groups X25519MLKEM768` against a TLS-enabled instance.
+    async fn handle_gui_pqc_state(
+        State(state): State<Arc<Mutex<BackendState>>>,
+    ) -> Json<serde_json::Value> {
+        let active = lock_state(&state).enable_tls_active;
+        Json(serde_json::json!({
+            "enabled": active,
+            "algorithm": "X25519MLKEM768",
+            "note": if active {
+                "TLS is active on this server; rustls is configured to prefer the X25519MLKEM768 post-quantum hybrid key-exchange group (via the prefer-post-quantum feature)."
+            } else {
+                "TLS is not active on this server (plain HTTP) — no key exchange is happening. Enable via POST /api/security/pqc/enable and restart."
+            }
+        }))
     }
 
-    async fn handle_gui_audit_log() -> Json<serde_json::Value> {
-        Json(serde_json::json!({ "entries": [] }))
+    async fn handle_gui_audit_log(
+        State(state): State<Arc<Mutex<BackendState>>>,
+    ) -> Json<serde_json::Value> {
+        let backend = lock_state(&state);
+        // Most-recent-first — a log feed reads top-to-bottom as newest-first.
+        let entries: Vec<&AuditLogEntry> = backend.audit_log.iter().rev().collect();
+        Json(serde_json::json!({ "entries": entries }))
     }
 
     async fn handle_gui_runtime_select(
@@ -5209,7 +7145,20 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             let latency_u = latency_ms.round() as u32;
             let throughput_u = tokens_per_sec.unwrap_or(0.0).round().max(0.0) as usize;
 
-            let maybe_session = backend.sessions.first_mut();
+            // Matched by its own well-known id, not just "whichever session is
+            // first" — that used to mean any saved chat session that happened
+            // to land at index 0 got its tokens/model/status silently
+            // overwritten by unrelated live-inference bookkeeping the next
+            // time any chat request completed.
+            let live_session_id = "sess_local_001";
+            let new_messages = [
+                serde_json::json!({ "role": "user", "content": req.message }),
+                serde_json::json!({ "role": "assistant", "content": response_text }),
+            ];
+            let maybe_session = backend
+                .sessions
+                .iter_mut()
+                .find(|s| s.id == live_session_id);
             let session_id = if let Some(session) = maybe_session {
                 session.tokens = session.tokens.saturating_add(tokens_out as usize);
                 session.throughput = throughput_u;
@@ -5220,11 +7169,13 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                 } else {
                     "Degraded".to_string()
                 };
+                session.messages.extend(new_messages);
                 session.id.clone()
             } else {
-                let session_id = "sess_local_001".to_string();
+                let session_id = live_session_id.to_string();
                 backend.sessions.push(SessionRecord {
                     id: session_id.clone(),
+                    name: String::new(),
                     model: current_model.clone(),
                     status: if real_inference {
                         "Running".to_string()
@@ -5234,9 +7185,11 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                     throughput: throughput_u,
                     latency: latency_u,
                     tokens: tokens_out as usize,
+                    messages: new_messages.to_vec(),
                 });
                 session_id
             };
+            save_persistent_sessions(&backend.sessions);
 
             let metrics_json = serde_json::json!({
                 "throughput": snap.tokens_per_sec,
@@ -5321,6 +7274,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
     /// denying feeds back `mcp::toolcall::format_denial` instead.
     async fn handle_tool_confirm(
         State(state): State<Arc<Mutex<BackendState>>>,
+        ConnectInfo(addr): ConnectInfo<SocketAddr>,
         Json(req): Json<ToolConfirmRequest>,
     ) -> Json<serde_json::Value> {
         let (native_engine_client, ollama_client, vllm_client, mcp_registry, pending_tool_calls) = {
@@ -5347,6 +7301,19 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                 )
             }));
         };
+
+        let (tool_name, server_name) = match &pending {
+            PendingToolCall::Native { tool, server, .. } => (tool.clone(), server.clone()),
+            PendingToolCall::Ollama { tool, server, .. } => (tool.clone(), server.clone()),
+            PendingToolCall::Vllm { tool, server, .. } => (tool.clone(), server.clone()),
+        };
+        record_audit_event(
+            &mut lock_state(&state),
+            "tool_confirm",
+            if req.approve { "APPROVED" } else { "DENIED" },
+            addr.ip().to_string(),
+            Some(format!("{tool_name} @ {server_name}")),
+        );
 
         let mut tool_results: Vec<ToolResult> = Vec::new();
         let mut pending_tool_call: Option<PendingToolCallInfo> = None;
@@ -5665,6 +7632,62 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                             current.ctx_size = v as usize;
                         }
                     }
+                    "parallel_slots" => {
+                        if let Some(v) = value.as_u64() {
+                            current.parallel_slots = (v as usize).clamp(1, 64);
+                            // Mirrors llama_server_url's existing precedent
+                            // below: takes effect on the *next* model load
+                            // for llama-server's own -np flag.
+                            std::env::set_var(
+                                "GHOSTLINK_PARALLEL_SLOTS",
+                                current.parallel_slots.to_string(),
+                            );
+                            // Takes effect immediately for ghost-link's own
+                            // admission control, independent of when the
+                            // model next reloads.
+                            active_runtime_switcher()
+                                .request_tracker()
+                                .resize_slots(current.parallel_slots);
+                        }
+                    }
+                    "enable_tls" => {
+                        if let Some(v) = value.as_bool() {
+                            // Takes effect on next server restart — the
+                            // listener is bound once at startup (main.rs's
+                            // `start_openai_api_server`), not re-bound on a
+                            // settings change.
+                            current.enable_tls = v;
+                        }
+                    }
+                    "distributed_inference" => {
+                        if let Some(v) = value.as_bool() {
+                            // Live: re-checked from `backend.settings` on
+                            // every `/api/models/load` call (see
+                            // `handle_gui_model_load`), so this takes effect
+                            // on the next model load without a restart.
+                            current.distributed_inference = v;
+                        }
+                    }
+                    "contribute_compute" => {
+                        if let Some(v) = value.as_bool() {
+                            // Takes effect on next server restart — the
+                            // rpc-server contributor process (if any) is
+                            // started once at startup, not re-evaluated on a
+                            // settings change (see `rpc_cluster`).
+                            current.contribute_compute = v;
+                        }
+                    }
+                    "rpc_port" => {
+                        if let Some(v) = value.as_u64() {
+                            // Same next-restart caveat as contribute_compute.
+                            current.rpc_port = v as u16;
+                        }
+                    }
+                    "conversation_token_limit" => {
+                        if let Some(v) = value.as_u64() {
+                            current.conversation_token_limit = v as usize;
+                        }
+                    }
                     "temperature" => {
                         if let Some(v) = value.as_f64() {
                             current.temperature = v as f32;
@@ -5780,6 +7803,8 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
     println!("Listening on http://{}:{}", host, port);
     println!("Routes:");
     println!("  - POST /v1/chat/completions");
+    println!("  - POST /v1/completions");
+    println!("  - POST /v1/embeddings");
     println!("  - GET  /v1/models");
     println!("  - GET  /health");
     println!("  - GET  /api/models");
@@ -5817,7 +7842,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
     println!("  - POST /api/settings/reset");
     println!("  - POST /api/inference/chat");
 
-    let profile = detect_runtime_profile("studio-api");
+    let profile = detect_runtime_profile(detect_node_id());
     let backend_url = format!("http://{}:{}", host, port);
     println!(
         "Inference Core: {} workers, {} acceleration",
@@ -5843,13 +7868,31 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         .build()
         .map_err(|err| anyhow::anyhow!("failed to initialize runtime: {}", err))?;
 
+    // Loaded here (rather than at its previous spot further down) because
+    // discovery advertisement below needs `contribute_compute`/`rpc_port`
+    // to decide whether this node should advertise itself as an RPC
+    // contributor — see `rpc_cluster` module docs.
+    let mut settings = load_settings();
+
+    if settings.contribute_compute {
+        rpc_cluster::ensure_contributing(host, settings.rpc_port);
+    }
+    let advertised_node = if settings.contribute_compute {
+        profile
+            .node_resources
+            .clone()
+            .with_rpc_port(settings.rpc_port)
+    } else {
+        profile.node_resources.clone()
+    };
+
     let cluster = Arc::new(ClusterState::new());
-    let mut local_node = profile.node_resources.clone();
+    let mut local_node = advertised_node.clone();
     local_node.vram_gb = local_node.vram_gb.max(16.0);
     local_node.system_memory_gb = local_node.system_memory_gb.max(16.0);
     cluster.register(local_node);
 
-    let node_for_listener = profile.node_resources.clone();
+    let node_for_listener = advertised_node.clone();
     thread::spawn(move || {
         let auth_token = std::env::var("GHOSTLINK_DISCOVERY_AUTH_TOKEN")
             .ok()
@@ -5869,8 +7912,14 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         let _ = serve_discovery(&node_for_listener, &config, None);
     });
 
+    // mDNS is a complement to UDP broadcast discovery above, not a
+    // replacement — some networks (managed VLANs, cloud VPCs) filter
+    // broadcast traffic but still carry multicast. Best-effort: logged and
+    // otherwise ignored on failure, same as the UDP listener thread.
+    ghostlink_core::mdns::ensure_advertised(&advertised_node, port);
+
     let cluster_for_broadcast = Arc::clone(&cluster);
-    let node_for_broadcast = profile.node_resources.clone();
+    let node_for_broadcast = advertised_node.clone();
     thread::spawn(move || {
         let auth_token = std::env::var("GHOSTLINK_DISCOVERY_AUTH_TOKEN")
             .ok()
@@ -5905,19 +7954,16 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
     let models = load_persistent_models();
     save_persistent_models(&models);
 
-    let mut settings = load_settings();
-
-    // Auto-compute ngl from GPU VRAM only when the caller hasn't already told
-    // us what to do. `-1` is ambiguous on its own: it's both RuntimeSettings'
-    // unconfigured default AND launch-native.ps1's deliberate "offload every
-    // layer llama-server can fit" sentinel (see its own GHOSTLINK_LLAMA_NGL
-    // comment) — load_settings() just copied that env var verbatim into
-    // settings.ngl above, so gating on `settings.ngl < 0` alone can't tell
-    // "nobody configured this" from "-1 was the explicit choice", and ends up
-    // silently downgrading every native launch to a conservative 12-layer
-    // partial offload instead of the full offload that was actually
-    // requested. Only guess when no one set the env var at all.
-    if settings.ngl < 0 && std::env::var("GHOSTLINK_LLAMA_NGL").is_err() {
+    // Auto-compute ngl from GPU VRAM if still at default (-1) AND the
+    // operator didn't explicitly ask for -1. `load_settings()` above copies
+    // `GHOSTLINK_LLAMA_NGL` straight into `settings.ngl` when the env var is
+    // set, so an explicit `GHOSTLINK_LLAMA_NGL=-1` (native_engine.rs's own
+    // documented "let llama-server decide, offload all it can" value) is
+    // indistinguishable from "never configured" by value alone — without
+    // this check it gets silently reinterpreted as unconfigured and
+    // overwritten by the VRAM-tier guess below on every single startup.
+    let ngl_explicitly_set = std::env::var("GHOSTLINK_LLAMA_NGL").is_ok();
+    if settings.ngl < 0 && !ngl_explicitly_set {
         let ngl = if profile.node_resources.vram_gb >= 12.0 {
             40
         } else if profile.node_resources.vram_gb >= 8.0 {
@@ -5969,6 +8015,20 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
 
     // Load settings to get initial inference backend
     let settings = load_settings();
+    // Captured before `settings` moves into `BackendState` below — used
+    // once at the very end of this function to pick the TLS vs. plain
+    // listener.
+    // Computed once here (rather than at the final serve call, after
+    // `settings` has moved into `BackendState`) so both the listener
+    // choice below and `BackendState.enable_tls_active` (read by
+    // `/api/security/pqc/state`) share one source of truth.
+    let use_tls = settings.enable_tls || !tls::is_loopback_host(host);
+    // Eagerly generate/load (and, on first run, print) the API key here —
+    // `active_api_key()` is otherwise lazy-initialized on first use, which
+    // would mean the one-time "here's your key" banner never prints at
+    // all unless some request happens to trigger it first, leaving a
+    // fresh install with no way to discover the key it needs.
+    auth::active_api_key();
     let inference_backend = InferenceEngine::parse(&settings.inference_backend);
     let native_engine_client = native_engine::NativeEngineClient::new();
     let ollama_client = ollama::OllamaClient::new(ollama_url);
@@ -6030,14 +8090,14 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             threads: profile.recommended_workers.max(1),
             load: 35,
         }],
-        sessions: vec![],
-        queue_depth: 0,
+        sessions: load_persistent_sessions(),
         chat_requests: 0,
         last_latency_ms: 0.0,
         last_tokens_per_sec: 0.0,
         inference_metrics: host_metrics::InferenceMetrics::default(),
         started_at: Instant::now(),
         backend_url,
+        local_node_id: profile.node_resources.id.clone(),
         cluster,
         inference_backend,
         native_engine_client,
@@ -6047,6 +8107,11 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         settings,
         mcp_registry: Arc::clone(&mcp_registry),
         pending_tool_calls: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+        download_progress: HashMap::new(),
+        model_lifecycle_lock: Arc::new(tokio::sync::Mutex::new(())),
+        plugin_registry: backend_plugin::BackendPluginRegistry::from_env(),
+        enable_tls_active: use_tls,
+        audit_log: std::collections::VecDeque::new(),
     }));
 
     // Background CPU/RAM/GPU sampler — keeps /api/metrics non-blocking.
@@ -6057,12 +8122,60 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         // child processes, some of which pull an npx package on first run) —
         // done in the background so a slow/misconfigured server can't delay
         // the API from coming up and serving everything else.
-        tokio::spawn(async move {
-            mcp_registry.connect_enabled().await;
+        tokio::spawn({
+            let mcp_registry = Arc::clone(&mcp_registry);
+            async move {
+                mcp_registry.connect_enabled().await;
+            }
         });
+
+        // Per-IP request rate limiting — protects the API from runaway
+        // clients/retry loops. Applied as the outermost layer so it gates
+        // requests before CORS/auth do any work.
+        //
+        // This sits behind control-plane's own proxy (the GUI never talks
+        // to this port directly), which means every request — from every
+        // browser tab, every user — arrives here already collapsed onto
+        // control-plane's own source address. The old per_second(2) /
+        // burst_size(30) config was sized as if this were a genuine per-
+        // client limit; in practice it was a global ceiling on the whole
+        // gateway. A single page mount alone fires ~8 concurrent requests
+        // (settings, models, sessions, metrics, workers, backends, mcp
+        // servers), and steady-state polling (metrics+sessions every 3s,
+        // workers every 15s) adds ~0.7 req/s per open tab on top of that —
+        // two tabs, or a couple of reloads in quick succession, was enough
+        // to permanently exhaust the 30-token bucket (15s to refill at
+        // 2/s) and made ordinary GUI usage indistinguishable from a
+        // runaway client. Sized here to comfortably absorb a few tabs'
+        // worth of simultaneous mount bursts plus their steady polling,
+        // while still catching an actually-pathological tight retry loop.
+        let governor_conf = std::sync::Arc::new(
+            tower_governor::governor::GovernorConfigBuilder::default()
+                .per_second(20)
+                .burst_size(60)
+                .finish()
+                .expect("static governor config is always valid"),
+        );
+        {
+            let governor_conf = Arc::clone(&governor_conf);
+            tokio::spawn(async move {
+                let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+                loop {
+                    interval.tick().await;
+                    governor_conf.limiter().retain_recent();
+                }
+            });
+        }
+
+        // Cloned before `.with_state(state)` below consumes `state` — the
+        // auth middleware needs its own `State` extraction (to record
+        // failed-auth attempts to the audit log) via `from_fn_with_state`.
+        let auth_mw_state = Arc::clone(&state);
 
         let app = Router::new()
             .route("/v1/chat/completions", post(handle_chat_completions))
+            .route("/v1/completions", post(handle_completions))
+            .route("/v1/embeddings", post(handle_embeddings))
             .route("/v1/models", get(handle_models))
             .route("/health", get(handle_health))
             .route("/api/health", get(handle_health))
@@ -6075,6 +8188,11 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             .route("/api/models/load", post(handle_gui_model_load))
             .route("/api/models/download", post(handle_gui_model_download))
             .route("/api/models/delete", post(handle_gui_model_delete))
+            .route("/api/models/partial", get(handle_gui_models_partial))
+            .route(
+                "/api/models/partial/discard",
+                post(handle_gui_models_partial_discard),
+            )
             .route(
                 "/api/models/search/huggingface",
                 get(handle_gui_models_search_hf),
@@ -6115,6 +8233,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             )
             .route("/api/metrics", get(handle_gui_metrics))
             .route("/api/metrics/history", get(handle_gui_metrics_history))
+            .route("/metrics", get(handle_metrics_prometheus))
             .route("/api/sessions", get(handle_gui_sessions))
             .route("/api/sessions/save", post(handle_gui_session_save))
             .route("/api/sessions/:session_id", get(handle_gui_session_load))
@@ -6160,21 +8279,66 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                 "/api/backends/:name/status",
                 get(backend_api::handle_backend_status),
             )
+            .route("/api/workspace/tree", get(handle_workspace_tree))
+            .route(
+                "/api/workspace/file",
+                get(handle_workspace_file_read).put(handle_workspace_file_write),
+            )
+            .route("/api/workspace/index", post(handle_workspace_index))
             .with_state(state)
-            .layer(CorsLayer::permissive());
+            // Auth runs inside CORS (added first here = innermost = runs
+            // *after* CORS on the way in), so a browser's CORS preflight
+            // OPTIONS request is still handled without needing a bearer
+            // token — matches how CORS preflight is expected to work.
+            .layer(middleware::from_fn_with_state(
+                auth_mw_state,
+                auth_middleware,
+            ))
+            .layer(CorsLayer::permissive())
+            .layer(tower_governor::GovernorLayer {
+                config: governor_conf,
+            });
 
-        // addr already parsed above
-        let listener = tokio::net::TcpListener::bind(addr)
-            .await
-            .map_err(|err| anyhow::anyhow!("failed to bind API server on {}: {}", addr, err))?;
-        println!(
-            "
+        // addr already parsed above; `use_tls` computed earlier alongside
+        // `BackendState.enable_tls_active`.
+        if use_tls {
+            let tls_config = tls::build_rustls_config(host)
+                .await
+                .map_err(|err| anyhow::anyhow!("failed to prepare TLS: {}", err))?;
+            println!(
+                "
+API Server Online (HTTPS, PQC-hybrid key exchange preferred). Ready for connections."
+            );
+            let shutdown_handle = axum_server::Handle::new();
+            tokio::spawn({
+                let shutdown_handle = shutdown_handle.clone();
+                async move {
+                    mcp_shutdown_on_ctrl_c(mcp_registry).await;
+                    shutdown_handle.graceful_shutdown(None);
+                }
+            });
+            axum_server::bind_rustls(addr, tls_config)
+                .handle(shutdown_handle)
+                .serve(app.into_make_service_with_connect_info::<SocketAddr>())
+                .await
+                .map_err(|err| anyhow::anyhow!("HTTPS API server terminated with error: {}", err))
+        } else {
+            let listener = tokio::net::TcpListener::bind(addr)
+                .await
+                .map_err(|err| anyhow::anyhow!("failed to bind API server on {}: {}", addr, err))?;
+            println!(
+                "
 API Server Online. Ready for connections."
-        );
+            );
 
-        axum::serve(listener, app)
+            axum::serve(
+                listener,
+                app.into_make_service_with_connect_info::<SocketAddr>(),
+            )
+            .with_graceful_shutdown(mcp_shutdown_on_ctrl_c(mcp_registry))
             .await
             .map_err(|err| anyhow::anyhow!("API server terminated with error: {}", err))
+        }
     })?;
 
     Ok(())
@@ -8193,16 +10357,20 @@ fn run_gui_preflight_checks() -> Result<()> {
     Ok(())
 }
 
+mod auth;
 mod backend_api;
 mod backend_config;
+mod backend_plugin;
 mod backend_registry;
 mod host_metrics;
 mod inference_engine;
 mod mcp;
 mod native_engine;
 mod ollama;
+mod rpc_cluster;
 mod runtime;
 mod runtime_switcher;
+mod tls;
 mod vllm;
 
 static ACTIVE_BACKEND_REGISTRY: OnceLock<Arc<backend_registry::BackendRegistry>> = OnceLock::new();
@@ -8268,7 +10436,6 @@ mod tests {
             current_model: "tinyllama".to_string(),
             workers: vec![],
             sessions: vec![],
-            queue_depth: 0,
             chat_requests: 0,
             last_latency_ms: 0.0,
             last_tokens_per_sec: 0.0,
@@ -8276,6 +10443,7 @@ mod tests {
             started_at: Instant::now(),
             backend_url: "http://127.0.0.1:8003".to_string(),
             cluster,
+            local_node_id: "test-node".to_string(),
             inference_backend: InferenceEngine::Vllm,
             native_engine_client: native_engine::NativeEngineClient::new(),
             ollama_client: ollama::OllamaClient::new("http://127.0.0.1:11434".to_string()),
@@ -8286,7 +10454,58 @@ mod tests {
                 std::env::temp_dir().join("ghostlink-test-mcp-servers.toml"),
             ))),
             pending_tool_calls: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+            download_progress: HashMap::new(),
+            model_lifecycle_lock: Arc::new(tokio::sync::Mutex::new(())),
+            enable_tls_active: false,
+            plugin_registry: backend_plugin::BackendPluginRegistry::from_env(),
+            audit_log: std::collections::VecDeque::new(),
         }))
+    }
+
+    #[test]
+    fn detect_node_id_prefers_explicit_env_override() {
+        // Regression coverage for the "studio-api" literal bug: two real
+        // Ghostlink instances previously always shared that id, colliding in
+        // ClusterState. GHOSTLINK_NODE_ID must win over any host-derived
+        // signal so operators (and tests) can force distinct ids.
+        std::env::set_var("GHOSTLINK_NODE_ID", "test-node-explicit");
+        assert_eq!(detect_node_id(), "test-node-explicit");
+        std::env::remove_var("GHOSTLINK_NODE_ID");
+    }
+
+    fn audit_entry(event: &str) -> AuditLogEntry {
+        AuditLogEntry {
+            event: event.to_string(),
+            status: "SUCCESS".to_string(),
+            ip: "127.0.0.1".to_string(),
+            time: chrono::Utc::now().to_rfc3339(),
+            detail: None,
+        }
+    }
+
+    #[test]
+    fn push_audit_entry_appends_in_order() {
+        let mut log = std::collections::VecDeque::new();
+        push_audit_entry(&mut log, audit_entry("first"));
+        push_audit_entry(&mut log, audit_entry("second"));
+        assert_eq!(log.len(), 2);
+        assert_eq!(log[0].event, "first");
+        assert_eq!(log[1].event, "second");
+    }
+
+    #[test]
+    fn push_audit_entry_trims_oldest_once_over_cap() {
+        let mut log = std::collections::VecDeque::new();
+        for i in 0..(AUDIT_LOG_CAP + 10) {
+            push_audit_entry(&mut log, audit_entry(&format!("event-{i}")));
+        }
+        assert_eq!(log.len(), AUDIT_LOG_CAP, "must never grow past the cap");
+        // The oldest 10 were pushed out; the front is now event-10.
+        assert_eq!(log.front().unwrap().event, "event-10");
+        assert_eq!(
+            log.back().unwrap().event,
+            format!("event-{}", AUDIT_LOG_CAP + 9)
+        );
     }
 
     #[test]
@@ -8511,6 +10730,87 @@ mod tests {
         let map = build_device_map(&profile, "amdgpu", "n2");
         assert_eq!(map.get("amdgpu"), Some(&DeviceKind::Gpu));
         assert_eq!(map.get("n2"), Some(&DeviceKind::Gpu));
+    }
+
+    #[test]
+    fn quant_rank_orders_common_tags_by_size() {
+        assert!(quant_rank("MODEL-Q2_K.GGUF") < quant_rank("MODEL-Q4_K_M.GGUF"));
+        assert!(quant_rank("MODEL-Q4_K_M.GGUF") < quant_rank("MODEL-Q8_0.GGUF"));
+        assert!(quant_rank("MODEL-Q8_0.GGUF") < quant_rank("MODEL-F16.GGUF"));
+        // Longest-match tie-break: "Q3_K_M" must not be misread via a
+        // hypothetical shorter overlapping tag.
+        assert_eq!(
+            quant_rank("MODEL-Q3_K_M.GGUF"),
+            quant_rank("model-q3_k_m.gguf".to_uppercase().as_str())
+        );
+        assert_eq!(quant_rank("MODEL-UNKNOWNQUANT.GGUF"), None);
+    }
+
+    #[test]
+    fn target_quant_rank_scales_down_for_low_vram() {
+        let high = target_quant_rank_for_vram(24.0);
+        let mid = target_quant_rank_for_vram(8.0);
+        let low = target_quant_rank_for_vram(2.0);
+        assert!(low < mid);
+        assert!(mid <= high);
+    }
+
+    #[test]
+    fn select_best_gguf_group_picks_fitting_quant_not_first_listed() {
+        // Regression: previously `download_hf_model` always took whatever
+        // file HuggingFace's API listed first, regardless of size. A repo
+        // commonly lists a large quant before smaller ones.
+        let files = vec![
+            "model-F16.gguf".to_string(),
+            "model-Q8_0.gguf".to_string(),
+            "model-Q4_K_M.gguf".to_string(),
+            "model-Q2_K.gguf".to_string(),
+        ];
+        let groups = group_gguf_shards(&files);
+        // Below 4GB VRAM should land on a small/mid quant, never blindly on
+        // F16 (index 0, and the largest/most likely to fail to load).
+        let chosen = select_best_gguf_group(&groups, 3.5).expect("a group should be chosen");
+        assert_ne!(chosen, vec!["model-F16.gguf".to_string()]);
+        let rank = quant_rank(&chosen[0].to_ascii_uppercase()).expect("known tag");
+        assert!(
+            rank <= quant_rank("Q4_K_M").unwrap(),
+            "expected a Q4_K_M-or-smaller pick for 3.5GB VRAM, got rank {rank}"
+        );
+
+        // Higher VRAM should land on a noticeably bigger quant than the
+        // low-VRAM case, confirming the target actually scales with VRAM
+        // rather than always converging on the same answer.
+        let chosen_high = select_best_gguf_group(&groups, 24.0).expect("a group should be chosen");
+        let rank_high = quant_rank(&chosen_high[0].to_ascii_uppercase()).expect("known tag");
+        assert!(rank_high > rank);
+    }
+
+    #[test]
+    fn group_gguf_shards_keeps_split_files_together_in_order() {
+        // Regression: previously only the first shard of a split GGUF was
+        // ever downloaded, leaving an unloadable partial model on disk.
+        let files = vec![
+            "model-Q8_0-00002-of-00003.gguf".to_string(),
+            "model-Q4_K_M.gguf".to_string(),
+            "model-Q8_0-00001-of-00003.gguf".to_string(),
+            "model-Q8_0-00003-of-00003.gguf".to_string(),
+        ];
+        let groups = group_gguf_shards(&files);
+        let split_group = groups
+            .iter()
+            .find(|g| g.len() > 1)
+            .expect("the Q8_0 split set should be grouped together");
+        assert_eq!(
+            split_group,
+            &vec![
+                "model-Q8_0-00001-of-00003.gguf".to_string(),
+                "model-Q8_0-00002-of-00003.gguf".to_string(),
+                "model-Q8_0-00003-of-00003.gguf".to_string(),
+            ]
+        );
+        assert!(groups
+            .iter()
+            .any(|g| g == &vec!["model-Q4_K_M.gguf".to_string()]));
     }
 
     #[test]

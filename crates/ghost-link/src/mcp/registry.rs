@@ -156,7 +156,6 @@ impl McpRegistry {
     /// ever applied to the *spawned child process* — this (main) process
     /// never inherits them, so out-of-band checks (e.g. "is rag's Ollama
     /// actually reachable") can't just read `std::env::var` directly.
-    #[allow(dead_code)]
     pub fn env_var_for(&self, server_name: &str, key: &str) -> Option<String> {
         let configs = self.config_manager.load().ok()?;
         let config = configs.into_iter().find(|c| c.name == server_name)?;

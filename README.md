@@ -16,6 +16,7 @@ Route workloads across CPU, GPU, and NPU resources with explicit scheduling, har
 [![Platforms](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey)](#quick-start)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
 [![GitHub Stars](https://img.shields.io/github/stars/rwilliamspbg-ops/Ghostlink?style=social)](https://github.com/rwilliamspbg-ops/Ghostlink)
+[![Sponsor](https://img.shields.io/badge/Sponsor-%E2%9D%A4-db61a2?logo=githubsponsors)](https://github.com/sponsors/rwilliamspbg-ops)
 
 [Quick Start](#quick-start) · [Demo](#demo) · [Architecture](#architecture) · [API](#api-endpoints) · [Docs](https://rwilliamspbg-ops.github.io/Ghostlink/) · [Contributing](CONTRIBUTING.md)
 
@@ -69,12 +70,24 @@ Route workloads across CPU, GPU, and NPU resources with explicit scheduling, har
 
 ## Why Ghostlink
 
-Ghostlink is designed for teams that want lower-latency planning, more control over distributed inference topologies, and a simpler path to custom LLM serving than generic orchestration stacks.
+Point Ghostlink at every machine on your LAN and it becomes one inference
+cluster — correctly sized, authenticated, and observable — with zero YAML
+and no manual `--rpc` flags. Nobody else combines *zero-config discovery of
+heterogeneous consumer/prosumer hardware* (gaming GPU + old laptop +
+NPU-equipped ultrabook + Mac) with *real distributed inference across it*:
+vLLM assumes a homogeneous co-located GPU fleet, Ollama and LM Studio don't
+distribute at all, and Kubernetes-based serving solves this but needs a
+cluster and an ops team. See [docs/COMPARISON.md](docs/COMPARISON.md) for
+the full breakdown and [docs/BENCHMARKS.md](docs/BENCHMARKS.md) for a real
+two-machine LAN run backing this up, not just prose.
 
 Use Ghostlink when you need:
-- fast model and workload scheduling across heterogeneous hardware,
-- a self-hosted inference fabric with open-source flexibility,
-- a platform that can be extended into a paid commercial offering with support and enterprise deployment services.
+- zero-config cluster formation across mixed CPU/GPU/NPU hardware already
+  sitting on your network,
+- a self-hosted inference fabric with open-source flexibility and no
+  vendor lock-in,
+- a platform that can be extended into a paid commercial offering with
+  support and enterprise deployment services.
 
 ## Quick Start
 
@@ -208,6 +221,23 @@ run on an **Intel i7-14700K (Linux/WSL2)** with `RUSTFLAGS="-C target-cpu=native
 | TCP loopback | 1024 / 128 | 340 K tok/s | 3.01 ms |
 | In-process (spin-wait) | 256 / 32 | 639 K tok/s | 0.40 ms |
 | TCP loopback | 256 / 32 | 236 K tok/s | 1.08 ms |
+
+### Reproduce these numbers / other hardware
+
+```bash
+cargo bench -p ghostlink-core --bench criterion   # microbenchmarks
+python scripts/flow_perf_snapshot.py --exec-tokens 512 --micro-batch 8 --runs 5 --modes tcp inmem --release
+```
+
+Every number above is falsifiable — run the commands yourself. Numbers vary
+meaningfully by hardware: [docs/BENCHMARKS.md](docs/BENCHMARKS.md) documents
+two more full profiles with the same rigor — an AMD Radeon 860M integrated
+GPU laptop (Windows) and a 4-core Linux mini PC with no dedicated GPU —
+including honest noisiness notes for both low-power classes. A first real
+multi-node LAN run (that same Windows laptop and Linux mini PC, over a real
+network) is also in BENCHMARKS.md's Multi-Node Performance section; more
+node counts and hardware pairs (especially discrete GPUs) are still open,
+see [docs/ROADMAP.md](docs/ROADMAP.md), Horizon 1.
 
 ### Local llama-server tuning
 
@@ -483,7 +513,7 @@ Current focus areas:
 
 **Public launch assets:**
 - Live site: https://rwilliamspbg-ops.github.io/Ghostlink/
-- Comparison sheet: [docs/archive/comparison_sheet.md](docs/archive/comparison_sheet.md)
+- Comparison sheet: [docs/COMPARISON.md](docs/COMPARISON.md)
 - Demo flow: [docs/archive/launch_demo.md](docs/archive/launch_demo.md)
 
 ## Contributing
