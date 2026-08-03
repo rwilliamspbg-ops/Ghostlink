@@ -1498,6 +1498,9 @@ struct BackendState {
     started_at: Instant,
     backend_url: String,
     cluster: Arc<ClusterState>,
+    /// This node's own id in `cluster` — needed to exclude ourselves when
+    /// selecting `distributed_inference` RPC peers (see `rpc_cluster`).
+    local_node_id: String,
     inference_backend: InferenceEngine,
     native_engine_client: native_engine::NativeEngineClient,
     ollama_client: ollama::OllamaClient,
@@ -1587,6 +1590,31 @@ struct RuntimeSettings {
     /// this field existed still deserialize.
     #[serde(default)]
     enable_tls: bool,
+    /// When true and the cluster has other nodes advertising
+    /// `contribute_compute`, the native engine launches with `--rpc`/`-ts`
+    /// so llama.cpp's own RPC backend splits the model across them — real
+    /// cross-process model-parallel inference (see `rpc_cluster`), not this
+    /// crate's synthetic pipeline-benchmark transport. Off by default: a
+    /// single-node deployment sees zero behavior change.
+    #[serde(default)]
+    distributed_inference: bool,
+    /// When true, this node runs `ggml-rpc-server` (see `rpc_cluster`),
+    /// exposing its own GPU/CPU as a device other cluster members can use
+    /// via `distributed_inference`. SECURITY: that server has no built-in
+    /// authentication (an upstream llama.cpp limitation) — only enable this
+    /// on a network you trust. Off by default.
+    #[serde(default)]
+    contribute_compute: bool,
+    /// Port `ggml-rpc-server` binds to when `contribute_compute` is on, and
+    /// the port advertised to peers (UDP/mDNS discovery) so they can reach
+    /// it. `#[serde(default = "...")]` so it survives a settings.json saved
+    /// before this field existed.
+    #[serde(default = "default_rpc_port")]
+    rpc_port: u16,
+}
+
+fn default_rpc_port() -> u16 {
+    50052
 }
 
 // Kept as named constants (rather than inlined in both `RuntimeSettings::default()`
@@ -1649,6 +1677,9 @@ impl Default for RuntimeSettings {
             xdp_interface: "eth0".to_string(),
             conversation_token_limit: default_conversation_token_limit(),
             enable_tls: false,
+            distributed_inference: false,
+            contribute_compute: false,
+            rpc_port: default_rpc_port(),
         }
     }
 }
@@ -3224,6 +3255,177 @@ struct PendingToolCallInfo {
     args: serde_json::Value,
 }
 
+/// Rough size/quality rank for common GGUF quantization tags — higher
+/// means bigger file / higher fidelity. Used to pick a quantization that
+/// actually fits the local machine instead of an arbitrary file from the
+/// repo. Matched by substring against the uppercased filename; ties are
+/// broken by preferring the longest matching tag (so "Q3_K_M" doesn't
+/// get miscategorized by a shorter unrelated prefix).
+fn quant_rank(name_upper: &str) -> Option<i32> {
+    const TIERS: &[(&str, i32)] = &[
+        ("IQ1", 0),
+        ("IQ2_XXS", 1),
+        ("IQ2_XS", 2),
+        ("IQ2_S", 3),
+        ("IQ2_M", 3),
+        ("Q2_K", 3),
+        ("IQ3_XXS", 4),
+        ("IQ3_XS", 5),
+        ("Q3_K_S", 5),
+        ("IQ3_S", 5),
+        ("IQ3_M", 6),
+        ("Q3_K_M", 6),
+        ("Q3_K_L", 7),
+        ("IQ4_XS", 7),
+        ("IQ4_NL", 8),
+        ("Q4_0", 8),
+        ("Q4_1", 8),
+        ("Q4_K_S", 8),
+        ("Q4_K_M", 9),
+        ("Q5_0", 10),
+        ("Q5_1", 10),
+        ("Q5_K_S", 10),
+        ("Q5_K_M", 11),
+        ("Q6_K", 12),
+        ("Q8_0", 13),
+        ("F16", 14),
+        ("BF16", 14),
+        ("F32", 15),
+    ];
+    TIERS
+        .iter()
+        .filter(|(tag, _)| name_upper.contains(tag))
+        .max_by_key(|(tag, _)| tag.len())
+        .map(|(_, rank)| *rank)
+}
+
+/// Target quantization rank (see `quant_rank`) for a given amount of
+/// VRAM — aims for a comfortable sweet spot rather than the smallest or
+/// largest option technically available. Below 4GB in particular, most
+/// 7B+ full-precision or Q6/Q8 files won't fit at all, so favor a much
+/// smaller quantization there rather than picking whatever the repo
+/// happens to list first (previously: always `gguf_files[0]`, with no
+/// regard for size at all).
+fn target_quant_rank_for_vram(vram_gb: f32) -> i32 {
+    if vram_gb >= 16.0 {
+        12 // Q6_K
+    } else if vram_gb >= 12.0 {
+        11 // Q5_K_M
+    } else if vram_gb >= 8.0 || vram_gb >= 4.0 {
+        9 // Q4_K_M — the common "fits almost anywhere with partial offload" sweet spot
+    } else {
+        6 // Q3_K_M / IQ3_M for genuinely constrained VRAM
+    }
+}
+
+/// HuggingFace GGUF repos commonly split a single quantization across
+/// multiple files named `<name>-00001-of-00005.gguf`. Groups filenames
+/// that belong to the same split set together (by filename with the
+/// shard suffix stripped) so all shards of a chosen quantization get
+/// downloaded — previously only `gguf_files[0]` was ever fetched, which
+/// for a split model meant downloading one shard of a multi-file model
+/// and silently leaving it unloadable (llama.cpp requires every shard
+/// alongside the first). Each returned group is sorted by shard index.
+fn group_gguf_shards(files: &[String]) -> Vec<Vec<String>> {
+    use std::collections::BTreeMap;
+
+    let shard_re = |name: &str| -> Option<(String, u32)> {
+        // Matches "...-00001-of-00005.gguf" (case-insensitive "of").
+        let lower = name.to_ascii_lowercase();
+        let gguf_pos = lower.rfind(".gguf")?;
+        let stem = &name[..gguf_pos];
+        let of_pos = stem.to_ascii_lowercase().rfind("-of-")?;
+        let (before_of, after_of) = stem.split_at(of_pos);
+        let _total: u32 = after_of[4..].parse().ok()?;
+        let dash_pos = before_of.rfind('-')?;
+        let shard_idx: u32 = before_of[dash_pos + 1..].parse().ok()?;
+        let base = before_of[..dash_pos].to_string();
+        Some((base, shard_idx))
+    };
+
+    let mut groups: BTreeMap<String, Vec<(u32, String)>> = BTreeMap::new();
+    for file in files {
+        match shard_re(file) {
+            Some((base, idx)) => groups.entry(base).or_default().push((idx, file.clone())),
+            None => groups
+                .entry(file.clone())
+                .or_default()
+                .push((0, file.clone())),
+        }
+    }
+
+    groups
+        .into_values()
+        .map(|mut shards| {
+            shards.sort_by_key(|(idx, _)| *idx);
+            shards.into_iter().map(|(_, name)| name).collect()
+        })
+        .collect()
+}
+
+/// Picks the shard-group whose quantization rank is closest to the
+/// target for the detected VRAM, preferring a rank at or below the
+/// target (safe) over one above it (might not fit) when both are
+/// equally close. Falls back to the smallest available quantization if
+/// none can be ranked (unusual filenames) rather than failing outright.
+fn select_best_gguf_group(groups: &[Vec<String>], vram_gb: f32) -> Option<Vec<String>> {
+    let target = target_quant_rank_for_vram(vram_gb);
+    groups
+        .iter()
+        .filter(|g| !g.is_empty())
+        .min_by_key(|g| {
+            let upper = g[0].to_ascii_uppercase();
+            match quant_rank(&upper) {
+                Some(rank) => {
+                    let diff = (rank - target).abs();
+                    // Prefer <= target over > target on a tie in absolute distance.
+                    (diff, if rank > target { 1 } else { 0 }, rank)
+                }
+                None => (i32::MAX, 1, i32::MAX),
+            }
+        })
+        .cloned()
+        .or_else(|| groups.first().cloned())
+}
+
+/// Best-effort *unique* node id for cluster discovery/registration.
+///
+/// Previously this was the literal string `"studio-api"` for every single
+/// API-server instance, on every machine — harmless for a single node, but
+/// it means any two real Ghostlink installs collide on the same
+/// `ClusterState` key (a `HashMap<String, NodeResources>`), so the second
+/// one to register silently overwrites the first's entry instead of the
+/// cluster ever containing both. `discover_rpc_peers`'s "exclude the local
+/// node id" filter would then exclude *every* peer too, since they'd all
+/// share that id — quietly breaking distributed inference (and clustering
+/// in general) across real hardware, not just in a same-machine test.
+/// Falls back to the old literal only if no hostname signal exists at all.
+fn detect_node_id() -> String {
+    if let Ok(id) = std::env::var("GHOSTLINK_NODE_ID") {
+        let id = id.trim().to_string();
+        if !id.is_empty() {
+            return id;
+        }
+    }
+    for var in ["COMPUTERNAME", "HOSTNAME"] {
+        if let Ok(name) = std::env::var(var) {
+            let name = name.trim().to_string();
+            if !name.is_empty() {
+                return name;
+            }
+        }
+    }
+    if let Ok(output) = std::process::Command::new("hostname").output() {
+        if output.status.success() {
+            let name = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !name.is_empty() {
+                return name;
+            }
+        }
+    }
+    "studio-api".to_string()
+}
+
 fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
     use axum::{
         extract::{Path, Query, Request, State},
@@ -4348,8 +4550,41 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
 
         // Extract model info and settings under the lock, then drop it before
         // the potentially-long blocking load_model_into_slot call.
-        let (native_engine_client, local_path, native_engine, selected_model) = {
+        let (
+            native_engine_client,
+            local_path,
+            native_engine,
+            selected_model,
+            rpc_servers,
+            tensor_split,
+        ) = {
             let mut backend = lock_state(&state);
+
+            // Real cross-process model-parallel inference via llama.cpp's
+            // own RPC backend when enabled and the cluster has other nodes
+            // contributing compute — see `rpc_cluster` module docs. Empty
+            // when disabled or no qualifying peers, which reproduces
+            // single-node behavior exactly.
+            let (rpc_servers, tensor_split) = if backend.settings.distributed_inference {
+                let peers =
+                    rpc_cluster::discover_rpc_peers(&backend.cluster, &backend.local_node_id);
+                if peers.is_empty() {
+                    (None, None)
+                } else {
+                    let local_vram = backend
+                        .cluster
+                        .get_metrics(&backend.local_node_id)
+                        .map(|m| m.vram_gb)
+                        .unwrap_or(0.0);
+                    let split = rpc_cluster::compute_tensor_split(local_vram, &peers);
+                    (
+                        Some(rpc_cluster::rpc_flag_value(&peers)),
+                        Some(rpc_cluster::tensor_split_flag_value(&split)),
+                    )
+                }
+            } else {
+                (None, None)
+            };
 
             // Merge local scans so we can find local_path for locally-downloaded models
             let local = scan_local_models_dir(&backend.settings.models_dir);
@@ -4418,6 +4653,8 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                 local_path,
                 backend.settings.native_engine.clone(),
                 selected,
+                rpc_servers,
+                tensor_split,
             )
         }; // <-- state lock dropped here
 
@@ -4435,7 +4672,11 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             };
 
             let result = tokio::task::spawn_blocking(move || {
-                native_engine_client.load_model_into_slot(&path, None, None)
+                native_engine_client.load_model_into_slot(
+                    &path,
+                    rpc_servers.as_deref(),
+                    tensor_split.as_deref(),
+                )
             })
             .await
             .map_err(|e| format!("task join error: {}", e))
@@ -4449,7 +4690,11 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         } else if let Some(path) = local_path.clone() {
             if native_engine == "llama_server" || native_engine == "llama-server" {
                 let result = tokio::task::spawn_blocking(move || {
-                    native_engine_client.load_model_into_slot(&path, None, None)
+                    native_engine_client.load_model_into_slot(
+                        &path,
+                        rpc_servers.as_deref(),
+                        tensor_split.as_deref(),
+                    )
                 })
                 .await
                 .map_err(|e| format!("task join error: {}", e))
@@ -6599,6 +6844,30 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                             current.enable_tls = v;
                         }
                     }
+                    "distributed_inference" => {
+                        if let Some(v) = value.as_bool() {
+                            // Live: re-checked from `backend.settings` on
+                            // every `/api/models/load` call (see
+                            // `handle_gui_model_load`), so this takes effect
+                            // on the next model load without a restart.
+                            current.distributed_inference = v;
+                        }
+                    }
+                    "contribute_compute" => {
+                        if let Some(v) = value.as_bool() {
+                            // Takes effect on next server restart — the
+                            // rpc-server contributor process (if any) is
+                            // started once at startup, not re-evaluated on a
+                            // settings change (see `rpc_cluster`).
+                            current.contribute_compute = v;
+                        }
+                    }
+                    "rpc_port" => {
+                        if let Some(v) = value.as_u64() {
+                            // Same next-restart caveat as contribute_compute.
+                            current.rpc_port = v as u16;
+                        }
+                    }
                     "conversation_token_limit" => {
                         if let Some(v) = value.as_u64() {
                             current.conversation_token_limit = v as usize;
@@ -6758,7 +7027,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
     println!("  - POST /api/settings/reset");
     println!("  - POST /api/inference/chat");
 
-    let profile = detect_runtime_profile("studio-api");
+    let profile = detect_runtime_profile(detect_node_id());
     let backend_url = format!("http://{}:{}", host, port);
     println!(
         "Inference Core: {} workers, {} acceleration",
@@ -6784,13 +7053,31 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         .build()
         .map_err(|err| anyhow::anyhow!("failed to initialize runtime: {}", err))?;
 
+    // Loaded here (rather than at its previous spot further down) because
+    // discovery advertisement below needs `contribute_compute`/`rpc_port`
+    // to decide whether this node should advertise itself as an RPC
+    // contributor — see `rpc_cluster` module docs.
+    let mut settings = load_settings();
+
+    if settings.contribute_compute {
+        rpc_cluster::ensure_contributing(host, settings.rpc_port);
+    }
+    let advertised_node = if settings.contribute_compute {
+        profile
+            .node_resources
+            .clone()
+            .with_rpc_port(settings.rpc_port)
+    } else {
+        profile.node_resources.clone()
+    };
+
     let cluster = Arc::new(ClusterState::new());
-    let mut local_node = profile.node_resources.clone();
+    let mut local_node = advertised_node.clone();
     local_node.vram_gb = local_node.vram_gb.max(16.0);
     local_node.system_memory_gb = local_node.system_memory_gb.max(16.0);
     cluster.register(local_node);
 
-    let node_for_listener = profile.node_resources.clone();
+    let node_for_listener = advertised_node.clone();
     thread::spawn(move || {
         let auth_token = std::env::var("GHOSTLINK_DISCOVERY_AUTH_TOKEN")
             .ok()
@@ -6814,10 +7101,10 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
     // replacement — some networks (managed VLANs, cloud VPCs) filter
     // broadcast traffic but still carry multicast. Best-effort: logged and
     // otherwise ignored on failure, same as the UDP listener thread.
-    ghostlink_core::mdns::ensure_advertised(&profile.node_resources, port);
+    ghostlink_core::mdns::ensure_advertised(&advertised_node, port);
 
     let cluster_for_broadcast = Arc::clone(&cluster);
-    let node_for_broadcast = profile.node_resources.clone();
+    let node_for_broadcast = advertised_node.clone();
     thread::spawn(move || {
         let auth_token = std::env::var("GHOSTLINK_DISCOVERY_AUTH_TOKEN")
             .ok()
@@ -6852,19 +7139,16 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
     let models = load_persistent_models();
     save_persistent_models(&models);
 
-    let mut settings = load_settings();
-
-    // Auto-compute ngl from GPU VRAM only when the caller hasn't already told
-    // us what to do. `-1` is ambiguous on its own: it's both RuntimeSettings'
-    // unconfigured default AND launch-native.ps1's deliberate "offload every
-    // layer llama-server can fit" sentinel (see its own GHOSTLINK_LLAMA_NGL
-    // comment) — load_settings() just copied that env var verbatim into
-    // settings.ngl above, so gating on `settings.ngl < 0` alone can't tell
-    // "nobody configured this" from "-1 was the explicit choice", and ends up
-    // silently downgrading every native launch to a conservative 12-layer
-    // partial offload instead of the full offload that was actually
-    // requested. Only guess when no one set the env var at all.
-    if settings.ngl < 0 && std::env::var("GHOSTLINK_LLAMA_NGL").is_err() {
+    // Auto-compute ngl from GPU VRAM if still at default (-1) AND the
+    // operator didn't explicitly ask for -1. `load_settings()` above copies
+    // `GHOSTLINK_LLAMA_NGL` straight into `settings.ngl` when the env var is
+    // set, so an explicit `GHOSTLINK_LLAMA_NGL=-1` (native_engine.rs's own
+    // documented "let llama-server decide, offload all it can" value) is
+    // indistinguishable from "never configured" by value alone — without
+    // this check it gets silently reinterpreted as unconfigured and
+    // overwritten by the VRAM-tier guess below on every single startup.
+    let ngl_explicitly_set = std::env::var("GHOSTLINK_LLAMA_NGL").is_ok();
+    if settings.ngl < 0 && !ngl_explicitly_set {
         let ngl = if profile.node_resources.vram_gb >= 12.0 {
             40
         } else if profile.node_resources.vram_gb >= 8.0 {
@@ -6999,6 +7283,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         inference_metrics: host_metrics::InferenceMetrics::default(),
         started_at: Instant::now(),
         backend_url,
+        local_node_id: profile.node_resources.id.clone(),
         cluster,
         inference_backend,
         native_engine_client,
@@ -9231,6 +9516,7 @@ mod inference_engine;
 mod mcp;
 mod native_engine;
 mod ollama;
+mod rpc_cluster;
 mod runtime;
 mod runtime_switcher;
 mod tls;
@@ -9307,6 +9593,7 @@ mod tests {
             started_at: Instant::now(),
             backend_url: "http://127.0.0.1:8003".to_string(),
             cluster,
+            local_node_id: "test-node".to_string(),
             inference_backend: InferenceEngine::Vllm,
             native_engine_client: native_engine::NativeEngineClient::new(),
             ollama_client: ollama::OllamaClient::new("http://127.0.0.1:11434".to_string()),
@@ -9322,6 +9609,17 @@ mod tests {
             enable_tls_active: false,
             plugin_registry: backend_plugin::BackendPluginRegistry::from_env(),
         }))
+    }
+
+    #[test]
+    fn detect_node_id_prefers_explicit_env_override() {
+        // Regression coverage for the "studio-api" literal bug: two real
+        // Ghostlink instances previously always shared that id, colliding in
+        // ClusterState. GHOSTLINK_NODE_ID must win over any host-derived
+        // signal so operators (and tests) can force distinct ids.
+        std::env::set_var("GHOSTLINK_NODE_ID", "test-node-explicit");
+        assert_eq!(detect_node_id(), "test-node-explicit");
+        std::env::remove_var("GHOSTLINK_NODE_ID");
     }
 
     #[test]
