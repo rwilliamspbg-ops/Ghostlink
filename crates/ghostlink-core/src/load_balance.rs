@@ -189,7 +189,8 @@ impl LoadBalancer {
         }
 
         // Sort references to nodes by VRAM capacity (descending) to avoid copying heap-allocated IDs and strings
-        let mut sorted_nodes: Vec<&crate::protocol::NodeResources> = nodes_snapshot.iter().collect();
+        let mut sorted_nodes: Vec<&crate::protocol::NodeResources> =
+            nodes_snapshot.iter().collect();
         sorted_nodes.sort_by(|a, b| {
             b.vram_gb
                 .partial_cmp(&a.vram_gb)
