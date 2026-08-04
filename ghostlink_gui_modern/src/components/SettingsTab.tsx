@@ -121,6 +121,9 @@ export const SettingsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
   };
 
   const handleReset = async () => {
+    if (!window.confirm('Are you sure you want to reset all settings to defaults? This will overwrite your current configuration.')) {
+      return;
+    }
     setSaving(true);
     const result = await api.resetSettings();
     if (result.success && result.settings) {
@@ -194,9 +197,11 @@ export const SettingsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
     // Settings round-trip through an f32 backend, so fractional values arrive
     // as things like 0.8999999761581421 — round for display to the precision
     // `step` actually offers instead of showing the float32 artifact.
-    const displayValue = !step || step >= 1
-      ? Math.round(value).toString()
-      : value.toFixed(Math.max(0, -Math.floor(Math.log10(step))));
+    const displayValue = value === undefined || value === null
+      ? '0'
+      : (!step || step >= 1
+        ? Math.round(value).toString()
+        : value.toFixed(Math.max(0, -Math.floor(Math.log10(step)))));
     return (
       <div className="space-y-1.5">
         <div className="flex items-center justify-between">
@@ -211,9 +216,9 @@ export const SettingsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
           min={min}
           max={max}
           step={step || 1}
-          value={value}
+          value={value ?? 0}
           onChange={(e) => onChange(parseFloat(e.target.value))}
-          className="w-full h-1.5 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-blue-500"
+          className="w-full h-1.5 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-blue-500 focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
         />
         <div className="flex justify-between text-[10px] text-slate-600">
           <span>{min}</span>
@@ -234,9 +239,9 @@ export const SettingsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
         <select
           id={fieldId}
           name={fieldId}
-          value={value}
+          value={value ?? ''}
           onChange={(e) => onChange(e.target.value)}
-          className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2.5 text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500/50"
+          className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2.5 text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500/50 focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
         >
           {options.map((o) => (
             <option key={o.value} value={o.value}>{o.label}</option>
@@ -258,10 +263,10 @@ export const SettingsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
           id={fieldId}
           name={fieldId}
           type={type}
-          value={value}
+          value={value ?? ''}
           onChange={(e) => onChange(e.target.value)}
           placeholder={placeholder}
-          className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2.5 text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500/50 font-mono"
+          className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2.5 text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500/50 font-mono focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
         />
       </div>
     );
@@ -288,14 +293,16 @@ export const SettingsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
           <button
             onClick={handleReset}
             disabled={saving}
-            className="flex items-center gap-2 px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl text-sm transition disabled:opacity-50"
+            title="Reset all settings to defaults"
+            className="flex items-center gap-2 px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl text-sm transition disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
           >
             <RotateCcw size={14} aria-hidden="true" /> Reset
           </button>
           <button
             onClick={handleSave}
             disabled={saving}
-            className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-sm font-bold transition shadow-lg shadow-blue-500/20 disabled:opacity-50"
+            title="Save changes to settings.json"
+            className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-sm font-bold transition shadow-lg shadow-blue-500/20 disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
           >
             <Save size={14} aria-hidden="true" /> {saving ? 'Saving...' : 'Save'}
           </button>
@@ -328,7 +335,8 @@ export const SettingsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                         <button
                           onClick={loadBackends}
                           disabled={backendLoading}
-                          className="flex items-center gap-2 px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-sm transition disabled:opacity-50"
+                          title="Re-detect compute backends"
+                          className="flex items-center gap-2 px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-sm transition disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
                         >
                           <RefreshCw size={14} className={backendLoading ? 'animate-spin' : ''} />
                           Re-detect
@@ -343,11 +351,12 @@ export const SettingsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                             aria-checked={backend.name === currentBackend}
                             onClick={() => handleSwitchBackend(backend.name)}
                             disabled={switchingBackend !== null || backend.name === currentBackend}
+                            title={`Switch compute backend to ${backend.name}`}
                             className={`flex items-center justify-between w-full px-3 py-2.5 rounded-xl text-left transition text-sm ${
                               backend.name === currentBackend
                                 ? 'bg-blue-600/10 text-blue-400 border border-blue-500/30'
                                 : 'text-slate-300 hover:bg-slate-800 border border-slate-800'
-                            } ${switchingBackend === backend.name ? 'opacity-50' : ''}`}
+                            } ${switchingBackend === backend.name ? 'opacity-50' : ''} focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none`}
                           >
                             <div className="flex items-center gap-3 min-w-0">
                               <div className={`flex items-center justify-center h-8 w-8 rounded-lg ${

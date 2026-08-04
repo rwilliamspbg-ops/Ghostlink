@@ -1,5 +1,9 @@
 # Palette's Journal
 
+## 2026-08-04 - [Settings Safety and Accessibility Controls]
+**Learning:** Destructive utility actions in complex dashboards (like resetting runtime configurations) that are positioned directly adjacent to primary actions (like Save) must be guarded with descriptive titles and modal confirmation dialogs (`window.confirm`) to prevent catastrophic data loss. Furthermore, inputs, sliders, and buttons must utilize explicit high-contrast focus rings (`focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none`) to ensure keyboard navigatees have complete visual tracking on dark-theme UI layers.
+**Action:** Always secure configuration reset triggers with clear, modal confirmation prompts, native informational tooltips, and high-visibility keyboard focus state rings.
+
 ## 2026-08-02 - [Sessions Active Protection & Tooltips]
 **Learning:** Cancelling a running LLM inference session is a highly disruptive action. Sighted users need immediate visual hover tooltips (`title`) to confirm the destructive function of icon-only action triggers, and all users benefit from a non-blocking confirmation dialog (`window.confirm`) to prevent accidental session evictions. Additionally, ensuring these interactive controls have tailored keyboard focus rings guarantees an accessible experience during keyboard navigation.
 **Action:** Always protect cluster session teardowns with clear modal confirmations, intuitive tooltips, and tailored `focus-visible:` focus rings.

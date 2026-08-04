@@ -192,4 +192,42 @@ describe('SettingsTab', () => {
       expect(screen.getByText('Reachable · 2 models')).toBeInTheDocument();
     });
   });
+
+  it('prompts confirm and calls resetSettings when Reset is confirmed', async () => {
+    const api = createMockApi();
+    api.resetSettings.mockResolvedValue({ success: true, settings: {} });
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+
+    render(<SettingsTab api={api} />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Compute Backend')).toBeInTheDocument();
+    });
+
+    const resetBtn = screen.getByRole('button', { name: /reset/i });
+    expect(resetBtn).toHaveAttribute('title', 'Reset all settings to defaults');
+    fireEvent.click(resetBtn);
+
+    expect(confirmSpy).toHaveBeenCalledWith(
+      'Are you sure you want to reset all settings to defaults? This will overwrite your current configuration.'
+    );
+    expect(api.resetSettings).toHaveBeenCalled();
+  });
+
+  it('prompts confirm and does not call resetSettings when Reset is cancelled', async () => {
+    const api = createMockApi();
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
+
+    render(<SettingsTab api={api} />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Compute Backend')).toBeInTheDocument();
+    });
+
+    const resetBtn = screen.getByRole('button', { name: /reset/i });
+    fireEvent.click(resetBtn);
+
+    expect(confirmSpy).toHaveBeenCalled();
+    expect(api.resetSettings).not.toHaveBeenCalled();
+  });
 });
