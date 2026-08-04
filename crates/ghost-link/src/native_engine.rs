@@ -780,6 +780,14 @@ impl NativeEngineClient {
         top_k: usize,
         repeat_penalty: f32,
         native_engine: &str,
+        // Prior conversation turns (role, content), oldest first, *not*
+        // including `prompt` itself (that's sent separately as the final
+        // user turn). Empty for stateless call sites (the OpenAI-compatible
+        // completions endpoints, tool-loop iterations after the first,
+        // simulated/llama_cpp paths). Ignored by the llama_cpp/simulated
+        // paths below, which build a single flat prompt string with no
+        // chat-template concept.
+        history: &[(String, String)],
         // See `generate_with_llama_server`'s doc comment. Ignored by the
         // llama_cpp/simulated paths below, which have no slot concept.
         id_slot: Option<i64>,
@@ -819,6 +827,7 @@ impl NativeEngineClient {
                         top_p,
                         top_k,
                         repeat_penalty,
+                        history,
                         id_slot,
                         cache_prompt,
                         response_format,
@@ -933,6 +942,11 @@ impl NativeEngineClient {
         top_p: f32,
         top_k: usize,
         repeat_penalty: f32,
+        // Prior conversation turns (role, content), oldest first. Woven into
+        // both the chat-completions `messages` array and the `/completion`
+        // fallback's flat prompt, between the system prompt and the current
+        // `cleaned_prompt` turn.
+        history: &[(String, String)],
         // Slot/context reuse: `id_slot` pins this generation to a specific
         // llama-server slot (-1, llama-server's own "any idle slot" sentinel,
         // when None) and `cache_prompt` lets llama-server reuse whatever KV
@@ -965,12 +979,16 @@ impl NativeEngineClient {
         // Try chat completion endpoint first (for models with chat templates)
         let chat_url = format!("{base_url}/v1/chat/completions");
 
+        let mut chat_messages =
+            vec![serde_json::json!({"role": "system", "content": system_prompt})];
+        for (role, content) in history {
+            chat_messages.push(serde_json::json!({"role": role, "content": content}));
+        }
+        chat_messages.push(serde_json::json!({"role": "user", "content": cleaned_prompt}));
+
         let mut chat_payload = serde_json::json!({
             "model": model,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": cleaned_prompt}
-            ],
+            "messages": chat_messages,
             "max_tokens": max_tokens,
             "temperature": temperature.clamp(0.0, 2.0),
             "top_p": top_p.clamp(0.0, 1.0),
@@ -1034,11 +1052,21 @@ impl NativeEngineClient {
         // Fall back to completion endpoint for models without chat template
         let completion_url = format!("{base_url}/completion");
 
-        // Format prompt for completion endpoint: system + user
-        let completion_prompt = format!(
-            "{}\n\nUser: {}\n\nAssistant:",
-            system_prompt, cleaned_prompt
-        );
+        // Format prompt for completion endpoint: system + prior turns + user.
+        // No real chat template here (this is the no-template fallback), so
+        // prior turns are just labelled plain-text lines - good enough for
+        // models that fell through to this path specifically because they
+        // don't understand structured `messages`.
+        let mut completion_prompt = system_prompt.clone();
+        for (role, content) in history {
+            let label = if role.eq_ignore_ascii_case("assistant") {
+                "Assistant"
+            } else {
+                "User"
+            };
+            completion_prompt.push_str(&format!("\n\n{label}: {content}"));
+        }
+        completion_prompt.push_str(&format!("\n\nUser: {cleaned_prompt}\n\nAssistant:"));
 
         let completion_payload = serde_json::json!({
             "model": model,
@@ -1182,6 +1210,7 @@ impl NativeEngineClient {
                     top_p,
                     top_k,
                     repeat_penalty,
+                    &[],
                     id_slot,
                     cache_prompt,
                     None,
@@ -1480,6 +1509,7 @@ mod tests {
                         40,
                         1.1,
                         "simulated",
+                        &[],
                         None,
                         false,
                         None,
@@ -1563,6 +1593,7 @@ mod tests {
                         40,
                         1.1,
                         "llama_server",
+                        &[],
                         Some(0),
                         true,
                         None,
@@ -1590,6 +1621,90 @@ mod tests {
     }
 
     #[test]
+    fn generate_weaves_prior_turns_into_the_messages_array() {
+        let _guard = env_lock().lock().expect("env lock poisoned");
+
+        let listener =
+            std::net::TcpListener::bind("127.0.0.1:0").expect("failed to bind test listener");
+        let addr = listener.local_addr().expect("failed to read local_addr");
+
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept coordinator connection");
+            let body = read_http_request_body(&mut stream);
+            let response_body = serde_json::json!({
+                "choices": [{"message": {"content": "hello again"}}]
+            })
+            .to_string();
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                response_body.len(),
+                response_body
+            );
+            use std::io::Write;
+            stream
+                .write_all(response.as_bytes())
+                .expect("write mock response");
+            body
+        });
+
+        std::env::set_var("GHOSTLINK_LLAMA_SERVER_URL", format!("http://{addr}"));
+
+        let history = vec![
+            (
+                "user".to_string(),
+                "what's the capital of France?".to_string(),
+            ),
+            ("assistant".to_string(), "Paris.".to_string()),
+        ];
+
+        let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+        let engine = NativeEngineClient::new();
+        rt.block_on(async {
+            engine
+                .generate(
+                    "test-model",
+                    "and its population?",
+                    32,
+                    0.7,
+                    0.9,
+                    40,
+                    1.1,
+                    "llama_server",
+                    &history,
+                    None,
+                    false,
+                    None,
+                )
+                .await
+        })
+        .expect("generation against the test server should succeed");
+
+        let captured_body = server.join().expect("server thread should not panic");
+        let parsed: serde_json::Value =
+            serde_json::from_str(&captured_body).expect("captured body should be valid JSON");
+        let messages = parsed
+            .get("messages")
+            .and_then(|v| v.as_array())
+            .expect("messages array");
+
+        // system, then the two history turns in order, then the new user turn.
+        assert_eq!(
+            messages.len(),
+            4,
+            "unexpected messages shape: {captured_body}"
+        );
+        assert_eq!(messages[0]["role"], "system");
+        assert_eq!(messages[1]["role"], "user");
+        assert_eq!(messages[1]["content"], "what's the capital of France?");
+        assert_eq!(messages[2]["role"], "assistant");
+        assert_eq!(messages[2]["content"], "Paris.");
+        assert_eq!(messages[3]["role"], "user");
+        assert_eq!(messages[3]["content"], "and its population?");
+
+        std::env::remove_var("GHOSTLINK_LLAMA_SERVER_URL");
+    }
+
+    #[test]
     fn llama_mode_requires_model_path() {
         let _guard = env_lock().lock().expect("env lock poisoned");
 
@@ -1609,6 +1724,7 @@ mod tests {
                         40,
                         1.1,
                         "llama_cpp",
+                        &[],
                         None,
                         false,
                         None,

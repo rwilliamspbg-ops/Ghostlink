@@ -1996,6 +1996,11 @@ async fn native_tool_loop_core(
     top_p: f32,
     top_k: usize,
     penalty: f32,
+    // Prior conversation turns (role, content), oldest first, from *before*
+    // this tool-calling exchange started. Constant across every iteration of
+    // this loop - the scratchpad below carries the exchange's own
+    // in-progress tool-call/observation turns, which are a separate thing.
+    history: &[(String, String)],
     mut scratchpad: String,
     mut tool_results: Vec<ToolResult>,
     mut iterations_left: usize,
@@ -2014,6 +2019,7 @@ async fn native_tool_loop_core(
                 top_k,
                 penalty,
                 native_engine,
+                history,
                 None,
                 false,
                 None,
@@ -2058,6 +2064,7 @@ async fn native_tool_loop_core(
                     native_engine: native_engine.to_string(),
                     tool_instructions: tool_instructions.to_string(),
                     user_message: user_message.to_string(),
+                    history: history.to_vec(),
                     scratchpad,
                     tools: tools.to_vec(),
                     exec_tokens,
@@ -2121,6 +2128,7 @@ async fn run_native_tool_loop(
     penalty: f32,
     native_engine: &str,
     tools: &[mcp::McpToolSchema],
+    history: &[(String, String)],
 ) -> NativeLoopStep {
     let tool_instructions = mcp::toolcall::build_tool_instructions(tools);
     native_tool_loop_core(
@@ -2136,6 +2144,7 @@ async fn run_native_tool_loop(
         top_p,
         top_k,
         penalty,
+        history,
         String::new(),
         Vec::new(),
         mcp::toolcall::MAX_TOOL_ITERATIONS,
@@ -2159,6 +2168,7 @@ async fn resume_native_tool_loop(
         native_engine,
         tool_instructions,
         user_message,
+        history,
         mut scratchpad,
         tools,
         exec_tokens,
@@ -2235,6 +2245,7 @@ async fn resume_native_tool_loop(
         top_p,
         top_k,
         penalty,
+        &history,
         scratchpad,
         tool_results_so_far,
         iterations_left,
@@ -3071,9 +3082,24 @@ struct ChatCompletionRequest {
     #[allow(dead_code)]
     max_tokens: Option<usize>,
 }
+/// One turn of conversation history, as sent by api.ts's `sendMessage`
+/// `messages` field: "Full transcript (oldest first, including the latest
+/// turn) so the model has memory of the conversation instead of seeing
+/// `message` alone." That last-turn duplication with `GuiChatRequest.message`
+/// is intentional on the client side (older callers only send `message`) -
+/// `handle_gui_chat` drops the final entry here before using the rest as
+/// prior-turn context, since `message` already covers it.
+#[derive(Debug, Deserialize, Clone)]
+struct ChatHistoryTurn {
+    role: String,
+    content: String,
+}
+
 #[derive(Debug, Deserialize)]
 struct GuiChatRequest {
     message: String,
+    #[serde(default)]
+    messages: Option<Vec<ChatHistoryTurn>>,
     #[allow(dead_code)]
     model: Option<String>,
     #[allow(dead_code)]
@@ -3303,6 +3329,10 @@ enum PendingToolCall {
         native_engine: String,
         tool_instructions: String,
         user_message: String,
+        /// Prior conversation turns (role, content), oldest first, from
+        /// before this tool-calling exchange started — see
+        /// `native_tool_loop_core`'s matching doc comment.
+        history: Vec<(String, String)>,
         scratchpad: String,
         tools: Vec<mcp::McpToolSchema>,
         exec_tokens: usize,
@@ -3935,6 +3965,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                     40,
                     1.1,
                     &settings.native_engine,
+                    &[],
                     None,
                     false,
                     None,
@@ -4200,6 +4231,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                     &settings.native_engine,
                     // Stateless endpoint, no session to pin a slot to —
                     // matches handle_chat_completions' same behavior.
+                    &[],
                     None,
                     false,
                     None,
@@ -6752,6 +6784,46 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         }
     }
 
+    /// Builds prior-turn history for `generate()`/`native_tool_loop_core`
+    /// from the client's full transcript, trimmed to fit `token_budget`
+    /// (oldest dropped first) - the actual enforcement point for
+    /// `RuntimeSettings.conversation_token_limit`, which until this function
+    /// existed was stored and displayed but never applied to anything.
+    ///
+    /// `messages` is the *full* transcript including the latest turn (see
+    /// `ChatHistoryTurn`'s doc comment) - the last entry is dropped here
+    /// since callers already send that turn separately as the `prompt`
+    /// argument to `generate()`. Token cost per turn is the same
+    /// whitespace-word estimate used elsewhere in this file (e.g. the
+    /// `token_estimate` computed a few lines into `handle_gui_chat`) rather
+    /// than a real tokenizer - consistent, not exact, which is all a rough
+    /// budget needs.
+    fn trim_conversation_history(
+        messages: &[ChatHistoryTurn],
+        token_budget: usize,
+    ) -> (Vec<(String, String)>, bool) {
+        let prior = if messages.is_empty() {
+            &[][..]
+        } else {
+            &messages[..messages.len() - 1]
+        };
+
+        let mut budget = token_budget;
+        let mut kept: Vec<(String, String)> = Vec::new();
+        for turn in prior.iter().rev() {
+            let cost = turn.content.split_whitespace().count().max(1);
+            if cost > budget {
+                break;
+            }
+            budget -= cost;
+            kept.push((turn.role.clone(), turn.content.clone()));
+        }
+        kept.reverse();
+
+        let truncated = kept.len() < prior.len();
+        (kept, truncated)
+    }
+
     async fn handle_gui_chat(
         State(state): State<Arc<Mutex<BackendState>>>,
         Json(req): Json<GuiChatRequest>,
@@ -6817,6 +6889,10 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         }
 
         let token_estimate = req.message.split_whitespace().count().clamp(1, 1024);
+        let (history_turns, history_truncated) = trim_conversation_history(
+            req.messages.as_deref().unwrap_or(&[]),
+            settings.conversation_token_limit,
+        );
         let temp = req.temperature.unwrap_or(settings.temperature);
         let top_p = req.top_p.unwrap_or(settings.top_p);
         let top_k = req.top_k.unwrap_or(settings.top_k);
@@ -6991,6 +7067,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                     penalty,
                     &settings.native_engine,
                     &enabled_tools,
+                    &history_turns,
                 )
                 .await;
                 match step {
@@ -7023,8 +7100,17 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                         top_k,
                         penalty,
                         &settings.native_engine,
+                        &history_turns,
+                        // "any idle slot" (llama-server's own default), not a
+                        // pinned slot number - safe with the default
+                        // parallel_slots=1 (there's only ever one slot to
+                        // land on anyway) and no worse than before if the
+                        // user's raised it. cache_prompt: true only helps
+                        // when consecutive calls land on the same slot with
+                        // a matching prefix; harmless (just a fresh eval, as
+                        // before) when they don't.
                         None,
-                        false,
+                        true,
                         req.response_format.clone(),
                     )
                     .await
@@ -7219,6 +7305,12 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             "exec_tokens": exec_tokens,
             "exec_micro_batch": exec_micro_batch,
             "real_inference": real_inference,
+            // Set when trim_conversation_history dropped one or more of the
+            // client's older turns to fit conversation_token_limit - the GUI
+            // renders a divider above this reply so the gap is visible (see
+            // ChatMessage.truncatedBefore) instead of looking like the model
+            // just forgot on its own.
+            "truncated": history_truncated,
             "metrics": metrics_json
         });
 
