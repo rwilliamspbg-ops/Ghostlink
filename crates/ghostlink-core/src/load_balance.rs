@@ -177,6 +177,8 @@ impl LoadBalancer {
     ///
     /// Optimized using cursor-based index traversal instead of costly vector draining
     /// and shifting elements, improving complexity from O(N^2) to O(N).
+    /// Further optimized by sorting references to NodeResources instead of cloning them,
+    /// and dynamically avoiding layer cloning/sorting if they are already in sequential order.
     pub fn distribute_layers(
         &self,
         layers: &[crate::planning::LayerSpec],
@@ -186,25 +188,33 @@ impl LoadBalancer {
             return Err("no nodes available".into());
         }
 
-        // Sort nodes by VRAM capacity (descending)
-        let mut sorted_nodes: Vec<_> = nodes_snapshot.iter().cloned().collect();
+        // Sort references to nodes by VRAM capacity (descending) to avoid copying heap-allocated IDs and strings
+        let mut sorted_nodes: Vec<&crate::protocol::NodeResources> =
+            nodes_snapshot.iter().collect();
         sorted_nodes.sort_by(|a, b| {
             b.vram_gb
                 .partial_cmp(&a.vram_gb)
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
 
-        // Collect all layers into a single sorted vector (by index)
-        let mut all_layers: Vec<_> = layers.to_vec();
-        all_layers.sort_by_key(|l| l.index);
-        let total_layer_count = all_layers.len();
+        // Zero-copy shortcut: check if layers are already sorted (nearly always true).
+        // If already sorted, borrow instead of allocating/sorting a new vector.
+        let is_sorted = layers.windows(2).all(|w| w[0].index <= w[1].index);
+        let sorted_layers: std::borrow::Cow<'_, [crate::planning::LayerSpec]> = if is_sorted {
+            std::borrow::Cow::Borrowed(layers)
+        } else {
+            let mut all_layers = layers.to_vec();
+            all_layers.sort_by_key(|l| l.index);
+            std::borrow::Cow::Owned(all_layers)
+        };
+        let total_layer_count = sorted_layers.len();
 
         // Greedy assignment: assign contiguous layers to nodes based on VRAM using O(1) indices
         let mut distributions = Vec::with_capacity(sorted_nodes.len());
         let mut current_layer_idx = 0usize;
 
         for node in &sorted_nodes {
-            if current_layer_idx >= all_layers.len() {
+            if current_layer_idx >= sorted_layers.len() {
                 break;
             }
 
@@ -212,7 +222,7 @@ impl LoadBalancer {
             let start_idx = current_layer_idx;
             let mut end_idx = current_layer_idx;
 
-            for layer in &all_layers[current_layer_idx..] {
+            for layer in &sorted_layers[current_layer_idx..] {
                 if used_vram + layer.vram_gb > node.vram_gb {
                     break;
                 }
@@ -221,7 +231,7 @@ impl LoadBalancer {
             }
 
             if end_idx > start_idx {
-                let slices: Vec<TensorSlice> = all_layers[start_idx..end_idx]
+                let slices: Vec<TensorSlice> = sorted_layers[start_idx..end_idx]
                     .iter()
                     .map(|l| TensorSlice::new((l.index, l.index + 1), l.vram_gb))
                     .collect();
@@ -231,12 +241,12 @@ impl LoadBalancer {
             }
         }
 
-        if current_layer_idx >= all_layers.len() {
+        if current_layer_idx >= sorted_layers.len() {
             Ok(LoadDistributionPlan::new(distributions, total_layer_count))
         } else {
             Err(format!(
                 "insufficient VRAM: {} layers remain",
-                all_layers.len() - current_layer_idx
+                sorted_layers.len() - current_layer_idx
             ))
         }
     }
