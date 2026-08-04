@@ -8155,15 +8155,28 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         // throughput, and instead configured 1 token per 20 seconds —
         // 10x slower than the original `.per_second(2)` it was replacing.
         // `.per_millisecond(N)` is the method that actually takes a rate
-        // in the usual sense once inverted: `per_millisecond(50)` = one
-        // token every 50ms = 20 tokens/sec sustained, comfortably above
-        // a few tabs' worth of steady polling while still catching an
-        // actually-pathological tight retry loop. `burst_size` is
-        // unaffected by this mixup — it's already a plain token count.
+        // in the usual sense once inverted.
+        //
+        // 20 tok/s / burst 60 (the first correct version of this fix)
+        // still measurably undershot real usage: a full-spectrum perf pass
+        // hitting 8 endpoints back-to-back (~160 requests in well under a
+        // second — a benchmark script, a dashboard, a fast page load) burns
+        // through a 60-token burst and starts drawing real 429s from
+        // cumulative budget exhaustion, on requests that have nothing to do
+        // with each other. This is a single-user local tool sitting behind
+        // one proxy hop, not a shared multi-tenant API — the auth layer
+        // already keeps out anyone without the bearer token, so this limiter's
+        // real job is catching a genuinely pathological unbounded retry loop
+        // (which fires far faster than even a fast benchmark script), not
+        // policing ordinary rapid-but-finite request bursts. `per_millisecond(20)`
+        // = one token every 20ms = 50 tokens/sec sustained, burst 300 — both
+        // raised well past anything this tool's own tooling has thrown at it
+        // in practice, while a real runaway loop (typically hundreds+ req/s
+        // with no pause) still trips it.
         let governor_conf = std::sync::Arc::new(
             tower_governor::governor::GovernorConfigBuilder::default()
-                .per_millisecond(50)
-                .burst_size(60)
+                .per_millisecond(20)
+                .burst_size(300)
                 .finish()
                 .expect("static governor config is always valid"),
         );
