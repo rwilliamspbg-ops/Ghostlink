@@ -1,5 +1,9 @@
 # Palette's Journal
 
+## 2026-08-05 - [Sidebar Search Button & Shortcut Badges]
+**Learning:** Displaying incorrect hotkey badges in primary UI controls (such as labeling "New Chat" with "Ctrl+K" instead of "Ctrl+Shift+O") confuses power users and misrepresents keyboard capability. Additionally, hidden features (like a global Command Palette) are significantly more accessible and discoverable when represented by a clear, dedicated visual trigger button in main navigation menus. Custom programmatic event systems with active focus restoration allow seamless visual triggers without losing screen-reader context.
+**Action:** Always provide dedicated visual trigger buttons for hidden features like command palettes, label shortcut badges precisely, and use custom window events with focus restoration to trigger them smoothly.
+
 ## 2026-08-04 - [Settings Safety and Accessibility Controls]
 **Learning:** Destructive utility actions in complex dashboards (like resetting runtime configurations) that are positioned directly adjacent to primary actions (like Save) must be guarded with descriptive titles and modal confirmation dialogs (`window.confirm`) to prevent catastrophic data loss. Furthermore, inputs, sliders, and buttons must utilize explicit high-contrast focus rings (`focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none`) to ensure keyboard navigatees have complete visual tracking on dark-theme UI layers.
 **Action:** Always secure configuration reset triggers with clear, modal confirmation prompts, native informational tooltips, and high-visibility keyboard focus state rings.

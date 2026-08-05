@@ -87,7 +87,7 @@ export const CommandPalette: React.FC = () => {
     setHighlight(0);
   }, [query, open]);
 
-  // Global keyboard shortcuts — the only place any of these are wired up.
+  // Global keyboard shortcuts & custom trigger events — the only place any of these are wired up.
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
@@ -114,8 +114,18 @@ export const CommandPalette: React.FC = () => {
         }
       }
     };
+    const handleOpenPalette = () => {
+      setOpen((o) => {
+        if (!o) triggerRef.current = document.activeElement as HTMLElement;
+        return true;
+      });
+    };
     document.addEventListener('keydown', handleKeyDown);
-    return () => document.removeEventListener('keydown', handleKeyDown);
+    window.addEventListener('open-command-palette', handleOpenPalette);
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('open-command-palette', handleOpenPalette);
+    };
   }, [setActiveTab, setChatMessages]);
 
   useEffect(() => {
