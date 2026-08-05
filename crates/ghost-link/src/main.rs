@@ -2022,7 +2022,10 @@ async fn invoke_mcp_tool(
     tool_name: &str,
     args: serde_json::Value,
 ) -> ToolResult {
-    match tools.iter().find(|t| t.name == tool_name) {
+    let tool_map: std::collections::HashMap<&str, &mcp::McpToolSchema> =
+        tools.iter().map(|t| (t.name.as_str(), t)).collect();
+
+    match tool_map.get(tool_name) {
         Some(schema) => match mcp_registry
             .call_tool(&schema.server, tool_name, args)
             .await
@@ -2137,6 +2140,9 @@ async fn native_tool_loop_core(
     mut tool_results: Vec<ToolResult>,
     mut iterations_left: usize,
 ) -> NativeLoopStep {
+    let tool_map: std::collections::HashMap<&str, &mcp::McpToolSchema> =
+        tools.iter().map(|t| (t.name.as_str(), t)).collect();
+
     while iterations_left > 0 {
         iterations_left -= 1;
         let prompt = format!("{tool_instructions}Question: {user_message}\n{scratchpad}");
@@ -2189,7 +2195,7 @@ async fn native_tool_loop_core(
             });
         };
 
-        if let Some(schema) = tools.iter().find(|t| t.name == call.tool) {
+        if let Some(schema) = tool_map.get(call.tool.as_str()) {
             if mcp_registry.requires_confirmation(&schema.server).await {
                 return NativeLoopStep::NeedsConfirmation(Box::new(PendingToolCall::Native {
                     model: model.to_string(),
@@ -2453,10 +2459,13 @@ async fn ollama_process_call_batch(
     messages: &mut Vec<ollama::ChatMessage>,
     tool_results: &mut Vec<ToolResult>,
 ) -> Option<(String, String, serde_json::Value, Vec<serde_json::Value>)> {
+    let tool_map: std::collections::HashMap<&str, &mcp::McpToolSchema> =
+        tools.iter().map(|t| (t.name.as_str(), t)).collect();
+
     let mut iter = calls.into_iter();
     while let Some(call) = iter.next() {
         let (name, args) = parse_ollama_tool_call(&call);
-        if let Some(schema) = tools.iter().find(|t| t.name == name) {
+        if let Some(schema) = tool_map.get(name.as_str()) {
             if mcp_registry.requires_confirmation(&schema.server).await {
                 return Some((name, schema.server.clone(), args, iter.collect()));
             }
@@ -2739,11 +2748,14 @@ async fn vllm_process_call_batch(
     Option<String>,
     Vec<vllm::VllmToolCall>,
 )> {
+    let tool_map: std::collections::HashMap<&str, &mcp::McpToolSchema> =
+        tools.iter().map(|t| (t.name.as_str(), t)).collect();
+
     let mut iter = calls.into_iter();
     while let Some(call) = iter.next() {
         let args: serde_json::Value =
             serde_json::from_str(&call.function.arguments).unwrap_or(serde_json::Value::Null);
-        if let Some(schema) = tools.iter().find(|t| t.name == call.function.name) {
+        if let Some(schema) = tool_map.get(call.function.name.as_str()) {
             if mcp_registry.requires_confirmation(&schema.server).await {
                 return Some((
                     call.function.name,
@@ -11283,5 +11295,52 @@ mod tests {
     fn bootstrap_rejects_missing_config_value() {
         let result = extract_bootstrap_args(vec!["--config".to_string()]);
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_mcp_tool_hashmap_lookup() {
+        use serde_json::json;
+
+        let mut tools = Vec::new();
+        for i in 0..100 {
+            tools.push(mcp::McpToolSchema {
+                server: format!("server-{}", i),
+                name: format!("tool-{}", i),
+                description: format!("description-{}", i),
+                input_schema: json!({}),
+            });
+        }
+
+        let config_path = std::env::temp_dir().join("ghostlink-test-mcp-servers-hashmap-test.toml");
+        let registry = mcp::McpRegistry::new(mcp::McpConfigManager::new(config_path));
+        let outcome = invoke_mcp_tool(&registry, &tools, "tool-42", json!({})).await;
+        assert_eq!(outcome.tool, "tool-42");
+        assert!(!outcome.success);
+
+        let calls = vec![
+            json!({
+                "function": {
+                    "name": "tool-10",
+                    "arguments": {}
+                }
+            }),
+            json!({
+                "function": {
+                    "name": "tool-99",
+                    "arguments": {}
+                }
+            }),
+        ];
+        let mut messages = Vec::new();
+        let mut tool_results = Vec::new();
+        let pending =
+            ollama_process_call_batch(&registry, &tools, calls, &mut messages, &mut tool_results)
+                .await;
+
+        assert!(pending.is_none());
+        assert_eq!(messages.len(), 2);
+        assert_eq!(tool_results.len(), 2);
+        assert_eq!(tool_results[0].tool, "tool-10");
+        assert_eq!(tool_results[1].tool, "tool-99");
     }
 }
