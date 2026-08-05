@@ -795,40 +795,40 @@ fn detect_gpus(mode: ProbeMode) -> Vec<GpuInfo> {
         return vec![gpu];
     }
 
-    // Platform-specific probes
+    // Platform-specific probes with timeout for subprocess calls
     let mut gpus = Vec::new();
 
-    // nvidia-smi (cross-platform)
-    if let Some(result) = probe_nvidia_smi() {
+    // nvidia-smi (cross-platform, with timeout)
+    if let Some(result) = probe_nvidia_smi_with_timeout() {
         gpus.extend(result);
     }
 
-    // rocm-smi (Linux, feature-gated)
+    // rocm-smi (Linux, feature-gated, with timeout)
     #[cfg(feature = "rocm")]
-    if let Some(result) = probe_rocm_smi() {
+    if let Some(result) = probe_rocm_smi_with_timeout() {
         gpus.extend(result);
     }
 
-    // Windows WMI (fallback for non-NVIDIA GPUs)
+    // Windows WMI (fallback for non-NVIDIA GPUs, with timeout)
     #[cfg(target_os = "windows")]
     if gpus.is_empty() {
-        if let Some(result) = probe_windows_wmi_gpu() {
+        if let Some(result) = probe_windows_wmi_gpu_with_timeout() {
             gpus.extend(result);
         }
     }
 
-    // Linux lspci (fallback, no VRAM info)
+    // Linux lspci (fallback, no VRAM info, with timeout)
     #[cfg(target_os = "linux")]
     if gpus.is_empty() {
-        if let Some(gpu) = probe_lspci_gpu() {
+        if let Some(gpu) = probe_lspci_gpu_with_timeout() {
             gpus.push(gpu);
         }
     }
 
-    // macOS system_profiler
+    // macOS system_profiler (with timeout)
     #[cfg(target_os = "macos")]
     if gpus.is_empty() {
-        if let Some(gpu) = probe_macos_gpu() {
+        if let Some(gpu) = probe_macos_gpu_with_timeout() {
             gpus.push(gpu);
         }
     }
@@ -841,9 +841,9 @@ fn detect_gpus(mode: ProbeMode) -> Vec<GpuInfo> {
         }
     }
 
-    // Vulkan probe (cross-platform, full mode only to avoid slowdown)
+    // Vulkan probe (cross-platform, full mode only to avoid slowdown, with timeout)
     if mode == ProbeMode::Full && gpus.is_empty() {
-        if let Some(gpu) = probe_vulkan_gpu() {
+        if let Some(gpu) = probe_vulkan_gpu_with_timeout() {
             gpus.push(gpu);
         }
     }
@@ -865,6 +865,62 @@ fn detect_gpus(mode: ProbeMode) -> Vec<GpuInfo> {
     }
 
     gpus
+}
+
+/// Runs `probe` on a detached background thread and waits up to `timeout`
+/// for a result, returning as soon as it's ready rather than always blocking
+/// for the full duration — `std::thread::scope` can't do this: it implicitly
+/// joins every spawned thread before returning, so wrapping a probe in a
+/// scope and then sleeping for the timeout duration blocks for that full
+/// duration on *every* call, fast or slow, and still hangs forever on a
+/// genuinely stuck probe (the earlier bug this replaces). Rust has no way to
+/// forcibly kill a thread, so a probe that's still running past `timeout` is
+/// abandoned: the background thread runs to completion on its own time and
+/// its late result is silently dropped when `rx` goes out of scope.
+fn probe_with_timeout<T, F>(timeout: Duration, probe: F) -> Option<T>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Option<T> + Send + 'static,
+{
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(probe());
+    });
+    rx.recv_timeout(timeout).ok().flatten()
+}
+
+/// Timeout-wrapped GPU probe: nvidia-smi with 5-second timeout
+fn probe_nvidia_smi_with_timeout() -> Option<Vec<GpuInfo>> {
+    probe_with_timeout(Duration::from_millis(5000), probe_nvidia_smi)
+}
+
+/// Timeout-wrapped GPU probe: rocm-smi with 5-second timeout
+#[cfg(feature = "rocm")]
+fn probe_rocm_smi_with_timeout() -> Option<Vec<GpuInfo>> {
+    probe_with_timeout(Duration::from_millis(5000), probe_rocm_smi)
+}
+
+/// Timeout-wrapped GPU probe: Windows WMI with 5-second timeout
+#[cfg(target_os = "windows")]
+fn probe_windows_wmi_gpu_with_timeout() -> Option<Vec<GpuInfo>> {
+    probe_with_timeout(Duration::from_millis(5000), probe_windows_wmi_gpu)
+}
+
+/// Timeout-wrapped GPU probe: lspci with 5-second timeout
+#[cfg(target_os = "linux")]
+fn probe_lspci_gpu_with_timeout() -> Option<GpuInfo> {
+    probe_with_timeout(Duration::from_millis(5000), probe_lspci_gpu)
+}
+
+/// Timeout-wrapped GPU probe: macOS system_profiler with 5-second timeout
+#[cfg(target_os = "macos")]
+fn probe_macos_gpu_with_timeout() -> Option<GpuInfo> {
+    probe_with_timeout(Duration::from_millis(5000), probe_macos_gpu)
+}
+
+/// Timeout-wrapped GPU probe: Vulkan with 10-second timeout (slower probe)
+fn probe_vulkan_gpu_with_timeout() -> Option<GpuInfo> {
+    probe_with_timeout(Duration::from_millis(10000), probe_vulkan_gpu)
 }
 
 fn detect_gpu_from_env() -> Option<GpuInfo> {

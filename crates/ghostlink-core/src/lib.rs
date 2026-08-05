@@ -29,7 +29,9 @@
 //! ```
 
 pub mod accelerator;
+pub mod api_response_cache;
 pub mod autotune;
+pub mod circuit_breaker;
 pub mod cluster;
 pub mod dashboard;
 pub mod discovery;
@@ -50,7 +52,9 @@ pub mod xdp;
 
 // Re-export common types for convenience
 pub use accelerator::ExecutionBackend;
+pub use api_response_cache::{ApiResponseCache, CacheStats};
 pub use autotune::AutoTuner;
+pub use circuit_breaker::{CircuitBreaker, CircuitBreakerConfig, CircuitState, JitteredBackoff};
 pub use cluster::{ClusterState, NodeMetrics, NodeStatus};
 pub use discovery::{broadcast_and_collect, UdpDiscoveryConfig, DEFAULT_DISCOVERY_PORT};
 pub use host::{
