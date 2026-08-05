@@ -8,6 +8,7 @@
 use crate::inference_engine::InferenceEngine;
 use crate::runtime::Runtime;
 use anyhow::Result;
+use ghostlink_core::api_response_cache::ApiResponseCache;
 use ghostlink_core::autotune::AutoTuner;
 use ghostlink_core::cluster::{ClusterState, NodeMetrics};
 use ghostlink_core::dashboard::Dashboard;
@@ -1546,6 +1547,13 @@ struct BackendState {
     /// would need an append-only file, which is a bigger step than this
     /// first real version takes.
     audit_log: std::collections::VecDeque<AuditLogEntry>,
+    /// Caches `scan_local_models_dir`'s result — a real `fs::read_dir` +
+    /// `fs::metadata`-per-file disk scan `handle_gui_models` previously did
+    /// on every single `GET /api/models` call. Short TTL (see
+    /// `MODELS_SCAN_CACHE_TTL`); explicitly cleared by the load/download/
+    /// delete handlers so a change is visible immediately rather than
+    /// waiting out the TTL.
+    models_scan_cache: ApiResponseCache,
 }
 
 /// One row for the GUI's Security tab audit log — field names/shape match
@@ -1750,6 +1758,33 @@ impl Default for RuntimeSettings {
             rpc_port: default_rpc_port(),
         }
     }
+}
+
+/// How long `handle_gui_models` trusts a cached local-disk model scan before
+/// re-scanning. The load/download/delete handlers explicitly clear the cache
+/// on completion, so this only bounds staleness for changes made outside
+/// Ghostlink (e.g. a model file dropped in by hand).
+const MODELS_SCAN_CACHE_TTL: Duration = Duration::from_secs(5);
+
+/// Runs `compute` (a real `fs::read_dir`/`fs::metadata` disk scan) through
+/// `cache`, so repeated calls within `MODELS_SCAN_CACHE_TTL` reuse the prior
+/// scan instead of re-touching the filesystem every time. Top-level (rather
+/// than inlined in the nested `handle_gui_models` handler, which — like the
+/// rest of this file's axum handlers — is a local fn inside `main()` and so
+/// isn't directly reachable from `mod tests`) specifically so it's callable
+/// from a test without spinning up the whole handler/state plumbing.
+fn cached_models_scan(
+    cache: &ApiResponseCache,
+    compute: impl FnOnce() -> Vec<ModelRecord>,
+) -> Vec<ModelRecord> {
+    cache
+        .get_or_compute("local_models_scan", MODELS_SCAN_CACHE_TTL, move || {
+            serde_json::to_vec(&compute())
+                .map_err(|e| format!("failed to serialize local model scan: {e}"))
+        })
+        .ok()
+        .and_then(|(body, _etag)| serde_json::from_slice(&body).ok())
+        .unwrap_or_default()
 }
 
 fn build_cluster_topology_json(cluster: &ClusterState) -> serde_json::Value {
@@ -4619,8 +4654,12 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
     ) -> Json<serde_json::Value> {
         let backend = lock_state(&state);
 
+        let models_dir = backend.settings.models_dir.clone();
+        let local = cached_models_scan(&backend.models_scan_cache, move || {
+            scan_local_models_dir(&models_dir)
+        });
+
         let mut merged: Vec<ModelRecord> = backend.models.clone();
-        let local = scan_local_models_dir(&backend.settings.models_dir);
         for l in &local {
             if let Some(existing) = merged.iter_mut().find(|m| m.name == l.name) {
                 existing.local_path = l.local_path.clone();
@@ -5083,6 +5122,10 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                         local_path,
                     });
                     save_persistent_models(&backend.models);
+                    // The download wrote a new .gguf file — the cached disk
+                    // scan is stale as of this exact moment, not just after
+                    // its TTL elapses.
+                    backend.models_scan_cache.clear();
                     backend.download_progress.insert(
                         spawn_model_id.clone(),
                         DownloadProgressInfo {
@@ -5218,6 +5261,8 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             backend.current_model = "none".to_string();
         }
         save_persistent_models(&backend.models);
+        // The delete(s) above may have removed real files from disk.
+        backend.models_scan_cache.clear();
         Json(serde_json::json!({
             "status": "ok",
             "model": model_name
@@ -8204,6 +8249,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         plugin_registry: backend_plugin::BackendPluginRegistry::from_env(),
         enable_tls_active: use_tls,
         audit_log: std::collections::VecDeque::new(),
+        models_scan_cache: ApiResponseCache::new(),
     }));
 
     // Background CPU/RAM/GPU sampler — keeps /api/metrics non-blocking.
@@ -10575,6 +10621,7 @@ mod tests {
             enable_tls_active: false,
             plugin_registry: backend_plugin::BackendPluginRegistry::from_env(),
             audit_log: std::collections::VecDeque::new(),
+            models_scan_cache: ApiResponseCache::new(),
         }))
     }
 
@@ -10647,6 +10694,44 @@ mod tests {
         assert!(json["nodes"][1]["throughput_history_gbps"]
             .as_array()
             .is_some());
+    }
+
+    #[test]
+    fn cached_models_scan_reuses_the_prior_scan_within_the_ttl() {
+        let cache = ApiResponseCache::new();
+        let call_count = std::sync::atomic::AtomicUsize::new(0);
+        let fake_scan = || {
+            call_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            vec![ModelRecord {
+                name: "tinyllama".to_string(),
+                size_gb: 1.0,
+                model_type: "LLM".to_string(),
+                quantization: "Q4_K_M".to_string(),
+                status: "Ready".to_string(),
+                local_path: "/models/tinyllama.gguf".to_string(),
+            }]
+        };
+
+        let first = cached_models_scan(&cache, fake_scan);
+        let second = cached_models_scan(&cache, fake_scan);
+
+        assert_eq!(first.len(), second.len());
+        assert_eq!(first[0].name, second[0].name);
+        assert_eq!(
+            call_count.load(std::sync::atomic::Ordering::Relaxed),
+            1,
+            "second call within the TTL should reuse the cached scan, not rescan the disk"
+        );
+        assert_eq!(cache.stats().cache_hits, 1);
+
+        cache.clear();
+        let third = cached_models_scan(&cache, fake_scan);
+        assert_eq!(third[0].name, first[0].name);
+        assert_eq!(
+            call_count.load(std::sync::atomic::Ordering::Relaxed),
+            2,
+            "clearing the cache (as the download/delete handlers do) must force a rescan"
+        );
     }
 
     #[tokio::test]

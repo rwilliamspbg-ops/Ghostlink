@@ -3,6 +3,7 @@
 //! This module provides lightweight execution planning primitives that bridge
 //! placement plans to token-step pipeline schedules across heterogeneous devices.
 
+use crate::circuit_breaker::CircuitBreaker;
 use crate::planning::LayerAssignment;
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
@@ -1046,6 +1047,15 @@ fn _read_payload(
 ///
 /// In a multi-node deployment, the `bind_addr` and `connect_addr` can point to
 /// different physical interfaces or remote hosts.
+///
+/// `circuit_breaker` is optional and persists failure history *across* calls
+/// (unlike `config.reconnect_attempts`, which only bounds retries within this
+/// one call) — pass `ClusterState::circuit_breaker_for(node_id)` for a real
+/// remote node so a chronically-unreachable node fails fast on subsequent
+/// pipeline runs instead of repeating the full connect/backoff sequence every
+/// time. `None` (e.g. loopback benchmarking, where there's no real remote
+/// failure mode to protect against) reproduces the prior always-retry behavior
+/// exactly.
 pub fn spawn_tcp_bridge(
     source_stage: usize,
     input_rx: mpsc::Receiver<TransportBatch>,
@@ -1053,33 +1063,53 @@ pub fn spawn_tcp_bridge(
     config: TcpTransportConfig,
     listener: BridgeListener,
     addr: BridgeAddr,
+    circuit_breaker: Option<CircuitBreaker>,
 ) -> thread::JoinHandle<BridgeAccumulator> {
     thread::spawn(move || {
         let client_stream = {
+            let breaker_open = circuit_breaker
+                .as_ref()
+                .is_some_and(|breaker| !breaker.should_attempt());
+
             let mut connected = None;
-            let attempts = config.reconnect_attempts.max(1);
-            for attempt in 0..attempts {
-                match addr.connect(Duration::from_secs(1)) {
-                    Ok(stream) => {
-                        connected = Some(stream);
-                        break;
-                    }
-                    Err(e) => {
-                        tracing::debug!(
-                            "Bridge: Connection attempt {}/{} failed for {:?}: {}",
-                            attempt + 1,
-                            attempts,
-                            addr,
-                            e
-                        );
-                        thread::sleep(Duration::from_millis(config.reconnect_backoff_ms));
+            if breaker_open {
+                tracing::warn!(
+                    "Bridge: circuit breaker open for {:?}; skipping connection attempts",
+                    addr
+                );
+            } else {
+                let attempts = config.reconnect_attempts.max(1);
+                for attempt in 0..attempts {
+                    match addr.connect(Duration::from_secs(1)) {
+                        Ok(stream) => {
+                            connected = Some(stream);
+                            break;
+                        }
+                        Err(e) => {
+                            tracing::debug!(
+                                "Bridge: Connection attempt {}/{} failed for {:?}: {}",
+                                attempt + 1,
+                                attempts,
+                                addr,
+                                e
+                            );
+                            thread::sleep(Duration::from_millis(config.reconnect_backoff_ms));
+                        }
                     }
                 }
             }
 
             match connected {
-                Some(stream) => stream,
+                Some(stream) => {
+                    if let Some(breaker) = &circuit_breaker {
+                        breaker.record_success();
+                    }
+                    stream
+                }
                 None => {
+                    if let Some(breaker) = &circuit_breaker {
+                        breaker.record_failure();
+                    }
                     tracing::error!(
                         "Bridge: Exhausted retries for {:?}. Falling back to passthrough.",
                         addr
@@ -1417,6 +1447,7 @@ pub fn execute_pipeline_distributed(
             )
         };
 
+        let breaker = Some(cluster.circuit_breaker_for(&target_stage_p.node_id));
         bridge_handles.push(spawn_tcp_bridge(
             source_stage_idx,
             bridge_in_rx,
@@ -1424,6 +1455,7 @@ pub fn execute_pipeline_distributed(
             config.clone(),
             listener,
             addr,
+            breaker,
         ));
     }
 
@@ -1691,6 +1723,7 @@ pub fn execute_pipeline_tcp_loopback_with_config(
             config.clone(),
             listener,
             addr,
+            None, // loopback benchmarking: no real remote-node failure mode to track
         ));
     }
 
@@ -2614,6 +2647,56 @@ mod tests {
             result.stage_stats[1].avg_bridge_write_ms > 0.0,
             "remote round-trip time must be non-zero for a real socket hop, got {}",
             result.stage_stats[1].avg_bridge_write_ms
+        );
+    }
+
+    #[test]
+    fn spawn_tcp_bridge_skips_connection_attempts_when_circuit_breaker_is_open() {
+        use crate::circuit_breaker::{CircuitBreakerConfig, CircuitState};
+
+        // Bind-then-drop reliably yields an address nothing is listening on.
+        let dead_addr = {
+            let l = TcpListener::bind("127.0.0.1:0").unwrap();
+            l.local_addr().unwrap()
+        };
+        let dummy_listener = BridgeListener::Tcp(TcpListener::bind("127.0.0.1:0").unwrap());
+
+        let breaker = CircuitBreaker::with_config(CircuitBreakerConfig {
+            failure_threshold: 1,
+            open_duration_secs: 3600,
+            reset_timeout_secs: 3600,
+        });
+        breaker.record_failure();
+        assert_eq!(breaker.current_state(), CircuitState::Open);
+
+        let (in_tx, in_rx) = mpsc::sync_channel::<TransportBatch>(1);
+        let (out_tx, _out_rx) = mpsc::sync_channel::<TransportBatch>(1);
+        drop(in_tx); // closes the passthrough loop's input immediately
+
+        let config = TcpTransportConfig {
+            reconnect_attempts: 5,
+            reconnect_backoff_ms: 2000,
+            ..TcpTransportConfig::default()
+        };
+
+        let start = Instant::now();
+        let handle = spawn_tcp_bridge(
+            0,
+            in_rx,
+            out_tx,
+            config,
+            dummy_listener,
+            BridgeAddr::Tcp(dead_addr),
+            Some(breaker),
+        );
+        handle.join().expect("bridge thread panicked");
+
+        // 5 attempts * 2s backoff would take >=10s if the open breaker weren't
+        // honored; a healthy short-circuit finishes in well under a second.
+        assert!(
+            start.elapsed() < Duration::from_millis(1500),
+            "open circuit breaker should skip connection attempts entirely, took {:?}",
+            start.elapsed()
         );
     }
 }

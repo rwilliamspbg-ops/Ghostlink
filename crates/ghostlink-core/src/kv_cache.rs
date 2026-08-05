@@ -176,6 +176,52 @@ impl LayerKvCache {
         Ok(())
     }
 
+    /// Writes multiple tokens' key/value vectors under a single write-lock
+    /// acquisition, validating every entry upfront (before taking the lock)
+    /// so a bad entry anywhere in the batch fails the whole call without
+    /// partially writing it. Same per-token semantics as calling `write_kv`
+    /// in a loop — this only changes how many times the lock is acquired.
+    pub fn write_kv_batch(&self, entries: &[(usize, &[f32], &[f32])]) -> Result<(), String> {
+        if entries.is_empty() {
+            return Ok(());
+        }
+
+        let width = self.config.token_width();
+
+        // Validate all entries upfront before taking write lock
+        for (token_idx, keys, values) in entries {
+            if keys.len() != values.len() {
+                return Err("keys/values length mismatch".to_string());
+            }
+            if keys.len() != width {
+                return Err(format!("expected {width} elements, got {}", keys.len()));
+            }
+            if *token_idx >= self.config.max_tokens_per_seq {
+                return Err(format!("token index {token_idx} out of bounds"));
+            }
+        }
+
+        // Single write lock acquisition
+        let mut state = self
+            .state
+            .write()
+            .map_err(|_| "kv cache lock poisoned".to_string())?;
+        if state.keys.is_empty() {
+            return Err("cache not initialized".to_string());
+        }
+
+        let mut max_token_idx = 0;
+        for (token_idx, keys, values) in entries {
+            let start = token_idx * width;
+            state.keys[start..start + width].copy_from_slice(keys);
+            state.values[start..start + width].copy_from_slice(values);
+            max_token_idx = max_token_idx.max(*token_idx);
+        }
+
+        state.current_len = state.current_len.max(max_token_idx + 1);
+        Ok(())
+    }
+
     /// Reads one token's cached key/value vectors as an owned, fixed-size
     /// copy (`config.token_width()` floats each — not the whole cache).
     pub fn read_kv(&self, token_idx: usize) -> Result<KVCacheEntry, String> {
@@ -400,5 +446,72 @@ mod tests {
         // Written through the clone, visible through the original — same
         // underlying Arc<RwLock<..>>, not a deep copy.
         assert_eq!(cache.read_kv(0).unwrap().keys, data);
+    }
+
+    #[test]
+    fn write_kv_batch_multiple() {
+        let cache = LayerKvCache::new(small_config());
+        cache.initialize(8).unwrap();
+        let width = cache.config.token_width();
+
+        let k0 = vec![0.0_f32; width];
+        let v0 = vec![0.0_f32; width];
+        let k1 = vec![1.0_f32; width];
+        let v1 = vec![10.0_f32; width];
+
+        let entries = [
+            (0, k0.as_slice(), v0.as_slice()),
+            (1, k1.as_slice(), v1.as_slice()),
+        ];
+
+        cache.write_kv_batch(&entries).unwrap();
+        assert_eq!(cache.read_kv(0).unwrap().keys[0], 0.0);
+        assert_eq!(cache.read_kv(1).unwrap().values[0], 10.0);
+    }
+
+    #[test]
+    fn write_kv_batch_empty() {
+        let cache = LayerKvCache::new(small_config());
+        cache.initialize(4).unwrap();
+        assert!(cache.write_kv_batch(&[]).is_ok());
+    }
+
+    #[test]
+    fn write_kv_batch_validation_fails() {
+        let cache = LayerKvCache::new(small_config());
+        cache.initialize(4).unwrap();
+        let width = cache.config.token_width();
+
+        let k0 = vec![1.0_f32; width];
+        let v0 = vec![2.0_f32; width];
+        let bad_k = vec![0.0_f32; width + 1];
+
+        let entries = [
+            (0, k0.as_slice(), v0.as_slice()),
+            (1, bad_k.as_slice(), v0.as_slice()),
+        ];
+
+        assert!(cache.write_kv_batch(&entries).is_err());
+    }
+
+    #[test]
+    fn write_kv_batch_is_atomic_on_validation_failure() {
+        let cache = LayerKvCache::new(small_config());
+        cache.initialize(4).unwrap();
+        let width = cache.config.token_width();
+
+        let good_keys = vec![5.0_f32; width];
+        let bad_keys = vec![0.0_f32; width + 1];
+
+        let entries = [
+            (0, good_keys.as_slice(), good_keys.as_slice()),
+            (1, bad_keys.as_slice(), good_keys.as_slice()),
+        ];
+
+        assert!(cache.write_kv_batch(&entries).is_err());
+        // Upfront validation must reject the whole batch before the write
+        // lock is even taken, so entry 0 must still hold its zero-initialized
+        // default rather than the batch's (never-applied) value.
+        assert_eq!(cache.read_kv(0).unwrap().keys[0], 0.0);
     }
 }

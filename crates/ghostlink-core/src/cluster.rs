@@ -234,6 +234,12 @@ pub struct ClusterState {
     total_vram_cache: Arc<AtomicU64>,
     /// Cached total system memory across all registered nodes
     total_system_memory_cache: Arc<AtomicU64>,
+    /// Per-node circuit breakers for the TCP transport bridge (`runtime::spawn_tcp_bridge`).
+    /// Lazily created on first use via `circuit_breaker_for` and kept here — rather than
+    /// inside a single pipeline execution — so failures accumulate *across* pipeline runs
+    /// targeting the same node: a node that's been chronically unreachable trips open and
+    /// stays fail-fast instead of re-running the full connect/backoff dance every call.
+    circuit_breakers: Arc<Mutex<HashMap<String, crate::circuit_breaker::CircuitBreaker>>>,
 }
 
 impl Clone for ClusterState {
@@ -246,6 +252,7 @@ impl Clone for ClusterState {
             last_update: Arc::clone(&self.last_update),
             total_vram_cache: Arc::clone(&self.total_vram_cache),
             total_system_memory_cache: Arc::clone(&self.total_system_memory_cache),
+            circuit_breakers: Arc::clone(&self.circuit_breakers),
         }
     }
 }
@@ -267,7 +274,21 @@ impl ClusterState {
             last_update: Arc::new(AtomicU64::new(0)),
             total_vram_cache: Arc::new(AtomicU64::new(0.0_f64.to_bits())),
             total_system_memory_cache: Arc::new(AtomicU64::new(0.0_f64.to_bits())),
+            circuit_breakers: Arc::new(Mutex::new(HashMap::new())),
         }
+    }
+
+    /// Gets (creating with default config on first use) the circuit breaker
+    /// tracking TCP transport failures for one node. The returned handle is
+    /// a cheap `Arc`-backed clone sharing state with every other caller for
+    /// the same `node_id` — recording a failure through one clone is visible
+    /// to all of them.
+    pub fn circuit_breaker_for(&self, node_id: &str) -> crate::circuit_breaker::CircuitBreaker {
+        let mut breakers = self
+            .circuit_breakers
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        breakers.entry(node_id.to_string()).or_default().clone()
     }
 
     /// Register a new node with the cluster

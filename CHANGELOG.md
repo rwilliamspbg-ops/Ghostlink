@@ -4,6 +4,34 @@ All notable changes to Ghostlink Studio are documented here.
 
 ---
 
+## [1.16.0] - 2026-08-05 (Reliability fixes: GPU probe timeout, TCP circuit breaker, model-list caching)
+
+### Fixed
+
+- GPU hardware detection (`system_profile.rs`) had a probe-timeout regression: each `probe_*_with_timeout` wrapper unconditionally slept the full timeout duration before checking whether the probe had already finished, so every startup paid the full 5-10s per probe instead of returning as soon as the fast path completed. Replaced with a real bounded wait (detached thread + `mpsc::recv_timeout`) that returns immediately on completion and only blocks up to the timeout on a genuinely slow/hung probe. Full profile detection now completes in ~1.5s on a typical dev machine instead of a guaranteed multi-second floor.
+- GUI production build (`npm run build`) was broken: `vite-plugin-monaco-editor-esm`'s built-in worker entries hardcode `monaco-editor/esm/vs/...` paths that, against `monaco-editor`'s current package.json `"exports"` map, resolve to a doubled `esm/vs/esm/vs/...` path that doesn't exist ("Could not resolve"). Reconfigured [ghostlink_gui_modern/vite.config.ts](ghostlink_gui_modern/vite.config.ts) to supply the same 5 workers (editor core, CSS, HTML, JSON, TypeScript) via `customWorkers` with the prefix stripped, which the exports map re-adds correctly. Affects both `npm run build` and `npm run dev`; this was blocking the `release-artifacts.yml` CI gate outright.
+
+### Added
+
+- `circuit_breaker` module in [crates/ghostlink-core/src/circuit_breaker.rs](crates/ghostlink-core/src/circuit_breaker.rs): a 3-state (Closed/Open/Half-Open) circuit breaker with jittered exponential backoff. Wired into the TCP transport bridge's reconnect loop ([crates/ghostlink-core/src/runtime.rs](crates/ghostlink-core/src/runtime.rs) `spawn_tcp_bridge`) via a new per-node breaker registry on `ClusterState` (`circuit_breaker_for`) — failure history now persists *across* pipeline executions targeting the same remote node, so a chronically-unreachable node fails fast on later calls instead of repeating the full connect/backoff sequence every time. Opt-in per call site (`Option<CircuitBreaker>`); the loopback benchmarking path passes `None` and is unaffected.
+- `api_response_cache` module in [crates/ghostlink-core/src/api_response_cache.rs](crates/ghostlink-core/src/api_response_cache.rs): a TTL + ETag response cache. Wired into `GET /api/models`, which previously ran a real `fs::read_dir`/`fs::metadata` disk scan on every request — now cached for 5s and explicitly invalidated the moment a download completes or a model is deleted.
+- `LayerKvCache::write_kv_batch` in [crates/ghostlink-core/src/kv_cache.rs](crates/ghostlink-core/src/kv_cache.rs): writes multiple tokens' KV entries under a single write-lock acquisition, validating every entry upfront so a bad entry fails the whole batch atomically. Available as a primitive; like the rest of `kv_cache.rs`, it has no current caller in `runtime.rs` (Ghostlink delegates model execution to an external inference engine).
+
+### Removed
+
+- Three modules from an in-progress performance pass didn't hold up under review and were cut before landing: a churn-coalescing module that duplicated `ClusterState`'s existing lock-free snapshot cache, an MCP "server pool" that pooled against a per-call subprocess-spawn cost the real MCP client (`mcp/registry.rs`, persistent connections) doesn't have, and a protocol buffer pool targeting `DiscoveryFrame::encode()`, which already encodes into a stack buffer on a low-frequency discovery path.
+
+### Validation
+
+- `cargo fmt --all --check` — OK
+- `cargo clippy --workspace --all-targets -- -D warnings` — OK
+- `cargo test --workspace` — OK
+- `cd control-plane && go test ./...` — OK
+- `cd ghostlink_gui_modern && npm run test` — OK (14 files, 142 tests)
+- `cd ghostlink_gui_modern && npm run build` — OK
+
+---
+
 ## [1.3.2] - 2026-08-02 (vLLM Integration & Release Packaging Readiness)
 
 ### Added

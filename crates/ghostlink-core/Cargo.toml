@@ -1,6 +1,6 @@
 [package]
 name = "ghostlink-core"
-version = "1.3.0"
+version = "1.16.0"
 edition = "2021"
 authors = ["Ryan K Williams"]
 description = "Core runtime primitives for Ghostlink, including planning, routing, health monitoring, and transport logic for distributed inference workloads."

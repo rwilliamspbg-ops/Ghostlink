@@ -11,7 +11,34 @@ export default defineConfig({
   // node_modules/.monaco) instead of the CDN @monaco-editor/react defaults
   // to — Ghostlink is local-first everywhere else, so the Editor tab's code
   // editor shouldn't be the one piece that silently needs internet access.
-  plugins: [react(), monacoEditorEsmPlugin()],
+  //
+  // vite-plugin-monaco-editor-esm's built-in worker list hardcodes each
+  // entry with a "monaco-editor/esm/vs/..." path (languageWork.js) and feeds
+  // it straight to esbuild. monaco-editor >=0.53 ships a package.json
+  // "exports" map — "./*": "./esm/vs/*.js" — so esbuild now resolves
+  // subpaths strictly through that map instead of probing the filesystem;
+  // requesting the already-prefixed "esm/vs/editor/editor.worker" subpath
+  // re-applies the map's own "esm/vs/" prefix, doubling it to
+  // "esm/vs/esm/vs/editor/editor.worker.js", which doesn't exist ("Could
+  // not resolve" at both build and dev time). The plugin has had no release
+  // since (2.0.2 is latest) and there's no option to fix individual built-in
+  // entries, only to replace the whole worker list — so disable the broken
+  // defaults (`languageWorkers: []`) and resupply the same 5 workers via
+  // `customWorkers` with the "esm/vs/" prefix stripped, which the exports
+  // map re-adds itself and resolves to the real on-disk file.
+  plugins: [
+    react(),
+    monacoEditorEsmPlugin({
+      languageWorkers: [],
+      customWorkers: [
+        { label: 'editorWorkerService', entry: 'monaco-editor/editor/editor.worker' },
+        { label: 'css', entry: 'monaco-editor/language/css/css.worker' },
+        { label: 'html', entry: 'monaco-editor/language/html/html.worker' },
+        { label: 'json', entry: 'monaco-editor/language/json/json.worker' },
+        { label: 'typescript', entry: 'monaco-editor/language/typescript/ts.worker' },
+      ],
+    }),
+  ],
   resolve: {
     alias: [
       // vite-plugin-monaco-editor-esm hardcodes worker entry points as
