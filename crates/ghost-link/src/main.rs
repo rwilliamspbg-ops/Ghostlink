@@ -783,6 +783,33 @@ fn maybe_write_flow_metrics_json(
         .map(|cfg| cfg.reconnect_backoff_ms.to_string())
         .unwrap_or_else(|| "null".to_string());
 
+    // The actual per-token wire size in bytes (f32 elements * 4) — reflects
+    // whatever elems_per_token this run was actually configured with
+    // (apply_flow_payload_sizing for TCP/XDP paths, or the fixed 16-element
+    // default for pure in-memory execution, which has no TcpTransportConfig
+    // at all), not an aspirational number.
+    let bytes_per_token = tcp_config
+        .map(|cfg| cfg.elems_per_token * 4)
+        .unwrap_or(16 * 4);
+    let bandwidth_gbps = if execution.total_time_ms > 0.0 {
+        (execution.token_count as f64 * bytes_per_token as f64)
+            / (execution.total_time_ms as f64 / 1000.0)
+            / 1e9
+    } else {
+        0.0
+    };
+    let (hidden_dim_json, dtype_bytes_json) = match flow_bench_dtype() {
+        Some((hidden_dim, dtype_bytes)) => (hidden_dim.to_string(), dtype_bytes.to_string()),
+        None => ("null".to_string(), "null".to_string()),
+    };
+
+    let latency_samples = execution
+        .token_latencies_ms
+        .iter()
+        .map(|v| format!("{v:.6}"))
+        .collect::<Vec<_>>()
+        .join(",");
+
     let payload = format!(
         "{{
   \"transport_mode\": \"{}\",
@@ -794,10 +821,16 @@ fn maybe_write_flow_metrics_json(
   \"throughput_tokens_per_sec\": {:.6},
   \"avg_token_latency_ms\": {:.6},
   \"p95_token_latency_ms\": {:.6},
+  \"p99_token_latency_ms\": {:.6},
+  \"bytes_per_token\": {},
+  \"bandwidth_gbps\": {:.6},
+  \"simulated_hidden_dim\": {},
+  \"simulated_dtype_bytes\": {},
   \"tcp_max_inflight_batches\": {},
   \"tcp_reconnect_attempts\": {},
   \"tcp_reconnect_backoff_ms\": {},
-  \"stage_stats\": [{}]
+  \"stage_stats\": [{}],
+  \"token_latencies_ms\": [{}]
 }}
 ",
         transport_mode.as_str(),
@@ -809,10 +842,16 @@ fn maybe_write_flow_metrics_json(
         execution.throughput_tokens_per_sec,
         execution.avg_token_latency_ms,
         execution.p95_token_latency_ms,
+        execution.p99_token_latency_ms,
+        bytes_per_token,
+        bandwidth_gbps,
+        hidden_dim_json,
+        dtype_bytes_json,
         tcp_max_inflight,
         tcp_reconnect_attempts,
         tcp_reconnect_backoff_ms,
-        stage_entries
+        stage_entries,
+        latency_samples
     );
 
     fs::write(&path, payload)
@@ -852,6 +891,46 @@ fn tcp_transport_config_from_env() -> TcpTransportConfig {
         auth_token,
         ..Default::default()
     }
+}
+
+/// Real per-token hidden-state size for the `flow` command's benchmark
+/// payload — **opt-in only**: returns `None` unless `GHOSTLINK_FLOW_HIDDEN_DIM`
+/// is explicitly set, so every existing caller of `flow` (including
+/// `production-gate.yml`'s SLO/drift/canary/tail-latency gates, all
+/// calibrated against the small historical payload) keeps identical
+/// behavior unless it explicitly asks for a realistic one. When set,
+/// `GHOSTLINK_FLOW_DTYPE_BYTES` defaults to 2 (FP16/BF16); a 7B-class
+/// model is `GHOSTLINK_FLOW_HIDDEN_DIM=4096`. Only `flow`'s own execution
+/// paths call this; `serve`/`stage-worker`'s real request handling never
+/// reads these env vars.
+fn flow_bench_dtype() -> Option<(usize, usize)> {
+    let hidden_dim = std::env::var("GHOSTLINK_FLOW_HIDDEN_DIM")
+        .ok()?
+        .parse::<usize>()
+        .ok()?;
+    let dtype_bytes = env_default_usize("GHOSTLINK_FLOW_DTYPE_BYTES", 2);
+    Some((hidden_dim, dtype_bytes))
+}
+
+/// Bytes one token's simulated activation occupies (`hidden_dim *
+/// dtype_bytes`), or `None` if `GHOSTLINK_FLOW_HIDDEN_DIM` wasn't set.
+fn flow_bench_bytes_per_token() -> Option<usize> {
+    flow_bench_dtype().map(|(hidden_dim, dtype_bytes)| hidden_dim * dtype_bytes)
+}
+
+/// Scales `TcpTransportConfig::elems_per_token` so the synthetic payload the
+/// `flow` command pushes through the real ring buffer/TCP transport carries
+/// the same byte volume as a real per-token activation would, instead of the
+/// small historical default (see `TcpTransportConfig::elems_per_token`'s doc
+/// comment) — only when `GHOSTLINK_FLOW_HIDDEN_DIM` is explicitly set; a
+/// no-op (returns `cfg` unchanged) otherwise. The wire format stays
+/// `f32`-native — a documented simplification — so this converts the target
+/// byte count into an equivalent `f32` element count.
+fn apply_flow_payload_sizing(mut cfg: TcpTransportConfig) -> TcpTransportConfig {
+    if let Some(bytes_per_token) = flow_bench_bytes_per_token() {
+        cfg.elems_per_token = bytes_per_token.div_ceil(4).max(1);
+    }
+    cfg
 }
 
 fn is_env_truthy(name: &str) -> bool {
@@ -1248,7 +1327,7 @@ fn print_flow(opts: FlowOptions) -> Result<()> {
             opts.remote_id,
             opts.execution_tokens,
             opts.micro_batch,
-            tcp_transport_config_from_env(),
+            apply_flow_payload_sizing(tcp_transport_config_from_env()),
             remote_addr,
         )
     } else {
@@ -1258,7 +1337,7 @@ fn print_flow(opts: FlowOptions) -> Result<()> {
         );
         match opts.transport_mode {
             FlowTransportMode::TcpLoopback => {
-                let base_tcp_cfg = tcp_transport_config_from_env();
+                let base_tcp_cfg = apply_flow_payload_sizing(tcp_transport_config_from_env());
                 let tcp_cfg = if is_env_truthy("GHOSTLINK_TCP_AUTOTUNE") {
                     autotune_tcp_transport_config(
                         &pipeline_plan,
@@ -1311,7 +1390,7 @@ fn print_flow(opts: FlowOptions) -> Result<()> {
                             "AF_XDP probe succeeded on interface '{}'; using xdp-optimized runtime settings.",
                             interface
                         );
-                        let base_tcp_cfg = xdp_optimized_tcp_config();
+                        let base_tcp_cfg = apply_flow_payload_sizing(xdp_optimized_tcp_config());
                         let tcp_cfg = if xdp_autotune_enabled() {
                             autotune_tcp_transport_config(
                                 &pipeline_plan,
@@ -1336,7 +1415,8 @@ fn print_flow(opts: FlowOptions) -> Result<()> {
                             interface, reason
                         );
                         effective_transport_mode = FlowTransportMode::TcpLoopback;
-                        let base_tcp_cfg = tcp_transport_config_from_env();
+                        let base_tcp_cfg =
+                            apply_flow_payload_sizing(tcp_transport_config_from_env());
                         let tcp_cfg = if is_env_truthy("GHOSTLINK_TCP_AUTOTUNE") {
                             autotune_tcp_transport_config(
                                 &pipeline_plan,
@@ -1400,7 +1480,7 @@ fn print_flow(opts: FlowOptions) -> Result<()> {
             &pipeline_plan,
             opts.execution_tokens,
             opts.micro_batch,
-            tcp_transport_config_from_env(),
+            apply_flow_payload_sizing(tcp_transport_config_from_env()),
             &cluster,
             Some(&placement),
             None,
@@ -1440,6 +1520,23 @@ Distribution Summary:"
     );
     let execution = execution.map_err(|e| anyhow::anyhow!(e))?;
     println!("{}", execution.summary());
+    let bytes_per_token = selected_tcp_cfg
+        .as_ref()
+        .map(|cfg| cfg.elems_per_token * 4)
+        .unwrap_or(16 * 4);
+    let bandwidth_gbps = if execution.total_time_ms > 0.0 {
+        (execution.token_count as f64 * bytes_per_token as f64)
+            / (execution.total_time_ms as f64 / 1000.0)
+            / 1e9
+    } else {
+        0.0
+    };
+    println!(
+        "Bandwidth: {:.3} GB/s ({} bytes/token actually moved over the wire) — \
+         loopback execution, so this is a software-stack ceiling, not a NIC-bound/CPU-bound \
+         verdict; that needs a real two-machine run.",
+        bandwidth_gbps, bytes_per_token
+    );
     maybe_write_flow_metrics_json(
         &execution,
         effective_transport_mode,
