@@ -59,9 +59,10 @@ def run_once(mode: str, run_index: int, args: argparse.Namespace, output_dir: Pa
     out_file = output_dir / f"{mode}-{run_index}.json"
     env = {
         "GHOSTLINK_FLOW_METRICS_JSON": str(out_file),
-        "GHOSTLINK_FLOW_HIDDEN_DIM": str(args.hidden_dim),
-        "GHOSTLINK_FLOW_DTYPE_BYTES": str(args.dtype_bytes),
     }
+    if args.hidden_dim is not None:
+        env["GHOSTLINK_FLOW_HIDDEN_DIM"] = str(args.hidden_dim)
+        env["GHOSTLINK_FLOW_DTYPE_BYTES"] = str(args.dtype_bytes)
     if mode == "tcp":
         env["GHOSTLINK_TCP_AUTH_TOKEN"] = args.tcp_auth_token
         if args.applied_tcp_max_inflight is not None:
@@ -106,10 +107,10 @@ def run_once(mode: str, run_index: int, args: argparse.Namespace, output_dir: Pa
 
 
 def run_warmup(mode: str, _warmup_index: int, args: argparse.Namespace) -> None:
-    env = {
-        "GHOSTLINK_FLOW_HIDDEN_DIM": str(args.hidden_dim),
-        "GHOSTLINK_FLOW_DTYPE_BYTES": str(args.dtype_bytes),
-    }
+    env = {}
+    if args.hidden_dim is not None:
+        env["GHOSTLINK_FLOW_HIDDEN_DIM"] = str(args.hidden_dim)
+        env["GHOSTLINK_FLOW_DTYPE_BYTES"] = str(args.dtype_bytes)
     if mode == "tcp":
         env["GHOSTLINK_TCP_AUTH_TOKEN"] = args.tcp_auth_token
         if args.applied_tcp_max_inflight is not None:
@@ -249,14 +250,20 @@ def main() -> int:
     parser.add_argument(
         "--hidden-dim",
         type=int,
-        default=4096,
-        help="Simulated per-token hidden-state width (4096 = 7B-class model)",
+        default=None,
+        help=(
+            "Simulated per-token hidden-state width (e.g. 4096 for a 7B-class "
+            "model). Opt-in: omitting this reproduces flow's historical small "
+            "synthetic payload exactly, which production-gate.yml's SLO/drift/"
+            "canary/tail-latency thresholds are calibrated against — set this "
+            "explicitly to benchmark realistic LLM-sized payloads instead."
+        ),
     )
     parser.add_argument(
         "--dtype-bytes",
         type=int,
         default=2,
-        help="Simulated per-element byte width (2 = FP16/BF16, 4 = FP32)",
+        help="Simulated per-element byte width (2 = FP16/BF16, 4 = FP32) — only used when --hidden-dim is set",
     )
     parser.add_argument(
         "--histogram",
@@ -302,11 +309,17 @@ def main() -> int:
         args.applied_micro_batch = selected["micro_batch"]
         args.applied_tcp_max_inflight = selected["tcp_max_inflight"]
 
+    if args.hidden_dim is not None:
+        payload_note = (
+            f"hidden_dim={args.hidden_dim} dtype_bytes={args.dtype_bytes} "
+            f"(simulated {args.hidden_dim * args.dtype_bytes} bytes/token)"
+        )
+    else:
+        payload_note = "hidden_dim=unset (flow's historical 64-byte/token synthetic payload)"
     print(
         f"profile_mode={args.profile_mode} micro_batch={args.applied_micro_batch} "
         f"tcp_max_inflight={args.applied_tcp_max_inflight if args.applied_tcp_max_inflight is not None else 'env/default'} "
-        f"hidden_dim={args.hidden_dim} dtype_bytes={args.dtype_bytes} "
-        f"(simulated {args.hidden_dim * args.dtype_bytes} bytes/token)"
+        f"{payload_note}"
     )
 
     output_dir = Path(args.output_dir)

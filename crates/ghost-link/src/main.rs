@@ -798,7 +798,10 @@ fn maybe_write_flow_metrics_json(
     } else {
         0.0
     };
-    let (hidden_dim, dtype_bytes) = flow_bench_dtype();
+    let (hidden_dim_json, dtype_bytes_json) = match flow_bench_dtype() {
+        Some((hidden_dim, dtype_bytes)) => (hidden_dim.to_string(), dtype_bytes.to_string()),
+        None => ("null".to_string(), "null".to_string()),
+    };
 
     let latency_samples = execution
         .token_latencies_ms
@@ -842,8 +845,8 @@ fn maybe_write_flow_metrics_json(
         execution.p99_token_latency_ms,
         bytes_per_token,
         bandwidth_gbps,
-        hidden_dim,
-        dtype_bytes,
+        hidden_dim_json,
+        dtype_bytes_json,
         tcp_max_inflight,
         tcp_reconnect_attempts,
         tcp_reconnect_backoff_ms,
@@ -891,31 +894,42 @@ fn tcp_transport_config_from_env() -> TcpTransportConfig {
 }
 
 /// Real per-token hidden-state size for the `flow` command's benchmark
-/// payload, read from env (defaults: 4096-wide hidden state, 2-byte
-/// FP16/BF16 elements — a 7B-class model). Only `flow`'s own execution paths
-/// call this; `serve`/`stage-worker`'s real request handling never reads
-/// these env vars, so production behavior is unaffected.
-fn flow_bench_dtype() -> (usize, usize) {
-    let hidden_dim = env_default_usize("GHOSTLINK_FLOW_HIDDEN_DIM", 4096);
+/// payload — **opt-in only**: returns `None` unless `GHOSTLINK_FLOW_HIDDEN_DIM`
+/// is explicitly set, so every existing caller of `flow` (including
+/// `production-gate.yml`'s SLO/drift/canary/tail-latency gates, all
+/// calibrated against the small historical payload) keeps identical
+/// behavior unless it explicitly asks for a realistic one. When set,
+/// `GHOSTLINK_FLOW_DTYPE_BYTES` defaults to 2 (FP16/BF16); a 7B-class
+/// model is `GHOSTLINK_FLOW_HIDDEN_DIM=4096`. Only `flow`'s own execution
+/// paths call this; `serve`/`stage-worker`'s real request handling never
+/// reads these env vars.
+fn flow_bench_dtype() -> Option<(usize, usize)> {
+    let hidden_dim = std::env::var("GHOSTLINK_FLOW_HIDDEN_DIM")
+        .ok()?
+        .parse::<usize>()
+        .ok()?;
     let dtype_bytes = env_default_usize("GHOSTLINK_FLOW_DTYPE_BYTES", 2);
-    (hidden_dim, dtype_bytes)
+    Some((hidden_dim, dtype_bytes))
 }
 
-/// Bytes one token's simulated activation occupies — `hidden_dim * dtype_bytes`.
-fn flow_bench_bytes_per_token() -> usize {
-    let (hidden_dim, dtype_bytes) = flow_bench_dtype();
-    hidden_dim * dtype_bytes
+/// Bytes one token's simulated activation occupies (`hidden_dim *
+/// dtype_bytes`), or `None` if `GHOSTLINK_FLOW_HIDDEN_DIM` wasn't set.
+fn flow_bench_bytes_per_token() -> Option<usize> {
+    flow_bench_dtype().map(|(hidden_dim, dtype_bytes)| hidden_dim * dtype_bytes)
 }
 
 /// Scales `TcpTransportConfig::elems_per_token` so the synthetic payload the
 /// `flow` command pushes through the real ring buffer/TCP transport carries
 /// the same byte volume as a real per-token activation would, instead of the
 /// small historical default (see `TcpTransportConfig::elems_per_token`'s doc
-/// comment). The wire format stays `f32`-native — a documented
-/// simplification — so this converts the target byte count into an
-/// equivalent `f32` element count.
+/// comment) — only when `GHOSTLINK_FLOW_HIDDEN_DIM` is explicitly set; a
+/// no-op (returns `cfg` unchanged) otherwise. The wire format stays
+/// `f32`-native — a documented simplification — so this converts the target
+/// byte count into an equivalent `f32` element count.
 fn apply_flow_payload_sizing(mut cfg: TcpTransportConfig) -> TcpTransportConfig {
-    cfg.elems_per_token = flow_bench_bytes_per_token().div_ceil(4).max(1);
+    if let Some(bytes_per_token) = flow_bench_bytes_per_token() {
+        cfg.elems_per_token = bytes_per_token.div_ceil(4).max(1);
+    }
     cfg
 }
 

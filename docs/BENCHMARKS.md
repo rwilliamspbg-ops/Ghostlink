@@ -379,14 +379,28 @@ This section fixes that: `TcpTransportConfig::elems_per_token` (new,
 defaults to the historical 16 so every other benchmark/test above is
 unaffected) lets the `flow` command's TCP/XDP execution paths carry a real
 byte volume per token, controlled by two new env vars — `GHOSTLINK_FLOW_HIDDEN_DIM`
-(default 4096) and `GHOSTLINK_FLOW_DTYPE_BYTES` (default 2, FP16/BF16) — and
-`ExecutionResult` now reports `p99_token_latency_ms` and the raw per-token
-`token_latencies_ms` samples (previously P95-only, aggregate-only).
+and `GHOSTLINK_FLOW_DTYPE_BYTES` (FP16/BF16 = 2) — and `ExecutionResult` now
+reports `p99_token_latency_ms` and the raw per-token `token_latencies_ms`
+samples (previously P95-only, aggregate-only).
+
+**Opt-in, not default-on** — this took a real CI failure to get right the
+first time. `flow` is also `production-gate.yml`'s smoke-test harness (SLO/
+drift/canary/tail-latency gates, all calibrated against the small historical
+payload); making realistic sizing the *default* broke that gate's throughput
+threshold outright (measured: 4832 tok/s vs. its 10000 tok/s minimum) the
+moment a tag push actually exercised it. `GHOSTLINK_FLOW_HIDDEN_DIM` is
+unset by default — omit it and `flow` reproduces the historical 64-byte/token
+payload exactly (verified: `simulated_hidden_dim`/`simulated_dtype_bytes`
+report `null` in the JSON output, `bytes_per_token` reports `64`, and the
+production-gate.yml smoke-test invocation — 256 tokens, micro_batch=4 — measures
+134,249 tok/s unset vs. its 10,000 tok/s floor). Every command in this
+section sets both env vars explicitly via `--hidden-dim`/`--dtype-bytes`.
 
 **Important scope note**: the in-memory (`inmem`) transport mode has no
-`TcpTransportConfig` at all and keeps the original 64-byte/token payload —
-its numbers below are **not** LLM-shaped, included only as a same-session
-reference point. Only `tcp` mode below actually moved 8192 bytes/token.
+`TcpTransportConfig` at all and keeps the original 64-byte/token payload
+regardless of these flags — its numbers below are **not** LLM-shaped,
+included only as a same-session reference point. Only `tcp` mode below
+actually moved 8192 bytes/token.
 
 **Hardware** — same "laptop iGPU host" as the Full-Spectrum session above:
 16 logical cores, 27.6 GB RAM, AMD Radeon 860M (integrated, 4.0 GB VRAM,
@@ -395,7 +409,7 @@ DirectML), Windows 11, `cargo build --release` (workspace `lto = "thin"`,
 
 ```bash
 python scripts/flow_perf_snapshot.py --runs 3 --modes tcp inmem --release \
-  --exec-tokens 4096 --micro-batch 32 --histogram
+  --exec-tokens 4096 --micro-batch 32 --hidden-dim 4096 --dtype-bytes 2 --histogram
 ```
 
 ### Results — 7B-class payload (hidden_dim=4096, FP16/BF16, 8192 bytes/token), micro_batch=32, 3 runs each
@@ -488,8 +502,8 @@ of the JSON output both scripts write.
 ```bash
 for tokens in 4096 8192 16384 32768; do
   python scripts/flow_perf_snapshot.py --runs 3 --modes tcp inmem --release \
-    --exec-tokens "$tokens" --micro-batch 32 --histogram \
-    --output-dir "tmp/perf_snapshot/$tokens"
+    --exec-tokens "$tokens" --micro-batch 32 --hidden-dim 4096 --dtype-bytes 2 \
+    --histogram --output-dir "tmp/perf_snapshot/$tokens"
   python scripts/ray_transfer_baseline.py --runs 3 --exec-tokens "$tokens" \
     --micro-batch 32 --histogram --output-dir "tmp/ray_baseline/$tokens"
 done
