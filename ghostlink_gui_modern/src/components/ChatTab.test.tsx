@@ -10,6 +10,8 @@ function createMockApi(engine: 'ollama' | 'native' | 'vllm' = 'ollama'): Ghostli
   vi.spyOn(api, 'sendMessage').mockResolvedValue({ success: true, data: { response: 'Hello from test' } });
   vi.spyOn(api, 'loadModel').mockResolvedValue({ success: true, data: {} });
   vi.spyOn(api, 'listSessions').mockResolvedValue({ sessions: [] });
+  vi.spyOn(api, 'getOllamaHealth').mockResolvedValue({ reachable: false, model_count: 0 });
+  vi.spyOn(api, 'getVllmHealth').mockResolvedValue({ reachable: false, model_count: 0 });
   vi.spyOn(api, 'getInferenceEngines').mockResolvedValue({
     current: engine,
     engines: [
