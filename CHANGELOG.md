@@ -4,6 +4,17 @@ All notable changes to Ghostlink Studio are documented here.
 
 ---
 
+## [1.16.1] - 2026-08-05 (CI fix: release-artifacts.yml release build)
+
+### Fixed
+
+- `release-artifacts.yml`'s "Run release validation gates" step runs `cd control-plane && go test ./...` but never installed a Go toolchain first (unlike `ci.yml`'s Go job, which does). This only surfaced when the `v1.16.0` tag push exercised the workflow for real for the first time — it only triggers on `push: tags: v*`, so no PR check had ever run it. Both matrix legs failed: `macos-latest` with `go: command not found` (no Go on that runner image at all), `windows-latest` with a transient TLS handshake timeout fetching a Go module (plausible without a real `setup-go` step warming the module cache). Fixed by adding `actions/setup-go@v7` with `go-version: stable`, matching the already-working pattern in `ci.yml`.
+- No functional code changes — this release exists solely to get `v1.16.0`'s actual content (see below) published with working release binaries. `v1.16.0` itself published successfully to crates.io; it just never got a GitHub Release with binaries attached.
+
+This patch is cut from the commit immediately after the CI fix landed on `main`, before later unrelated work (an LLM-shaped benchmarking suite) merged — it carries `v1.16.0`'s code unchanged plus only this workflow fix, not that follow-on feature work.
+
+---
+
 ## [1.16.0] - 2026-08-05 (Reliability fixes: GPU probe timeout, TCP circuit breaker, model-list caching)
 
 ### Fixed
