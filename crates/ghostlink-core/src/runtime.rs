@@ -196,6 +196,13 @@ pub struct ExecutionResult {
     pub throughput_tokens_per_sec: f32,
     pub avg_token_latency_ms: f32,
     pub p95_token_latency_ms: f32,
+    pub p99_token_latency_ms: f32,
+    /// One entry per token, in completion order — the raw samples P95/P99
+    /// are computed from. Exposed (rather than kept purely internal) so
+    /// callers such as `ghost-link flow` can dump the real per-token
+    /// latency distribution for a histogram, not just precomputed
+    /// percentiles.
+    pub token_latencies_ms: Vec<f32>,
     pub stage_stats: Vec<StageExecutionStats>,
 }
 
@@ -379,6 +386,15 @@ pub struct TcpTransportConfig {
     pub recv_buffer_size: usize,
     /// Use vectored I/O (writev/readv) for zero-copy header+payload writes.
     pub use_vectored_io: bool,
+    /// Synthetic `f32` elements per token in the benchmark/demo payload these
+    /// pipeline-execution paths generate — they move a stand-in payload
+    /// through the real transport rather than real model activations (see
+    /// `ghost-link::main`'s `flow` command). Defaults to 16 elements (64
+    /// bytes/token), matching the historical hardcoded value so every
+    /// existing caller keeps identical behavior; the `flow` CLI raises this
+    /// to reflect a real FP16/BF16 hidden-state size (e.g. 4096 × 2 bytes ÷
+    /// 4 bytes/f32 = 2048 elements/token for a 7B-class model).
+    pub elems_per_token: usize,
 }
 
 impl Default for TcpTransportConfig {
@@ -395,6 +411,7 @@ impl Default for TcpTransportConfig {
             send_buffer_size: 256 * 1024, // 256 KB
             recv_buffer_size: 256 * 1024, // 256 KB
             use_vectored_io: true,
+            elems_per_token: 16,
         }
     }
 }
@@ -424,8 +441,8 @@ impl ExecutionResult {
             self.throughput_tokens_per_sec
         ));
         out.push_str(&format!(
-            "Avg token latency: {:.2} ms | P95: {:.2} ms\n",
-            self.avg_token_latency_ms, self.p95_token_latency_ms
+            "Avg token latency: {:.2} ms | P95: {:.2} ms | P99: {:.2} ms\n",
+            self.avg_token_latency_ms, self.p95_token_latency_ms, self.p99_token_latency_ms
         ));
 
         for stage in &self.stage_stats {
@@ -518,6 +535,8 @@ pub fn execute_pipeline_with_rebalance_and_measured(
             throughput_tokens_per_sec: 0.0,
             avg_token_latency_ms: 0.0,
             p95_token_latency_ms: 0.0,
+            p99_token_latency_ms: 0.0,
+            token_latencies_ms: Vec::new(),
             stage_stats: Vec::new(),
         });
     }
@@ -709,6 +728,8 @@ pub fn execute_pipeline_with_rebalance_and_measured(
     sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     let p95_idx = (sorted.len().saturating_sub(1) as f32 * 0.95).round() as usize;
     let p95_token_latency_ms = sorted.get(p95_idx).copied().unwrap_or(0.0);
+    let p99_idx = (sorted.len().saturating_sub(1) as f32 * 0.99).round() as usize;
+    let p99_token_latency_ms = sorted.get(p99_idx).copied().unwrap_or(0.0);
 
     Ok(ExecutionResult {
         token_count,
@@ -719,6 +740,8 @@ pub fn execute_pipeline_with_rebalance_and_measured(
         throughput_tokens_per_sec,
         avg_token_latency_ms,
         p95_token_latency_ms,
+        p99_token_latency_ms,
+        token_latencies_ms: token_latencies,
         stage_stats,
     })
 }
@@ -1373,6 +1396,8 @@ pub fn execute_pipeline_distributed(
             throughput_tokens_per_sec: 0.0,
             avg_token_latency_ms: 0.0,
             p95_token_latency_ms: 0.0,
+            p99_token_latency_ms: 0.0,
+            token_latencies_ms: Vec::new(),
             stage_stats: Vec::new(),
         });
     }
@@ -1514,7 +1539,7 @@ pub fn execute_pipeline_distributed(
     for (batch_idx, batch_started_slot) in batch_started_at.iter_mut().enumerate() {
         let batch_start_token = batch_idx * micro_batch;
         let tokens_in_batch = (token_count - batch_start_token).min(micro_batch);
-        let payload_len = (tokens_in_batch.max(1) * 16).max(32);
+        let payload_len = (tokens_in_batch.max(1) * config.elems_per_token.max(1)).max(32);
         let payload = (0..payload_len)
             .map(|idx| (batch_idx as f32 * 0.01) + (idx as f32 * 0.0001))
             .collect();
@@ -1614,6 +1639,8 @@ pub fn execute_pipeline_distributed(
     sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     let p95_idx = ((sorted.len().saturating_sub(1)) as f32 * 0.95).round() as usize;
     let p95_token_latency_ms = sorted.get(p95_idx).copied().unwrap_or(0.0);
+    let p99_idx = ((sorted.len().saturating_sub(1)) as f32 * 0.99).round() as usize;
+    let p99_token_latency_ms = sorted.get(p99_idx).copied().unwrap_or(0.0);
 
     Ok(ExecutionResult {
         token_count,
@@ -1624,6 +1651,8 @@ pub fn execute_pipeline_distributed(
         throughput_tokens_per_sec,
         avg_token_latency_ms,
         p95_token_latency_ms,
+        p99_token_latency_ms,
+        token_latencies_ms: token_latencies,
         stage_stats,
     })
 }
@@ -1661,6 +1690,8 @@ pub fn execute_pipeline_tcp_loopback_with_config(
             throughput_tokens_per_sec: 0.0,
             avg_token_latency_ms: 0.0,
             p95_token_latency_ms: 0.0,
+            p99_token_latency_ms: 0.0,
+            token_latencies_ms: Vec::new(),
             stage_stats: Vec::new(),
         });
     }
@@ -1784,7 +1815,7 @@ pub fn execute_pipeline_tcp_loopback_with_config(
     for (batch_idx, batch_started_slot) in batch_started_at.iter_mut().enumerate() {
         let batch_start_token = batch_idx * micro_batch;
         let tokens_in_batch = (token_count - batch_start_token).min(micro_batch);
-        let payload_len = (tokens_in_batch.max(1) * 16).max(32);
+        let payload_len = (tokens_in_batch.max(1) * config.elems_per_token.max(1)).max(32);
         let payload = (0..payload_len)
             .map(|idx| (batch_idx as f32 * 0.01) + (idx as f32 * 0.0001))
             .collect();
@@ -1872,6 +1903,8 @@ pub fn execute_pipeline_tcp_loopback_with_config(
     sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     let p95_idx = ((sorted.len().saturating_sub(1)) as f32 * 0.95).round() as usize;
     let p95_token_latency_ms = sorted.get(p95_idx).copied().unwrap_or(0.0);
+    let p99_idx = ((sorted.len().saturating_sub(1)) as f32 * 0.99).round() as usize;
+    let p99_token_latency_ms = sorted.get(p99_idx).copied().unwrap_or(0.0);
 
     Ok(ExecutionResult {
         token_count,
@@ -1882,6 +1915,8 @@ pub fn execute_pipeline_tcp_loopback_with_config(
         throughput_tokens_per_sec,
         avg_token_latency_ms,
         p95_token_latency_ms,
+        p99_token_latency_ms,
+        token_latencies_ms: token_latencies,
         stage_stats,
     })
 }
@@ -2099,6 +2134,8 @@ pub fn execute_pipeline_with_remote_stage(
             throughput_tokens_per_sec: 0.0,
             avg_token_latency_ms: 0.0,
             p95_token_latency_ms: 0.0,
+            p99_token_latency_ms: 0.0,
+            token_latencies_ms: Vec::new(),
             stage_stats: Vec::new(),
         });
     }
@@ -2122,7 +2159,7 @@ pub fn execute_pipeline_with_remote_stage(
     for batch_idx in 0..batch_count {
         let batch_start_token = batch_idx * micro_batch;
         let tokens_in_batch = (token_count - batch_start_token).min(micro_batch);
-        let payload_len = (tokens_in_batch.max(1) * 16).max(32);
+        let payload_len = (tokens_in_batch.max(1) * config.elems_per_token.max(1)).max(32);
         let mut payload: Vec<f32> = (0..payload_len)
             .map(|idx| (batch_idx as f32 * 0.01) + (idx as f32 * 0.0001))
             .collect();
@@ -2177,6 +2214,8 @@ pub fn execute_pipeline_with_remote_stage(
     sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     let p95_idx = (sorted.len().saturating_sub(1) as f32 * 0.95).round() as usize;
     let p95_token_latency_ms = sorted.get(p95_idx).copied().unwrap_or(0.0);
+    let p99_idx = (sorted.len().saturating_sub(1) as f32 * 0.99).round() as usize;
+    let p99_token_latency_ms = sorted.get(p99_idx).copied().unwrap_or(0.0);
 
     Ok(ExecutionResult {
         token_count,
@@ -2187,6 +2226,8 @@ pub fn execute_pipeline_with_remote_stage(
         throughput_tokens_per_sec,
         avg_token_latency_ms,
         p95_token_latency_ms,
+        p99_token_latency_ms,
+        token_latencies_ms: token_latencies,
         stage_stats: vec![
             StageExecutionStats {
                 stage_idx: 0,
@@ -2379,6 +2420,53 @@ mod tests {
         assert_eq!(result.stage_stats.len(), 2);
         assert!(result.total_time_ms > 0.0);
         assert!(result.throughput_tokens_per_sec > 0.0);
+        assert!(
+            result.p99_token_latency_ms >= result.p95_token_latency_ms,
+            "p99 ({}) must be >= p95 ({})",
+            result.p99_token_latency_ms,
+            result.p95_token_latency_ms
+        );
+    }
+
+    #[test]
+    fn elems_per_token_config_scales_payload_size_and_still_completes() {
+        let plan = PipelinePlan {
+            stages: vec![
+                StagePlacement {
+                    node_id: "node-a".to_string(),
+                    start_layer: 0,
+                    end_layer: 10,
+                    device: DeviceKind::Gpu,
+                    est_latency_ms: 1.0,
+                },
+                StagePlacement {
+                    node_id: "node-b".to_string(),
+                    start_layer: 10,
+                    end_layer: 20,
+                    device: DeviceKind::Cpu,
+                    est_latency_ms: 2.0,
+                },
+            ],
+        };
+
+        // 4096 hidden_dim * 2 bytes (fp16/bf16) / 4 bytes per wire f32 = 2048
+        // elements/token — a real 7B-class model's per-token activation size,
+        // instead of the default 16-element synthetic stand-in.
+        let config = TcpTransportConfig {
+            elems_per_token: 2048,
+            ..TcpTransportConfig::default()
+        };
+
+        let result = execute_pipeline_tcp_loopback_with_config(&plan, 8, 2, config)
+            .expect("large-payload loopback execution failed");
+        assert_eq!(result.token_count, 8);
+        assert!(result.total_time_ms > 0.0);
+        assert!(
+            result.p99_token_latency_ms >= result.p95_token_latency_ms,
+            "p99 ({}) must be >= p95 ({})",
+            result.p99_token_latency_ms,
+            result.p95_token_latency_ms
+        );
     }
 
     #[test]

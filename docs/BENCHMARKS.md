@@ -365,6 +365,142 @@ ICMP RTT to that host.
 
 ---
 
+## LLM-Shaped Workload Benchmarks — 2026-08-05
+
+Every benchmark above this section moves a **16-`f32`-element (64-byte)
+synthetic payload per token** — the pipeline-execution paths' historical
+hardcoded stand-in, regardless of what `--exec-tokens` count is passed.
+That's roughly **128x smaller than a real per-token activation** (a 7B-class
+model's hidden state is ~4096 elements × 2 bytes in FP16/BF16 = 8192
+bytes/token), so throughput/latency numbers above measure the transport
+layer moving trivial packets, not data volumes an actual model would push.
+
+This section fixes that: `TcpTransportConfig::elems_per_token` (new,
+defaults to the historical 16 so every other benchmark/test above is
+unaffected) lets the `flow` command's TCP/XDP execution paths carry a real
+byte volume per token, controlled by two new env vars — `GHOSTLINK_FLOW_HIDDEN_DIM`
+(default 4096) and `GHOSTLINK_FLOW_DTYPE_BYTES` (default 2, FP16/BF16) — and
+`ExecutionResult` now reports `p99_token_latency_ms` and the raw per-token
+`token_latencies_ms` samples (previously P95-only, aggregate-only).
+
+**Important scope note**: the in-memory (`inmem`) transport mode has no
+`TcpTransportConfig` at all and keeps the original 64-byte/token payload —
+its numbers below are **not** LLM-shaped, included only as a same-session
+reference point. Only `tcp` mode below actually moved 8192 bytes/token.
+
+**Hardware** — same "laptop iGPU host" as the Full-Spectrum session above:
+16 logical cores, 27.6 GB RAM, AMD Radeon 860M (integrated, 4.0 GB VRAM,
+DirectML), Windows 11, `cargo build --release` (workspace `lto = "thin"`,
+`codegen-units = 1`).
+
+```bash
+python scripts/flow_perf_snapshot.py --runs 3 --modes tcp inmem --release \
+  --exec-tokens 4096 --micro-batch 32 --histogram
+```
+
+### Results — 7B-class payload (hidden_dim=4096, FP16/BF16, 8192 bytes/token), micro_batch=32, 3 runs each
+
+| Tokens | Mode | Throughput (avg tok/s) | Throughput (min-max) | P95 (avg, ms) | P99 (avg, ms) | Bandwidth (avg GB/s) |
+|---:|---|---:|---|---:|---:|---:|
+| 4,096 | tcp | 14,934 | 14,530-15,448 | 260.1 | 266.2 | 0.122 |
+| 4,096 | inmem* | 1,435,075 | 1,346,084-1,542,575 | 2.46 | 2.51 | 0.092* |
+| 8,192 | tcp | 10,068 | 9,495-10,459 | 780.1 | 795.3 | 0.082 |
+| 8,192 | inmem* | 1,634,012 | 1,407,971-1,769,216 | 4.59 | 4.72 | 0.105* |
+| 16,384 | tcp | 13,084 | 12,488-13,508 | 1,192.4 | 1,214.4 | 0.107 |
+| 16,384 | inmem* | 1,496,748 | 952,536-2,099,759 | 11.12 | 11.40 | 0.096* |
+| 32,768 | tcp | 12,173 | 12,120-12,250 | 2,519.2 | 2,594.0 | 0.100 |
+| 32,768 | inmem* | 2,046,090 | 1,968,036-2,103,452 | 14.75 | 15.14 | 0.131* |
+
+\* `inmem` bandwidth is computed from its real 64-byte/token payload, not
+8192 — it's the same tiny synthetic packet every other benchmark in this
+file uses, listed here only for continuity with the tcp-mode rows above it.
+
+**Bandwidth, GB/s: ~0.08-0.12 GB/s sustained on `tcp` loopback.** This is a
+software-stack ceiling (framing, syscalls, loopback copy), not a network
+measurement — **a loopback path has no real NIC in it**, so this number
+cannot and does not answer "NIC-bound or CPU-bound?" That question needs a
+real two-machine run over an actual link, like the Multi-Node Performance
+section above (which measured real cross-machine bridge-write latency, not
+bandwidth at this payload size — a real-NIC bandwidth run at 7B-class
+payload sizes is open follow-up work, not done here).
+
+**P99 vs. P95**: consistently 2-6% above P95 across all four token counts
+(e.g. 32,768 tokens: 2519.2ms → 2594.0ms), not a heavy tail — no batch got
+catastrophically stuck relative to the rest, on this loopback path, on this
+host, at this concurrency.
+
+**Throughput doesn't scale linearly with token count** (14,934 → 10,068 →
+13,084 → 12,173 tok/s across 4K/8K/16K/32K) — flat-to-slightly-declining,
+not the smooth curve a captive microbenchmark would produce; expect
+run-to-run noise from a shared dev-machine host similar to the ~15-19%
+stdev already documented in this file's Methodology-note section above.
+
+### Comparative baseline — Ray actor-to-actor transfer
+
+`scripts/ray_transfer_baseline.py` (new, not a project dependency —
+`pip install ray`) moves the identical payload matrix (same token counts,
+same 8192 bytes/token) between two local Ray actors via
+`ray.get(actor.method.remote(payload))`, measuring the same metrics the
+same way. This is a fair comparison to Ghostlink's own `tcp`-loopback
+numbers above — **not** "Ray Serve" (a model-serving framework, a different
+layer entirely), and **not** multi-node Ray (no second machine here either,
+same single-host constraint as the Ghostlink `tcp` numbers). Ray 2.56.1 on
+Python 3.10 (Ray does not yet support Python 3.13+; this repo's default
+interpreter is 3.14, so this ran under a separate 3.10 install).
+
+```bash
+python scripts/ray_transfer_baseline.py --runs 3 --hidden-dim 4096 --dtype-bytes 2 \
+  --exec-tokens 4096 --micro-batch 32 --histogram
+```
+
+| Tokens | Throughput (avg tok/s) | Throughput (min-max) | P95 (avg, ms) | P99 (avg, ms) | Bandwidth (avg GB/s) |
+|---:|---:|---|---:|---:|---:|
+| 4,096 | 16,342 | 15,810-17,114 | 2.73 | 6.50 | 0.134 |
+| 8,192 | 17,905 | 17,432-18,542 | 3.03 | 3.69 | 0.147 |
+| 16,384 | 14,989 | 9,367-19,182 | 2.82 | 3.45 | 0.123 |
+| 32,768 | 17,995 | 16,268-19,938 | 2.76 | 3.25 | 0.147 |
+
+**Genuinely surprising result, stated plainly**: at this batch size
+(micro_batch=32, i.e. 256 KB per call), Ray's actor-to-actor throughput is
+**comparable to or higher than** Ghostlink's own TCP-loopback numbers above
+— the opposite of the naive assumption that a purpose-built Rust transport
+would trivially beat a general-purpose Python actor framework. A smaller,
+separate sanity check at micro_batch=8 (32 KB/call) showed the expected
+result instead — Ghostlink ~8,060 tok/s vs. Ray ~3,491 tok/s — so Ray's
+per-call overhead is real and dominates at small payloads, but gets
+amortized away at larger ones. **Batch size, not backend choice alone,
+determines which one wins here** — a call this repo's own numbers don't
+support glossing over.
+
+**The real P99-matters finding**: at 16,384 tokens, Ray's min/max throughput
+across only 3 runs spans **9,367 to 19,182 tok/s (~2x)**, and its raw
+latency histogram (`--histogram`) shows samples up to ~407ms against a P99
+of only ~3.5ms — a rare but severe tail-latency outlier the P95/P99 averages
+in the table above completely hide. Ghostlink's `tcp` numbers at the same
+token count show ~4% min-max spread (12,488-13,508 tok/s) — meaningfully
+more consistent run-to-run on this same host. This is exactly the kind of
+signal mean/P95-only reporting misses, and the reason `token_latencies_ms`
+(the raw per-token samples, not just precomputed percentiles) is now part
+of the JSON output both scripts write.
+
+### Reproduce this section
+
+```bash
+for tokens in 4096 8192 16384 32768; do
+  python scripts/flow_perf_snapshot.py --runs 3 --modes tcp inmem --release \
+    --exec-tokens "$tokens" --micro-batch 32 --histogram \
+    --output-dir "tmp/perf_snapshot/$tokens"
+  python scripts/ray_transfer_baseline.py --runs 3 --exec-tokens "$tokens" \
+    --micro-batch 32 --histogram --output-dir "tmp/ray_baseline/$tokens"
+done
+```
+
+Every number above came from these exact commands, this session, on the
+hardware table above — falsifiable, run it yourself, same standard as the
+rest of this document.
+
+---
+
 ## Memory Requirements
 
 Reference values for common quantization sizes, not measured on Ghostlink

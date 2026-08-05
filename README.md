@@ -222,12 +222,27 @@ run on an **Intel i7-14700K (Linux/WSL2)** with `RUSTFLAGS="-C target-cpu=native
 | In-process (spin-wait) | 256 / 32 | 639 K tok/s | 0.40 ms |
 | TCP loopback | 256 / 32 | 236 K tok/s | 1.08 ms |
 
+These four numbers move a 64-byte/token synthetic payload — a stand-in
+roughly 128x smaller than a real model's per-token activation, so treat
+this table as a transport-layer ceiling, not an LLM-workload number. For
+realistic payload sizes (4K-32K token batches at real FP16/BF16 activation
+byte sizes, P99 latency, bandwidth GB/s, and a Ray actor-transfer
+comparison baseline), see
+[docs/BENCHMARKS.md's "LLM-Shaped Workload Benchmarks"](docs/BENCHMARKS.md#llm-shaped-workload-benchmarks--2026-08-05)
+section.
+
 ### Reproduce these numbers / other hardware
 
 ```bash
 cargo bench -p ghostlink-core --bench criterion   # microbenchmarks
 python scripts/flow_perf_snapshot.py --exec-tokens 512 --micro-batch 8 --runs 5 --modes tcp inmem --release
 ```
+
+Note: the `flow` command's TCP/XDP paths now default to a realistic
+8192-byte/token payload (`GHOSTLINK_FLOW_HIDDEN_DIM=4096`,
+`GHOSTLINK_FLOW_DTYPE_BYTES=2`) rather than the historical 64 bytes/token —
+running the command above reproduces the LLM-shaped numbers linked above,
+not the legacy Pipeline Throughput table (which predates this default).
 
 Every number above is falsifiable — run the commands yourself. Numbers vary
 meaningfully by hardware: [docs/BENCHMARKS.md](docs/BENCHMARKS.md) documents
