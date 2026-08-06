@@ -13,8 +13,8 @@ use std::time::{Duration, Instant};
 /// Cached API response
 #[derive(Clone, Debug)]
 struct CachedResponse {
-    /// Response body
-    body: Vec<u8>,
+    /// Response body - optimized to Arc<[u8]> to allow cheap, O(1), zero-allocation clones on cache hits
+    body: Arc<[u8]>,
     /// ETag hash
     etag: String,
     /// Expiration time
@@ -56,13 +56,17 @@ impl ApiResponseCache {
         }
     }
 
-    /// Get cached response or compute new one
+    /// Get cached response or compute new one.
+    ///
+    /// Optimized to return Arc<[u8]> instead of Vec<u8> to prevent cloning the entire
+    /// response body (which can be multi-megabyte JSON) on cache hits. This reduces allocation churn
+    /// and memory traffic from O(N) to O(1) time and space complexity.
     pub fn get_or_compute<F>(
         &self,
         key: &str,
         ttl: Duration,
         compute_fn: F,
-    ) -> Result<(Vec<u8>, String), String>
+    ) -> Result<(Arc<[u8]>, String), String>
     where
         F: FnOnce() -> Result<Vec<u8>, String>,
     {
@@ -75,7 +79,7 @@ impl ApiResponseCache {
             if let Some(cached) = cache.get(key) {
                 if cached.expires_at > Instant::now() {
                     stats.cache_hits += 1;
-                    return Ok((cached.body.clone(), cached.etag.clone()));
+                    return Ok((Arc::clone(&cached.body), cached.etag.clone()));
                 }
             }
         }
@@ -84,18 +88,19 @@ impl ApiResponseCache {
         stats.cache_misses += 1;
         let body = compute_fn()?;
         let etag = compute_etag(&body);
+        let body_arc: Arc<[u8]> = Arc::from(body);
 
         let mut cache = self.cache.write().unwrap();
         cache.insert(
             key.to_string(),
             CachedResponse {
-                body: body.clone(),
+                body: Arc::clone(&body_arc),
                 etag: etag.clone(),
                 expires_at: Instant::now() + ttl,
             },
         );
 
-        Ok((body, etag))
+        Ok((body_arc, etag))
     }
 
     /// Check if client's ETag matches (for 304 responses)
@@ -191,7 +196,7 @@ mod tests {
             .get_or_compute("test", Duration::from_secs(60), || Ok(body_clone))
             .unwrap();
 
-        assert_eq!(result, body);
+        assert_eq!(result.as_ref(), body.as_slice());
         assert!(!etag.is_empty());
     }
 
@@ -249,7 +254,7 @@ mod tests {
             .get_or_compute("test", Duration::from_secs(60), || Ok(b"data2".to_vec()))
             .unwrap();
 
-        assert_eq!(result2, b"data2");
+        assert_eq!(result2.as_ref(), b"data2");
     }
 
     #[test]
