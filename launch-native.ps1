@@ -264,6 +264,17 @@ $env:GHOSTLINK_LLAMA_THREADS = [Math]::Max(1, $logicalCores - 1)
 $env:GHOSTLINK_VRAM_GB = "4"
 $env:GHOSTLINK_LLAMA_NGL = "-1"
 
+# GHOSTLINK_VRAM_GB=4 above also drives native_engine.rs's get_ctx_size() VRAM
+# tier table, which caps context at its smallest bucket (4096) -- that's sized
+# off the 860M's fixed VRAM carve-out, not the ~29GB of system RAM this iGPU
+# actually shares (q8_0 KV + Flash Attention are already on by default, so the
+# real per-token KV cost is small). GHOSTLINK_CTX_SIZE takes priority over the
+# VRAM tiering in get_ctx_size(), so set it explicitly here -- but only if the
+# caller hasn't already exported one, so manual overrides still win.
+if (-not $env:GHOSTLINK_CTX_SIZE) {
+    $env:GHOSTLINK_CTX_SIZE = "16384"
+}
+
 $ApiScheme = Get-ApiScheme
 if ($ApiScheme -eq "https") {
     Write-Warn "settings.json has enable_tls=true - Ghost-Link API will bind HTTPS (self-signed cert)"
