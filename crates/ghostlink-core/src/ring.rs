@@ -373,7 +373,11 @@ impl<T> SpscRingBuffer<T> {
             let second_chunk = count - first_chunk;
             unsafe {
                 std::ptr::copy_nonoverlapping(slice.as_ptr(), buf_ptr.add(start), first_chunk);
-                std::ptr::copy_nonoverlapping(slice.as_ptr().add(first_chunk), buf_ptr, second_chunk);
+                std::ptr::copy_nonoverlapping(
+                    slice.as_ptr().add(first_chunk),
+                    buf_ptr,
+                    second_chunk,
+                );
             }
         }
         let new_tail = tail.wrapping_add(count) & mask;
