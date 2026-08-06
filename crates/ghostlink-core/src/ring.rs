@@ -36,6 +36,7 @@ const CACHE_LINE: usize = 128; // 128-byte cache lines on modern x86/ARM
 
 /// Prefetch hint for read access (equivalent to `prefetcht0` on x86)
 #[inline(always)]
+#[allow(dead_code)]
 fn prefetch_read<T>(ptr: *const T) {
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     unsafe {
@@ -50,6 +51,7 @@ fn prefetch_read<T>(ptr: *const T) {
 
 /// Prefetch hint for write access (equivalent to `prefetchw` on x86)
 #[inline(always)]
+#[allow(dead_code)]
 fn prefetch_write<T>(ptr: *mut T) {
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     unsafe {
@@ -357,17 +359,22 @@ impl<T> SpscRingBuffer<T> {
 
         let buf = unsafe { &mut *self.buffer.get() };
         let mask = Self::CAPACITY - 1;
+        let start = tail & mask;
 
-        // Prefetch the first write location
-        prefetch_write(&mut buf[tail & mask] as *mut _);
-
-        for i in 0..count {
-            let idx = (tail + i) & mask;
-            // Prefetch next cache line (64 bytes = ~16 elements for small T)
-            if i % 16 == 14 && i + 2 < count {
-                prefetch_write(&mut buf[(tail + i + 2) & mask] as *mut _);
+        // Optimize batch write by using direct contiguous memory copying via copy_nonoverlapping
+        // instead of a per-element write loop with modulo and prefetching checks.
+        let buf_ptr = buf.as_mut_ptr() as *mut T;
+        if start + count <= Self::CAPACITY {
+            unsafe {
+                std::ptr::copy_nonoverlapping(slice.as_ptr(), buf_ptr.add(start), count);
             }
-            buf[idx].write(slice[i]);
+        } else {
+            let first_chunk = Self::CAPACITY - start;
+            let second_chunk = count - first_chunk;
+            unsafe {
+                std::ptr::copy_nonoverlapping(slice.as_ptr(), buf_ptr.add(start), first_chunk);
+                std::ptr::copy_nonoverlapping(slice.as_ptr().add(first_chunk), buf_ptr, second_chunk);
+            }
         }
         let new_tail = tail.wrapping_add(count) & mask;
         self.tail.store(new_tail, Ordering::Release);
@@ -399,17 +406,23 @@ impl<T> SpscRingBuffer<T> {
 
         let buf = unsafe { &mut *self.buffer.get() };
         let mask = Self::CAPACITY - 1;
+        let start = head & mask;
 
-        // Prefetch the first read location
-        prefetch_read(&buf[head & mask] as *const _);
-
-        for (i, slot) in out.iter_mut().enumerate().take(count) {
-            let src = (head + i) & mask;
-            // Prefetch next cache line
-            if i % 16 == 14 && i + 2 < count {
-                prefetch_read(&buf[(head + i + 2) & mask] as *const _);
+        // Optimize batch read by using direct contiguous memory copying via copy_nonoverlapping
+        // instead of a per-element read loop with modulo and prefetching checks.
+        let buf_ptr = buf.as_ptr() as *const T;
+        let out_ptr = out.as_mut_ptr() as *mut T;
+        if start + count <= Self::CAPACITY {
+            unsafe {
+                std::ptr::copy_nonoverlapping(buf_ptr.add(start), out_ptr, count);
             }
-            *slot = std::mem::MaybeUninit::new(unsafe { buf[src].assume_init_read() });
+        } else {
+            let first_chunk = Self::CAPACITY - start;
+            let second_chunk = count - first_chunk;
+            unsafe {
+                std::ptr::copy_nonoverlapping(buf_ptr.add(start), out_ptr, first_chunk);
+                std::ptr::copy_nonoverlapping(buf_ptr, out_ptr.add(first_chunk), second_chunk);
+            }
         }
         let new_head = head.wrapping_add(count) & mask;
         self.head.store(new_head, Ordering::Release);
