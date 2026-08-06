@@ -30,6 +30,12 @@ jobs:
         with:
           enablement: true
 
+      - name: Validate Pages content
+        run: |
+          test -f docs/index.html
+          test -f docs/assets/demo/ghostlink-walkthrough.gif
+          echo "Pages content validated"
+
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v5
         with:

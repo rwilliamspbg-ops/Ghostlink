@@ -5,458 +5,431 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Ghostlink — distributed inference fabric for custom LLM systems</title>
 <meta name="description" content="Zero-config distributed inference across heterogeneous LAN hardware — CPU, GPU, and NPU. Self-hosted, open-source, single binary.">
+<meta name="theme-color" content="#060816">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>👻</text></svg>">
 <style>
   :root {
-    --bg: #0b0d12;
-    --bg-alt: #12151d;
-    --card: #161a24;
-    --border: #262b38;
-    --text: #e7e9ee;
-    --text-dim: #9aa1b2;
-    --accent: #8b7cf6;
-    --accent-2: #22d3ee;
-    --accent-soft: rgba(139, 124, 246, 0.14);
-    --good: #34d399;
-    --warn: #fbbf24;
-    --code-bg: #0d1017;
-    --max-w: 1080px;
+    --bg: #050816;
+    --bg-2: #0b1124;
+    --panel: rgba(10, 16, 31, 0.9);
+    --panel-strong: rgba(13, 21, 39, 0.96);
+    --border: rgba(120, 139, 255, 0.18);
+    --text: #f4f7ff;
+    --muted: #8b95b8;
+    --accent: #5b7cff;
+    --accent-2: #26d7ff;
+    --accent-soft: rgba(91, 124, 255, 0.18);
+    --good: #31d3a3;
+    --shadow: 0 20px 50px rgba(0, 0, 0, 0.26);
+    --radius: 24px;
   }
 
   * { box-sizing: border-box; }
-
   html { scroll-behavior: smooth; }
-
   body {
     margin: 0;
-    background: var(--bg);
+    font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+    background:
+      radial-gradient(circle at top left, rgba(91, 124, 255, 0.25), transparent 28%),
+      linear-gradient(135deg, var(--bg) 0%, var(--bg-2) 100%);
     color: var(--text);
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
     line-height: 1.6;
     -webkit-font-smoothing: antialiased;
-  }
-
-  code, pre, .mono {
-    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
   }
 
   a { color: var(--accent-2); text-decoration: none; }
   a:hover { text-decoration: underline; }
 
-  .wrap { max-width: var(--max-w); margin: 0 auto; padding: 0 24px; }
+  .wrap { max-width: 1160px; margin: 0 auto; padding: 0 24px; }
 
-  /* ---------- Nav ---------- */
-  nav.top {
-    position: sticky; top: 0; z-index: 20;
-    background: rgba(11, 13, 18, 0.85);
-    backdrop-filter: blur(8px);
-    border-bottom: 1px solid var(--border);
+  .topbar {
+    position: sticky;
+    top: 0;
+    z-index: 20;
+    backdrop-filter: blur(16px);
+    background: rgba(5, 8, 22, 0.72);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.05);
   }
-  nav.top .wrap {
-    display: flex; align-items: center; justify-content: space-between;
-    padding-top: 14px; padding-bottom: 14px;
+  .topbar .wrap {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 16px 24px;
   }
-  .brand { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 1.05rem; color: var(--text); }
-  .brand .ghost { font-size: 1.3rem; }
-  nav.top .links { display: flex; gap: 20px; align-items: center; font-size: 0.92rem; }
-  nav.top .links a { color: var(--text-dim); }
-  nav.top .links a:hover { color: var(--text); text-decoration: none; }
-  .btn-gh {
-    display: inline-flex; align-items: center; gap: 6px;
-    padding: 6px 12px; border-radius: 8px;
-    border: 1px solid var(--border); color: var(--text) !important;
-  }
-  .btn-gh:hover { border-color: var(--accent); text-decoration: none; }
-
-  /* ---------- Hero ---------- */
-  header.hero { padding: 76px 0 48px; text-align: center; }
-  header.hero .eyebrow {
-    display: inline-block; font-size: 0.78rem; letter-spacing: 0.06em; text-transform: uppercase;
-    color: var(--accent-2); background: var(--accent-soft); border: 1px solid rgba(139,124,246,0.35);
-    padding: 5px 12px; border-radius: 999px; margin-bottom: 22px;
-  }
-  header.hero h1 {
-    font-size: clamp(2.2rem, 5vw, 3.4rem);
-    margin: 0 0 18px;
+  .brand {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    font-weight: 700;
     letter-spacing: -0.02em;
   }
-  header.hero .tagline {
-    max-width: 700px; margin: 0 auto 34px;
-    color: var(--text-dim); font-size: 1.15rem;
+  .brand .ghost { font-size: 1.3rem; }
+  .nav-links { display: flex; gap: 20px; align-items: center; color: var(--muted); font-size: 0.95rem; }
+  .nav-links a { color: var(--muted); }
+  .nav-links a:hover { color: var(--text); text-decoration: none; }
+  .button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    padding: 10px 16px;
+    border-radius: 999px;
+    font-weight: 600;
+    border: 1px solid rgba(255,255,255,0.1);
+    transition: transform 0.2s ease, border-color 0.2s ease, background 0.2s ease;
   }
-  .cta-row { display: flex; gap: 14px; justify-content: center; flex-wrap: wrap; margin-bottom: 40px; }
-  .btn {
-    display: inline-flex; align-items: center; gap: 8px;
-    padding: 12px 22px; border-radius: 10px; font-weight: 600; font-size: 0.95rem;
-    border: 1px solid transparent; transition: transform 0.15s ease, opacity 0.15s ease;
+  .button:hover { transform: translateY(-1px); text-decoration: none; }
+  .button-primary {
+    background: linear-gradient(135deg, var(--accent), var(--accent-2));
+    color: #04111d;
+    border-color: transparent;
   }
-  .btn:hover { text-decoration: none; transform: translateY(-1px); }
-  .btn-primary { background: linear-gradient(135deg, var(--accent), var(--accent-2)); color: #0b0d12 !important; }
-  .btn-secondary { background: var(--card); border-color: var(--border); color: var(--text) !important; }
+  .button-secondary {
+    background: rgba(255,255,255,0.04);
+    color: var(--text);
+  }
 
-  .badges { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; }
+  main { padding: 24px 0 64px; }
+  .shell { display: grid; gap: 20px; }
+
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    overflow: hidden;
+  }
+  .hero {
+    display: grid;
+    grid-template-columns: 1.2fr 0.8fr;
+    gap: 24px;
+    padding: 28px;
+    position: relative;
+  }
+  .hero::after {
+    content: "";
+    position: absolute;
+    inset: auto -20px -24px auto;
+    width: 220px;
+    height: 220px;
+    background: radial-gradient(circle, rgba(38, 215, 255, 0.18), transparent 70%);
+    pointer-events: none;
+  }
+  .eyebrow {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 7px 12px;
+    border-radius: 999px;
+    font-size: 0.8rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: #8ceaff;
+    background: rgba(38, 215, 255, 0.12);
+    border: 1px solid rgba(38, 215, 255, 0.18);
+  }
+  h1 {
+    margin: 16px 0 12px;
+    font-size: clamp(2rem, 4vw, 2.8rem);
+    line-height: 1.08;
+    letter-spacing: -0.03em;
+  }
+  .lead {
+    margin: 0 0 18px;
+    font-size: 1.03rem;
+    color: var(--muted);
+    max-width: 680px;
+  }
+  .hero-actions { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 20px; }
+  .badges { display: flex; flex-wrap: wrap; gap: 10px; }
   .badge {
-    font-size: 0.72rem; padding: 4px 10px; border-radius: 999px;
-    border: 1px solid var(--border); color: var(--text-dim); background: var(--bg-alt);
+    padding: 6px 10px;
+    border-radius: 999px;
+    font-size: 0.8rem;
+    color: var(--muted);
+    background: rgba(255,255,255,0.04);
+    border: 1px solid rgba(255,255,255,0.08);
   }
 
-  /* ---------- Sections ---------- */
-  section { padding: 56px 0; border-top: 1px solid var(--border); }
-  section h2 {
-    font-size: 1.6rem; margin: 0 0 10px; letter-spacing: -0.01em;
+  .preview-card {
+    background: linear-gradient(145deg, rgba(255,255,255,0.06), rgba(255,255,255,0.03));
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 20px;
+    padding: 18px;
+    display: grid;
+    gap: 12px;
   }
-  section .lede { color: var(--text-dim); max-width: 720px; margin: 0 0 32px; }
-
-  /* ---------- Demo ---------- */
-  .demo-frame {
-    border: 1px solid var(--border); border-radius: 14px; overflow: hidden;
-    background: var(--bg-alt);
+  .preview-top {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 0.85rem;
+    color: var(--muted);
   }
-  .demo-frame img { display: block; width: 100%; height: auto; }
-  .demo-caption { color: var(--text-dim); font-size: 0.88rem; margin-top: 14px; text-align: center; }
-
-  /* ---------- Feature grid ---------- */
-  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; }
-  .card {
-    background: var(--card); border: 1px solid var(--border); border-radius: 12px;
-    padding: 20px;
+  .status-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 10px;
+    border-radius: 999px;
+    background: rgba(49, 211, 163, 0.14);
+    color: #8ef1cb;
+    font-weight: 600;
   }
-  .card h3 { margin: 0 0 8px; font-size: 1.02rem; }
-  .card p { margin: 0; color: var(--text-dim); font-size: 0.92rem; }
-
-  /* ---------- Comparison table ---------- */
-  .table-scroll { overflow-x: auto; border: 1px solid var(--border); border-radius: 12px; }
-  table { border-collapse: collapse; width: 100%; min-width: 640px; font-size: 0.9rem; }
-  th, td { text-align: left; padding: 12px 16px; border-bottom: 1px solid var(--border); vertical-align: top; }
-  th { color: var(--text-dim); font-weight: 600; background: var(--bg-alt); font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.04em; }
-  tr:last-child td { border-bottom: none; }
-  tr.highlight td { background: var(--accent-soft); }
-  tr.highlight td:first-child { font-weight: 700; color: var(--text); }
-
-  /* ---------- Quick start ---------- */
-  .tabs { display: flex; gap: 8px; margin-bottom: 14px; }
-  .tab-btn {
-    background: var(--card); border: 1px solid var(--border); color: var(--text-dim);
-    padding: 8px 16px; border-radius: 8px; font-size: 0.86rem; cursor: pointer;
-    font-family: inherit;
+  .status-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--good);
+    box-shadow: 0 0 0 4px rgba(49, 211, 163, 0.16);
   }
-  .tab-btn.active { color: var(--text); border-color: var(--accent); background: var(--accent-soft); }
-  pre.code-block {
-    background: var(--code-bg); border: 1px solid var(--border); border-radius: 12px;
-    padding: 18px 20px; overflow-x: auto; font-size: 0.86rem; margin: 0;
+  .preview-body {
+    display: grid;
+    gap: 10px;
   }
-  pre.code-block code { color: #d6e0ff; }
-  .code-comment { color: #6b7280; }
-  .tab-panel { display: none; }
-  .tab-panel.active { display: block; }
+  .preview-row {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+  }
+  .mini-card {
+    border-radius: 14px;
+    padding: 12px;
+    background: rgba(7, 12, 24, 0.8);
+    border: 1px solid rgba(255,255,255,0.06);
+  }
+  .mini-card strong { display: block; margin-bottom: 4px; font-size: 0.95rem; }
+  .mini-card span { color: var(--muted); font-size: 0.8rem; }
+  .mini-card .value { font-size: 1.1rem; color: var(--text); margin-top: 2px; }
 
-  /* ---------- Hardware table ---------- */
-  .accel-yes { color: var(--good); }
-  .accel-no { color: var(--text-dim); }
-  .accel-partial { color: var(--warn); }
+  .stats-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 16px;
+  }
+  .stat-card {
+    padding: 18px 20px;
+    display: grid;
+    gap: 6px;
+  }
+  .stat-card .label { color: var(--muted); font-size: 0.9rem; }
+  .stat-card .value { font-size: 1.4rem; font-weight: 700; letter-spacing: -0.02em; }
 
-  /* ---------- Docs grid ---------- */
-  .docs-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; }
+  .content-grid {
+    display: grid;
+    grid-template-columns: 1.1fr 0.9fr;
+    gap: 20px;
+  }
+  .section-card { padding: 24px; }
+  .section-card h2 { margin: 0 0 8px; font-size: 1.2rem; }
+  .section-card p { color: var(--muted); margin: 0 0 14px; }
+  .feature-list { display: grid; gap: 10px; }
+  .feature-item {
+    display: flex;
+    gap: 10px;
+    padding: 12px 13px;
+    border-radius: 14px;
+    background: rgba(255,255,255,0.04);
+    border: 1px solid rgba(255,255,255,0.06);
+  }
+  .feature-item .dot {
+    width: 10px; height: 10px; border-radius: 50%; margin-top: 8px; flex-shrink: 0;
+    background: linear-gradient(135deg, var(--accent), var(--accent-2));
+    box-shadow: 0 0 0 4px rgba(91, 124, 255, 0.14);
+  }
+
+  pre {
+    margin: 0;
+    padding: 16px;
+    border-radius: 16px;
+    background: #060a13;
+    border: 1px solid rgba(255,255,255,0.06);
+    overflow-x: auto;
+    color: #d9e3ff;
+    font-size: 0.9rem;
+  }
+  code { font-family: ui-monospace, SFMono-Regular, monospace; }
+
+  .media-card { padding: 24px; }
+  .media-frame {
+    border-radius: 18px;
+    overflow: hidden;
+    border: 1px solid rgba(255,255,255,0.08);
+    background: rgba(255,255,255,0.03);
+  }
+  .media-frame img { display: block; width: 100%; height: auto; }
+  .caption { margin-top: 10px; color: var(--muted); font-size: 0.92rem; }
+
+  .docs-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; }
   .doc-link {
-    display: block; background: var(--card); border: 1px solid var(--border); border-radius: 10px;
-    padding: 14px 16px; color: var(--text) !important;
+    display: block;
+    padding: 14px 15px;
+    border-radius: 14px;
+    background: rgba(255,255,255,0.04);
+    border: 1px solid rgba(255,255,255,0.06);
+    color: var(--text) !important;
   }
-  .doc-link:hover { border-color: var(--accent); text-decoration: none; }
-  .doc-link .name { font-weight: 600; font-size: 0.92rem; }
-  .doc-link .desc { color: var(--text-dim); font-size: 0.82rem; margin-top: 4px; }
+  .doc-link .name { font-weight: 700; margin-bottom: 4px; }
+  .doc-link .desc { color: var(--muted); font-size: 0.84rem; }
 
-  footer { padding: 40px 0 60px; text-align: center; color: var(--text-dim); font-size: 0.85rem; }
-  footer a { color: var(--text-dim); }
-  footer .foot-links { display: flex; gap: 18px; justify-content: center; margin-bottom: 16px; flex-wrap: wrap; }
+  footer {
+    padding: 28px 0 48px;
+    color: var(--muted);
+    text-align: center;
+    font-size: 0.9rem;
+  }
+  .footer-links { display: flex; justify-content: center; gap: 18px; flex-wrap: wrap; margin-bottom: 10px; }
 
+  @media (max-width: 900px) {
+    .hero, .content-grid { grid-template-columns: 1fr; }
+    .stats-grid { grid-template-columns: 1fr; }
+  }
   @media (max-width: 640px) {
-    nav.top .links { display: none; }
-    header.hero { padding: 52px 0 36px; }
+    .nav-links { display: none; }
+    .topbar .wrap { padding: 14px 20px; }
+    .hero, .section-card, .media-card { padding: 18px; }
   }
 </style>
 </head>
 <body>
-
-<nav class="top">
+<nav class="topbar">
   <div class="wrap">
-    <div class="brand"><span class="ghost">👻</span> Ghostlink</div>
-    <div class="links">
+    <a class="brand" href="#top" aria-label="Ghostlink home">
+      <span class="ghost">👻</span>
+      <span>Ghostlink</span>
+    </a>
+    <div class="nav-links">
       <a href="#what">What it brings</a>
-      <a href="#compare">Comparison</a>
       <a href="#quickstart">Quick Start</a>
       <a href="#docs">Docs</a>
-      <a class="btn-gh" href="https://github.com/rwilliamspbg-ops/Ghostlink" target="_blank" rel="noopener">GitHub ↗</a>
+      <a class="button button-secondary" href="https://github.com/rwilliamspbg-ops/Ghostlink" target="_blank" rel="noopener">GitHub ↗</a>
     </div>
   </div>
 </nav>
 
-<header class="hero">
-  <div class="wrap">
-    <span class="eyebrow">v1.16.0 · MIT licensed · self-hosted</span>
-    <h1>Distributed inference fabric<br>for custom LLM systems</h1>
-    <p class="tagline">
-      Point Ghostlink at every machine on your LAN and it becomes one inference cluster —
-      correctly sized, authenticated, and observable — with zero YAML and no manual
-      <code>--rpc</code> flags.
-    </p>
-    <div class="cta-row">
-      <a class="btn btn-primary" href="#quickstart">Quick Start</a>
-      <a class="btn btn-secondary" href="https://github.com/rwilliamspbg-ops/Ghostlink" target="_blank" rel="noopener">View on GitHub</a>
-      <a class="btn btn-secondary" href="https://github.com/rwilliamspbg-ops/Ghostlink/blob/main/docs/ARCHITECTURE.md" target="_blank" rel="noopener">Architecture</a>
-    </div>
-    <div class="badges">
-      <span class="badge">Windows · Linux · macOS</span>
-      <span class="badge">Rust 2021</span>
-      <span class="badge">CPU / GPU / NPU</span>
-      <span class="badge">MIT License</span>
-    </div>
-  </div>
-</header>
-
-<section id="demo">
-  <div class="wrap">
-    <h2>Install → load a model → chat</h2>
-    <p class="lede">
-      End to end, running <a href="https://huggingface.co/meta-llama/Llama-3.2-1B-Instruct" target="_blank" rel="noopener">Llama 3.2 1B</a>
-      locally through Ghostlink's native llama.cpp backend.
-    </p>
-    <div class="demo-frame">
-      <img src="assets/demo/ghostlink-walkthrough.gif" alt="Ghostlink Studio walkthrough — loading Llama 3.2 1B and chatting with it" loading="lazy">
-    </div>
-    <p class="demo-caption">The full-length recording (with audio) is available in the project repo.</p>
-  </div>
-</section>
-
-<section id="what">
-  <div class="wrap">
-    <h2>What Ghostlink brings</h2>
-    <p class="lede">
-      Nobody else combines zero-config discovery of heterogeneous consumer/prosumer
-      hardware with real distributed inference across it.
-    </p>
-    <div class="grid">
-      <div class="card">
-        <h3>Real cross-machine inference</h3>
-        <p>Opt in a node's spare GPU/CPU and a request automatically splits across it via llama.cpp's own RPC backend — zero-config, no manual <code>--rpc</code> flags.</p>
+<main id="top">
+  <div class="wrap shell">
+    <section class="panel hero">
+      <div>
+        <div class="eyebrow">v1.16.0 · self-hosted · MIT licensed</div>
+        <h1>Run your own inference fabric without the usual ops overhead.</h1>
+        <p class="lead">
+          Ghostlink turns your LAN into a shared inference layer with discovery, placement, auth, and observability built in — all from a single binary and a simple launcher.
+        </p>
+        <div class="hero-actions">
+          <a class="button button-primary" href="#quickstart">Get started</a>
+          <a class="button button-secondary" href="https://github.com/rwilliamspbg-ops/Ghostlink" target="_blank" rel="noopener">View on GitHub</a>
+        </div>
+        <div class="badges">
+          <span class="badge">CPU • GPU • NPU</span>
+          <span class="badge">Rust 2021</span>
+          <span class="badge">Windows • Linux • macOS</span>
+        </div>
       </div>
-      <div class="card">
-        <h3>Hardware-aware placement</h3>
-        <p>Layer assignment across mixed compute environments (CPU, GPU, NPU), sized from each node's actually-detected VRAM and compute capability.</p>
+      <div class="preview-card" aria-label="Ghostlink dashboard preview">
+        <div class="preview-top">
+          <span>Ghostlink Studio</span>
+          <span class="status-pill"><span class="status-dot"></span>live cluster</span>
+        </div>
+        <div class="preview-body">
+          <div class="preview-row">
+            <div class="mini-card">
+              <strong>Models</strong>
+              <span>Loaded locally</span>
+              <div class="value">3 active</div>
+            </div>
+            <div class="mini-card">
+              <strong>Workers</strong>
+              <span>Networked nodes</span>
+              <div class="value">7 online</div>
+            </div>
+          </div>
+          <div class="mini-card">
+            <strong>Inference path</strong>
+            <span>Balanced across CPU and accelerator tiers</span>
+            <div class="value">auto-placement enabled</div>
+          </div>
+          <div class="mini-card">
+            <strong>Editor</strong>
+            <span>Explain / Fix / Refactor from the workspace</span>
+            <div class="value">repo-aware context included</div>
+          </div>
+        </div>
       </div>
-      <div class="card">
-        <h3>Sub-microsecond transport</h3>
-        <p>SPSC ring-buffer transport with spin-wait for in-process hand-off, plus TCP and Unix domain socket transport for multi-process pipelines.</p>
-      </div>
-      <div class="card">
-        <h3>Zero-config discovery</h3>
-        <p>UDP broadcast and mDNS cluster discovery find every Ghostlink instance on the LAN automatically — no manual peer configuration.</p>
-      </div>
-      <div class="card">
-        <h3>Production-grade auth</h3>
-        <p>Session-level authentication on transport frames, bearer-token API auth, optional PQC-hybrid TLS, and rate limiting on the control-plane gateway.</p>
-      </div>
-      <div class="card">
-        <h3>In-GUI code editor</h3>
-        <p>Monaco-based Editor tab with copilot-style Explain/Fix/Refactor, diff preview before anything is written, multi-file refactor, and repo-aware chat via local RAG indexing.</p>
-      </div>
-    </div>
-  </div>
-</section>
+    </section>
 
-<section id="compare">
-  <div class="wrap">
-    <h2>Where Ghostlink fits</h2>
-    <p class="lede">
-      See <a href="https://github.com/rwilliamspbg-ops/Ghostlink/blob/main/docs/COMPARISON.md" target="_blank" rel="noopener">docs/COMPARISON.md</a>
-      for the full breakdown and <a href="https://github.com/rwilliamspbg-ops/Ghostlink/blob/main/docs/BENCHMARKS.md" target="_blank" rel="noopener">docs/BENCHMARKS.md</a>
-      for real measured runs, not just prose.
-    </p>
-    <div class="table-scroll">
-      <table>
-        <thead>
-          <tr><th>Platform</th><th>Best for</th><th>Weakness Ghostlink addresses</th></tr>
-        </thead>
-        <tbody>
-          <tr class="highlight">
-            <td>Ghostlink</td>
-            <td>Zero-config distributed inference across heterogeneous LAN hardware</td>
-            <td>Early-stage ecosystem; LAN only, no relay/WAN mode yet</td>
-          </tr>
-          <tr>
-            <td>vLLM / TensorRT-LLM</td>
-            <td>Datacenter-grade single/multi-GPU serving</td>
-            <td>Assumes homogeneous, co-located GPUs; no zero-config LAN clustering</td>
-          </tr>
-          <tr>
-            <td>Ollama</td>
-            <td>Single-node local model serving</td>
-            <td>No real multi-node distribution; no cluster discovery</td>
-          </tr>
-          <tr>
-            <td>LM Studio</td>
-            <td>Desktop-first local chat/inference</td>
-            <td>Single machine only, closed-source, not API-extensible</td>
-          </tr>
-          <tr>
-            <td>llama.cpp server</td>
-            <td>Lightweight single-binary inference</td>
-            <td>No orchestration, discovery, or cluster layer — Ghostlink wraps this as a backend</td>
-          </tr>
-          <tr>
-            <td>Kubernetes-based (KServe, Triton)</td>
-            <td>Large fleets, org-wide model serving</td>
-            <td>Needs a cluster and an ops team — overkill for a household/small-team LAN</td>
-          </tr>
-        </tbody>
-      </table>
-    </div>
-  </div>
-</section>
+    <section class="stats-grid">
+      <article class="panel stat-card">
+        <span class="label">Discovery</span>
+        <span class="value">Zero-config</span>
+        <span class="label">Broadcast + mDNS find peers automatically.</span>
+      </article>
+      <article class="panel stat-card">
+        <span class="label">Placement</span>
+        <span class="value">Hardware-aware</span>
+        <span class="label">Use each node’s real capability instead of guesses.</span>
+      </article>
+      <article class="panel stat-card">
+        <span class="label">Control</span>
+        <span class="value">Authenticated</span>
+        <span class="label">Token auth, rate limiting, and optional PQC-hybrid transport.</span>
+      </article>
+    </section>
 
-<section id="quickstart">
-  <div class="wrap">
-    <h2>Quick Start</h2>
-    <p class="lede">Three commands, one launcher, no manual service wiring.</p>
-
-    <div class="tabs">
-      <button class="tab-btn active" data-tab="windows">Windows</button>
-      <button class="tab-btn" data-tab="unix">Linux / macOS</button>
-    </div>
-
-    <div class="tab-panel active" id="tab-windows">
-      <pre class="code-block"><code><span class="code-comment"># Requires: Rust, Node.js, CMake, Git</span>
-git clone https://github.com/rwilliamspbg-ops/Ghostlink.git
+    <section class="content-grid" id="what">
+      <div class="panel section-card">
+        <h2>What makes Ghostlink feel different</h2>
+        <p>It is built for local-first distributed AI, not a cloud-only serving stack.</p>
+        <div class="feature-list">
+          <div class="feature-item"><span class="dot"></span><div><strong>Cross-machine inference</strong><br>Requests can span multiple machines so one model can be larger than any single box.</div></div>
+          <div class="feature-item"><span class="dot"></span><div><strong>In-GUI workflows</strong><br>Explain, fix, refactor, and review code changes directly from the embedded editor.</div></div>
+          <div class="feature-item"><span class="dot"></span><div><strong>Local-first design</strong><br>There is no vendor lock-in dependency on a hosted control plane or cloud runtime.</div></div>
+        </div>
+      </div>
+      <div class="panel section-card" id="quickstart">
+        <h2>Launch it in three steps</h2>
+        <p>Clone, build, and start the full local stack with one launcher.</p>
+        <pre><code>git clone https://github.com/rwilliamspbg-ops/Ghostlink.git
 cd Ghostlink
-
-<span class="code-comment"># One-time backend build</span>
-cargo build --release -p ghost-link
-
-<span class="code-comment"># Single launcher for the full stack</span>
-.\launch.bat</code></pre>
-    </div>
-    <div class="tab-panel" id="tab-unix">
-      <pre class="code-block"><code><span class="code-comment"># Requires: Rust, Node.js, curl (cmake optional)</span>
-git clone https://github.com/rwilliamspbg-ops/Ghostlink.git
-cd Ghostlink
-
 cargo build --release -p ghost-link
 ./launch.sh</code></pre>
-    </div>
+      </div>
+    </section>
 
-    <p class="lede" style="margin-top: 20px;">
-      This starts llama-server (inference), the Ghostlink API, a Go control-plane gateway,
-      and the React frontend at <code>http://127.0.0.1:5173</code> — opened automatically.
-      Then: <strong>Models</strong> → load a model → <strong>Chat</strong>.
-      Full walkthrough in the <a href="https://github.com/rwilliamspbg-ops/Ghostlink#quick-start" target="_blank" rel="noopener">README</a>.
-    </p>
-  </div>
-</section>
+    <section class="panel media-card">
+      <h2>See the experience in motion</h2>
+      <p>The walkthrough below shows the local workflow from first launch to chatting with a loaded model.</p>
+      <div class="media-frame">
+        <img src="assets/demo/ghostlink-walkthrough.gif" alt="Ghostlink Studio walkthrough" loading="lazy">
+      </div>
+      <div class="caption">The full walkthrough is also available in the repository for deeper setup guidance.</div>
+    </section>
 
-<section id="hardware">
-  <div class="wrap">
-    <h2>Hardware detection</h2>
-    <p class="lede">
-      Auto-detects available accelerators at startup — grounded in
-      <a href="https://github.com/rwilliamspbg-ops/Ghostlink/blob/main/crates/ghostlink-core/src/system_profile.rs" target="_blank" rel="noopener"><code>system_profile.rs</code></a>.
-    </p>
-    <div class="table-scroll">
-      <table>
-        <thead>
-          <tr><th>Accelerator</th><th>Windows</th><th>Linux</th><th>macOS</th></tr>
-        </thead>
-        <tbody>
-          <tr><td>CUDA (NVIDIA)</td><td class="accel-yes">✓</td><td class="accel-yes">✓</td><td class="accel-partial">partial</td></tr>
-          <tr><td>DirectML (AMD iGPU, Intel ARC, any DX12)</td><td class="accel-yes">✓</td><td class="accel-no">—</td><td class="accel-no">—</td></tr>
-          <tr><td>ROCm (AMD discrete)</td><td class="accel-no">—</td><td class="accel-yes">✓ (feature flag)</td><td class="accel-no">—</td></tr>
-          <tr><td>Vulkan (generic fallback)</td><td class="accel-yes">✓</td><td class="accel-yes">✓</td><td class="accel-yes">✓</td></tr>
-          <tr><td>Metal (Apple Silicon)</td><td class="accel-no">—</td><td class="accel-no">—</td><td class="accel-yes">✓</td></tr>
-          <tr><td>NPU (AMD XDNA, Intel, Qualcomm)</td><td class="accel-yes">✓</td><td class="accel-yes">✓</td><td class="accel-partial">Neural Engine</td></tr>
-          <tr><td>CPU</td><td class="accel-yes">✓</td><td class="accel-yes">✓</td><td class="accel-yes">✓</td></tr>
-        </tbody>
-      </table>
-    </div>
+    <section class="panel section-card" id="docs">
+      <h2>Docs and references</h2>
+      <p>Jump into the architecture, quickstart, benchmarks, and deployment guides.</p>
+      <div class="docs-grid">
+        <a class="doc-link" href="https://github.com/rwilliamspbg-ops/Ghostlink/blob/main/docs/ARCHITECTURE.md" target="_blank" rel="noopener"><div class="name">Architecture</div><div class="desc">Request flow and cluster layout</div></a>
+        <a class="doc-link" href="https://github.com/rwilliamspbg-ops/Ghostlink/blob/main/docs/QUICKSTART.md" target="_blank" rel="noopener"><div class="name">Quickstart</div><div class="desc">Guided setup walkthrough</div></a>
+        <a class="doc-link" href="https://github.com/rwilliamspbg-ops/Ghostlink/blob/main/docs/API_REFERENCE.md" target="_blank" rel="noopener"><div class="name">API Reference</div><div class="desc">Request and response examples</div></a>
+        <a class="doc-link" href="https://github.com/rwilliamspbg-ops/Ghostlink/blob/main/docs/BENCHMARKS.md" target="_blank" rel="noopener"><div class="name">Benchmarks</div><div class="desc">Real measured runs</div></a>
+        <a class="doc-link" href="https://github.com/rwilliamspbg-ops/Ghostlink/blob/main/docs/COMPARISON.md" target="_blank" rel="noopener"><div class="name">Comparison</div><div class="desc">vs. vLLM, Ollama, and more</div></a>
+        <a class="doc-link" href="https://github.com/rwilliamspbg-ops/Ghostlink/blob/main/docs/SECURITY_MODEL.md" target="_blank" rel="noopener"><div class="name">Security</div><div class="desc">Auth, TLS, and trust boundaries</div></a>
+      </div>
+    </section>
   </div>
-</section>
-
-<section id="docs">
-  <div class="wrap">
-    <h2>Documentation</h2>
-    <p class="lede">Rendered on GitHub for the best reading experience.</p>
-    <div class="docs-grid">
-      <a class="doc-link" href="https://github.com/rwilliamspbg-ops/Ghostlink/blob/main/docs/ARCHITECTURE.md" target="_blank" rel="noopener">
-        <div class="name">Architecture</div>
-        <div class="desc">Request/cluster-flow diagram</div>
-      </a>
-      <a class="doc-link" href="https://github.com/rwilliamspbg-ops/Ghostlink/blob/main/docs/QUICKSTART.md" target="_blank" rel="noopener">
-        <div class="name">Quickstart</div>
-        <div class="desc">Guided setup walkthrough</div>
-      </a>
-      <a class="doc-link" href="https://github.com/rwilliamspbg-ops/Ghostlink/blob/main/docs/API_REFERENCE.md" target="_blank" rel="noopener">
-        <div class="name">API Reference</div>
-        <div class="desc">Request/response examples</div>
-      </a>
-      <a class="doc-link" href="https://github.com/rwilliamspbg-ops/Ghostlink/blob/main/docs/openapi.yaml" target="_blank" rel="noopener">
-        <div class="name">OpenAPI Spec</div>
-        <div class="desc">Machine-readable API spec</div>
-      </a>
-      <a class="doc-link" href="https://github.com/rwilliamspbg-ops/Ghostlink/blob/main/docs/BENCHMARKS.md" target="_blank" rel="noopener">
-        <div class="name">Benchmarks</div>
-        <div class="desc">Real, reproducible numbers</div>
-      </a>
-      <a class="doc-link" href="https://github.com/rwilliamspbg-ops/Ghostlink/blob/main/docs/COMPARISON.md" target="_blank" rel="noopener">
-        <div class="name">Comparison</div>
-        <div class="desc">vs. vLLM, Ollama, LM Studio, K8s</div>
-      </a>
-      <a class="doc-link" href="https://github.com/rwilliamspbg-ops/Ghostlink/blob/main/docs/SECURITY_MODEL.md" target="_blank" rel="noopener">
-        <div class="name">Security Model</div>
-        <div class="desc">Auth, PQC-hybrid TLS, trust boundaries</div>
-      </a>
-      <a class="doc-link" href="https://github.com/rwilliamspbg-ops/Ghostlink/blob/main/docs/DEPLOYMENT.md" target="_blank" rel="noopener">
-        <div class="name">Deployment</div>
-        <div class="desc">Production deployment guide</div>
-      </a>
-      <a class="doc-link" href="https://github.com/rwilliamspbg-ops/Ghostlink/blob/main/docs/TROUBLESHOOTING.md" target="_blank" rel="noopener">
-        <div class="name">Troubleshooting</div>
-        <div class="desc">Common issues and fixes</div>
-      </a>
-      <a class="doc-link" href="https://github.com/rwilliamspbg-ops/Ghostlink/blob/main/docs/ROADMAP.md" target="_blank" rel="noopener">
-        <div class="name">Roadmap</div>
-        <div class="desc">Competitive strategy & what's next</div>
-      </a>
-      <a class="doc-link" href="https://github.com/rwilliamspbg-ops/Ghostlink/blob/main/CHANGELOG.md" target="_blank" rel="noopener">
-        <div class="name">Changelog</div>
-        <div class="desc">Release history</div>
-      </a>
-      <a class="doc-link" href="https://github.com/rwilliamspbg-ops/Ghostlink/blob/main/CONTRIBUTING.md" target="_blank" rel="noopener">
-        <div class="name">Contributing</div>
-        <div class="desc">Setup, PR expectations, release rubric</div>
-      </a>
-    </div>
-  </div>
-</section>
+</main>
 
 <footer>
   <div class="wrap">
-    <div class="foot-links">
+    <div class="footer-links">
       <a href="https://github.com/rwilliamspbg-ops/Ghostlink" target="_blank" rel="noopener">GitHub</a>
       <a href="https://github.com/rwilliamspbg-ops/Ghostlink/blob/main/LICENSE" target="_blank" rel="noopener">MIT License</a>
       <a href="https://github.com/rwilliamspbg-ops/Ghostlink/issues" target="_blank" rel="noopener">Issues</a>
-      <a href="https://github.com/sponsors/rwilliamspbg-ops" target="_blank" rel="noopener">Sponsor</a>
     </div>
     <div>Ghostlink is an open-source distributed inference fabric, self-hosted and MIT licensed.</div>
   </div>
 </footer>
-
-<script>
-  document.querySelectorAll('.tab-btn').forEach(function (btn) {
-    btn.addEventListener('click', function () {
-      document.querySelectorAll('.tab-btn').forEach(function (b) { b.classList.remove('active'); });
-      document.querySelectorAll('.tab-panel').forEach(function (p) { p.classList.remove('active'); });
-      btn.classList.add('active');
-      document.getElementById('tab-' + btn.dataset.tab).classList.add('active');
-    });
-  });
-</script>
-
 </body>
 </html>
