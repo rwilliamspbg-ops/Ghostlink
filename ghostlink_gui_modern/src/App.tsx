@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Plus, ChevronRight, Menu, Cpu, Zap, Wifi } from 'lucide-react';
+import { Plus, ChevronRight, Menu, Cpu, Zap, Wifi, Search } from 'lucide-react';
 import { useAppStore } from './store';
 import { GhostlinkAPI } from './api';
 import { ChatTab } from './components/ChatTab';
@@ -263,13 +263,30 @@ function App() {
                 closeSidebarOnMobile();
               }
             }}
-            className="flex items-center justify-between w-full p-3 bg-slate-800 hover:bg-slate-700 rounded-xl transition mb-6 group"
+            title="Start a new chat session (Ctrl+Shift+O)"
+            aria-label="Start a new chat"
+            className="flex items-center justify-between w-full p-3 bg-slate-800 hover:bg-slate-700 rounded-xl transition mb-2 group focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
           >
             <div className="flex items-center gap-3">
               <Plus size={18} className="text-slate-400 group-hover:text-white" aria-hidden="true" />
               <span className="text-sm font-medium">New Chat</span>
             </div>
-            <div className="text-[10px] text-slate-500 bg-slate-950 px-1.5 py-0.5 rounded border border-slate-700" title="Open the command palette">Ctrl K</div>
+            <div className="text-[10px] text-slate-500 bg-slate-950 px-1.5 py-0.5 rounded border border-slate-700" title="Shortcut for New Chat">Ctrl⇧O</div>
+          </button>
+
+          <button
+            onClick={() => {
+              window.dispatchEvent(new CustomEvent('open-command-palette'));
+            }}
+            title="Search commands (Ctrl+K)"
+            aria-label="Search and run commands"
+            className="flex items-center justify-between w-full p-3 bg-slate-800/40 hover:bg-slate-800 border border-slate-800/60 rounded-xl transition mb-6 group focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
+          >
+            <div className="flex items-center gap-3">
+              <Search size={18} className="text-slate-500 group-hover:text-slate-300" aria-hidden="true" />
+              <span className="text-sm font-medium text-slate-400 group-hover:text-slate-200">Search commands...</span>
+            </div>
+            <div className="text-[10px] text-slate-500 bg-slate-950 px-1.5 py-0.5 rounded border border-slate-700" title="Shortcut for Command Palette">Ctrl K</div>
           </button>
 
           <nav className="flex-1 space-y-1" aria-label="Primary">
