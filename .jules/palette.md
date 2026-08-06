@@ -1,5 +1,9 @@
 # Palette's Journal
 
+## 2026-08-06 - [Workspace & Editor Tab Keyboard Navigation]
+**Learning:** Development environments and files workspaces (such as the Editor tab with its file tree checkbox selectors, expandable folders, workspace-level toggles, and edit actions) need high-visibility focus indicator rings (`focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none`). Relying on default browser focus states in dark-themed, nested pane designs leaves keyboard-only navigators or assistive technology users completely lost, unable to determine which button, input, or checkbox is currently active.
+**Action:** Ensure all workspace file checkboxes, file/folder tree nodes, editor action triggers, and diff confirmation buttons are styled with explicit, high-contrast focus visible styles to maintain continuous keyboard-accessible visual feedback.
+
 ## 2026-08-05 - [Sidebar Search Button & Shortcut Badges]
 **Learning:** Displaying incorrect hotkey badges in primary UI controls (such as labeling "New Chat" with "Ctrl+K" instead of "Ctrl+Shift+O") confuses power users and misrepresents keyboard capability. Additionally, hidden features (like a global Command Palette) are significantly more accessible and discoverable when represented by a clear, dedicated visual trigger button in main navigation menus. Custom programmatic event systems with active focus restoration allow seamless visual triggers without losing screen-reader context.
 **Action:** Always provide dedicated visual trigger buttons for hidden features like command palettes, label shortcut badges precisely, and use custom window events with focus restoration to trigger them smoothly.

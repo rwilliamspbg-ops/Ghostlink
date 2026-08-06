@@ -150,13 +150,13 @@ const TreeNode: React.FC<{
             checked={selectedPaths.has(entry.path)}
             onClick={(e) => e.stopPropagation()}
             onChange={() => onToggleSelect(entry.path)}
-            className="shrink-0 accent-blue-600"
+            className="shrink-0 accent-blue-600 focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
           />
         )}
         <button
           onClick={toggle}
           title={entry.path}
-          className={`flex items-center gap-1.5 flex-1 min-w-0 py-1 text-left text-xs transition ${
+          className={`flex items-center gap-1.5 flex-1 min-w-0 py-1 text-left text-xs transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none rounded ${
             isOpen ? 'text-blue-400' : 'text-slate-400 hover:text-slate-200'
           }`}
         >
@@ -568,7 +568,7 @@ export const EditorTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
               aria-pressed={autocompleteEnabled}
               aria-label="Ghost-text autocomplete"
               title="Ghost-text autocomplete (experimental — fires a real completion request as you pause typing)"
-              className={`p-1 rounded-lg transition ${
+              className={`p-1 rounded-lg transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none ${
                 autocompleteEnabled ? 'bg-blue-600/20 text-blue-400' : 'text-slate-500 hover:text-white hover:bg-slate-900'
               }`}
             >
@@ -577,7 +577,7 @@ export const EditorTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
             <button
               onClick={loadRoot}
               aria-label="Refresh file tree"
-              className="p-1 rounded-lg hover:bg-slate-900 text-slate-500 hover:text-white transition"
+              className="p-1 rounded-lg hover:bg-slate-900 text-slate-500 hover:text-white transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
             >
               <RefreshCw size={13} className={treeLoading ? 'animate-spin' : ''} aria-hidden="true" />
             </button>
@@ -589,7 +589,7 @@ export const EditorTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
             <button
               onClick={runMultiFileRefactor}
               disabled={multiRunning}
-              className="flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-bold bg-purple-600 hover:bg-purple-500 text-white disabled:opacity-40 transition"
+              className="flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-bold bg-purple-600 hover:bg-purple-500 text-white disabled:opacity-40 transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
             >
               {multiRunning ? <Loader size={11} className="animate-spin" aria-hidden="true" /> : <Wand2 size={11} aria-hidden="true" />}
               Refactor Selected
@@ -636,7 +636,7 @@ export const EditorTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                 key={kind}
                 onClick={() => runAction(kind)}
                 disabled={!editorOpenPath || running !== null}
-                className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium text-slate-400 hover:text-white hover:bg-slate-800 disabled:opacity-40 transition"
+                className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium text-slate-400 hover:text-white hover:bg-slate-800 disabled:opacity-40 transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
               >
                 {running === kind ? <Loader size={13} className="animate-spin" aria-hidden="true" /> : <Icon size={13} aria-hidden="true" />}
                 {label}
@@ -645,7 +645,7 @@ export const EditorTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
             <button
               onClick={handleSave}
               disabled={!editorOpenPath || !dirty || saving}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold bg-blue-600 text-white hover:bg-blue-500 disabled:opacity-40 disabled:cursor-not-allowed transition"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold bg-blue-600 text-white hover:bg-blue-500 disabled:opacity-40 disabled:cursor-not-allowed transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
             >
               {saving ? <Loader size={13} className="animate-spin" aria-hidden="true" /> : <Save size={13} aria-hidden="true" />}
               Save
@@ -663,20 +663,20 @@ export const EditorTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                 <div className="flex gap-2">
                   <button
                     onClick={acceptMultiCurrent}
-                    className="flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-bold bg-green-600 hover:bg-green-500 text-white transition"
+                    className="flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-bold bg-green-600 hover:bg-green-500 text-white transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
                   >
                     <Check size={13} aria-hidden="true" /> Accept
                   </button>
                   <button
                     onClick={rejectMultiCurrent}
-                    className="flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-bold bg-slate-800 hover:bg-slate-700 text-slate-300 transition"
+                    className="flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-bold bg-slate-800 hover:bg-slate-700 text-slate-300 transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
                   >
                     <X size={13} aria-hidden="true" /> Reject
                   </button>
                   <button
                     onClick={advanceMultiQueue}
                     title="Skip without applying or discarding — you can revisit it another time"
-                    className="flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-bold bg-slate-800 hover:bg-slate-700 text-slate-300 transition"
+                    className="flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-bold bg-slate-800 hover:bg-slate-700 text-slate-300 transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
                   >
                     <SkipForward size={13} aria-hidden="true" /> Skip
                   </button>
@@ -712,13 +712,13 @@ export const EditorTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                 <div className="flex gap-2">
                   <button
                     onClick={acceptDiff}
-                    className="flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-bold bg-green-600 hover:bg-green-500 text-white transition"
+                    className="flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-bold bg-green-600 hover:bg-green-500 text-white transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
                   >
                     <Check size={13} aria-hidden="true" /> Accept
                   </button>
                   <button
                     onClick={rejectDiff}
-                    className="flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-bold bg-slate-800 hover:bg-slate-700 text-slate-300 transition"
+                    className="flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-bold bg-slate-800 hover:bg-slate-700 text-slate-300 transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
                   >
                     <X size={13} aria-hidden="true" /> Reject
                   </button>
