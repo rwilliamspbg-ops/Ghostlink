@@ -229,6 +229,27 @@ if ($InferenceBackend -eq "ollama") {
         exit 1
     }
     Write-Ok "llama-server: $LlamaBin"
+
+    # --- Ensure at least one local model exists (mirrors launch.sh's fallback) ---
+    # A fresh clone has an empty models\ dir, which otherwise leaves the GUI's
+    # model picker empty until the user finds and downloads something via the
+    # HF search themselves. Grab the same tiny stories15M GGUF launch.sh falls
+    # back to so there's always one model ready to load on first launch.
+    $ModelsDir = Join-Path $RootDir "models"
+    $ExistingGguf = Get-ChildItem -Path $ModelsDir -Filter "*.gguf" -ErrorAction SilentlyContinue
+    if (-not $ExistingGguf) {
+        Write-Step "Default model"
+        Write-Warn "No GGUF model found in models\ - downloading a tiny default (stories15M, ~60MB)..."
+        $DefaultModelPath = Join-Path $ModelsDir "stories15M-q4_0.gguf"
+        try {
+            Invoke-WebRequest -Uri "https://huggingface.co/ggml-org/models/resolve/main/tinyllamas/stories15M-q4_0.gguf" `
+                -OutFile $DefaultModelPath -UseBasicParsing
+            Write-Ok "Default model ready: $DefaultModelPath"
+        } catch {
+            Remove-Item $DefaultModelPath -ErrorAction SilentlyContinue
+            Write-Warn "Could not download default model ($($_.Exception.Message)) - use the GUI's model browser to download one instead."
+        }
+    }
 }
 
 # --- 4. Free stale listeners on the ports we're about to use ---
@@ -263,6 +284,17 @@ $env:GHOSTLINK_LLAMA_THREADS = [Math]::Max(1, $logicalCores - 1)
 # the full-offload that's already working today.
 $env:GHOSTLINK_VRAM_GB = "4"
 $env:GHOSTLINK_LLAMA_NGL = "-1"
+
+# GHOSTLINK_VRAM_GB=4 above also drives native_engine.rs's get_ctx_size() VRAM
+# tier table, which caps context at its smallest bucket (4096) -- that's sized
+# off the 860M's fixed VRAM carve-out, not the ~29GB of system RAM this iGPU
+# actually shares (q8_0 KV + Flash Attention are already on by default, so the
+# real per-token KV cost is small). GHOSTLINK_CTX_SIZE takes priority over the
+# VRAM tiering in get_ctx_size(), so set it explicitly here -- but only if the
+# caller hasn't already exported one, so manual overrides still win.
+if (-not $env:GHOSTLINK_CTX_SIZE) {
+    $env:GHOSTLINK_CTX_SIZE = "16384"
+}
 
 $ApiScheme = Get-ApiScheme
 if ($ApiScheme -eq "https") {

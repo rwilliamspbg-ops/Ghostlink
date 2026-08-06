@@ -159,6 +159,22 @@ cargo build --release -p ghost-link
 
 Same verification and port layout as Windows above — `curl http://127.0.0.1:8000/health`, then http://127.0.0.1:5173 → **Models** → **Chat**.
 
+### Docker (all platforms)
+
+No Rust/Node/cmake toolchain needed — just Docker.
+
+```bash
+git clone https://github.com/rwilliamspbg-ops/Ghostlink.git
+cd Ghostlink
+mkdir -p models
+curl -L -o models/stories15M-q4_0.gguf https://huggingface.co/ggml-org/models/resolve/main/tinyllamas/stories15M-q4_0.gguf
+docker compose up --build
+```
+
+Then open http://localhost:5173 → **Models** → **Chat**. Swap `models/stories15M-q4_0.gguf` (and the `llama-server` volume mount in [docker-compose.yml](docker-compose.yml)) for a larger GGUF once you've confirmed the stack comes up.
+
+> `docker-compose.demo.yml` is an older prototype (Python model manager + Ollama) and is no longer maintained — use `docker-compose.yml` above.
+
 ## Hardware Detection & Compatibility
 
 Ghostlink auto-detects available accelerators at startup by probing in this order: `nvidia-smi` (cross-platform), then an OS-specific fallback (Windows WMI / Linux lspci+sysfs / macOS `system_profiler`), then a Vulkan probe as a last resort. What's actually detectable, per OS (grounded in [`system_profile.rs`](crates/ghostlink-core/src/system_profile.rs)):
