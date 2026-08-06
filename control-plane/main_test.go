@@ -11,7 +11,7 @@ import (
 )
 
 func TestHealthEndpoint(t *testing.T) {
-	handler := buildHandler("http://127.0.0.1:19999", 1000, time.Second, "")
+	handler := buildHandler("http://127.0.0.1:19999", 1000, time.Second, "", "")
 
 	req := httptest.NewRequest("GET", "/health", nil)
 	w := httptest.NewRecorder()
@@ -37,7 +37,7 @@ func TestHealthEndpoint(t *testing.T) {
 }
 
 func TestHealthRejectsPost(t *testing.T) {
-	handler := buildHandler("http://127.0.0.1:19999", 1000, time.Second, "")
+	handler := buildHandler("http://127.0.0.1:19999", 1000, time.Second, "", "")
 
 	req := httptest.NewRequest("POST", "/health", nil)
 	w := httptest.NewRecorder()
@@ -58,7 +58,7 @@ func TestWorkersProxiesToBackend(t *testing.T) {
 	}))
 	defer backend.Close()
 
-	handler := buildHandler(backend.URL, 1000, time.Second, "")
+	handler := buildHandler(backend.URL, 1000, time.Second, "", "")
 
 	req := httptest.NewRequest("GET", "/api/workers", nil)
 	w := httptest.NewRecorder()
@@ -78,7 +78,7 @@ func TestWorkersProxiesToBackend(t *testing.T) {
 }
 
 func TestCORSHeaders(t *testing.T) {
-	handler := buildHandler("http://127.0.0.1:19999", 1000, time.Second, "")
+	handler := buildHandler("http://127.0.0.1:19999", 1000, time.Second, "", "")
 
 	req := httptest.NewRequest("OPTIONS", "/api/models", nil)
 	w := httptest.NewRecorder()
@@ -98,7 +98,7 @@ func TestRateLimitingBlocksExcessRequests(t *testing.T) {
 	}))
 	defer backend.Close()
 
-	handler := buildHandler(backend.URL, 2, time.Minute, "")
+	handler := buildHandler(backend.URL, 2, time.Minute, "", "")
 
 	makeReq := func() int {
 		req := httptest.NewRequest("GET", "/health", nil)
@@ -120,7 +120,7 @@ func TestRateLimitingBlocksExcessRequests(t *testing.T) {
 }
 
 func TestRateLimitingIsolatesByClient(t *testing.T) {
-	handler := buildHandler("http://127.0.0.1:19999", 1, time.Minute, "")
+	handler := buildHandler("http://127.0.0.1:19999", 1, time.Minute, "", "")
 
 	req1 := httptest.NewRequest("GET", "/health", nil)
 	req1.RemoteAddr = "10.0.0.1:1111"
@@ -152,7 +152,7 @@ func TestStreamingResponsesAreFlushed(t *testing.T) {
 	}))
 	defer backend.Close()
 
-	handler := buildHandler(backend.URL, 1000, time.Second, "")
+	handler := buildHandler(backend.URL, 1000, time.Second, "", "")
 
 	req := httptest.NewRequest("POST", "/api/inference/chat", nil)
 	w := httptest.NewRecorder()
@@ -184,7 +184,7 @@ func TestControlPlaneMutationsRequireBearerToken(t *testing.T) {
 	}))
 	defer backend.Close()
 
-	handler := buildHandler(backend.URL, 1000, time.Second, "")
+	handler := buildHandler(backend.URL, 1000, time.Second, "", "")
 
 	body := []byte(`{"id":"secured-node"}`)
 	createReq := httptest.NewRequest("POST", "/api/workers", bytes.NewReader(body))
@@ -243,5 +243,37 @@ func TestControlPlaneTokenFallbackUsesDiscoveryToken(t *testing.T) {
 
 	if got := controlPlaneAuthToken(); got != token {
 		t.Fatalf("expected discovery token fallback, got %q", got)
+	}
+}
+
+func TestServesBuiltGUIWhenDistDirPresent(t *testing.T) {
+	distDir := t.TempDir()
+	if err := os.WriteFile(distDir+"/index.html", []byte("<html>ghostlink studio</html>"), 0o644); err != nil {
+		t.Fatalf("write fixture index.html: %v", err)
+	}
+
+	handler := buildHandler("http://127.0.0.1:19999", 1000, time.Second, "", distDir)
+
+	req := httptest.NewRequest("GET", "/", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 serving built GUI, got %d", w.Code)
+	}
+	if w.Body.String() != "<html>ghostlink studio</html>" {
+		t.Fatalf("expected fixture index.html content, got %q", w.Body.String())
+	}
+}
+
+func TestNoStaticServingWhenDistDirAbsent(t *testing.T) {
+	handler := buildHandler("http://127.0.0.1:19999", 1000, time.Second, "", "/nonexistent/gui/dist")
+
+	req := httptest.NewRequest("GET", "/", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 when no built GUI is present (dev flow unaffected), got %d", w.Code)
 	}
 }
