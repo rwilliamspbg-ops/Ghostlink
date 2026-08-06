@@ -41,13 +41,26 @@ fi
 
 if [[ -n "$PLATFORM_SUFFIX" ]]; then
   BIN_NAME="ghost-link-${PLATFORM_SUFFIX}${SRC_EXT}"
+  CP_BIN_NAME="control-plane-${PLATFORM_SUFFIX}${SRC_EXT}"
   SUMS_NAME="SHA256SUMS-${PLATFORM_SUFFIX}"
 else
   BIN_NAME="ghost-link${SRC_EXT}"
+  CP_BIN_NAME="control-plane${SRC_EXT}"
   SUMS_NAME="SHA256SUMS"
 fi
 
 cp "$SRC_BIN" "$OUT_DIR/$BIN_NAME"
+
+GO_BIN="$(command -v go || true)"
+if [[ -z "$GO_BIN" ]]; then
+  echo "go is required to build the control-plane release binary" >&2
+  exit 1
+fi
+
+echo "[release] build control-plane release binary"
+pushd "$ROOT_DIR/control-plane" >/dev/null
+"$GO_BIN" build -o "$OUT_DIR/$CP_BIN_NAME" .
+popd >/dev/null
 
 echo "[release] build ghostlink_gui_modern frontend"
 pushd "$ROOT_DIR/ghostlink_gui_modern" >/dev/null
@@ -57,6 +70,11 @@ fi
 "$NPM_BIN" run build
 popd >/dev/null
 
+# gui/dist sits next to both binaries above — control-plane's
+# defaultGuiDistDir() (control-plane/main.go) resolves it relative to its own
+# executable's directory, so this layout is what lets a standalone release
+# binary serve the built GUI without Node at runtime (see that file's
+# comments for why nothing served this before).
 mkdir -p "$OUT_DIR/gui"
 cp -R "$ROOT_DIR/ghostlink_gui_modern/dist" "$OUT_DIR/gui/"
 
