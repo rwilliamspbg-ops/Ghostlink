@@ -7,6 +7,7 @@
 //! - Optional pre-warming on startup
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
@@ -40,11 +41,20 @@ impl CacheStats {
     }
 }
 
+/// Cache statistics for observability internally represented with lock-free atomics
+#[derive(Debug, Default)]
+struct AtomicCacheStats {
+    total_requests: AtomicUsize,
+    cache_hits: AtomicUsize,
+    cache_misses: AtomicUsize,
+    etag_hits: AtomicUsize,
+}
+
 /// Thread-safe API response cache
 #[derive(Debug)]
 pub struct ApiResponseCache {
     cache: Arc<RwLock<HashMap<String, CachedResponse>>>,
-    stats: Arc<RwLock<CacheStats>>,
+    stats: Arc<AtomicCacheStats>,
 }
 
 impl ApiResponseCache {
@@ -52,7 +62,7 @@ impl ApiResponseCache {
     pub fn new() -> Self {
         Self {
             cache: Arc::new(RwLock::new(HashMap::new())),
-            stats: Arc::new(RwLock::new(CacheStats::default())),
+            stats: Arc::new(AtomicCacheStats::default()),
         }
     }
 
@@ -61,6 +71,8 @@ impl ApiResponseCache {
     /// Optimized to return Arc<[u8]> instead of Vec<u8> to prevent cloning the entire
     /// response body (which can be multi-megabyte JSON) on cache hits. This reduces allocation churn
     /// and memory traffic from O(N) to O(1) time and space complexity.
+    /// Further optimized using lock-free atomics for statistics tracking, preventing
+    /// write lock contention on the hot path of cache hits/misses.
     pub fn get_or_compute<F>(
         &self,
         key: &str,
@@ -70,22 +82,21 @@ impl ApiResponseCache {
     where
         F: FnOnce() -> Result<Vec<u8>, String>,
     {
-        let mut stats = self.stats.write().unwrap();
-        stats.total_requests += 1;
+        self.stats.total_requests.fetch_add(1, Ordering::Relaxed);
 
-        // Check cache
+        // Check cache with a cheap read lock
         {
             let cache = self.cache.read().unwrap();
             if let Some(cached) = cache.get(key) {
                 if cached.expires_at > Instant::now() {
-                    stats.cache_hits += 1;
+                    self.stats.cache_hits.fetch_add(1, Ordering::Relaxed);
                     return Ok((Arc::clone(&cached.body), cached.etag.clone()));
                 }
             }
         }
 
-        // Cache miss or expired
-        stats.cache_misses += 1;
+        // Cache miss or expired: compute outside the stats write lock
+        self.stats.cache_misses.fetch_add(1, Ordering::Relaxed);
         let body = compute_fn()?;
         let etag = compute_etag(&body);
         let body_arc: Arc<[u8]> = Arc::from(body);
@@ -116,19 +127,26 @@ impl ApiResponseCache {
 
     /// Record ETag hit (304 response sent)
     pub fn record_etag_hit(&self) {
-        let mut stats = self.stats.write().unwrap();
-        stats.etag_hits += 1;
+        self.stats.etag_hits.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Get current cache statistics
     pub fn stats(&self) -> CacheStats {
-        self.stats.read().unwrap().clone()
+        CacheStats {
+            total_requests: self.stats.total_requests.load(Ordering::Relaxed),
+            cache_hits: self.stats.cache_hits.load(Ordering::Relaxed),
+            cache_misses: self.stats.cache_misses.load(Ordering::Relaxed),
+            etag_hits: self.stats.etag_hits.load(Ordering::Relaxed),
+        }
     }
 
     /// Clear all cache entries
     pub fn clear(&self) {
         self.cache.write().unwrap().clear();
-        *self.stats.write().unwrap() = CacheStats::default();
+        self.stats.total_requests.store(0, Ordering::Relaxed);
+        self.stats.cache_hits.store(0, Ordering::Relaxed);
+        self.stats.cache_misses.store(0, Ordering::Relaxed);
+        self.stats.etag_hits.store(0, Ordering::Relaxed);
     }
 
     /// Pre-warm cache with known endpoints
