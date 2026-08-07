@@ -1,5 +1,9 @@
 # Palette's Journal
 
+## 2026-08-07 - [Metrics Tab Header Accessibility]
+**Learning:** Live monitoring headers often contain specialized quick-action buttons (like Export CSV and Manual Refresh) that lack text labels to keep the dashboard visual design minimal. While they have correct `aria-label` and `title` attributes, they must also be styled with customized, high-contrast focus rings (`focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none`) to preserve keyboard navigation. Without explicit indicators, users tabbing through live performance monitors will lose their selection completely, severely degrading the accessibility of critical dashboard features.
+**Action:** Always complement icon-only action triggers in live monitors and charts with explicit focus rings to guarantee seamless, visual keyboard tracking.
+
 ## 2026-08-06 - [Workspace & Editor Tab Keyboard Navigation]
 **Learning:** Development environments and files workspaces (such as the Editor tab with its file tree checkbox selectors, expandable folders, workspace-level toggles, and edit actions) need high-visibility focus indicator rings (`focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none`). Relying on default browser focus states in dark-themed, nested pane designs leaves keyboard-only navigators or assistive technology users completely lost, unable to determine which button, input, or checkbox is currently active.
 **Action:** Ensure all workspace file checkboxes, file/folder tree nodes, editor action triggers, and diff confirmation buttons are styled with explicit, high-contrast focus visible styles to maintain continuous keyboard-accessible visual feedback.
