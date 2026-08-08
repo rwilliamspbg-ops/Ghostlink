@@ -165,7 +165,7 @@ export const MetricsTab: React.FC<{ api: any }> = React.memo(({ api }) => {
           <button
             onClick={exportMetricsCsv}
             disabled={metricsHistory.length === 0}
-            className="p-2 rounded-lg hover:bg-slate-900 text-slate-400 hover:text-white transition disabled:opacity-30 disabled:hover:bg-transparent"
+            className="p-2 rounded-lg hover:bg-slate-900 text-slate-400 hover:text-white transition disabled:opacity-30 disabled:hover:bg-transparent focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
             title="Export metrics history as CSV"
             aria-label="Export metrics history as CSV"
           >
@@ -173,7 +173,7 @@ export const MetricsTab: React.FC<{ api: any }> = React.memo(({ api }) => {
           </button>
           <button
             onClick={refreshMetrics}
-            className="p-2 rounded-lg hover:bg-slate-900 text-slate-400 hover:text-white transition"
+            className="p-2 rounded-lg hover:bg-slate-900 text-slate-400 hover:text-white transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
             title="Refresh metrics"
             aria-label="Refresh metrics"
           >
