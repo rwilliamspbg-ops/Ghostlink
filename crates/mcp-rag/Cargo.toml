@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 publish = false
 description = "Local stdio MCP server exposing index_document/search retrieval tools backed by a local Ollama embedding model and an in-process cosine-similarity index, for Ghostlink chat's RAG tool."
+readme = "README.md"
 
 [dependencies]
 rmcp = { version = "2", features = ["transport-io", "schemars"] }

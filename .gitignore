@@ -76,6 +76,8 @@ api_key.txt
 tls_cert.pem
 tls_key.pem
 ghostlink_gui_modern/dist/
+sdks/js/node_modules/
+sdks/js/dist/
 
 # mcp_servers.toml is a per-install copy of mcp_servers.example.toml (same
 # pattern as ghostlink.toml/ghostlink.example.toml) — the GUI's MCP tab writes

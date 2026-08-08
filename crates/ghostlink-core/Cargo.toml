@@ -1,13 +1,13 @@
 [package]
 name = "ghostlink-core"
-version = "1.16.1"
+version = "1.17.0"
 edition = "2021"
 authors = ["Ryan K Williams"]
 description = "Core runtime primitives for Ghostlink, including planning, routing, health monitoring, and transport logic for distributed inference workloads."
 homepage = "https://rwilliamspbg-ops.github.io/Ghostlink/"
 documentation = "https://rwilliamspbg-ops.github.io/Ghostlink/"
 repository = "https://github.com/rwilliamspbg-ops/Ghostlink"
-readme = "../../README.md"
+readme = "README.md"
 license = "MIT"
 keywords = ["networking", "zero-copy", "async", "llm", "inference"]
 categories = ["asynchronous", "network-programming"]

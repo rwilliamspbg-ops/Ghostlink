@@ -1783,6 +1783,18 @@ struct RuntimeSettings {
     /// before this field existed.
     #[serde(default = "default_rpc_port")]
     rpc_port: u16,
+    /// IP allowlist for who may submit compute jobs to this node's
+    /// `ggml-rpc-server` (see `rpc_cluster`'s module doc for the full
+    /// security rationale). Accepts plain IPv4 addresses ("10.0.0.29") and
+    /// IPv4 CIDR ranges ("10.0.0.0/24"). Empty (the default) means "allow
+    /// all" — the exact same default-open behavior as before this field
+    /// existed, matching how `contribute_compute` itself defaults to off:
+    /// this is opt-in hardening, not a behavior change for anyone who
+    /// hasn't configured it. `#[serde(default)]` so settings.json files
+    /// saved before this field existed still deserialize (to the
+    /// allow-all empty vec, not full-struct defaults).
+    #[serde(default)]
+    rpc_allowed_peers: Vec<String>,
 }
 
 fn default_rpc_port() -> u16 {
@@ -1853,6 +1865,7 @@ impl Default for RuntimeSettings {
             distributed_inference: false,
             contribute_compute: false,
             rpc_port: default_rpc_port(),
+            rpc_allowed_peers: Vec::new(),
         }
     }
 }
@@ -7933,6 +7946,18 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                             current.rpc_port = v as u16;
                         }
                     }
+                    "rpc_allowed_peers" => {
+                        if let Some(arr) = value.as_array() {
+                            // Same next-restart caveat as contribute_compute/
+                            // rpc_port: the allowlist proxy (if any) is only
+                            // stood up once, at startup, in `rpc_cluster::
+                            // ensure_contributing`.
+                            current.rpc_allowed_peers = arr
+                                .iter()
+                                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                                .collect();
+                        }
+                    }
                     "conversation_token_limit" => {
                         if let Some(v) = value.as_u64() {
                             current.conversation_token_limit = v as usize;
@@ -8117,6 +8142,12 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         .enable_all()
         .build()
         .map_err(|err| anyhow::anyhow!("failed to initialize runtime: {}", err))?;
+    // Cheap to clone (an `Arc`-backed handle into `rt`) and needed by
+    // `rpc_cluster::ensure_contributing` below to spawn its allowlist-proxy
+    // task from contexts that run before `rt.block_on` starts (this call
+    // site, and the periodic-respawn thread below) — `tokio::spawn` alone
+    // requires already being inside a runtime, which neither is.
+    let rt_handle = rt.handle().clone();
 
     // Loaded here (rather than at its previous spot further down) because
     // discovery advertisement below needs `contribute_compute`/`rpc_port`
@@ -8125,7 +8156,12 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
     let mut settings = load_settings();
 
     if settings.contribute_compute {
-        rpc_cluster::ensure_contributing(host, settings.rpc_port);
+        rpc_cluster::ensure_contributing(
+            host,
+            settings.rpc_port,
+            &settings.rpc_allowed_peers,
+            &rt_handle,
+        );
 
         // `ensure_contributing` is already idempotent and already checks
         // child health (a no-op if the contributor is still alive, a
@@ -8140,9 +8176,16 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         // background thread's loop+sleep pattern just below.
         let contribute_host = host.to_string();
         let contribute_port = settings.rpc_port;
+        let contribute_allowed_peers = settings.rpc_allowed_peers.clone();
+        let contribute_rt_handle = rt_handle.clone();
         thread::spawn(move || loop {
             thread::sleep(Duration::from_secs(30));
-            rpc_cluster::ensure_contributing(&contribute_host, contribute_port);
+            rpc_cluster::ensure_contributing(
+                &contribute_host,
+                contribute_port,
+                &contribute_allowed_peers,
+                &contribute_rt_handle,
+            );
         });
     }
     let advertised_node = if settings.contribute_compute {

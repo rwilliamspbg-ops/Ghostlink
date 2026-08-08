@@ -11,7 +11,7 @@ Route workloads across CPU, GPU, and NPU resources with explicit scheduling, har
 [![MSRV](https://github.com/rwilliamspbg-ops/Ghostlink/actions/workflows/msrv.yml/badge.svg)](https://github.com/rwilliamspbg-ops/Ghostlink/actions/workflows/msrv.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Docs](https://img.shields.io/badge/Docs-GitHub%20Pages-0ea5e9)](https://rwilliamspbg-ops.github.io/Ghostlink/)
-[![Version](https://img.shields.io/badge/version-1.16.1-blueviolet)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.17.0-blueviolet)](CHANGELOG.md)
 [![Rust](https://img.shields.io/badge/Rust-2021-orange?logo=rust)](Cargo.toml)
 [![Platforms](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey)](#quick-start)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
@@ -92,6 +92,53 @@ Use Ghostlink when you need:
 ## Quick Start
 
 Three commands, one launcher, no manual service wiring — `launch.bat` / `launch.sh` builds what's missing, starts every process, and opens the GUI.
+
+### Fastest path: install the binary
+
+No Rust/Node/cmake toolchain needed — this downloads the prebuilt `ghost-link`
+binary from [GitHub Releases](https://github.com/rwilliamspbg-ops/Ghostlink/releases),
+verifies it against the release's published `SHA256SUMS`, and installs it to
+a user-writable directory (no `sudo`/admin required).
+
+**Linux / macOS:**
+```bash
+curl -fsSL https://raw.githubusercontent.com/rwilliamspbg-ops/Ghostlink/main/scripts/install.sh | sh
+```
+
+**Windows (PowerShell):**
+```powershell
+irm https://raw.githubusercontent.com/rwilliamspbg-ops/Ghostlink/main/scripts/install.ps1 | iex
+```
+
+Then:
+```bash
+ghost-link --help
+ghost-link doctor --strict         # sanity-check your setup
+ghost-link serve 127.0.0.1 8003    # start the OpenAI-compatible API server
+```
+
+Both scripts accept `VERSION=v1.17.0` (env var) to pin a specific release
+instead of latest, and print PATH guidance if the install directory isn't
+already on it. Source for both lives at
+[`scripts/install.sh`](scripts/install.sh) and
+[`scripts/install.ps1`](scripts/install.ps1) — read them before piping to a
+shell if you'd rather not blind-trust a one-liner, that's a reasonable
+instinct.
+
+**What this does *not* give you**: the Go `control-plane` gateway or the
+built React GUI aren't published as standalone release assets today — only
+the `ghost-link` binary, its checksums, and an SBOM are (see
+[`scripts/release_bundle.sh`](scripts/release_bundle.sh)). The one-line
+install gets you the CLI and OpenAI-compatible API server; for the full
+browser GUI, use the build-from-source or Docker paths below. Release
+binaries are also **x86_64/amd64-only** — there's no arm64 build yet, and
+both scripts detect and refuse non-x86_64 hosts rather than silently
+handing you a binary that won't run.
+
+### Build from source (full stack, including the GUI)
+
+Needed for the browser GUI, local development, or platforms without a
+published release binary.
 
 ### Windows
 

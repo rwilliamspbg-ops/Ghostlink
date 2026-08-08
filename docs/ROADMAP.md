@@ -474,16 +474,26 @@ Bigger, riskier, higher payoff if the moat above is already real.
   target, not a rearchitecture.
 - **`ggml-rpc-server` (the new distributed-inference contributor process)
   has no built-in authentication** — an upstream llama.cpp limitation, not
-  something Ghostlink's layer can currently paper over. `contribute_compute`
-  is off by default and the startup log carries an explicit warning, but
-  this is the same trust-the-LAN posture as UDP/mDNS discovery, now backing
-  a service that accepts arbitrary compute jobs rather than just
+  something Ghostlink's layer can patch directly. `contribute_compute` is
+  off by default and the startup log carries an explicit warning, and this
+  is still the same trust-the-LAN posture as UDP/mDNS discovery, now
+  backing a service that accepts arbitrary compute jobs rather than just
   broadcasting hardware specs — a meaningfully bigger blast radius if a
-  hostile device is already on the network. Worth an explicit allowlist or
-  auth shim ahead of any "enable this on an untrusted network" claim.
-  **Status check (2026-08-08): still unaddressed** — no allowlist or auth
-  shim exists in `rpc_cluster.rs` today. Given `contribute_compute` is a
-  real security boundary once RBAC/multi-user work (Horizon 2 item 5)
-  starts inviting more than a single trusted operator, this is worth
-  pulling forward alongside the Horizon 2 plugin-marketplace work rather
-  than leaving it last in Horizon 1's list.
+  hostile device is already on the network.
+  **Status check (2026-08-08): partially addressed.** An IP allowlist now
+  exists: `rpc_allowed_peers` in settings.json (plain IPv4 addresses or IPv4
+  CIDR ranges) is enforced by a Ghostlink-owned TCP proxy in
+  `rpc_cluster.rs` — when the allowlist is non-empty, `ggml-rpc-server`
+  binds loopback-only and the proxy fronts the publicly-advertised port,
+  splicing through only allowed source IPs and closing everything else.
+  Empty (the default) is unchanged: `ggml-rpc-server` binds the public
+  address directly, zero overhead, zero behavior change. This is real
+  access control — "only these hosts/subnets," not "anyone on the LAN" —
+  but it is **not** authentication of the RPC protocol itself: a device
+  already inside an allowlisted range, or one able to spoof a source IP on
+  the LAN, is not stopped by it. Given `contribute_compute` is a real
+  security boundary once RBAC/multi-user work (Horizon 2 item 5) starts
+  inviting more than a single trusted operator, genuine protocol-level
+  auth (not just IP allowlisting) is still worth pulling forward alongside
+  the Horizon 2 plugin-marketplace work rather than treating this as fully
+  closed.

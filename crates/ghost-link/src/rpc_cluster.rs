@@ -15,16 +15,56 @@
 //!
 //! SECURITY: `ggml-rpc-server` has no built-in authentication — this is
 //! upstream llama.cpp behavior, not a Ghostlink limitation. Anyone who can
-//! reach the port can submit compute to it. Only enable contribution
-//! (`contribute_compute` in settings) on a network you trust, same
+//! reach the port can submit compute to it. `contribute_compute` is off by
+//! default for exactly this reason.
+//!
+//! When it is on, `rpc_allowed_peers` (settings.json) closes the biggest gap
+//! in that: an IP allowlist (plain IPv4 addresses or IPv4 CIDR ranges)
+//! enforced by Ghostlink itself, since the vendored `ggml-rpc-server` binary
+//! has no concept of authentication to patch in. The mechanism is a TCP
+//! proxy (`run_rpc_allowlist_proxy`): `ggml-rpc-server` binds loopback-only
+//! (unreachable from the network directly) and this process listens on the
+//! publicly-advertised `bind_host:port` instead, splicing through only
+//! connections whose source IP passes the allowlist and closing everything
+//! else immediately. Left empty (the default), no proxy is started at all —
+//! `ggml-rpc-server` binds the public address directly, identical to the
+//! behavior before this allowlist existed.
+//!
+//! Be clear-eyed about what this does and doesn't buy: it is real,
+//! meaningful access control — "only these hosts/subnets," not "anyone on
+//! the LAN." It is **not** authentication of the RPC protocol itself. A
+//! device that is itself inside an allowlisted range, or one that can spoof
+//! a source IP on the local network, is not stopped by this. Only enable
+//! `contribute_compute` (allowlisted or not) on a network you trust, same
 //! assumption the existing UDP/mDNS discovery already makes.
 
-use std::net::SocketAddr;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex, OnceLock};
 
+use tokio::io::copy_bidirectional;
+use tokio::net::{TcpListener, TcpStream};
+use tokio::runtime::Handle;
+
 use ghostlink_core::cluster::{ClusterState, NodeStatus};
+
+/// Offset added to the publicly-advertised `rpc_port` to derive the
+/// loopback-only port `ggml-rpc-server` actually binds to when the
+/// allowlist proxy is active. Arbitrary but fixed, so the proxy and
+/// `ggml-rpc-server` agree on it across the periodic respawn-supervision
+/// calls without needing to thread extra state between them.
+/// `saturating_add`ed against the configured port, so a `rpc_port` already
+/// close to `u16::MAX` degrades (a possible port reuse) rather than
+/// overflowing/panicking.
+const RPC_INTERNAL_PORT_OFFSET: u16 = 1000;
+
+/// True once this process has spawned its (single, process-lifetime)
+/// allowlist proxy task. Guards `maybe_start_allowlist_proxy` so the
+/// periodic respawn-supervision loop in `main.rs` (which calls
+/// `ensure_contributing` every 30s) doesn't try to bind the public port a
+/// second time.
+static RPC_ALLOWLIST_PROXY_STARTED: OnceLock<()> = OnceLock::new();
 
 static RPC_CONTRIBUTOR_PROCESS: OnceLock<Arc<Mutex<Option<Child>>>> = OnceLock::new();
 
@@ -87,7 +127,21 @@ pub fn get_rpc_server_bin() -> String {
 /// it. Idempotent — safe to call on every settings load/update. Best-effort:
 /// a failure to start is logged, not fatal, mirroring how UDP/mDNS discovery
 /// failures never block server startup elsewhere in this codebase.
-pub fn ensure_contributing(bind_host: &str, port: u16) {
+///
+/// When `allowed_peers` is non-empty, `ggml-rpc-server` is bound
+/// loopback-only and an allowlist proxy (spawned onto `rt_handle`, since
+/// this function itself isn't async and may be called before the tokio
+/// runtime's `block_on` starts) is stood up on the publicly-advertised
+/// `bind_host:port` in front of it — see this module's top-of-file SECURITY
+/// doc. When `allowed_peers` is empty, `ggml-rpc-server` binds
+/// `bind_host:port` directly, exactly as before this allowlist existed: no
+/// proxy, no extra hop, no behavior change for the default case.
+pub fn ensure_contributing(
+    bind_host: &str,
+    port: u16,
+    allowed_peers: &[String],
+    rt_handle: &Handle,
+) {
     let handle = contributor_handle();
     let mut guard = handle.lock().unwrap_or_else(|p| p.into_inner());
     if let Some(child) = guard.as_mut() {
@@ -96,13 +150,35 @@ pub fn ensure_contributing(bind_host: &str, port: u16) {
         }
     }
 
+    let (spawn_host, spawn_port): (String, u16) = if allowed_peers.is_empty() {
+        (bind_host.to_string(), port)
+    } else {
+        let internal_port = port.saturating_add(RPC_INTERNAL_PORT_OFFSET);
+        maybe_start_allowlist_proxy(bind_host, port, internal_port, allowed_peers, rt_handle);
+        ("127.0.0.1".to_string(), internal_port)
+    };
+
     let bin = get_rpc_server_bin();
-    tracing::warn!(
-        "rpc_cluster: starting ggml-rpc-server on {bind_host}:{port} \u{2014} this exposes local \
-         compute (GPU/CPU) to the network with NO AUTHENTICATION (an upstream llama.cpp \
-         limitation, not Ghostlink's). Only enable contribute_compute on a network you trust, \
-         the same assumption UDP/mDNS discovery already makes."
-    );
+    if allowed_peers.is_empty() {
+        tracing::warn!(
+            "rpc_cluster: starting ggml-rpc-server on {spawn_host}:{spawn_port} \u{2014} this \
+             exposes local compute (GPU/CPU) to the network with NO AUTHENTICATION (an upstream \
+             llama.cpp limitation, not Ghostlink's) and NO IP ALLOWLIST (rpc_allowed_peers is \
+             empty). Only enable contribute_compute on a network you trust, the same assumption \
+             UDP/mDNS discovery already makes. Set rpc_allowed_peers in settings to restrict \
+             which hosts may submit compute jobs."
+        );
+    } else {
+        tracing::warn!(
+            "rpc_cluster: starting ggml-rpc-server on loopback ({spawn_host}:{spawn_port}), \
+             fronted by an allowlist proxy on {bind_host}:{port} restricted to {} \
+             rpc_allowed_peers entries \u{2014} ggml-rpc-server itself still has NO \
+             AUTHENTICATION (an upstream llama.cpp limitation), so this is access control, not \
+             protocol-level auth. A device already inside an allowlisted range isn't stopped by \
+             this.",
+            allowed_peers.len()
+        );
+    }
 
     // ggml-rpc-server's own stdout/stderr (connection/tensor-transfer activity
     // logged by upstream llama.cpp) is discarded by default — matches every
@@ -146,9 +222,9 @@ pub fn ensure_contributing(bind_host: &str, port: u16) {
 
     match Command::new(&bin)
         .arg("-H")
-        .arg(bind_host)
+        .arg(&spawn_host)
         .arg("-p")
-        .arg(port.to_string())
+        .arg(spawn_port.to_string())
         .stdout(stdout_cfg)
         .stderr(stderr_cfg)
         .stdin(Stdio::null())
@@ -178,6 +254,203 @@ pub fn stop_contributing() {
             let _ = child.wait();
         }
     };
+}
+
+/// Spawns the allowlist proxy exactly once per process, the first time
+/// `ensure_contributing` sees a non-empty `allowed_peers`. Guarded by
+/// `RPC_ALLOWLIST_PROXY_STARTED` (only the caller whose `set()` call wins
+/// the race actually spawns) so the periodic respawn-supervision loop's
+/// repeated `ensure_contributing` calls don't try to rebind the public port
+/// every 30s.
+fn maybe_start_allowlist_proxy(
+    bind_host: &str,
+    public_port: u16,
+    internal_port: u16,
+    allowed_peers: &[String],
+    rt_handle: &Handle,
+) {
+    if RPC_ALLOWLIST_PROXY_STARTED.get().is_some() {
+        return;
+    }
+
+    let public_addr_str = format!("{bind_host}:{public_port}");
+    let public_addr: SocketAddr = match public_addr_str.parse() {
+        Ok(addr) => addr,
+        Err(err) => {
+            tracing::warn!(
+                "rpc_cluster: cannot start rpc_allowed_peers proxy \u{2014} invalid bind address \
+                 '{public_addr_str}': {err}. ggml-rpc-server will stay loopback-only and \
+                 unreachable from the network until this is fixed."
+            );
+            return;
+        }
+    };
+    let backend_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), internal_port);
+    let allowed = allowed_peers.to_vec();
+
+    // Only the thread whose `set()` succeeds spawns — race-free without an
+    // extra Mutex, and cheap even under the (practically impossible, given
+    // `ensure_contributing` already serializes callers through its own
+    // `contributor_handle()` lock) case of concurrent first calls.
+    if RPC_ALLOWLIST_PROXY_STARTED.set(()).is_ok() {
+        rt_handle.spawn(async move {
+            if let Err(err) = run_rpc_allowlist_proxy(public_addr, backend_addr, allowed).await {
+                tracing::warn!(
+                    "rpc_cluster: rpc_allowed_peers proxy on {public_addr} exited with error: \
+                     {err} \u{2014} the node will stop accepting distributed-inference compute \
+                     jobs from any peer until this process restarts."
+                );
+            }
+        });
+    }
+}
+
+/// Binds `public_addr` and runs the allowlist proxy forever (see this
+/// module's top-of-file SECURITY doc for the mechanism). Returns only on a
+/// bind failure; a running proxy never returns on its own. Intended to be
+/// spawned as a background task, not awaited to completion.
+async fn run_rpc_allowlist_proxy(
+    public_addr: SocketAddr,
+    backend_addr: SocketAddr,
+    allowed_peers: Vec<String>,
+) -> std::io::Result<()> {
+    let listener = TcpListener::bind(public_addr).await?;
+    tracing::info!(
+        "rpc_cluster: rpc_allowed_peers proxy listening on {public_addr}, forwarding allowed \
+         peers to ggml-rpc-server at {backend_addr} ({} allowlist entries)",
+        allowed_peers.len()
+    );
+    serve_rpc_allowlist_proxy(listener, backend_addr, allowed_peers).await
+}
+
+/// Accept loop shared by `run_rpc_allowlist_proxy` and its tests: for each
+/// inbound connection, checks the peer's source IP against `allowed_peers`
+/// (`ip_allowed`) and either splices it through to `backend_addr` via
+/// `tokio::io::copy_bidirectional`, or drops it immediately with a
+/// `tracing::warn!` naming the rejected IP. Split out from
+/// `run_rpc_allowlist_proxy` so tests can bind an ephemeral loopback port
+/// themselves (avoiding a bind/rebind race) instead of going through a
+/// fixed `SocketAddr`.
+async fn serve_rpc_allowlist_proxy(
+    listener: TcpListener,
+    backend_addr: SocketAddr,
+    allowed_peers: Vec<String>,
+) -> std::io::Result<()> {
+    loop {
+        let (inbound, peer_addr) = match listener.accept().await {
+            Ok(pair) => pair,
+            Err(err) => {
+                tracing::warn!("rpc_cluster: rpc_allowed_peers proxy accept() failed: {err}");
+                continue;
+            }
+        };
+
+        if !ip_allowed(&peer_addr.ip(), &allowed_peers) {
+            tracing::warn!(
+                "rpc_cluster: rejected ggml-rpc-server connection from {} \u{2014} not in \
+                 rpc_allowed_peers",
+                peer_addr.ip()
+            );
+            continue; // dropping `inbound` closes the connection
+        }
+
+        tokio::spawn(async move {
+            let mut inbound = inbound;
+            match TcpStream::connect(backend_addr).await {
+                Ok(mut outbound) => {
+                    if let Err(err) = copy_bidirectional(&mut inbound, &mut outbound).await {
+                        tracing::debug!(
+                            "rpc_cluster: proxied connection from {peer_addr} ended: {err}"
+                        );
+                    }
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        "rpc_cluster: rpc_allowed_peers proxy could not reach ggml-rpc-server at \
+                         {backend_addr}: {err} \u{2014} closing connection from {peer_addr}"
+                    );
+                }
+            }
+        });
+    }
+}
+
+/// Checks `ip` against `allowlist` (settings.json's `rpc_allowed_peers`).
+/// Empty allowlist means "allow all" — the default-open behavior. Each
+/// entry is either an exact IPv4 address ("10.0.0.29") or IPv4 CIDR
+/// ("10.0.0.0/24"); no CIDR-matching crate (e.g. `ipnet`, which appears in
+/// `Cargo.lock` only as a transitive dependency of unrelated crates, not a
+/// direct one) was already a dependency of this workspace, so this is a
+/// small hand-written IPv4-only matcher rather than a new direct
+/// dependency for a narrowly-scoped need.
+///
+/// IPv6 is not supported: an IPv6 `ip` is rejected (logged, not matched
+/// against anything) rather than silently mismatched against IPv4 entries,
+/// and a malformed or IPv6 allowlist entry is logged and skipped rather
+/// than panicking or being silently ignored without a trace.
+pub fn ip_allowed(ip: &IpAddr, allowlist: &[String]) -> bool {
+    if allowlist.is_empty() {
+        return true;
+    }
+
+    let ip_v4 = match ip {
+        IpAddr::V4(v4) => *v4,
+        IpAddr::V6(_) => {
+            tracing::warn!(
+                "rpc_cluster: rejecting connection from {ip} \u{2014} rpc_allowed_peers only \
+                 supports IPv4 addresses/CIDR ranges today, so an IPv6 peer can never match"
+            );
+            return false;
+        }
+    };
+
+    allowlist
+        .iter()
+        .any(|entry| ipv4_entry_matches(entry, ip_v4))
+}
+
+/// Matches a single `rpc_allowed_peers` entry (exact IPv4 address or IPv4
+/// CIDR) against `ip`. Malformed entries are logged and treated as
+/// non-matching rather than panicking — a typo in one allowlist entry
+/// should not take down the whole allowlist check.
+fn ipv4_entry_matches(entry: &str, ip: Ipv4Addr) -> bool {
+    let entry = entry.trim();
+
+    let Some((network_str, prefix_str)) = entry.split_once('/') else {
+        return match entry.parse::<Ipv4Addr>() {
+            Ok(addr) => addr == ip,
+            Err(_) => {
+                tracing::warn!(
+                    "rpc_cluster: rpc_allowed_peers entry '{entry}' is not a valid IPv4 address \
+                     \u{2014} ignoring it"
+                );
+                false
+            }
+        };
+    };
+
+    let (Ok(network), Ok(prefix)) = (network_str.parse::<Ipv4Addr>(), prefix_str.parse::<u32>())
+    else {
+        tracing::warn!(
+            "rpc_cluster: rpc_allowed_peers entry '{entry}' is not a valid IPv4 CIDR range \
+             \u{2014} ignoring it"
+        );
+        return false;
+    };
+    if prefix > 32 {
+        tracing::warn!(
+            "rpc_cluster: rpc_allowed_peers entry '{entry}' has an invalid CIDR prefix length \
+             (must be 0-32) \u{2014} ignoring it"
+        );
+        return false;
+    }
+
+    let mask: u32 = if prefix == 0 {
+        0
+    } else {
+        u32::MAX << (32 - prefix)
+    };
+    (u32::from(network) & mask) == (u32::from(ip) & mask)
 }
 
 /// A cluster peer known to be contributing compute over `ggml-rpc-server`.
@@ -615,5 +888,162 @@ mod tests {
     #[test]
     fn rpc_flag_value_empty_for_no_peers() {
         assert_eq!(rpc_flag_value(&[]), "");
+    }
+
+    // --- ip_allowed / CIDR matching ---
+
+    fn v4(a: u8, b: u8, c: u8, d: u8) -> IpAddr {
+        IpAddr::V4(Ipv4Addr::new(a, b, c, d))
+    }
+
+    #[test]
+    fn ip_allowed_empty_allowlist_allows_everything() {
+        // Empty rpc_allowed_peers means "allow all" -- the default-open
+        // behavior that must be unchanged from before this field existed.
+        assert!(ip_allowed(&v4(10, 0, 0, 29), &[]));
+        assert!(ip_allowed(&v4(203, 0, 113, 5), &[]));
+    }
+
+    #[test]
+    fn ip_allowed_exact_ipv4_match() {
+        let allowlist = vec!["10.0.0.29".to_string()];
+        assert!(ip_allowed(&v4(10, 0, 0, 29), &allowlist));
+        assert!(!ip_allowed(&v4(10, 0, 0, 30), &allowlist));
+    }
+
+    #[test]
+    fn ip_allowed_cidr_range_match() {
+        let allowlist = vec!["10.0.0.0/24".to_string()];
+        assert!(ip_allowed(&v4(10, 0, 0, 1), &allowlist));
+        assert!(ip_allowed(&v4(10, 0, 0, 254), &allowlist));
+        assert!(!ip_allowed(&v4(10, 0, 1, 1), &allowlist));
+        assert!(!ip_allowed(&v4(11, 0, 0, 1), &allowlist));
+    }
+
+    #[test]
+    fn ip_allowed_cidr_slash_32_is_exact_match() {
+        let allowlist = vec!["192.168.1.5/32".to_string()];
+        assert!(ip_allowed(&v4(192, 168, 1, 5), &allowlist));
+        assert!(!ip_allowed(&v4(192, 168, 1, 6), &allowlist));
+    }
+
+    #[test]
+    fn ip_allowed_cidr_slash_0_matches_everything() {
+        let allowlist = vec!["0.0.0.0/0".to_string()];
+        assert!(ip_allowed(&v4(1, 2, 3, 4), &allowlist));
+        assert!(ip_allowed(&v4(255, 255, 255, 255), &allowlist));
+    }
+
+    #[test]
+    fn ip_allowed_multiple_entries_any_match_wins() {
+        let allowlist = vec!["10.0.0.29".to_string(), "192.168.0.0/16".to_string()];
+        assert!(ip_allowed(&v4(10, 0, 0, 29), &allowlist));
+        assert!(ip_allowed(&v4(192, 168, 50, 7), &allowlist));
+        assert!(!ip_allowed(&v4(172, 16, 0, 1), &allowlist));
+    }
+
+    #[test]
+    fn ip_allowed_ipv6_input_rejected_not_panicking() {
+        let allowlist = vec!["10.0.0.0/24".to_string()];
+        let ipv6 = IpAddr::V6(std::net::Ipv6Addr::LOCALHOST);
+        // Must not panic, and must not silently "match" -- an IPv6 peer is
+        // always rejected against an IPv4-only allowlist.
+        assert!(!ip_allowed(&ipv6, &allowlist));
+    }
+
+    #[test]
+    fn ip_allowed_malformed_entry_is_skipped_not_panicking() {
+        let allowlist = vec![
+            "not-an-ip".to_string(),
+            "10.0.0.0/99".to_string(), // invalid prefix length
+            "10.0.0.29".to_string(),   // still valid, still matches
+        ];
+        assert!(ip_allowed(&v4(10, 0, 0, 29), &allowlist));
+        assert!(!ip_allowed(&v4(10, 0, 0, 30), &allowlist));
+    }
+
+    // --- allowlist proxy (integration-style, real loopback sockets) ---
+
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    /// Spawns a trivial echo server on an ephemeral loopback port and
+    /// returns its address, standing in for the loopback `ggml-rpc-server`
+    /// the proxy would normally forward to.
+    async fn spawn_echo_backend() -> SocketAddr {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            loop {
+                let (mut sock, _) = match listener.accept().await {
+                    Ok(pair) => pair,
+                    Err(_) => return,
+                };
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 1024];
+                    loop {
+                        match sock.read(&mut buf).await {
+                            Ok(0) | Err(_) => return,
+                            Ok(n) => {
+                                if sock.write_all(&buf[..n]).await.is_err() {
+                                    return;
+                                }
+                            }
+                        }
+                    }
+                });
+            }
+        });
+        addr
+    }
+
+    #[tokio::test]
+    async fn allowlist_proxy_forwards_allowed_source() {
+        let backend_addr = spawn_echo_backend().await;
+
+        // Bind the proxy's public-facing listener on an ephemeral loopback
+        // port ourselves (rather than a fixed SocketAddr) so there's no
+        // bind/rebind race with `run_rpc_allowlist_proxy`.
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        let proxy_addr = listener.local_addr().unwrap();
+        let allowed_peers = vec!["127.0.0.1".to_string()];
+        tokio::spawn(serve_rpc_allowlist_proxy(
+            listener,
+            backend_addr,
+            allowed_peers,
+        ));
+
+        let mut client = TcpStream::connect(proxy_addr).await.unwrap();
+        client.write_all(b"hello").await.unwrap();
+        let mut resp = [0u8; 5];
+        client.read_exact(&mut resp).await.unwrap();
+        assert_eq!(
+            &resp, b"hello",
+            "allowed peer's traffic must be spliced through"
+        );
+    }
+
+    #[tokio::test]
+    async fn allowlist_proxy_rejects_disallowed_source() {
+        let backend_addr = spawn_echo_backend().await;
+
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        let proxy_addr = listener.local_addr().unwrap();
+        // 127.0.0.1 (what this test connects from) is deliberately NOT in
+        // this allowlist.
+        let allowed_peers = vec!["10.0.0.1".to_string()];
+        tokio::spawn(serve_rpc_allowlist_proxy(
+            listener,
+            backend_addr,
+            allowed_peers,
+        ));
+
+        let mut client = TcpStream::connect(proxy_addr).await.unwrap();
+        let _ = client.write_all(b"hello").await; // may or may not land before close
+        let mut resp = [0u8; 1];
+        let n = client.read(&mut resp).await.unwrap_or(0);
+        assert_eq!(
+            n, 0,
+            "disallowed peer's connection must be closed with no data forwarded"
+        );
     }
 }

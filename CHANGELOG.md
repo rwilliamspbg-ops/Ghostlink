@@ -4,6 +4,39 @@ All notable changes to Ghostlink Studio are documented here.
 
 ---
 
+## [1.17.0] - 2026-08-08 (Real distributed-inference testing, three bug fixes, RPC allowlist, install script, JS SDK)
+
+### Added
+
+- **Real E2E CI gate for distributed inference** (`.github/workflows/distributed-e2e.yml`, `Dockerfile.rpc-fabric`, `docker-compose.rpc-fabric.yml`, `scripts/rpc_fabric_assert.py`): a two-container Docker fabric proving Ghostlink's `ggml-rpc`-backed distributed inference actually executes across containers (`real_inference: true`, live RPC connection log evidence), not just that peer discovery found a node count.
+- **Real multi-node benchmark harness** (`docker-compose.rpc-fabric-benchmark.yml`, `scripts/rpc_fabric_benchmark.py`), plus extensive real findings from testing on genuinely separate physical hardware documented in `docs/BENCHMARKS.md`: real single-node-vs-distributed throughput comparisons, and — the actual proof this project's roadmap has been chasing — a real 30B-class model that cannot load on one machine alone (`ErrorOutOfDeviceMemory`) loading and serving correctly once split across two real machines.
+- **RPC contributor IP allowlist** (`rpc_allowed_peers` setting, `crates/ghost-link/src/rpc_cluster.rs`): `ggml-rpc-server` has no authentication of its own (an upstream llama.cpp limitation); Ghostlink now optionally fronts it with a Ghostlink-controlled TCP proxy that only forwards connections from allowlisted IPs/CIDR ranges. Empty allowlist (the default) is byte-for-byte the old direct-bind behavior — zero overhead, zero change, for anyone not using the feature.
+- **Version-mismatch detection for RPC peers** (`rpc_build_id` field on `NodeResources`, carried through all three discovery wire paths — the shared binary encoder, `DiscoveryFrame`'s UDP encoder, and mDNS TXT records): a coordinator now refuses to route distributed inference through a peer running a different `llama.cpp` build, closing a real bug found this session where mismatched builds silently corrupted output on larger models while the API reported healthy throughout. Only excludes on a *confirmed* mismatch — a peer that predates this field is still used, so this rolls out without breaking anyone mid-upgrade.
+- **One-line install script** (`scripts/install.sh`, `scripts/install.ps1`): `curl -fsSL .../install.sh | sh` downloads, SHA256-verifies, and installs the real published `ghost-link` release binary — no sudo, no package manager, no Rust toolchain required.
+- **JS/TS client SDK** (`sdks/js/`, package `ghostlink-client`): mirrors `sdks/python`'s shape (`chat.completions.create`, real SSE streaming via `/api/inference/chat`, typed error hierarchy), built on native `fetch`/`ReadableStream`, ships ESM + CJS + `.d.ts`.
+- **Full per-crate READMEs** for all five workspace crates (`ghost-link`, `ghostlink-core`, `mcp-calculator`, `mcp-rag`, `mcp-vision`) — each `Cargo.toml`'s `readme` field now points at its own crate's README instead of the repo-wide root README.
+
+### Fixed
+
+- **Silent output corruption from version-mismatched `ggml-rpc` peers** — see "Added" above; this is the fix, `rpc_build_id` detection is the mechanism.
+- **Unsupervised RPC contributor child process**: `rpc_cluster::ensure_contributing()` already had working respawn logic but was only ever called once at server startup — if the spawned `ggml-rpc-server` child later crashed (e.g. the quantized-KV-cache/RPC-CPU-backend crash found this session), the node kept advertising RPC capability via discovery while actually unreachable. Now called every 30s on a background thread for the process lifetime whenever `contribute_compute` is on.
+- **90-second model-ready timeout too short for real distributed loads**: `native_engine.rs` used a flat 90s health-check budget for both single-node and distributed loads. Real distributed loads measured this session took anywhere from 168s to over 900s depending on model size, all previously aborted as false failures. Now scales to 600s specifically when a load attempt's args include `--rpc`, stays at 90s for single-node; `GHOSTLINK_MODEL_READY_TIMEOUT_SECS` env override for further tuning.
+
+### Changed
+
+- `ghost-link` and `ghostlink-core` bumped `1.16.1` → `1.17.0` (new backward-compatible settings/protocol fields, no breaking changes — a minor bump per semver). `ghostlink_gui_modern`'s `package.json` bumped to match, keeping the whole repo on one coordinated version number.
+
+### Documentation
+
+- `docs/ROADMAP.md` and `docs/BENCHMARKS.md` updated extensively with the real findings above — hardware tables, methodology, honest caveats about what wasn't yet proven (e.g. "usable speed" for the 30B distributed result is not yet there, even though the capacity proof is real).
+
+### Validation
+
+- `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace` — all clean (164 ghost-link + 183 ghostlink-core tests, 0 failures).
+- Real Docker E2E fabric rebuilt and rerun after the allowlist change, confirming zero regression to the existing passing gate.
+- JS SDK: `tsc --noEmit` clean, real `tsup` build (ESM + CJS + `.d.ts`), 17/17 `vitest` tests passing.
+- Install scripts: both actually run end-to-end against the real live `v1.16.1` release (not just syntax-checked) — real binary downloaded, checksum verified against the published `SHA256SUMS`, installed binary executed successfully.
+
 ## [1.16.1] - 2026-08-05 (CI fix: release-artifacts.yml release build)
 
 ### Fixed
