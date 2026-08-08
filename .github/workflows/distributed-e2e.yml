@@ -1,0 +1,104 @@
+name: Distributed E2E (RPC Fabric)
+
+# Regression gate for Ghostlink's real distributed-inference feature
+# (llama.cpp's ggml-rpc backend — crates/ghost-link/src/rpc_cluster.rs).
+# Builds docker-compose.rpc-fabric.yml (a contributor node + a coordinator
+# node on an isolated bridge network), then runs
+# scripts/rpc_fabric_assert.py, which proves — not just asserts node
+# count — that a real chat completion executed across both containers:
+# UDP discovery found the peer, the coordinator built --rpc/-ts flags with
+# zero manual input, a real chat completion came back with
+# real_inference: true, and the contributor's own ggml-rpc-server log shows
+# it actually accepted a connection. See docs/ROADMAP.md's Horizon 1 #1 —
+# this is the CI test that section calls for.
+#
+# Path-filtered like production-gate.yml: this does a from-source llama.cpp
+# build (several minutes) so it only runs when something that could plausibly
+# break the distributed path actually changed, plus on every push to main
+# and on manual dispatch.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'crates/ghost-link/src/rpc_cluster.rs'
+      - 'crates/ghost-link/src/native_engine.rs'
+      - 'crates/ghost-link/src/main.rs'
+      - 'crates/ghostlink-core/src/discovery.rs'
+      - 'crates/ghostlink-core/src/cluster.rs'
+      - 'crates/ghostlink-core/src/mdns.rs'
+      - 'crates/ghostlink-core/src/protocol.rs'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'Dockerfile.rpc-fabric'
+      - 'docker-compose.rpc-fabric.yml'
+      - 'scripts/rpc_fabric_entrypoint.sh'
+      - 'scripts/rpc_fabric_assert.py'
+      - '.github/workflows/distributed-e2e.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'crates/ghost-link/src/rpc_cluster.rs'
+      - 'crates/ghost-link/src/native_engine.rs'
+      - 'crates/ghost-link/src/main.rs'
+      - 'crates/ghostlink-core/src/discovery.rs'
+      - 'crates/ghostlink-core/src/cluster.rs'
+      - 'crates/ghostlink-core/src/mdns.rs'
+      - 'crates/ghostlink-core/src/protocol.rs'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'Dockerfile.rpc-fabric'
+      - 'docker-compose.rpc-fabric.yml'
+      - 'scripts/rpc_fabric_entrypoint.sh'
+      - 'scripts/rpc_fabric_assert.py'
+      - '.github/workflows/distributed-e2e.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: distributed-e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  distributed-e2e:
+    name: Distributed E2E (RPC Fabric)
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install assertion script dependencies
+        run: pip install requests urllib3
+
+      - name: Build fabric images
+        run: docker compose -f docker-compose.rpc-fabric.yml build
+
+      - name: Start fabric
+        run: |
+          docker compose -f docker-compose.rpc-fabric.yml up -d --wait --wait-timeout 300
+
+      - name: Run distributed-inference assertion
+        run: python3 scripts/rpc_fabric_assert.py
+
+      - name: Dump container logs
+        if: always()
+        run: |
+          mkdir -p ./tmp
+          docker compose -f docker-compose.rpc-fabric.yml logs --no-color rpc-contributor > ./tmp/rpc-contributor.log 2>&1 || true
+          docker compose -f docker-compose.rpc-fabric.yml logs --no-color rpc-coordinator > ./tmp/rpc-coordinator.log 2>&1 || true
+          docker exec ghostlink-rpc-contributor cat /tmp/ggml-rpc-server.log > ./tmp/ggml-rpc-server.log 2>&1 || true
+
+      - name: Upload fabric logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: distributed-e2e-logs
+          path: ./tmp/*.log
+          retention-days: 14
+
+      - name: Tear down fabric
+        if: always()
+        run: docker compose -f docker-compose.rpc-fabric.yml down -v

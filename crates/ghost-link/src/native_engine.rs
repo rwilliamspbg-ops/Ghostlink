@@ -55,6 +55,13 @@ pub struct NativeEngineClient {
 // Static variable to track the llama-server process
 static LLAMA_SERVER_PROCESS: OnceLock<Arc<Mutex<Option<Child>>>> = OnceLock::new();
 
+// Cached local llama.cpp build fingerprint (short commit hash from
+// `llama-server --version`). Never changes during a process's lifetime, so
+// shelling out on every discovery/advertisement cycle would be wasteful.
+// `None` means the binary is missing or `--version` failed/was unparsable —
+// see `NativeEngineClient::get_llama_build_id`.
+static LLAMA_BUILD_ID: OnceLock<Option<String>> = OnceLock::new();
+
 impl NativeEngineClient {
     pub fn new() -> Self {
         Self {
@@ -167,6 +174,73 @@ impl NativeEngineClient {
         } else {
             "llama-server".to_string()
         }
+    }
+
+    /// Parse the short commit hash out of `llama-server --version`'s first
+    /// line, e.g. `"version: 1 (da296d6)\nbuilt with MSVC ..."` -> `da296d6`.
+    fn parse_llama_build_id(version_output: &str) -> Option<String> {
+        let first_line = version_output.lines().next()?;
+        let open = first_line.find('(')?;
+        let close = first_line[open..].find(')')? + open;
+        let hash = first_line[open + 1..close].trim();
+        if hash.is_empty() {
+            None
+        } else {
+            Some(hash.to_string())
+        }
+    }
+
+    /// This node's local `llama.cpp` build fingerprint (the short commit hash
+    /// `llama-server --version` prints in parens on its first line), cached
+    /// for the process's lifetime since it never changes at runtime.
+    ///
+    /// Used to detect version-mismatched `ggml-rpc` peers before routing
+    /// distributed inference through them — mismatched builds connect and
+    /// exchange data over `ggml-rpc-server` without complaint, but can
+    /// silently corrupt output for larger models while reporting healthy
+    /// status the whole time (confirmed on real hardware; see
+    /// `docs/BENCHMARKS.md`'s native two-machine entry and
+    /// `rpc_cluster::discover_rpc_peers`).
+    ///
+    /// Best-effort: a missing binary or an unparsable `--version` output
+    /// returns `None` rather than panicking or blocking startup, matching
+    /// this codebase's established pattern for hardware/binary detection.
+    pub fn get_llama_build_id() -> Option<String> {
+        LLAMA_BUILD_ID
+            .get_or_init(|| {
+                let bin = Self::get_llama_server_bin();
+                let output = match Command::new(&bin).arg("--version").output() {
+                    Ok(output) => output,
+                    Err(err) => {
+                        eprintln!(
+                            "[llama-build] Could not run '{bin} --version' to determine build \
+                             fingerprint ({err}); version-mismatch detection for distributed \
+                             inference will be skipped for this node."
+                        );
+                        return None;
+                    }
+                };
+                let combined = format!(
+                    "{}\n{}",
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr)
+                );
+                match Self::parse_llama_build_id(&combined) {
+                    Some(build_id) => {
+                        eprintln!("[llama-build] Detected local llama.cpp build: {build_id}");
+                        Some(build_id)
+                    }
+                    None => {
+                        eprintln!(
+                            "[llama-build] '{bin} --version' output didn't contain a \
+                             recognizable build hash; version-mismatch detection for \
+                             distributed inference will be skipped for this node."
+                        );
+                        None
+                    }
+                }
+            })
+            .clone()
     }
 
     /// Raw URL from env/settings (may include `/completion` suffix from launchers).
@@ -376,6 +450,39 @@ impl NativeEngineClient {
             .await
             .map(|r| r.status().is_success())
             .unwrap_or(false)
+    }
+
+    /// Model-ready timeout, in seconds, for a specific `llama-server` launch
+    /// arg set. Real distributed (`--rpc`) loads take far longer than
+    /// single-node loads of the same-sized file — confirmed this session:
+    /// real cross-machine RPC loads took anywhere from 168s to over 900s
+    /// depending on model size, while single-node loads of the same files
+    /// completed comfortably within 90s (see `docs/BENCHMARKS.md`'s native
+    /// two-machine entry). Raising the single-node timeout to match would
+    /// make every single-node failure (e.g. a genuinely broken model file)
+    /// take much longer to report, so the two cases get different defaults
+    /// based on whether `--rpc` is actually present in `args` — the launch's
+    /// own arg set, not a single global flag (this is checked per arg-set
+    /// variant in `load_model_into_slot`'s staging loop, which tries
+    /// multiple variants with/without quantized KV cache).
+    ///
+    /// `GHOSTLINK_MODEL_READY_TIMEOUT_SECS`, when set to a valid positive
+    /// integer, overrides either default so an operator can tune this
+    /// further without a rebuild.
+    fn model_ready_timeout_secs(args: &[String]) -> u64 {
+        if let Ok(val) = std::env::var("GHOSTLINK_MODEL_READY_TIMEOUT_SECS") {
+            if let Ok(n) = val.trim().parse::<u64>() {
+                if n > 0 {
+                    return n;
+                }
+            }
+        }
+        let is_distributed = args.iter().any(|a| a == "--rpc");
+        if is_distributed {
+            600
+        } else {
+            90
+        }
     }
 
     /// Wait for llama-server to become ready. Polls `child`'s exit status
@@ -672,9 +779,10 @@ impl NativeEngineClient {
                 staging_child.id()
             );
 
+            let staging_timeout_secs = Self::model_ready_timeout_secs(args);
             let staged_ready = rt.block_on(Self::wait_for_llama_server_ready(
                 &staging_url,
-                90,
+                staging_timeout_secs,
                 &mut staging_child,
             ));
             let _ = staging_child.kill();
@@ -718,7 +826,12 @@ impl NativeEngineClient {
         let pid = child.id();
         eprintln!("[model-load] Started llama-server with PID: {pid}");
 
-        let ready = rt.block_on(Self::wait_for_llama_server_ready(&base_url, 90, &mut child));
+        let final_timeout_secs = Self::model_ready_timeout_secs(winning_args);
+        let ready = rt.block_on(Self::wait_for_llama_server_ready(
+            &base_url,
+            final_timeout_secs,
+            &mut child,
+        ));
         if let Err(e) = ready {
             let _ = child.kill();
             let _ = child.wait();
@@ -1440,6 +1553,113 @@ mod tests {
     fn env_lock() -> &'static Mutex<()> {
         static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         ENV_LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    #[test]
+    fn parse_llama_build_id_extracts_short_hash_from_first_line() {
+        let output = "version: 1 (da296d6)\nbuilt with MSVC 19.50.35725.0 for x64";
+        assert_eq!(
+            NativeEngineClient::parse_llama_build_id(output),
+            Some("da296d6".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_llama_build_id_handles_single_line_output() {
+        assert_eq!(
+            NativeEngineClient::parse_llama_build_id("version: 1 (e920c523e)"),
+            Some("e920c523e".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_llama_build_id_returns_none_without_parens() {
+        assert_eq!(
+            NativeEngineClient::parse_llama_build_id("no version info here"),
+            None
+        );
+    }
+
+    #[test]
+    fn parse_llama_build_id_returns_none_on_empty_parens() {
+        assert_eq!(
+            NativeEngineClient::parse_llama_build_id("version: 1 ()"),
+            None
+        );
+    }
+
+    #[test]
+    fn parse_llama_build_id_returns_none_on_empty_input() {
+        assert_eq!(NativeEngineClient::parse_llama_build_id(""), None);
+    }
+
+    #[test]
+    fn get_llama_build_id_does_not_panic_when_binary_is_missing() {
+        let _guard = env_lock().lock().expect("env lock poisoned");
+        // Best-effort: should gracefully return None (or a cached Some from
+        // an earlier test run in this process) rather than panic, even when
+        // no llama-server binary is resolvable in this test environment.
+        let _ = NativeEngineClient::get_llama_build_id();
+    }
+
+    #[test]
+    fn model_ready_timeout_uses_90s_for_single_node_args() {
+        let _guard = env_lock().lock().expect("env lock poisoned");
+        std::env::remove_var("GHOSTLINK_MODEL_READY_TIMEOUT_SECS");
+        let args = vec!["-fa".to_string()];
+        assert_eq!(NativeEngineClient::model_ready_timeout_secs(&args), 90);
+    }
+
+    #[test]
+    fn model_ready_timeout_uses_600s_when_rpc_flag_present() {
+        let _guard = env_lock().lock().expect("env lock poisoned");
+        std::env::remove_var("GHOSTLINK_MODEL_READY_TIMEOUT_SECS");
+        let args = vec![
+            "--rpc".to_string(),
+            "10.0.0.29:50052".to_string(),
+            "-ts".to_string(),
+            "3.9990,0.1000".to_string(),
+        ];
+        assert_eq!(NativeEngineClient::model_ready_timeout_secs(&args), 600);
+    }
+
+    #[test]
+    fn model_ready_timeout_env_override_applies_regardless_of_rpc() {
+        let _guard = env_lock().lock().expect("env lock poisoned");
+        std::env::set_var("GHOSTLINK_MODEL_READY_TIMEOUT_SECS", "45");
+
+        let single_node_args: Vec<String> = vec![];
+        assert_eq!(
+            NativeEngineClient::model_ready_timeout_secs(&single_node_args),
+            45
+        );
+
+        let distributed_args = vec!["--rpc".to_string(), "host:1".to_string()];
+        assert_eq!(
+            NativeEngineClient::model_ready_timeout_secs(&distributed_args),
+            45
+        );
+
+        std::env::remove_var("GHOSTLINK_MODEL_READY_TIMEOUT_SECS");
+    }
+
+    #[test]
+    fn model_ready_timeout_ignores_invalid_or_zero_env_override() {
+        let _guard = env_lock().lock().expect("env lock poisoned");
+        std::env::set_var("GHOSTLINK_MODEL_READY_TIMEOUT_SECS", "not-a-number");
+        let single_node_args: Vec<String> = vec![];
+        assert_eq!(
+            NativeEngineClient::model_ready_timeout_secs(&single_node_args),
+            90
+        );
+
+        std::env::set_var("GHOSTLINK_MODEL_READY_TIMEOUT_SECS", "0");
+        assert_eq!(
+            NativeEngineClient::model_ready_timeout_secs(&single_node_args),
+            90
+        );
+
+        std::env::remove_var("GHOSTLINK_MODEL_READY_TIMEOUT_SECS");
     }
 
     #[test]

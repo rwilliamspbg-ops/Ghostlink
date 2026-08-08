@@ -1,13 +1,13 @@
 [package]
 name = "ghost-link"
-version = "1.16.1"
+version = "1.17.0"
 edition = "2021"
 authors = ["Ryan K Williams"]
 description = "CLI and API runtime for Ghostlink, a distributed inference fabric for routing and scheduling custom LLM workloads across heterogeneous hardware."
 homepage = "https://rwilliamspbg-ops.github.io/Ghostlink/"
 documentation = "https://rwilliamspbg-ops.github.io/Ghostlink/"
 repository = "https://github.com/rwilliamspbg-ops/Ghostlink"
-readme = "../../README.md"
+readme = "README.md"
 license = "MIT"
 keywords = ["networking", "zero-copy", "async", "distributed", "llm"]
 categories = ["asynchronous", "network-programming", "command-line-utilities"]
@@ -21,7 +21,7 @@ cuda = []
 rocm = ["ghostlink-core/rocm"]
 
 [dependencies]
-ghostlink-core = { path = "../ghostlink-core", version = "1.16.1" }
+ghostlink-core = { path = "../ghostlink-core", version = "1.17.0" }
 
 # Local date/time for the assistant system prompt
 chrono = "0.4"

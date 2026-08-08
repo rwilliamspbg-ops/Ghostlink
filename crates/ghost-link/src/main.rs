@@ -1783,6 +1783,18 @@ struct RuntimeSettings {
     /// before this field existed.
     #[serde(default = "default_rpc_port")]
     rpc_port: u16,
+    /// IP allowlist for who may submit compute jobs to this node's
+    /// `ggml-rpc-server` (see `rpc_cluster`'s module doc for the full
+    /// security rationale). Accepts plain IPv4 addresses ("10.0.0.29") and
+    /// IPv4 CIDR ranges ("10.0.0.0/24"). Empty (the default) means "allow
+    /// all" — the exact same default-open behavior as before this field
+    /// existed, matching how `contribute_compute` itself defaults to off:
+    /// this is opt-in hardening, not a behavior change for anyone who
+    /// hasn't configured it. `#[serde(default)]` so settings.json files
+    /// saved before this field existed still deserialize (to the
+    /// allow-all empty vec, not full-struct defaults).
+    #[serde(default)]
+    rpc_allowed_peers: Vec<String>,
 }
 
 fn default_rpc_port() -> u16 {
@@ -1853,6 +1865,7 @@ impl Default for RuntimeSettings {
             distributed_inference: false,
             contribute_compute: false,
             rpc_port: default_rpc_port(),
+            rpc_allowed_peers: Vec::new(),
         }
     }
 }
@@ -4971,8 +4984,12 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             // when disabled or no qualifying peers, which reproduces
             // single-node behavior exactly.
             let (rpc_servers, tensor_split) = if backend.settings.distributed_inference {
-                let peers =
-                    rpc_cluster::discover_rpc_peers(&backend.cluster, &backend.local_node_id);
+                let local_build_id = native_engine::NativeEngineClient::get_llama_build_id();
+                let peers = rpc_cluster::discover_rpc_peers(
+                    &backend.cluster,
+                    &backend.local_node_id,
+                    local_build_id.as_deref(),
+                );
                 if peers.is_empty() {
                     (None, None)
                 } else {
@@ -7929,6 +7946,18 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                             current.rpc_port = v as u16;
                         }
                     }
+                    "rpc_allowed_peers" => {
+                        if let Some(arr) = value.as_array() {
+                            // Same next-restart caveat as contribute_compute/
+                            // rpc_port: the allowlist proxy (if any) is only
+                            // stood up once, at startup, in `rpc_cluster::
+                            // ensure_contributing`.
+                            current.rpc_allowed_peers = arr
+                                .iter()
+                                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                                .collect();
+                        }
+                    }
                     "conversation_token_limit" => {
                         if let Some(v) = value.as_u64() {
                             current.conversation_token_limit = v as usize;
@@ -8113,6 +8142,12 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         .enable_all()
         .build()
         .map_err(|err| anyhow::anyhow!("failed to initialize runtime: {}", err))?;
+    // Cheap to clone (an `Arc`-backed handle into `rt`) and needed by
+    // `rpc_cluster::ensure_contributing` below to spawn its allowlist-proxy
+    // task from contexts that run before `rt.block_on` starts (this call
+    // site, and the periodic-respawn thread below) — `tokio::spawn` alone
+    // requires already being inside a runtime, which neither is.
+    let rt_handle = rt.handle().clone();
 
     // Loaded here (rather than at its previous spot further down) because
     // discovery advertisement below needs `contribute_compute`/`rpc_port`
@@ -8121,13 +8156,54 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
     let mut settings = load_settings();
 
     if settings.contribute_compute {
-        rpc_cluster::ensure_contributing(host, settings.rpc_port);
+        rpc_cluster::ensure_contributing(
+            host,
+            settings.rpc_port,
+            &settings.rpc_allowed_peers,
+            &rt_handle,
+        );
+
+        // `ensure_contributing` is already idempotent and already checks
+        // child health (a no-op if the contributor is still alive, a
+        // respawn if it died) — but it was previously only ever called once,
+        // here, at startup. If the spawned `ggml-rpc-server` child later
+        // crashes (a real, confirmed failure mode: quantized KV cache on the
+        // RPC/CPU backend aborting on an unimplemented op — see
+        // `docs/BENCHMARKS.md`'s native two-machine entry), nothing called
+        // `ensure_contributing` again, so it never respawned despite the
+        // function itself already knowing how. Poll it periodically for the
+        // lifetime of the process instead, mirroring the UDP-broadcast
+        // background thread's loop+sleep pattern just below.
+        let contribute_host = host.to_string();
+        let contribute_port = settings.rpc_port;
+        let contribute_allowed_peers = settings.rpc_allowed_peers.clone();
+        let contribute_rt_handle = rt_handle.clone();
+        thread::spawn(move || loop {
+            thread::sleep(Duration::from_secs(30));
+            rpc_cluster::ensure_contributing(
+                &contribute_host,
+                contribute_port,
+                &contribute_allowed_peers,
+                &contribute_rt_handle,
+            );
+        });
     }
     let advertised_node = if settings.contribute_compute {
-        profile
+        let mut node = profile
             .node_resources
             .clone()
-            .with_rpc_port(settings.rpc_port)
+            .with_rpc_port(settings.rpc_port);
+        // Advertise this node's llama.cpp build fingerprint alongside its RPC
+        // port so peers can refuse to route distributed inference through a
+        // version-mismatched contributor instead of silently corrupting
+        // output (see `rpc_cluster::discover_rpc_peers` and
+        // `docs/BENCHMARKS.md`'s native two-machine entry). Best-effort:
+        // `None` when the binary is missing or unversioned, same as today's
+        // behavior for any peer that predates this field.
+        if let Some(build_id) = native_engine::NativeEngineClient::get_llama_build_id() {
+            node = node.with_rpc_build_id(build_id);
+        }
+        node
     } else {
         profile.node_resources.clone()
     };

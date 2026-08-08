@@ -1,0 +1,62 @@
+{
+  "name": "ghostlink-client",
+  "version": "0.1.0",
+  "description": "JavaScript/TypeScript client for the Ghostlink Studio API: OpenAI-compatible chat/completions/embeddings, plus native token-streaming chat, workers, metrics, and settings.",
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "sideEffects": false,
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "tsup",
+    "type-check": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "keywords": [
+    "ghostlink",
+    "llm",
+    "self-hosted",
+    "inference",
+    "openai-compatible",
+    "sdk",
+    "streaming",
+    "sse"
+  ],
+  "author": "Ghostlink contributors",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/rwilliamspbg-ops/Ghostlink.git",
+    "directory": "sdks/js"
+  },
+  "homepage": "https://github.com/rwilliamspbg-ops/Ghostlink",
+  "bugs": {
+    "url": "https://github.com/rwilliamspbg-ops/Ghostlink/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "tsup": "^8.5.1",
+    "typescript": "^5.3.0",
+    "vitest": "^1.0.0"
+  }
+}
