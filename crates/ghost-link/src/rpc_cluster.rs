@@ -190,10 +190,37 @@ pub struct RpcPeer {
 
 /// Finds healthy, RPC-contributing peers (excluding `local_node_id`) from
 /// `cluster`'s live node list. A peer only qualifies if it advertised an
-/// `rpc_port` (opted in to contributing), is `NodeStatus::Active`, and has a
-/// known reachable IP (from discovery or `/api/workers/connect`). Sorted by
-/// node id for a stable `--rpc`/`--tensor-split` ordering across a session.
-pub fn discover_rpc_peers(cluster: &ClusterState, local_node_id: &str) -> Vec<RpcPeer> {
+/// `rpc_port` (opted in to contributing), is `NodeStatus::Active`, has a
+/// known reachable IP (from discovery or `/api/workers/connect`), and
+/// doesn't have a *confirmed* `llama.cpp` build mismatch against
+/// `local_rpc_build_id`. Sorted by node id for a stable
+/// `--rpc`/`--tensor-split` ordering across a session.
+///
+/// # Version-compatibility check
+///
+/// `ggml-rpc-server` has no version-compatibility check of its own — an
+/// upstream llama.cpp limitation. Confirmed on real, genuinely separate
+/// hardware (`docs/BENCHMARKS.md`'s native two-machine entry): two machines
+/// running `llama.cpp` builds 10 days apart connected and exchanged RPC
+/// traffic without complaint, but larger-model inference through the real
+/// distributed path came back as reproducible garbage while the API
+/// reported `healthy`/HTTP 200 throughout. Rebuilding both sides at the
+/// identical commit fixed it.
+///
+/// A peer is only excluded on an *actual confirmed* mismatch — both this
+/// node and the peer report a `rpc_build_id` and they differ. A peer
+/// reporting `None` (it predates this field, or couldn't determine its own
+/// build id) is deliberately **not** treated as a mismatch: that would make
+/// every not-yet-updated peer on a LAN unroutable the moment one node
+/// upgrades, an unnecessarily disruptive rollout behavior. Instead this
+/// ships additively: unknown-version peers are still used, with a lower-
+/// urgency warning that their safety can't be verified — matching today's
+/// actual (pre-this-field) behavior exactly.
+pub fn discover_rpc_peers(
+    cluster: &ClusterState,
+    local_node_id: &str,
+    local_rpc_build_id: Option<&str>,
+) -> Vec<RpcPeer> {
     let nodes = cluster.nodes_snapshot();
     let mut peers: Vec<RpcPeer> = nodes
         .iter()
@@ -204,6 +231,35 @@ pub fn discover_rpc_peers(cluster: &ClusterState, local_node_id: &str) -> Vec<Rp
             if metrics.status != NodeStatus::Active {
                 return None;
             }
+
+            match (local_rpc_build_id, node.rpc_build_id.as_deref()) {
+                (Some(local), Some(peer)) if local != peer => {
+                    tracing::warn!(
+                        "rpc_cluster: excluding peer '{}' ({peer_addr:?}) \u{2014} llama.cpp \
+                         build mismatch (local: '{local}', peer: '{peer}'). Distributed \
+                         inference is skipping this peer because version-mismatched ggml-rpc \
+                         peers have been confirmed to silently corrupt output for larger models \
+                         while reporting healthy status throughout. Rebuild both nodes at the \
+                         same llama.cpp commit to re-enable this peer.",
+                        node.id,
+                        peer_addr = metrics.ip_address,
+                    );
+                    return None;
+                }
+                (Some(local), Some(peer)) => {
+                    debug_assert_eq!(local, peer);
+                }
+                _ => {
+                    tracing::warn!(
+                        "rpc_cluster: peer '{}' did not report a verifiable llama.cpp build \
+                         fingerprint (predates version-compatibility checking, or couldn't \
+                         determine its own build id) \u{2014} cannot verify it matches this \
+                         node's build; proceeding anyway.",
+                        node.id
+                    );
+                }
+            }
+
             let mut addr = metrics.ip_address?;
             addr.set_port(rpc_port);
             Some(RpcPeer {
@@ -261,9 +317,25 @@ mod tests {
         addr: Option<SocketAddr>,
         status: NodeStatus,
     ) {
+        register_peer_with_build_id(cluster, id, vram_gb, rpc_port, None, addr, status);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn register_peer_with_build_id(
+        cluster: &ClusterState,
+        id: &str,
+        vram_gb: f32,
+        rpc_port: Option<u16>,
+        rpc_build_id: Option<&str>,
+        addr: Option<SocketAddr>,
+        status: NodeStatus,
+    ) {
         let mut node = NodeResources::new(id, vram_gb, 32.0, "8.6", None);
         if let Some(port) = rpc_port {
             node = node.with_rpc_port(port);
+        }
+        if let Some(build_id) = rpc_build_id {
+            node = node.with_rpc_build_id(build_id);
         }
         cluster.register_with_addr(node, addr);
         cluster.get_metrics_mut(id, |m| m.status = status);
@@ -317,7 +389,7 @@ mod tests {
             NodeStatus::Active,
         );
 
-        let peers = discover_rpc_peers(&cluster, "local");
+        let peers = discover_rpc_peers(&cluster, "local", None);
 
         assert_eq!(peers.len(), 1);
         assert_eq!(peers[0].node_id, "contributor");
@@ -337,7 +409,7 @@ mod tests {
             NodeStatus::Active,
         );
 
-        assert!(discover_rpc_peers(&cluster, "local").is_empty());
+        assert!(discover_rpc_peers(&cluster, "local", None).is_empty());
     }
 
     #[test]
@@ -360,10 +432,135 @@ mod tests {
             NodeStatus::Active,
         );
 
-        let peers = discover_rpc_peers(&cluster, "local");
+        let peers = discover_rpc_peers(&cluster, "local", None);
         assert_eq!(peers.len(), 2);
         assert_eq!(peers[0].node_id, "alpha");
         assert_eq!(peers[1].node_id, "zeta");
+    }
+
+    #[test]
+    fn excludes_peer_with_confirmed_mismatched_rpc_build_id() {
+        let cluster = ClusterState::new();
+        register_peer_with_build_id(
+            &cluster,
+            "local",
+            16.0,
+            None,
+            None,
+            Some(loopback(9000)),
+            NodeStatus::Active,
+        );
+        register_peer_with_build_id(
+            &cluster,
+            "contributor",
+            12.0,
+            Some(50052),
+            Some("e920c523e"),
+            Some(loopback(9001)),
+            NodeStatus::Active,
+        );
+
+        let peers = discover_rpc_peers(&cluster, "local", Some("da296d6"));
+
+        assert!(
+            peers.is_empty(),
+            "peer with a confirmed different llama.cpp build id must be excluded"
+        );
+    }
+
+    #[test]
+    fn does_not_exclude_peer_with_matching_rpc_build_id() {
+        let cluster = ClusterState::new();
+        register_peer_with_build_id(
+            &cluster,
+            "local",
+            16.0,
+            None,
+            None,
+            Some(loopback(9000)),
+            NodeStatus::Active,
+        );
+        register_peer_with_build_id(
+            &cluster,
+            "contributor",
+            12.0,
+            Some(50052),
+            Some("da296d6"),
+            Some(loopback(9001)),
+            NodeStatus::Active,
+        );
+
+        let peers = discover_rpc_peers(&cluster, "local", Some("da296d6"));
+
+        assert_eq!(peers.len(), 1);
+        assert_eq!(peers[0].node_id, "contributor");
+    }
+
+    #[test]
+    fn does_not_exclude_peer_with_unknown_rpc_build_id() {
+        // Asymmetry from bug 1's fix: a peer reporting `None` (predates this
+        // field, or couldn't determine its own build) must NOT be treated as
+        // a mismatch and excluded -- only an *actual confirmed* mismatch
+        // (Some(a) != Some(b)) should exclude a peer. Otherwise every
+        // not-yet-updated peer on a LAN becomes unroutable the moment one
+        // node upgrades.
+        let cluster = ClusterState::new();
+        register_peer_with_build_id(
+            &cluster,
+            "local",
+            16.0,
+            None,
+            None,
+            Some(loopback(9000)),
+            NodeStatus::Active,
+        );
+        register_peer(
+            &cluster,
+            "contributor",
+            12.0,
+            Some(50052),
+            Some(loopback(9001)),
+            NodeStatus::Active,
+        );
+
+        let peers = discover_rpc_peers(&cluster, "local", Some("da296d6"));
+
+        assert_eq!(
+            peers.len(),
+            1,
+            "a peer with no rpc_build_id must still be used, not excluded"
+        );
+        assert_eq!(peers[0].node_id, "contributor");
+    }
+
+    #[test]
+    fn does_not_exclude_peer_when_local_build_id_is_unknown() {
+        // Mirror case: if this node itself couldn't determine its own build
+        // id, it also can't confirm a mismatch, so peers should still be used.
+        let cluster = ClusterState::new();
+        register_peer_with_build_id(
+            &cluster,
+            "local",
+            16.0,
+            None,
+            None,
+            Some(loopback(9000)),
+            NodeStatus::Active,
+        );
+        register_peer_with_build_id(
+            &cluster,
+            "contributor",
+            12.0,
+            Some(50052),
+            Some("e920c523e"),
+            Some(loopback(9001)),
+            NodeStatus::Active,
+        );
+
+        let peers = discover_rpc_peers(&cluster, "local", None);
+
+        assert_eq!(peers.len(), 1);
+        assert_eq!(peers[0].node_id, "contributor");
     }
 
     #[test]

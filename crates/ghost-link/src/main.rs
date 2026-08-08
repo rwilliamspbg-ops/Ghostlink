@@ -4971,8 +4971,12 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             // when disabled or no qualifying peers, which reproduces
             // single-node behavior exactly.
             let (rpc_servers, tensor_split) = if backend.settings.distributed_inference {
-                let peers =
-                    rpc_cluster::discover_rpc_peers(&backend.cluster, &backend.local_node_id);
+                let local_build_id = native_engine::NativeEngineClient::get_llama_build_id();
+                let peers = rpc_cluster::discover_rpc_peers(
+                    &backend.cluster,
+                    &backend.local_node_id,
+                    local_build_id.as_deref(),
+                );
                 if peers.is_empty() {
                     (None, None)
                 } else {
@@ -8122,12 +8126,41 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
 
     if settings.contribute_compute {
         rpc_cluster::ensure_contributing(host, settings.rpc_port);
+
+        // `ensure_contributing` is already idempotent and already checks
+        // child health (a no-op if the contributor is still alive, a
+        // respawn if it died) — but it was previously only ever called once,
+        // here, at startup. If the spawned `ggml-rpc-server` child later
+        // crashes (a real, confirmed failure mode: quantized KV cache on the
+        // RPC/CPU backend aborting on an unimplemented op — see
+        // `docs/BENCHMARKS.md`'s native two-machine entry), nothing called
+        // `ensure_contributing` again, so it never respawned despite the
+        // function itself already knowing how. Poll it periodically for the
+        // lifetime of the process instead, mirroring the UDP-broadcast
+        // background thread's loop+sleep pattern just below.
+        let contribute_host = host.to_string();
+        let contribute_port = settings.rpc_port;
+        thread::spawn(move || loop {
+            thread::sleep(Duration::from_secs(30));
+            rpc_cluster::ensure_contributing(&contribute_host, contribute_port);
+        });
     }
     let advertised_node = if settings.contribute_compute {
-        profile
+        let mut node = profile
             .node_resources
             .clone()
-            .with_rpc_port(settings.rpc_port)
+            .with_rpc_port(settings.rpc_port);
+        // Advertise this node's llama.cpp build fingerprint alongside its RPC
+        // port so peers can refuse to route distributed inference through a
+        // version-mismatched contributor instead of silently corrupting
+        // output (see `rpc_cluster::discover_rpc_peers` and
+        // `docs/BENCHMARKS.md`'s native two-machine entry). Best-effort:
+        // `None` when the binary is missing or unversioned, same as today's
+        // behavior for any peer that predates this field.
+        if let Some(build_id) = native_engine::NativeEngineClient::get_llama_build_id() {
+            node = node.with_rpc_build_id(build_id);
+        }
+        node
     } else {
         profile.node_resources.clone()
     };

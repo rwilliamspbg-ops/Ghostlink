@@ -136,6 +136,9 @@ fn node_to_txt_properties(node: &NodeResources) -> Vec<(String, String)> {
     if let Some(rpc_port) = node.rpc_port {
         props.push(("rpc_port".to_string(), rpc_port.to_string()));
     }
+    if let Some(rpc_build_id) = &node.rpc_build_id {
+        props.push(("rpc_build_id".to_string(), rpc_build_id.clone()));
+    }
     props
 }
 
@@ -146,6 +149,7 @@ fn node_from_txt_lookup(lookup: impl Fn(&str) -> Option<String>) -> Option<NodeR
     let compute_capability = lookup("compute_capability").unwrap_or_default();
     let gpu_name = lookup("gpu_name");
     let rpc_port = lookup("rpc_port").and_then(|v| v.parse().ok());
+    let rpc_build_id = lookup("rpc_build_id");
     Some(NodeResources {
         id,
         vram_gb,
@@ -153,6 +157,7 @@ fn node_from_txt_lookup(lookup: impl Fn(&str) -> Option<String>) -> Option<NodeR
         compute_capability,
         gpu_name,
         rpc_port,
+        rpc_build_id,
     })
 }
 
@@ -209,6 +214,25 @@ mod tests {
         let decoded = node_from_txt_lookup(lookup_from(&props)).expect("decode");
 
         assert_eq!(decoded.rpc_port, None);
+    }
+
+    #[test]
+    fn txt_roundtrip_preserves_rpc_build_id() {
+        let node =
+            NodeResources::new("node-e", 12.0, 32.0, "8.6", None).with_rpc_build_id("da296d6");
+        let props = node_to_txt_properties(&node);
+        let decoded = node_from_txt_lookup(lookup_from(&props)).expect("decode");
+
+        assert_eq!(decoded.rpc_build_id, Some("da296d6".to_string()));
+    }
+
+    #[test]
+    fn txt_roundtrip_without_rpc_build_id() {
+        let node = NodeResources::new("node-f", 8.0, 16.0, "7.5", None);
+        let props = node_to_txt_properties(&node);
+        let decoded = node_from_txt_lookup(lookup_from(&props)).expect("decode");
+
+        assert_eq!(decoded.rpc_build_id, None);
     }
 
     #[test]

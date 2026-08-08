@@ -154,6 +154,20 @@ pub struct NodeResources {
     /// both are indistinguishable and both correctly mean "don't route
     /// distributed inference through this node."
     pub rpc_port: Option<u16>,
+    /// Short commit-hash fingerprint of this node's local `llama.cpp` build
+    /// (see `ghost_link::native_engine::NativeEngineClient::get_llama_build_id`),
+    /// e.g. `"da296d6"`. `None` means this node either couldn't determine its
+    /// own build id or the peer that sent this frame predates this field —
+    /// both are indistinguishable, and both are treated as "unknown, can't
+    /// verify" rather than "mismatched" by `rpc_cluster::discover_rpc_peers`
+    /// (mismatched-but-unknown must not be treated the same as a confirmed
+    /// mismatch, or every not-yet-updated peer becomes unroutable overnight).
+    /// Used to refuse routing distributed inference through a peer whose
+    /// `llama.cpp` build doesn't match the local one — version-mismatched
+    /// `ggml-rpc` peers have been confirmed on real hardware to silently
+    /// corrupt output for larger models while reporting healthy status the
+    /// whole time (see `docs/BENCHMARKS.md`'s native two-machine entry).
+    pub rpc_build_id: Option<String>,
 }
 
 impl NodeResources {
@@ -172,6 +186,7 @@ impl NodeResources {
             compute_capability: compute_capability.into(),
             gpu_name,
             rpc_port: None,
+            rpc_build_id: None,
         }
     }
 
@@ -180,6 +195,12 @@ impl NodeResources {
     /// workspace's tests and CLI commands.
     pub fn with_rpc_port(mut self, port: u16) -> Self {
         self.rpc_port = Some(port);
+        self
+    }
+
+    /// Builder-style setter, same rationale as `with_rpc_port`.
+    pub fn with_rpc_build_id(mut self, build_id: impl Into<String>) -> Self {
+        self.rpc_build_id = Some(build_id.into());
         self
     }
 
@@ -195,6 +216,7 @@ impl NodeResources {
         let id_bytes = self.id.as_bytes();
         let cc_bytes = self.compute_capability.as_bytes();
         let gpu_bytes = self.gpu_name.as_ref().map(|name| name.as_bytes());
+        let build_id_bytes = self.rpc_build_id.as_ref().map(|id| id.as_bytes());
 
         if id_bytes.len() > u8::MAX as usize || cc_bytes.len() > u8::MAX as usize {
             return Err("field length exceeds u8::MAX");
@@ -202,6 +224,11 @@ impl NodeResources {
         if let Some(gpu_bytes) = gpu_bytes {
             if gpu_bytes.len() > u8::MAX as usize {
                 return Err("GPU name length exceeds u8::MAX");
+            }
+        }
+        if let Some(build_id_bytes) = build_id_bytes {
+            if build_id_bytes.len() > u8::MAX as usize {
+                return Err("rpc_build_id length exceeds u8::MAX");
             }
         }
 
@@ -214,8 +241,19 @@ impl NodeResources {
         // after this field existed, reading an older (shorter) payload from
         // a peer that predates it, just doesn't find the 2 extra bytes and
         // defaults to `None` — see `decode_payload`.
-        let payload_len =
-            11 + id_bytes.len() + cc_bytes.len() + gpu_bytes.map_or(0, |bytes| 1 + bytes.len()) + 2;
+        //
+        // Then a length-prefixed rpc_build_id string (u8 length + bytes,
+        // length 0 meaning "none"/unknown), appended *after* rpc_port for the
+        // same additive-compatibility reasoning: older decoders never read
+        // past what they know about, and this decoder defaults to `None` when
+        // an older/shorter payload doesn't have these trailing bytes at all.
+        let payload_len = 11
+            + id_bytes.len()
+            + cc_bytes.len()
+            + gpu_bytes.map_or(0, |bytes| 1 + bytes.len())
+            + 2
+            + 1
+            + build_id_bytes.map_or(0, |bytes| bytes.len());
         if payload_len > max_size {
             return Err("payload length exceeds max_size");
         }
@@ -237,6 +275,13 @@ impl NodeResources {
 
         buffer.extend_from_slice(&self.rpc_port.unwrap_or(0).to_le_bytes());
 
+        if let Some(build_id_bytes) = build_id_bytes {
+            buffer.push(build_id_bytes.len() as u8);
+            buffer.extend_from_slice(build_id_bytes);
+        } else {
+            buffer.push(0);
+        }
+
         Ok(payload_len)
     }
 
@@ -248,6 +293,7 @@ impl NodeResources {
         let id_bytes_len = self.id.len();
         let cc_bytes_len = self.compute_capability.len();
         let gpu_bytes_len = self.gpu_name.as_ref().map_or(0, |name| name.len());
+        let build_id_bytes_len = self.rpc_build_id.as_ref().map_or(0, |id| id.len());
         let est_len = 11
             + id_bytes_len
             + cc_bytes_len
@@ -256,7 +302,9 @@ impl NodeResources {
             } else {
                 0
             }
-            + 2;
+            + 2
+            + 1
+            + build_id_bytes_len;
 
         let mut payload = Vec::with_capacity(est_len);
         if self.encode_payload_into(&mut payload, max_size).is_ok() {
@@ -362,10 +410,34 @@ impl NodeResources {
                     .try_into()
                     .map_err(|_| "rpc_port parsing failed".to_string())?,
             );
+            cursor += 2;
             if port == 0 {
                 None
             } else {
                 Some(port)
+            }
+        } else {
+            None
+        };
+
+        // Trailing length-prefixed rpc_build_id field, added after rpc_port
+        // shipped — same additive-compatibility reasoning: a payload from a
+        // peer that predates this field simply won't have these bytes, which
+        // correctly decodes as "unknown build" rather than an error.
+        let rpc_build_id = if cursor < len {
+            let build_id_len = payload[cursor] as usize;
+            cursor += 1;
+            let build_id_end = cursor + build_id_len;
+            if build_id_end > len {
+                return Err("payload truncated".into());
+            }
+            if build_id_len == 0 {
+                None
+            } else {
+                let id = std::str::from_utf8(&payload[cursor..build_id_end])
+                    .map_err(|_| "invalid UTF-8 in rpc_build_id".to_string())?
+                    .to_string();
+                Some(id)
             }
         } else {
             None
@@ -378,6 +450,7 @@ impl NodeResources {
             compute_capability,
             gpu_name,
             rpc_port,
+            rpc_build_id,
         })
     }
 }
@@ -414,6 +487,12 @@ impl DiscoveryFrame {
                 return buf[..8].to_vec();
             }
         }
+        if let Some(ref build_id) = self.node.rpc_build_id {
+            if build_id.len() > u8::MAX as usize {
+                buf[4..8].copy_from_slice(&crc32(&[]).to_le_bytes());
+                return buf[..8].to_vec();
+            }
+        }
 
         // Guard against the combined fields overflowing the fixed-size stack
         // buffer: each field is individually bounded by u8::MAX above, but
@@ -427,8 +506,18 @@ impl DiscoveryFrame {
         // carried it correctly, so a UDP-discovered peer could never be
         // selected for distributed inference. See `decode_payload`, which
         // already tolerated this field being absent/present either way.
-        let payload_len =
-            11 + id_bytes.len() + cc_bytes.len() + gpu_len.map_or(0, |len| 1 + len) + 2;
+        //
+        // +1 (length prefix) + build_id bytes for rpc_build_id, appended
+        // after rpc_port for the same additive-compatibility reasoning —
+        // see `NodeResources::encode_payload_into`'s matching comment.
+        let build_id_len = self.node.rpc_build_id.as_ref().map(|id| id.len());
+        let payload_len = 11
+            + id_bytes.len()
+            + cc_bytes.len()
+            + gpu_len.map_or(0, |len| 1 + len)
+            + 2
+            + 1
+            + build_id_len.unwrap_or(0);
         if payload_len > MAX_PAYLOAD_SIZE {
             buf[4..8].copy_from_slice(&crc32(&[]).to_le_bytes());
             return buf[..8].to_vec();
@@ -468,6 +557,17 @@ impl DiscoveryFrame {
         let rpc_port_bytes = self.node.rpc_port.unwrap_or(0).to_le_bytes();
         buf[pos..pos + 2].copy_from_slice(&rpc_port_bytes);
         pos += 2;
+
+        if let Some(ref build_id) = self.node.rpc_build_id {
+            let build_id_bytes = build_id.as_bytes();
+            buf[pos] = build_id_bytes.len() as u8;
+            pos += 1;
+            buf[pos..pos + build_id_bytes.len()].copy_from_slice(build_id_bytes);
+            pos += build_id_bytes.len();
+        } else {
+            buf[pos] = 0;
+            pos += 1;
+        }
 
         let crc = crc32(&buf[8..pos]);
         buf[4..8].copy_from_slice(&crc.to_le_bytes());
@@ -603,6 +703,54 @@ mod tests {
     }
 
     #[test]
+    fn discovery_frame_encode_round_trips_rpc_build_id() {
+        // Same lesson as `discovery_frame_encode_round_trips_rpc_port` above:
+        // `DiscoveryFrame::encode()` is a hand-duplicated serializer from
+        // `NodeResources::encode_payload_into`, so a new trailing field has to
+        // be added to *both* independently or UDP discovery silently drops it
+        // while mDNS (which reuses the shared encoder) carries it correctly.
+        let frame = DiscoveryFrame {
+            kind: FrameKind::Join,
+            node: NodeResources::new("node-i", 12.0, 32.0, "8.6", None)
+                .with_rpc_build_id("da296d6"),
+        };
+
+        let encoded = frame.encode();
+        let decoded = DiscoveryFrame::decode(&encoded).unwrap();
+
+        assert_eq!(decoded.node.rpc_build_id, Some("da296d6".to_string()));
+    }
+
+    #[test]
+    fn discovery_frame_encode_without_rpc_build_id_decodes_to_none() {
+        let frame = DiscoveryFrame {
+            kind: FrameKind::Join,
+            node: NodeResources::new("node-j", 8.0, 16.0, "7.5", None),
+        };
+
+        let encoded = frame.encode();
+        let decoded = DiscoveryFrame::decode(&encoded).unwrap();
+
+        assert_eq!(decoded.node.rpc_build_id, None);
+    }
+
+    #[test]
+    fn discovery_frame_encode_round_trips_rpc_port_and_rpc_build_id_together() {
+        let frame = DiscoveryFrame {
+            kind: FrameKind::Join,
+            node: NodeResources::new("node-k", 12.0, 32.0, "8.6", None)
+                .with_rpc_port(50052)
+                .with_rpc_build_id("e920c523e"),
+        };
+
+        let encoded = frame.encode();
+        let decoded = DiscoveryFrame::decode(&encoded).unwrap();
+
+        assert_eq!(decoded.node.rpc_port, Some(50052));
+        assert_eq!(decoded.node.rpc_build_id, Some("e920c523e".to_string()));
+    }
+
+    #[test]
     fn crc_verification_fails_on_modified_payload() {
         let frame = DiscoveryFrame {
             kind: FrameKind::Discovery,
@@ -636,12 +784,12 @@ mod tests {
         let node = NodeResources::new("a", 1.0, 1.0, "b", Some("c".to_string()));
         let mut buffer = Vec::new();
         // Actual encoded length: id_len(1)+id(1)+vram(4)+mem(4)+cc_len(1)+cc(1)
-        // +has_gpu(1)+gpu_len(1)+gpu(1)+rpc_port(2) = 17 bytes.
+        // +has_gpu(1)+gpu_len(1)+gpu(1)+rpc_port(2)+rpc_build_id_len(1) = 18 bytes.
         let written = node
-            .encode_payload_into(&mut buffer, 17)
-            .expect("payload of exactly 17 bytes must fit within max_size 17");
-        assert_eq!(written, 17);
-        assert_eq!(buffer.len(), 17);
+            .encode_payload_into(&mut buffer, 18)
+            .expect("payload of exactly 18 bytes must fit within max_size 18");
+        assert_eq!(written, 18);
+        assert_eq!(buffer.len(), 18);
     }
 
     #[test]
@@ -684,6 +832,65 @@ mod tests {
         encoded.truncate(encoded.len() - 2);
         let decoded = NodeResources::decode_payload(&encoded).expect("decode");
         assert_eq!(decoded.rpc_port, None);
+    }
+
+    #[test]
+    fn node_resources_round_trip_preserves_rpc_build_id() {
+        let node =
+            NodeResources::new("node-i", 12.0, 32.0, "8.6", None).with_rpc_build_id("da296d6");
+        let encoded = node.encode_payload(64);
+        let decoded = NodeResources::decode_payload(&encoded).expect("decode");
+        assert_eq!(decoded.rpc_build_id, Some("da296d6".to_string()));
+    }
+
+    #[test]
+    fn node_resources_round_trip_without_rpc_build_id_is_none() {
+        let node = NodeResources::new("node-j", 8.0, 16.0, "7.5", None);
+        let encoded = node.encode_payload(64);
+        let decoded = NodeResources::decode_payload(&encoded).expect("decode");
+        assert_eq!(decoded.rpc_build_id, None);
+    }
+
+    #[test]
+    fn node_resources_round_trip_with_gpu_name_rpc_port_and_rpc_build_id_together() {
+        // Regression test mirroring
+        // `node_resources_round_trip_with_gpu_name_and_rpc_port_together`:
+        // rpc_build_id is read *after* rpc_port, so both trailing fields must
+        // survive a payload that also has a GPU name in the middle.
+        let node = NodeResources::new("node-k", 24.0, 64.0, "8.9", Some("RTX 4090".to_string()))
+            .with_rpc_port(50053)
+            .with_rpc_build_id("e920c523e");
+        let encoded = node.encode_payload(128);
+        let decoded = NodeResources::decode_payload(&encoded).expect("decode");
+        assert_eq!(decoded.gpu_name, Some("RTX 4090".to_string()));
+        assert_eq!(decoded.rpc_port, Some(50053));
+        assert_eq!(decoded.rpc_build_id, Some("e920c523e".to_string()));
+    }
+
+    #[test]
+    fn decode_payload_from_before_rpc_build_id_existed_defaults_to_none() {
+        // Simulates a frame from a peer build that has rpc_port but predates
+        // rpc_build_id: same format, just without the trailing length-prefix
+        // byte (and any build-id bytes).
+        let node = NodeResources::new("node-l", 8.0, 16.0, "7.5", None).with_rpc_port(50054);
+        let mut encoded = node.encode_payload(64);
+        assert!(!encoded.is_empty());
+        encoded.truncate(encoded.len() - 1);
+        let decoded = NodeResources::decode_payload(&encoded).expect("decode");
+        assert_eq!(decoded.rpc_port, Some(50054));
+        assert_eq!(decoded.rpc_build_id, None);
+    }
+
+    #[test]
+    fn decode_payload_truncated_mid_rpc_build_id_string_is_an_error() {
+        // A length prefix claiming more build-id bytes than are actually
+        // present should error, not panic or silently truncate.
+        let node =
+            NodeResources::new("node-m", 8.0, 16.0, "7.5", None).with_rpc_build_id("da296d6");
+        let mut encoded = node.encode_payload(64);
+        encoded.truncate(encoded.len() - 2); // drop the last 2 bytes of the hash
+        let result = NodeResources::decode_payload(&encoded);
+        assert!(result.is_err());
     }
 
     #[test]
