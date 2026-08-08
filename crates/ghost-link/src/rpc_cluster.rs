@@ -104,13 +104,53 @@ pub fn ensure_contributing(bind_host: &str, port: u16) {
          the same assumption UDP/mDNS discovery already makes."
     );
 
+    // ggml-rpc-server's own stdout/stderr (connection/tensor-transfer activity
+    // logged by upstream llama.cpp) is discarded by default — matches every
+    // other best-effort child process in this codebase. Opt-in redirection to
+    // a file via GHOSTLINK_RPC_SERVER_LOG exists specifically so its activity
+    // can be inspected/proven from outside the process (e.g. in a container
+    // where the contributor's own log is the only evidence a peer actually
+    // reached it), without changing default behavior for anyone who hasn't
+    // set it.
+    let log_file = std::env::var("GHOSTLINK_RPC_SERVER_LOG")
+        .ok()
+        .filter(|p| !p.trim().is_empty())
+        .and_then(|path| {
+            std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)
+                .map_err(|err| {
+                    tracing::warn!(
+                        "rpc_cluster: failed to open GHOSTLINK_RPC_SERVER_LOG at '{path}': {err}. \
+                         Falling back to discarding ggml-rpc-server output."
+                    );
+                    err
+                })
+                .ok()
+        });
+
+    // try_clone() only fails on rare OS-level fd duplication errors; on
+    // failure that stream just falls back to null rather than aborting this
+    // best-effort startup path.
+    let stdout_cfg = log_file
+        .as_ref()
+        .and_then(|f| f.try_clone().ok())
+        .map(Stdio::from)
+        .unwrap_or_else(Stdio::null);
+    let stderr_cfg = log_file
+        .as_ref()
+        .and_then(|f| f.try_clone().ok())
+        .map(Stdio::from)
+        .unwrap_or_else(Stdio::null);
+
     match Command::new(&bin)
         .arg("-H")
         .arg(bind_host)
         .arg("-p")
         .arg(port.to_string())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stdout(stdout_cfg)
+        .stderr(stderr_cfg)
         .stdin(Stdio::null())
         .spawn()
     {

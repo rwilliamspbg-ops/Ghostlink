@@ -1,0 +1,89 @@
+# Docker image for the real distributed-inference RPC fabric test
+# (docker-compose.rpc-fabric.yml). Builds three things:
+#
+#   1. ghost-link / ghostlink-core (same as Dockerfile.ghostlink)
+#   2. llama.cpp's llama-server, built with -DGGML_RPC=ON
+#   3. llama.cpp's ggml-rpc-server (the RPC contributor binary), which only
+#      exists as a build target when GGML_RPC=ON
+#
+# This is a NEW file rather than a modification of Dockerfile.ghostlink,
+# which intentionally stays a plain `cargo build` image.
+
+# ---- Stage 1: Rust build (ghost-link + ghostlink-core) --------------------
+FROM rust:1.88-bookworm AS rust-builder
+WORKDIR /build
+COPY Cargo.toml Cargo.lock ./
+COPY crates ./crates
+RUN cargo build --release -p ghost-link -p ghostlink-core
+
+# ---- Stage 2: llama.cpp build, GGML_RPC=ON ---------------------------------
+FROM debian:bookworm AS llama-builder
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential cmake git ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /src
+# Shallow clone: this test fabric only needs current upstream master, not
+# full history. Matches scripts/run_native_llama_server_stack.sh's source.
+RUN git clone --depth 1 https://github.com/ggml-org/llama.cpp.git llama.cpp
+
+# -DGGML_RPC=ON is the flag scripts/run_native_llama_server_stack.sh's cmake
+# recipe does NOT pass (that script builds only llama-server for single-node
+# use). It also produces a second target, `ggml-rpc-server`
+# (third_party/llama.cpp/tools/rpc/CMakeLists.txt: `set(TARGET
+# ggml-rpc-server)`), which is what crates/ghost-link/src/rpc_cluster.rs's
+# get_rpc_server_bin() resolves by default.
+# -DGGML_NATIVE=OFF avoids baking in -march=native, which would tie the
+# resulting binary to this exact build machine's CPU.
+RUN cmake -S llama.cpp -B llama.cpp/build \
+      -DCMAKE_BUILD_TYPE=Release \
+      -DGGML_RPC=ON \
+      -DGGML_NATIVE=OFF \
+      -DLLAMA_BUILD_TESTS=OFF \
+      -DLLAMA_BUILD_EXAMPLES=OFF \
+    && cmake --build llama.cpp/build -j"$(nproc)" --target llama-server ggml-rpc-server
+
+# ---- Stage 3: runtime -------------------------------------------------------
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates curl libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+RUN mkdir -p /app/bin /app/models
+
+COPY --from=rust-builder /build/target/release/ghost-link /app/bin/ghost-link
+# llama-server, ggml-rpc-server, and every ggml/llama shared lib CMake placed
+# alongside them (CMAKE_RUNTIME_OUTPUT_DIRECTORY == CMAKE_LIBRARY_OUTPUT_DIRECTORY
+# == build/bin for this project, see third_party/llama.cpp/CMakeLists.txt).
+COPY --from=llama-builder /src/llama.cpp/build/bin/ /app/bin/
+
+# Tiny, fast CPU-runnable GGUF model already used elsewhere in this repo
+# (scripts/run_native_llama_server_stack.sh) — keeps the build/test cycle
+# fast instead of reaching for a full-size model.
+RUN curl -L --fail -o /app/models/stories15M-q4_0.gguf \
+    https://huggingface.co/ggml-org/models/resolve/main/tinyllamas/stories15M-q4_0.gguf
+
+COPY scripts/rpc_fabric_entrypoint.sh /app/entrypoint.sh
+RUN chmod +x /app/entrypoint.sh /app/bin/ghost-link /app/bin/llama-server /app/bin/ggml-rpc-server
+
+ENV PATH="/app/bin:${PATH}"
+# The build-tree RPATH baked into llama-server/ggml-rpc-server points at the
+# llama-builder stage's absolute path, which doesn't exist in this image —
+# LD_LIBRARY_PATH is the fallback ld.so consults once RPATH resolution misses.
+ENV LD_LIBRARY_PATH="/app/bin"
+
+# GHOSTLINK_RPC_SERVER_BIN / GHOSTLINK_LLAMA_SERVER_BIN: explicit env-var
+# overrides are the first entry in both binaries' resolution order (see
+# rpc_cluster.rs::get_rpc_server_bin and native_engine.rs::get_llama_server_bin)
+# — set directly rather than relying on the relative-path fallback search.
+ENV GHOSTLINK_RPC_SERVER_BIN="/app/bin/ggml-rpc-server"
+ENV GHOSTLINK_LLAMA_SERVER_BIN="/app/bin/llama-server"
+ENV GHOSTLINK_MODEL_PATH="/app/models/stories15M-q4_0.gguf"
+ENV GHOSTLINK_MODELS_DIR="/app/models"
+ENV GHOSTLINK_SETTINGS_PATH="/app/settings.json"
+ENV GHOSTLINK_MODELS_PATH="/app/models.json"
+
+EXPOSE 8003 50052 45885/udp
+
+ENTRYPOINT ["/app/entrypoint.sh"]

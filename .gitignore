@@ -62,6 +62,12 @@ opencode.json
 launch-fast.sh
 models/*.gguf
 models/
+# Downloaded by scripts/rpc_fabric_benchmark.py's own instructions / manual
+# curl (see docs/BENCHMARKS.md's 2026-08-08 Multi-Node Performance entry) —
+# same reasoning as models/*.gguf above, just a different directory name
+# since docker-compose.rpc-fabric-benchmark.yml bind-mounts it in without
+# touching the CI-gate's Dockerfile.rpc-fabric image.
+models-bench/*.gguf
 models.json
 sessions.json
 # Generated on first run — a real per-install secret / self-signed cert,

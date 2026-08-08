@@ -1,0 +1,117 @@
+# Benchmark variant of docker-compose.rpc-fabric.yml — same two-container
+# ggml-rpc fabric (contributor + coordinator), same Dockerfile.rpc-fabric
+# image, but:
+#
+#   - mounts a real, larger GGUF model (models-bench/, downloaded by
+#     scripts/rpc_fabric_benchmark.py or manually — see docs/BENCHMARKS.md's
+#     2026-08-08 Multi-Node Performance entry for the exact source URL) into
+#     /app/models on the coordinator, alongside the tiny stories15M model
+#     already baked into the image.
+#   - separate container names, network subnet (172.31.0.0/24), and host
+#     port (8020) from docker-compose.rpc-fabric.yml, so this can run
+#     alongside (or without disturbing) the CI correctness gate
+#     (.github/workflows/distributed-e2e.yml), which must keep using the
+#     original compose file unmodified.
+#   - larger cpu/mem limits, sized for a ~1GB real model instead of the
+#     19MB smoke-test model (still well inside this machine's Docker
+#     Desktop VM allocation — see docs/BENCHMARKS.md for the measured
+#     `docker info` numbers).
+#
+# This file is NOT part of any CI gate — it's a manual benchmarking tool,
+# driven by scripts/rpc_fabric_benchmark.py.
+
+services:
+  rpc-bench-contributor:
+    build:
+      context: .
+      dockerfile: Dockerfile.rpc-fabric
+    container_name: ghostlink-rpc-bench-contributor
+    hostname: rpc-bench-contributor
+    networks:
+      ghostlink-rpc-fabric-bench:
+        ipv4_address: 172.31.0.11
+    environment:
+      GHOSTLINK_NODE_ID: "rpc-bench-contributor"
+      GHOSTLINK_API_HOST: "0.0.0.0"
+      GHOSTLINK_API_PORT: "8003"
+      GHOSTLINK_CONTRIBUTE_COMPUTE: "true"
+      GHOSTLINK_DISTRIBUTED_INFERENCE: "false"
+      GHOSTLINK_RPC_PORT: "50052"
+      GHOSTLINK_DISCOVERY_BROADCAST: "255.255.255.255:45885"
+      GHOSTLINK_RPC_SERVER_LOG: "/tmp/ggml-rpc-server.log"
+      GHOSTLINK_API_KEY: "ghostlink-rpc-fabric-bench-test-key-0123456789abcdef0123456789ab"
+      RUST_LOG: "info,ghost_link=debug"
+    expose:
+      - "50052"
+      - "8003"
+    healthcheck:
+      test: ["CMD", "curl", "-fk", "https://localhost:8003/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+    # Contributor's ggml-rpc-server has to hold whatever fraction of the
+    # model's tensors the coordinator's -ts split assigns it, in its own
+    # process memory (uploaded once at load time) — not just a thin proxy,
+    # so it gets the same real headroom as the coordinator.
+    cpus: '4'
+    mem_limit: 3g
+
+  rpc-bench-coordinator:
+    build:
+      context: .
+      dockerfile: Dockerfile.rpc-fabric
+    container_name: ghostlink-rpc-bench-coordinator
+    hostname: rpc-bench-coordinator
+    networks:
+      ghostlink-rpc-fabric-bench:
+        ipv4_address: 172.31.0.12
+    environment:
+      GHOSTLINK_NODE_ID: "rpc-bench-coordinator"
+      GHOSTLINK_API_HOST: "0.0.0.0"
+      GHOSTLINK_API_PORT: "8003"
+      GHOSTLINK_CONTRIBUTE_COMPUTE: "false"
+      # Left false here; scripts/rpc_fabric_benchmark.py PATCHes this live
+      # via /api/settings for the single-node phase, then flips it true for
+      # the distributed phase — same live-toggle-then-reload path
+      # scripts/rpc_fabric_assert.py already exercises.
+      GHOSTLINK_DISTRIBUTED_INFERENCE: "false"
+      GHOSTLINK_RPC_PORT: "50052"
+      GHOSTLINK_DISCOVERY_BROADCAST: "255.255.255.255:45885"
+      GHOSTLINK_API_KEY: "ghostlink-rpc-fabric-bench-test-key-0123456789abcdef0123456789ab"
+      # Defaults to the same "0" scripts/rpc_fabric_entrypoint.sh itself
+      # falls back to for CPU-only containers (`${GHOSTLINK_LLAMA_NGL:-0}`)
+      # — matches docker-compose.rpc-fabric.yml's (the CI gate's) real
+      # behavior. docs/BENCHMARKS.md's 2026-08-08 entry found this makes
+      # --rpc/-ts real-but-functionally-inert for compute placement: real
+      # RPC connections happen, but 0 layers get assigned to the remote
+      # device, so memory/throughput are indistinguishable from single-node.
+      # Reproduce that entry's control experiment (real layer offload) with:
+      #   GHOSTLINK_BENCH_NGL=-1 docker compose -f docker-compose.rpc-fabric-benchmark.yml up -d rpc-bench-coordinator
+      GHOSTLINK_LLAMA_NGL: "${GHOSTLINK_BENCH_NGL:-0}"
+      RUST_LOG: "info,ghost_link=debug"
+    depends_on:
+      rpc-bench-contributor:
+        condition: service_healthy
+    ports:
+      - "8020:8003"
+    volumes:
+      # Single-file bind mount into the image's existing /app/models dir —
+      # doesn't hide stories15M-q4_0.gguf (that's still baked in at the same
+      # path by Dockerfile.rpc-fabric), just adds this one alongside it.
+      - ./models-bench/qwen2.5-1.5b-instruct-q4_k_m.gguf:/app/models/qwen2.5-1.5b-instruct-q4_k_m.gguf:ro
+    healthcheck:
+      test: ["CMD", "curl", "-fk", "https://localhost:8003/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+    cpus: '4'
+    mem_limit: 3g
+
+networks:
+  ghostlink-rpc-fabric-bench:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.31.0.0/24

@@ -355,13 +355,533 @@ signal is `remote_bridge_write_ms`: a genuine ~10-16ms round-trip write
 cost to a physically separate machine over Wi-Fi, in the same range as raw
 ICMP RTT to that host.
 
+### Real ggml-rpc distributed-inference run — 2026-08-08 (Docker fabric, CPU-only, single host)
+
+The 2026-08-03 entry above is explicit that it exercises the *synthetic*
+`stage-worker`/`flow` pipeline harness (fake `f32` payloads, a timing proxy
+for per-stage compute), not Ghostlink's real distributed-inference feature.
+This entry supersedes/complements it by exercising the actual production
+code path: llama.cpp's own `ggml-rpc` backend
+(`crates/ghost-link/src/rpc_cluster.rs`), via `docker-compose.rpc-fabric.yml`
+(a contributor container + a coordinator container on an isolated Docker
+bridge network) and its CI correctness gate,
+`.github/workflows/distributed-e2e.yml` /
+`scripts/rpc_fabric_assert.py` — the same evidence bar that gate uses
+(`real_inference: true` in the chat response, plus fresh "Accepted client
+connection" lines in the contributor's own `ggml-rpc-server` log) is what
+every run below is checked against, not just a settings flag.
+
+**Important framing**: both "nodes" here are containers on **one physical
+host**, not genuinely separate machines like the 2026-08-03 LAN entry above
+(real `stage-worker` on a second machine, real NIC hop). This entry can
+prove the real cross-process ggml-rpc code path works and measure its real
+local resource cost — it cannot show a real network-bandwidth or
+genuinely-separate-hardware benefit, and the results below should not be
+read as such.
+
+#### Hardware / resource limits
+
+| | |
+|---|---|
+| Host OS | Windows 11 (build 10.0.26200) |
+| Docker Desktop VM | 16 CPUs, 13.46 GiB RAM (`docker info --format 'NCPU={{.NCPU}} MemTotal={{.MemTotal}}'` → `NCPU=16 MemTotal=14451666944`), Linux 6.6.87.2-microsoft-standard-WSL2, Docker 29.6.2 |
+| GPU | None passed through — CPU-only for both containers, `-ngl` forced per below |
+| `rpc-bench-contributor` limit | `cpus: '4'`, `mem_limit: 3g` |
+| `rpc-bench-coordinator` limit | `cpus: '4'`, `mem_limit: 3g` |
+
+(Larger than the CI gate's `2 cpus`/`2g` per container — this benchmark's
+model is ~59x the CI gate's 19MB smoke-test model, and needed real headroom
+to run repeated timed trials rather than a single pass/fail check.)
+
+#### Model
+
+`Qwen2.5-1.5B-Instruct-Q4_K_M.gguf`, downloaded directly from Qwen's own
+official GGUF repo on Hugging Face (public, unauthenticated,
+`https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf`
+— same plain-HTTPS-GGUF-URL convention `Dockerfile.rpc-fabric` already uses
+for `stories15M-q4_0.gguf`). 1.5B parameters, Q4_K_M quantization, real
+downloaded file size **1,117,320,736 bytes (1.04 GiB)**,
+sha256 `6a1a2eb6d15622bf3c96857206351ba97e1af16c30d7a74ee38970e434e9407e`.
+Chosen as a real step up from the trivial 19MB stories15M smoke-test model
+(which proves connectivity, not realistic throughput or memory behavior)
+while still being CPU-feasible for several timed trials on this hardware in
+a reasonable amount of time.
+
+#### Methodology
+
+New `scripts/rpc_fabric_benchmark.py` and `docker-compose.rpc-fabric-benchmark.yml`
+(the latter is a **separate** compose file — `docker-compose.rpc-fabric.yml`
+itself, the CI gate, is untouched). The benchmark model is bind-mounted
+into the existing image's `/app/models` directory rather than baked into
+`Dockerfile.rpc-fabric`, so the CI-gate image build is unaffected.
+
+For each of the two phases below, the script: PATCHes `distributed_inference`
+live via `/api/settings`, then calls `/api/models/load` — which always
+fully restarts `llama-server` (`native_engine.rs::load_model_into_slot`'s
+own doc comment: "restarting it with the new model... doesn't support
+runtime hot-swapping"), so the restart genuinely picks up the new
+`--rpc`/`-ts` flags — then runs **5** real chat completions
+(`POST /api/inference/chat`, which — unlike `/v1/chat/completions` — reports
+real per-call `tokens_generated` and server-measured `throughput`/`latency_ms`)
+against a fixed prompt, `max_tokens=128`. Every distributed-phase run is
+checked for `real_inference: true` *and* a nonzero increase in the
+contributor's `ggml-rpc-server` "Accepted client connection" log count
+since the phase started — a passing response alone doesn't prove real
+distributed work happened, same standard `rpc_fabric_assert.py` holds
+itself to. Memory is read directly from each container's cgroup
+(`/sys/fs/cgroup/memory.current` + `memory.stat`'s `anon`/`file` split),
+not `docker stats`' derived/cache-inclusive number — the anon/file
+distinction turned out to be the load-bearing one (see below).
+
+#### Result 1 — as-shipped default (`-ngl 0`, the same CPU-safety default `scripts/rpc_fabric_entrypoint.sh` forces for every container in this fabric, including the CI gate)
+
+| Mode | Runs | Throughput (avg) | Throughput (min-max) | Latency (avg) | Coordinator mem post-load | Coordinator anon/file split |
+|---|---|---|---|---|---|---|
+| single-node (`distributed_inference: false`) | 5 | 32.70 tok/s | 32.48-32.96 tok/s | 3754.2 ms | 1,940,283,392 B (1.807 GiB) | anon 811,155,456 B (773.5 MiB) / file 1,118,490,624 B (1.042 GiB) |
+| distributed (`distributed_inference: true`) | 5 | 32.53 tok/s | 32.40-32.70 tok/s | 3776.3 ms | 1,940,000,768 B (1.807 GiB) | anon 811,634,688 B (774.0 MiB) / file 1,118,543,872 B (1.042 GiB) |
+
+Throughput and memory are statistically indistinguishable between the two
+modes (0.5% throughput delta, well inside the ~0.1-0.2 tok/s run-to-run
+stdev measured within each mode). **But the distributed run is not a
+no-op**: the contributor's `ggml-rpc-server` log genuinely gained **462**
+new "Accepted client connection" lines over the 5 runs (0 in single-node,
+where `distributed_inference` was off) — real RPC traffic occurred. The
+explanation, found by reading `native_engine.rs::build_cmd`'s actual
+launched command line
+(`... -ngl 0 ... --rpc 172.31.0.11:50052 -ts 0.1000,0.1000`): with `-ngl 0`,
+llama.cpp assigns **zero** transformer layers to any non-CPU-primary
+backend device — GPU or RPC alike — so `--rpc`/`-ts` are real flags
+producing a real (but layer-empty) connection, not real tensor placement.
+`-ngl 0` is what `scripts/rpc_fabric_entrypoint.sh` forces by default for
+every container in this fabric (`export GHOSTLINK_LLAMA_NGL="${GHOSTLINK_LLAMA_NGL:-0}"`,
+a deliberate CPU-only safety default, not a bug) — meaning **the CI gate's
+own default configuration exercises the RPC wire protocol for real, but
+not real cross-process layer compute.**
+
+#### Result 2 — control experiment: real layer offload (`GHOSTLINK_BENCH_NGL=-1`)
+
+To confirm that diagnosis rather than assume it, the coordinator was
+recreated with `-ngl -1` (`native_engine.rs::get_ngl`'s own "auto/offload
+all" fallback) and 2 more real distributed runs collected
+(`max_tokens=96`; 2 runs rather than 5 — this was a confirmatory control,
+not the primary comparison, so it gets less statistical weight):
+
+| | as-shipped (`-ngl 0`, distributed) | control (`-ngl -1`, distributed) |
+|---|---|---|
+| Coordinator mem post-load | 1,940,000,768 B (1.807 GiB) | **1,195,409,408 B (1.113 GiB)** |
+| Coordinator anon (real committed memory) | 811,634,688 B (774.0 MiB) | **70,815,744 B (67.5 MiB)** |
+| Coordinator file (mmap'd GGUF, reclaimable cache) | 1,118,543,872 B (1.042 GiB) | 1,117,343,744 B (1.040 GiB) |
+| Contributor mem post-load | 7,139,328 B (6.8 MiB) | **1,129,553,920 B (1.052 GiB)** |
+| Contributor anon | 3,457,024 B (3.3 MiB) | **1,123,610,624 B (1.046 GiB)** |
+| New contributor RPC connections | +462 over 5 runs (~92/run) | +1084 over 2 runs (~542/run) |
+| Throughput (avg) | 32.53 tok/s | **17.01 tok/s** (16.86-17.17, 2 runs) |
+| Latency (avg) | 3776.3 ms | 5047.8 ms |
+
+This is the real answer to "does ggml-rpc's tensor split reduce the
+coordinator's own local memory footprint": **yes, on the metric that
+actually matters for avoiding an OOM — real anonymous (committed) memory —
+when layer offload is genuinely enabled.** The coordinator's anon memory
+dropped **~741 MB** (811.6 → 70.8 MiB) while the contributor's anon memory
+grew by almost exactly that much (3.3 → 1046 MiB), consistent with roughly
+half the model's real working weight buffers moving to the remote side
+under the `-ts 0.1000,0.1000` split (both nodes report equal declared VRAM
+— 0.0 GB, CPU-only — so `rpc_cluster::compute_tensor_split` floors both to
+an even split).
+
+**But it is not a proportional total-memory reduction**, and this is the
+honest, load-bearing caveat: the coordinator's `file` (mmap'd GGUF page
+cache) stayed at ~1.04 GiB — essentially the entire model file — in
+**both** configurations, single-node or distributed, `-ngl 0` or `-ngl -1`.
+`native_engine.rs::build_cmd` always passes `-m <full local model path>`
+and never passes `--no-mmap`; llama.cpp mmaps the whole GGUF locally
+regardless of how much of it actually executes remotely. Those mmap'd
+pages are reclaimable clean file-backed cache (the kernel can drop and
+re-read them under real memory pressure, unlike the anon pages above), but
+they still count toward `memory.current` and toward what a cgroup
+`mem_limit` would eventually reclaim-under-pressure or OOM-kill over,
+depending on how tight the limit is and how the reclaim path behaves —
+this was not stress-tested at a limit tight enough to force that decision
+(both configurations ran comfortably inside the 3g `mem_limit`, nowhere
+near triggering reclaim or OOM), so this document does **not** claim to
+have shown a "model too large for one node alone, only fits when split"
+capacity unlock. The honest, measured claim is narrower and still real:
+tensor-split genuinely redistributes committed working memory when layer
+offload is actually enabled, but the coordinator's local address space
+still has to mmap the full file either way.
+
+**And real distributed compute has a real cost here, not a benefit**:
+throughput dropped ~48% (32.53 → 17.01 tok/s) once compute was genuinely
+split across the RPC link. This is expected, not a regression to chase —
+both "nodes" are containers time-sharing **one physical host's CPU cores**
+with no additional hardware added by distributing, so every real
+cross-process tensor op pays real IPC/RPC round-trip and serialization
+overhead (~542 accepted connections per single 96-token generation call,
+vs. ~92/call when the split was compute-inert) for zero added compute
+capacity. This matches the same-host-no-real-benefit caveat the
+2026-08-03 LAN section above states from the transport side; here it's
+measured from the compute-distribution side instead.
+
+#### Caveats
+
+- CPU-only throughout — no GPU passthrough in this Docker setup. Not a
+  GPU-cluster performance claim.
+- Both containers ran on one physical host (Docker Desktop VM), not two
+  genuinely separate machines — unlike the 2026-08-03 LAN entry, this
+  cannot and does not measure real network bandwidth/latency between
+  separate hardware.
+- `tokens_estimated` (prompt-side count) is a word-count estimate
+  (`req.message.split_whitespace().count()`in `handle_gui_chat`), not an
+  exact tokenizer count — not relied on for the throughput numbers above,
+  which use the server's real `tokens_generated`/measured-latency
+  `throughput`.
+- The first run in each 5-run series generated fewer tokens (98 and 106 of
+  a requested 128) than the rest — the model hit a natural stop condition
+  early on that particular generation; throughput (tokens ÷ latency)
+  already accounts for this, but it's why per-run token counts in the raw
+  JSON aren't all identical.
+- The `-ngl -1` control used 2 runs, not 5, and a shorter `max_tokens` (96
+  vs. 128) — a real, deliberate, disclosed asymmetry with the primary
+  table above, not an oversight; it was a confirmatory experiment run
+  after the primary comparison, not the main result.
+- Only one model size/quantization was tested. Whether the anon-memory
+  split holds proportionally for larger models, or whether a genuine
+  OOM-vs-succeeds capacity unlock is reachable at a large-enough model /
+  tight-enough `mem_limit` combination, is real open follow-up work, not
+  something this entry measured.
+
+#### Reproduce this section
+
+```bash
+# One-time: download the benchmark model (public, unauthenticated HF repo)
+curl -L --fail -o models-bench/qwen2.5-1.5b-instruct-q4_k_m.gguf \
+  https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf
+
+docker compose -f docker-compose.rpc-fabric-benchmark.yml up -d --build --wait --wait-timeout 300
+python3 scripts/rpc_fabric_benchmark.py --runs 5 --max-tokens 128
+
+# Control experiment: real layer offload instead of the CPU-safe -ngl 0 default
+GHOSTLINK_BENCH_NGL=-1 docker compose -f docker-compose.rpc-fabric-benchmark.yml up -d rpc-bench-coordinator --wait
+python3 scripts/rpc_fabric_benchmark.py --skip-single-node --runs 2 --max-tokens 96 \
+  --output-dir tmp/rpc_fabric_benchmark_ngl_control
+
+docker compose -f docker-compose.rpc-fabric-benchmark.yml down -v
+```
+
+Raw per-run output: `tmp/rpc_fabric_benchmark/` (`summary.json` +
+`single-node-N.json`/`distributed-N.json`) and
+`tmp/rpc_fabric_benchmark_ngl_control/` — not committed (`tmp/` is
+gitignored), same convention as the 2026-08-03 LAN entry's raw output
+above.
+
+### Real ggml-rpc distributed-inference run — 2026-08-08 (native processes, two genuinely separate physical machines)
+
+The entry above proved the real `ggml-rpc` mechanism works but explicitly
+could not measure a genuine separate-hardware benefit, because both
+"nodes" were containers sharing one physical host's CPU. This entry closes
+that gap — real `ghost-link serve` processes (no Docker) on two actually
+separate machines on the same residential LAN — and in the process found
+four real, distinct bugs that the single-host Docker test structurally
+could not have surfaced. This is the most important entry in this
+document: it's the first genuinely separate-hardware run of the real
+(non-synthetic) distributed-inference path, and it found real correctness
+and resilience problems, not just a throughput number.
+
+**Hardware — two genuinely separate machines on the same residential LAN:**
+
+| | Coordinator (`10.0.0.87`) | Contributor "Iprada" (`10.0.0.29`) |
+|---|---|---|
+| OS | Windows 11 | Linux |
+| GPU / compute exposed to RPC | AMD Radeon(TM) 860M (integrated), Vulkan, 4.0 GB VRAM | Intel(R) N97 CPU only (15.2 GiB free) — the machine also has an Alder Lake-N iGPU, but only its CPU was exposed as an RPC device in this test |
+| Declared VRAM (drives tensor-split ratio) | 3.999 GB | 0.0 GB (floored to 0.1 GB by `compute_tensor_split`) |
+| Role | `distributed_inference: true` | `contribute_compute: true`, `rpc_port: 50052` |
+
+ICMP round-trip measured 8-14ms, consistent with the 2026-08-03 LAN
+entry's separate hardware pair (10-16ms) — a genuine second real-network
+data point, not a coincidence to read too much into with N=1 pairs.
+
+Both processes ran natively (`cargo build --release`, llama.cpp built with
+`-DGGML_RPC=ON` via the same cmake recipe as `Dockerfile.rpc-fabric`),
+deliberately avoiding Docker Desktop's Windows/WSL2 networking layer for
+this test — real UDP broadcast discovery (`GET /api/workers/discover` →
+`count: 2`) confirmed this works cleanly between genuinely separate
+physical machines with no manual IP configuration beyond the standard
+LAN.
+
+#### Result 1 — 1.5B model (`Qwen2.5-1.5B-Instruct-Q4_K_M`, the same file as the Docker entry above): real, small, honest cost
+
+`--rpc 10.0.0.29:50052 -ts 3.9990,0.1000` — built entirely by Ghostlink
+itself from live discovery, no manual flags. 5 runs each, `POST
+/api/inference/chat`, same prompt/`max_tokens=128` methodology as the
+Docker entry:
+
+| Mode | Runs | Throughput (avg) | Throughput (min-max) | Stdev |
+|---|---|---|---|---|
+| single-node | 5 | 55.11 tok/s | 54.27-56.23 tok/s | 0.70 |
+| distributed | 5 | 53.57 tok/s | 53.32-53.95 tok/s | 0.25 |
+
+A real ~2.8% cost — far smaller than the Docker same-host entry's 48%
+penalty, because real separate hardware means the coordinator isn't
+time-sharing its CPU with the remote side. But it's a cost, not a benefit,
+for a structural reason: `compute_tensor_split` is purely
+VRAM-proportional (`local_vram_gb.max(0.1)` per node — see
+`rpc_cluster.rs`), and Iprada declares `0.0 GB` VRAM (its iGPU wasn't
+exposed as an RPC device, only its CPU, which the split formula has no way
+to value in GB terms). That floors Iprada to a token ~2.4% share
+regardless of how much real, usable CPU/RAM capacity it actually has —
+real "old laptop with plenty of system RAM, no dedicated VRAM" hardware,
+exactly the profile the product pitch is built around, and the current
+split heuristic can't make meaningful use of it. **Worth carrying into any
+automatic-sharding work**: a VRAM-only split heuristic systematically
+under-uses non-GPU compute contributors.
+
+#### Bug 1 — quantized KV cache crashes the remote RPC-CPU backend (found, and already silently handled)
+
+The very first model load on this pairing crashed on both sides at once:
+the coordinator's own log recorded `llama-server exited before becoming
+ready (status: exit code: 0xc0000409)`, and Iprada's `ggml-rpc-server` log
+(via the opt-in `GHOSTLINK_RPC_SERVER_LOG`, same mechanism the CI gate
+uses) captured the other half of the same failure — a real GDB backtrace
+ending in `ggml_get_n_tasks: op not implemented: 100` inside
+`rpc_server::graph_compute`. Root cause: `-ctk q8_0 -ctv q8_0` (quantized
+KV cache, `native_engine.rs`'s default for declared-VRAM-under-4GB tiers)
+uses a ggml op the RPC/CPU backend combination doesn't implement.
+`native_engine.rs` already has a real, working fallback — retry without
+quantized KV cache — which is why every chat completion in Result 1 above
+still succeeded; the crash and recovery happened silently during the very
+first load and wasn't visible without reading the raw log.
+
+**A second, separate bug this surfaced**: after that crash, Iprada's `ghost-link
+serve` process stayed healthy (`/health` kept responding), but
+`ggml-rpc-server` — the actual contributor child process
+`rpc_cluster::ensure_contributing()` spawns once at startup — was dead
+(port 50052 went from accepting connections to `Connection refused`).
+Nothing in Ghostlink restarts it, and nothing stops the node from
+continuing to *advertise* `contribute_compute`/`rpc_port` via discovery
+(that's driven by settings, not live child-process health). A coordinator
+would discover this node as a usable peer, build a `--rpc` flag pointing
+at a dead port, and fail — a real resilience gap, not just a KV-cache
+edge case. Confirmed the API layer and the actual compute layer can
+silently diverge in health.
+
+#### Result 2 — bigger models (7B, then a different 5GB single-file model): a real, reproducible, silent correctness bug
+
+To test whether distribution could show a genuine capacity benefit (not
+just a cost), the same pairing was loaded with
+`Qwen2.5-7B-Instruct-Q4_K_M` (4.36 GiB, real 2-shard GGUF from Qwen's
+official HF repo, sha256-verified) — comfortably over the coordinator's
+declared 4.0 GB VRAM.
+
+- **The distributed load did not fail to fit — it just took longer than
+  Ghostlink's timeout allows.** `native_engine.rs`'s model-ready
+  health-check budget is a hardcoded 90 seconds (`wait_for_llama_server_ready(&url,
+  90, &mut child)`, no env override), identical for single-node and
+  distributed loads. Running the *exact* logged distributed command
+  manually (bypassing Ghostlink's timeout) showed the model **did** load
+  successfully — after **5 minutes 3 seconds**. `llama.cpp`'s own log
+  explained part of the slowdown: `failed to fit params to free device
+  memory: model_params::tensor_split already set by user, abort` — its
+  automatic memory-fit optimization disables itself whenever an explicit
+  `-ts` is passed, which Ghostlink always does. Single-node loading of the
+  *same* file completed within the 90s budget and served correct,
+  coherent real output (`real_inference: true`, 38.71 tok/s) — the model
+  fit and ran fine locally on this UMA (unified-memory) integrated GPU,
+  which can apparently overflow gracefully into system RAM past its
+  "declared" 4.0 GB. **A real, actionable bug**: the 90s readiness budget
+  doesn't account for the real extra time an RPC-distributed load takes,
+  and currently aborts loads that would have succeeded.
+
+- **Far more serious, found once the distributed load was allowed to
+  finish**: the response was **reproducibly corrupted garbage** —
+  `"The capital of France is"` → `"pérdida RencontreDBus并不是很 pérdida..."`
+  — while the server reported `healthy`/HTTP 200 throughout, and
+  throughput collapsed to 1.7 tok/s (vs 38.71 tok/s single-node, same
+  file). Reproduced on a **second, unrelated single-file model**
+  (`gemma-4-E4B-it-Q4_K_M.gguf`, 4.97 GiB, not sharded — ruling out
+  multi-part GGUF handling as the cause) with the same garbage pattern
+  (`"’’’’’’’’’’’’’’’’’’’’"`). The 1.5B model in Result 1 above worked
+  correctly through the identical distributed path on the identical
+  hardware pair, so this isn't a blanket "RPC is broken" finding — it's
+  specific to larger models on this pairing, and the trigger wasn't fully
+  characterized before the likely cause below was found and confirmed.
+
+- **Root cause, confirmed by a controlled before/after test**: the two
+  machines' `llama.cpp` builds were on different commits — coordinator at
+  `da296d6` (2026-07-23), Iprada at `e920c523e` (2026-07-13), a 10-day gap
+  in a very actively developed upstream project. `ggml-rpc-server` has no
+  version-compatibility check between peers (the same upstream limitation
+  already documented for its lack of authentication — see the Risks
+  section of `ROADMAP.md`) — mismatched builds connect and exchange data
+  without complaint instead of rejecting each other. After rebuilding
+  Iprada's `llama.cpp` at the exact matching commit (`da296d6`, confirmed
+  via the `ggml` version string bumping 0.16.0 → 0.17.0) and rerunning the
+  identical `gemma-4-E4B-it-Q4_K_M` distributed load — same model, same
+  tensor split, same real cross-machine RPC path, only the peer's
+  `llama.cpp` commit changed — the output was **correct**: `"The capital
+  of France is"` → `"Paris. Paris is a famous city known for its art,
+  fashion, and history. The Eiffel Tower"`. Load time also dropped from
+  312s to 168s on the matched build. This is a real, controlled A/B
+  result, not circumstantial: **version-mismatched `ggml-rpc` peers can
+  silently corrupt output for larger models while reporting healthy
+  status throughout, and this is currently undetectable from the API
+  surface alone.**
+
+#### Result 3 — the actual proof: a real 30B-class model, genuinely too large for the coordinator alone, working correctly when split
+
+With versions matched, the pairing was pushed with a real ~13.58 GiB
+model already on hand locally: `Qwen3-Coder-30B-A3B-Instruct-Q3_K_L.gguf`
+(30B-parameter MoE, ~3B active per token, Q3_K_L quant, sha256 not
+re-verified since it predates this session — a pre-existing local file).
+
+**Single-node genuinely cannot load this model** — not a timeout, a real,
+clean failure:
+```
+ggml_vulkan: Device memory allocation of size 964611072 failed.
+ggml_vulkan: vk::Device::allocateMemory: ErrorOutOfDeviceMemory
+```
+This is the first entry in this document where single-node isn't just
+slow or suboptimal — it hard-fails. Real coordinator hardware (4.0 GB
+declared VRAM, UMA integrated GPU) cannot hold this model alone.
+
+**The distributed attempt also initially failed**, and the debugging
+process (jointly diagnosed with the Claude session running on Iprada,
+which had direct log access this session's coordinator didn't) is worth
+recording because every intermediate hypothesis was real and ruled out in
+turn, not assumed:
+
+1. Three separate coordinator-side configurations — default settings,
+   `-c 2048` (down from 8192, ruling out KV-cache size), and an extreme
+   `-ts 39.9990,0.0100` split (~400x more lopsided than the automatic
+   ratio, ruling out the split ratio controlling per-buffer size) — all
+   failed identically: `failed to allocate RPC0[10.0.0.29:50052] buffer of
+   size 1043927040`, same byte count every time. This looked like a fixed
+   structural ceiling.
+2. Checked Iprada's Vulkan `maxMemoryAllocationSize`: 11.15 GiB — far
+   above the ~995 MB failing request, ruling out a hard per-allocation
+   cap.
+3. `GGML_RPC_DEBUG=1` on the contributor (upstream llama.cpp's own
+   per-command debug logging, `ggml-rpc.cpp:20`) gave real command-level
+   visibility and overturned the "fixed ceiling" read: the coordinator
+   was actually streaming buffers successfully in sequence — **11
+   buffers of ~947 MB–1.06 GB each, each properly `alloc_buffer` →
+   `set_tensor` (real weight data, up to ~138 MB per call) →
+   `free_buffer`, one per transformer layer — and only the 12th of the
+   same size failed.** Summed, 11 successful buffers ≈ 10.5 GiB, right up
+   against the 11.15 GiB heap. The real signature: not a per-allocation
+   cap, and not a leftover-process leak (a freshly-restarted contributor
+   failed identically) — **the Vulkan/Mesa driver on this iGPU wasn't
+   fully reclaiming freed device memory across repeated large alloc→free
+   cycles within one process**, so cumulative usage crept toward the heap
+   ceiling regardless of individual buffer size or split ratio.
+4. **The fix**: reduce `-ngl` from `-1` (offload all layers) to `20`,
+   cutting the total number of layers assigned across local+remote
+   devices — not the per-buffer size, the buffer *count*. This kept
+   Iprada's cumulative allocation comfortably under the reclaim ceiling.
+
+**Result: real success.** Loaded in 487s (~8 min — the largest model
+tested this session, expected to take longer). Two real completions,
+both coherent and correct — including a genuinely competent Python
+Fibonacci implementation with edge-case discussion, real evidence this is
+a working coding-capable model, not a lucky short answer:
+
+```
+"Write a Python function that returns the nth Fibonacci number."
+→ "The Fibonacci sequence starts with F(0) = 0, F(1) = 1, and each
+   subsequent number is the sum of the two preceding ones. ... 
+   def fibonacci_nth(n):
+       # Your implementation here
+       pass
+   def fibonacci_list(n): ..."
+```
+
+Real measured throughput: prompt eval 0.39–0.82 tok/s, generation
+1.47–2.52 tok/s — slow, and an honest caveat this document should not
+smooth over: at this speed, "usable" is a stretch for interactive chat.
+This is **not yet** the "usable speed" half of the roadmap's target
+claim, even though it is genuinely the "too large for one node, works
+when split" half. Both halves together are the actual target; this
+entry has one of them, on real hardware, for the first time.
+
+##### Finding the real `-ngl` boundary on this pairing
+
+`-ngl -1` (offload all layers) hits the reclaim ceiling above; `-ngl 20`
+(Result 3's working config) doesn't. A manual bisection above `-ngl 20`
+found the real boundary and a second, related failure mode:
+
+| `-ngl` | Result | Load time | Prompt eval | Generation |
+|---|---|---|---|---|
+| 20 | works | 487s | 0.39–0.82 tok/s (2 runs) | 1.47–2.52 tok/s (2 runs) |
+| 30 | works | 902s | 0.36 tok/s (1 run) | 1.56 tok/s (1 run) |
+| 40 | **fails** | 11m41s of successful weight loading, then fails | n/a | n/a |
+
+`-ngl 40`'s failure is instructive on its own: every weight buffer loaded
+successfully this time (no `alloc_tensor_range` weight failures, unlike
+Result 3's original `-ngl -1` failure) — it failed afterward, specifically
+allocating the **KV cache**, at a much smaller size (~312 MB, not the
+~995 MB weight-buffer chunks): `failed to allocate RPC0[...] buffer of
+size 327155712` → `failed to allocate buffer for kv cache`. This confirms
+the reclaim-ceiling bug isn't specific to weight-tensor transfers — it's
+cumulative across *any* large allocation on the contributor's device
+within one session, weights and KV cache competing for the same ~11 GiB
+budget. At `-ngl 40`, enough weight data landed on Iprada that no room
+was left for its share of the KV cache once inference was about to
+start.
+
+**Practical takeaway**: the real safe boundary for this exact
+model/hardware/quant combination sits between `-ngl 30` and `-ngl 40` —
+not further narrowed down (30 vs 40 bisection wasn't completed). Load
+time roughly doubled from `-ngl 20` to `-ngl 30` (487s → 902s, more
+layers now loading locally too, not just more risk on the RPC side).
+Generation throughput was flat across both working configs (~1.5–2.5
+tok/s) — not enough samples (2 runs, then 1 run) to call this a real
+trend either way. **This boundary is specific to this session's hardware
+pairing, model, and quantization** — it says nothing about where the
+ceiling sits for a different model size, a different contributor's real
+Vulkan heap budget, or (the actual fix) once the underlying Mesa/Vulkan
+reclaim behavior itself is addressed rather than worked around by
+tuning `-ngl` down.
+
+Four real findings came out of one afternoon of genuinely separate-
+hardware testing, none of which a same-host Docker fabric could have
+produced: a same-host setup has no meaningful network latency to expose
+the 90s-timeout gap, no reason to run mismatched `llama.cpp` builds on
+each side, and — most fundamentally — no way to show a real "too large
+for one node" capacity story, since the whole point of a single-host test
+is that one host's resources are shared, not genuinely partitioned.
+Three of the four findings (the dead-but-still-advertised contributor
+process, the timeout, and the version-mismatch silent-corruption bug) are
+correctness/resilience gaps, currently open and unfixed, worth
+prioritizing before any claim that the distributed path is
+production-ready beyond a single trusted operator running matched
+binaries. The fourth (Result 3 above) is the payoff this whole
+document-full of prior entries was building toward: real proof the
+mechanism delivers on half of its core promise, with the other half
+(usable speed, not just capacity) still open.
+
 ### Notes on Multi-Node Performance
 
-- The one real run above used exactly 2 nodes; scaling trends across 3+
-  nodes are still untested hypotheses, not measurements.
-- Bridge-write latency here tracks network RTT closely (10-16ms TCP vs.
-  8-14ms ICMP) — on this LAN, transport overhead is dominated by the
+- Two real cross-machine runs now exist: 2026-08-03 (synthetic
+  `stage-worker` transport harness) and 2026-08-08 (real `ggml-rpc` path,
+  native processes). Both used exactly 2 genuinely separate nodes. Scaling
+  trends across 3+ genuinely separate nodes are still untested hypotheses,
+  not measurements.
+- **The single most important finding across every entry in this
+  document**: version-mismatched `ggml-rpc` peers (2026-08-08's native
+  two-machine entry) can silently corrupt inference output for larger
+  models while the API reports healthy status throughout, and there is
+  currently no version-compatibility check to catch this. Confirmed via a
+  controlled before/after test on real hardware. Anyone running
+  `contribute_compute`/`distributed_inference` across machines that don't
+  share an exact `llama.cpp` build should treat output as unverified until
+  this is fixed upstream in Ghostlink's own peer-handshake layer.
+- Bridge-write latency (2026-08-03) tracks network RTT closely (10-16ms TCP
+  vs. 8-14ms ICMP) — on that LAN, transport overhead is dominated by the
   network hop itself, not Ghostlink's framing/serialization.
+- ggml-rpc's tensor split (2026-08-08) only moves real compute/memory off
+  the coordinator when `-ngl` is configured to allow non-CPU-primary layer
+  placement — a CPU-safety default of `-ngl 0` (as this repo's own Docker
+  fabric ships) makes `--rpc`/`-ts` real-connection-but-inert. Worth
+  checking deliberately, not assuming, on any new distributed-inference
+  deployment.
 
 ---
 

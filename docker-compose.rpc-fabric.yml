@@ -1,0 +1,110 @@
+# Two-container proof that Ghostlink's real distributed-inference feature
+# (llama.cpp's ggml-rpc backend, see crates/ghost-link/src/rpc_cluster.rs)
+# works end to end across process/container boundaries, not just on one
+# machine. See scripts/rpc_fabric_assert.py for the verification sequence.
+#
+# rpc-contributor runs `ggml-rpc-server`, exposing its (CPU-only, in this
+# test) compute over TCP. rpc-coordinator discovers it via Ghostlink's UDP
+# broadcast discovery, and — once `distributed_inference` is on — launches
+# its own llama-server with `--rpc <contributor>:50052 -ts <split>` computed
+# entirely by Ghostlink itself.
+
+services:
+  rpc-contributor:
+    build:
+      context: .
+      dockerfile: Dockerfile.rpc-fabric
+    container_name: ghostlink-rpc-contributor
+    hostname: rpc-contributor
+    networks:
+      ghostlink-rpc-fabric:
+        ipv4_address: 172.30.0.11
+    environment:
+      GHOSTLINK_NODE_ID: "rpc-contributor"
+      GHOSTLINK_API_HOST: "0.0.0.0"
+      GHOSTLINK_API_PORT: "8003"
+      GHOSTLINK_CONTRIBUTE_COMPUTE: "true"
+      GHOSTLINK_DISTRIBUTED_INFERENCE: "false"
+      GHOSTLINK_RPC_PORT: "50052"
+      # 255.255.255.255 is RuntimeSettings::default()'s own value; Docker
+      # user-defined bridge networks are a single L2 broadcast domain so this
+      # is expected to cross the container boundary. If discovery doesn't
+      # come up, switch both containers to the bridge's directed broadcast
+      # address instead: "172.30.0.255:45885" (subnet is 172.30.0.0/24 below).
+      GHOSTLINK_DISCOVERY_BROADCAST: "255.255.255.255:45885"
+      # rpc_cluster::ensure_contributing() discards ggml-rpc-server's own
+      # stdout/stderr by default (Stdio::null(), best-effort like every other
+      # child process it launches). This opt-in env var (added specifically
+      # for this fabric's verification requirement) redirects it to a file
+      # instead, so scripts/rpc_fabric_assert.py can prove the contributor
+      # actually saw a real connection, not just that the chat request
+      # succeeded.
+      GHOSTLINK_RPC_SERVER_LOG: "/tmp/ggml-rpc-server.log"
+      # main.rs forces TLS on for any non-loopback bind host (0.0.0.0 here),
+      # regardless of enable_tls in settings.json — see
+      # scripts/rpc_fabric_entrypoint.sh's comment. Fixed test-only bearer
+      # token, seeded into api_key.txt by the entrypoint before ghost-link
+      # starts, so scripts/rpc_fabric_assert.py doesn't have to scrape a
+      # randomly-generated one out of container logs.
+      GHOSTLINK_API_KEY: "ghostlink-rpc-fabric-test-key-0123456789abcdef0123456789abcdef"
+      RUST_LOG: "info,ghost_link=debug"
+    # rpc_port only needs to be reachable on the bridge network — no host
+    # publish needed, matching the task's networking shape.
+    expose:
+      - "50052"
+      - "8003"
+    healthcheck:
+      # -k: self-signed cert (see the TLS note above) — this is a test
+      # fabric on an isolated bridge network, not a scenario where cert
+      # validation buys anything.
+      test: ["CMD", "curl", "-fk", "https://localhost:8003/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+    cpus: '2'
+    mem_limit: 2g
+
+  rpc-coordinator:
+    build:
+      context: .
+      dockerfile: Dockerfile.rpc-fabric
+    container_name: ghostlink-rpc-coordinator
+    hostname: rpc-coordinator
+    networks:
+      ghostlink-rpc-fabric:
+        ipv4_address: 172.30.0.12
+    environment:
+      GHOSTLINK_NODE_ID: "rpc-coordinator"
+      GHOSTLINK_API_HOST: "0.0.0.0"
+      GHOSTLINK_API_PORT: "8003"
+      GHOSTLINK_CONTRIBUTE_COMPUTE: "false"
+      # Set statically here (in addition to the assertion script also
+      # PATCHing it live via /api/settings, which is idempotent) — mirrors
+      # both "off by default" single-node behavior and the original
+      # live-toggle verification described in commit 46a023c.
+      GHOSTLINK_DISTRIBUTED_INFERENCE: "true"
+      GHOSTLINK_RPC_PORT: "50052"
+      GHOSTLINK_DISCOVERY_BROADCAST: "255.255.255.255:45885"
+      GHOSTLINK_API_KEY: "ghostlink-rpc-fabric-test-key-0123456789abcdef0123456789abcdef"
+      RUST_LOG: "info,ghost_link=debug"
+    depends_on:
+      rpc-contributor:
+        condition: service_healthy
+    ports:
+      - "8010:8003"
+    healthcheck:
+      test: ["CMD", "curl", "-fk", "https://localhost:8003/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+    cpus: '2'
+    mem_limit: 2g
+
+networks:
+  ghostlink-rpc-fabric:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24

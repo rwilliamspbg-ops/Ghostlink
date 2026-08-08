@@ -193,7 +193,100 @@ make the Priority Zero fix land on solid ground.
    (should be roughly at parity — same llama.cpp core), and Ghostlink
    single-node vs. Ghostlink multi-node on a model too big for one node
    alone. Publish hardware specs, model, prompt set, concurrency — exactly
-   as CONTRIBUTING.md's release rubric already asks for.
+   as CONTRIBUTING.md's release rubric already asks for. **Status check
+   (2026-08-08, updated): the real-path benchmark now exists, and it found
+   something more important than a throughput number.** `BENCHMARKS.md`'s
+   2026-08-03 entry predates the ggml-rpc work above and only exercises the
+   old `stage-worker`/`flow` synthetic timing harness — that gap is now
+   closed. A new 2026-08-08 "Real ggml-rpc distributed-inference run" entry
+   (`docker-compose.rpc-fabric-benchmark.yml` + `scripts/rpc_fabric_benchmark.py`,
+   reusing the same fabric as Horizon 1 item 1's CI gate) drives the actual
+   `distributed_inference: true` / `rpc_cluster` path with a real 1.5B model
+   (Qwen2.5-1.5B-Instruct-Q4_K_M) and real, checked evidence
+   (`real_inference: true` plus contributor RPC-log connection counts), not
+   just a settings flag.
+
+   **What it found**: with `-ngl 0` — the CPU-safety default this Docker
+   fabric forces everywhere, including in the CI gate — `--rpc`/`-ts` are
+   real flags producing a real RPC connection (462 genuine "Accepted client
+   connection" log lines over 5 runs) that carries **zero compute**:
+   throughput (32.70 vs 32.53 tok/s) and memory were statistically
+   identical single-node vs. distributed, because `-ngl 0` assigns zero
+   transformer layers to any non-CPU-primary backend, GPU or RPC alike. A
+   control run with real layer offload (`-ngl -1`) confirmed the mechanism
+   works — the coordinator's real committed memory dropped ~741MB while the
+   contributor's grew by almost exactly that — but also that, on **one
+   physical host with two containers sharing its CPU**, real distributed
+   compute made throughput ~48% *worse* (32.53 → 17.01 tok/s), since
+   splitting adds real RPC round-trip cost without adding real hardware.
+
+   **Net effect on this roadmap item**: the "prove it, publicly" mechanism
+   now exists, is reproducible (`docs/BENCHMARKS.md`'s entry has full
+   repro commands), and is honestly documented rather than oversold — but
+   it does not yet deliver the "model too large for one node, running at
+   usable speed, split across ≥2 heterogeneous nodes" proof this item and
+   the roadmap's "How we'll know it's working" section actually call for.
+   That specifically requires genuinely separate hardware (like the
+   2026-08-03 LAN entry's real second machine, just exercising the real
+   `ggml-rpc` path instead of the synthetic one) — a single Docker host
+   cannot produce it, no matter how the benchmark is tuned. **Remaining
+   work, now much better scoped**: run this same fabric's benchmark script
+   against two real separate machines with `-ngl -1` (or a real GPU split),
+   on a model that's actually too large for either machine alone. A second,
+   equally real finding worth carrying into item 3 below (automatic
+   sharding) and any future default-tuning work: a CPU-safe `-ngl 0`
+   default silently makes `distributed_inference: true` a no-op rather than
+   an error or a warning — worth surfacing to the user explicitly, not just
+   documenting in a benchmark footnote.
+
+   **Status check (2026-08-08, second update — the real separate-hardware
+   test now exists.)** Two real machines, native processes (not Docker),
+   `ghost-link` on each — see `BENCHMARKS.md`'s "native processes, two
+   genuinely separate physical machines" entry for the full account. The
+   real-hardware result: single-node 55.11 tok/s avg vs. distributed 53.57
+   tok/s avg on the 1.5B model — a small real cost (~2.8%), not the
+   hoped-for benefit, because `compute_tensor_split`'s VRAM-only
+   proportionality floors any non-GPU contributor (Iprada declared 0GB
+   VRAM) to a token ~2.4% share regardless of its real CPU/RAM capacity.
+   Attempting to force a genuine capacity benefit with a bigger model (7B,
+   then a second 5GB model) did **not** produce the "too large for one
+   node, works when split" proof either — instead it surfaced four real,
+   distinct, previously-unknown bugs (a quantized-KV-cache crash on the
+   RPC/CPU backend, an unsupervised contributor child process, a
+   90-second readiness timeout too short for real cross-machine RPC loads,
+   and — the serious one — silent output corruption from unversioned
+   `ggml-rpc` peers, confirmed via a controlled test). See the Risks
+   section below and `BENCHMARKS.md` for full detail on each. **Net
+   effect**: this item is now blocked less by "we haven't tested real
+   hardware" and more by "real hardware testing found real bugs that
+   should be fixed before the compelling benchmark is published" —
+   publishing a flattering number before the version-mismatch corruption
+   bug is addressed would be actively misleading given how easy that
+   failure mode is to hit unknowingly (any two machines that haven't been
+   deliberately kept in version lockstep).
+
+   **Status check (2026-08-08, third update — the actual proof landed.)**
+   With `llama.cpp` versions matched (closing the corruption bug above),
+   the same two-machine pairing loaded and correctly served a real
+   30B-class model (`Qwen3-Coder-30B-A3B-Instruct-Q3_K_L`, 13.58 GiB) that
+   **genuinely cannot load on the coordinator alone** — confirmed via a
+   real `ErrorOutOfDeviceMemory` single-node failure, not a timeout or a
+   contrived constraint. The distributed path found and worked around a
+   real driver-level bug along the way (Vulkan/Mesa on the contributor's
+   iGPU not reclaiming freed device memory across repeated large
+   alloc→free cycles, diagnosed down to the exact command sequence via
+   upstream llama.cpp's own `GGML_RPC_DEBUG` logging — see
+   `BENCHMARKS.md`'s Result 3 for the full diagnostic trail) by reducing
+   `-ngl` to send fewer total layers to the constrained device. Real,
+   correct, coherent output followed, including working Python code
+   generation. **This is genuinely the "too large for one node, works
+   when split" proof this item has been chasing all along** — half of the
+   roadmap's target claim, confirmed on real hardware for the first time.
+   The other half, **usable speed**, is not yet there: 1.5-2.5 tok/s
+   generation is real and correct but slow, not the "usable speed"
+   language in "How we'll know it's working" below describes. Don't
+   publish this as the flagship benchmark number without that caveat
+   attached — it's the capacity proof, not the performance proof.
 3. **JS/TS client SDK**, mirroring `sdks/python`'s shape (nested
    `chat.completions`, real SSE streaming, typed errors). This is the
    difference between "has an API" and "has an ecosystem" — most people
@@ -225,7 +318,14 @@ Once Priority Zero is real and provable, these make it hard to copy.
    startup. This is the feature that turns "distributed" into "resilient,"
    and it's the kind of thing vLLM's static deployment model doesn't
    attempt and Kubernetes-based setups solve with a completely different
-   (much heavier) toolset.
+   (much heavier) toolset. **Status check (2026-08-08): more groundwork
+   than "not started."** `load_balance.rs` already has a `rebalance()`
+   function and real config (`max_concurrent_rebalances`,
+   `recommended_workers`-derived defaults, a load threshold). What's
+   unconfirmed is whether anything calls `rebalance()` in response to a
+   live node join/leave/health-degrade event today, or whether it's only
+   invoked from a static planning pass — worth a quick read of the call
+   sites before scoping this as greenfield.
 2. **Speculative decoding across heterogeneous nodes** — a small/fast node
    (or NPU) drafts, a large/slow node verifies. This is a genuinely novel
    angle: nobody targets *consumer heterogeneous* hardware for this pattern
@@ -235,14 +335,26 @@ Once Priority Zero is real and provable, these make it hard to copy.
    <hf-repo>`), auto-picking a GGUF quant that fits the *cluster's*
    aggregate VRAM, not just one node's. Ollama's model library is one of
    its biggest UX wins; Ghostlink should match it while adding the
-   cluster-aware sizing Ollama structurally can't do.
+   cluster-aware sizing Ollama structurally can't do. **Status check
+   (2026-08-08): partially shipped.** HF search/pull already exists
+   (`ModelsTab.tsx`, HF handling in `main.rs`, a nightly
+   `hf-model-verify.yml` CI job that checks downloads keep working). The
+   part that's genuinely still missing is narrower than the original
+   framing: *cluster-aggregate-VRAM-aware* quant selection specifically —
+   picking a quant sized to what the whole discovered cluster can hold,
+   not one node.
 4. **LoRA / adapter support** in the native engine path — increasingly
    table-stakes, currently absent.
-5. **RBAC + audit logging that's actually populated** (`/api/security/audit-log`
-   exists today but is permanently empty — closing that is cheap and
-   directly serves the "enterprise-adjacent trust" wedge; multi-user API
-   keys with scoped permissions is the natural next step for any
-   team/household deployment beyond a single operator).
+5. **RBAC + audit logging that's actually populated.** **Status check
+   (2026-08-08): audit logging is done, RBAC is not.**
+   `/api/security/audit-log` used to be hardcoded to always return empty;
+   it's now backed by a real in-memory, capped (`AUDIT_LOG_CAP`) log of
+   actual security events (failed auth, PQC/JWT actions, tool-call
+   approvals — see `audit_log`/`record_audit_event` in `main.rs`). It
+   resets on restart and isn't a persistent append-only trail, but "empty"
+   is no longer accurate. What's still genuinely missing: multi-user API
+   keys with scoped permissions (RBAC) — that's the remaining piece for
+   any team/household deployment beyond a single operator.
 6. **Plugin marketplace-lite**: a `plugins.toml`-style registry (mirroring
    the existing `mcp_servers.toml` pattern) so third-party
    `InferenceBackendPlugin`/MCP-tool implementations can be discovered and
@@ -295,7 +407,14 @@ Bigger, riskier, higher payoff if the moat above is already real.
 - A published, reproducible benchmark showing a model too large for any
   single owned machine running at usable speed across ≥2 heterogeneous
   nodes, with a one-command setup — becomes the canonical "why Ghostlink"
-  demo, replacing prose claims with a number.
+  demo, replacing prose claims with a number. **Status (2026-08-08): half
+  done, on real hardware.** `BENCHMARKS.md`'s native two-machine entry,
+  Result 3, has the "too large for any single owned machine" half —
+  confirmed with a real single-node `ErrorOutOfDeviceMemory` failure and a
+  real, correct distributed success on the same model. "Usable speed" is
+  not yet there (1.5-2.5 tok/s) and the setup was not one-command (manual
+  native builds on both machines, plus real debugging of a driver-level
+  bug to get there). Don't call this item done from that entry alone.
 - Time-to-first-distributed-chat-completion on fresh hardware: target
   under 5 minutes from `curl | sh` to a cluster-routed response.
 - GitHub stars/forks growth rate and PyPI/npm SDK download counts as
@@ -304,6 +423,39 @@ Bigger, riskier, higher payoff if the moat above is already real.
 
 ## Risks
 
+- **`ggml-rpc` has no version-compatibility check between peers, and
+  mismatched builds silently corrupt output rather than failing.**
+  Confirmed on real, genuinely separate hardware (2026-08-08,
+  `BENCHMARKS.md`'s native two-machine entry — read it in full, this is
+  the most important finding in that document): two machines running
+  `llama.cpp` builds 10 days apart connected and exchanged data without
+  complaint, and larger-model inference through the real distributed path
+  came back as reproducible garbage (`"pérdida RencontreDBus并不是很
+  pérdida..."`) while the API reported `healthy`/HTTP 200 the entire time.
+  A controlled before/after test (same hardware, same model, only the
+  peer's `llama.cpp` commit changed) confirmed this as the root cause —
+  rebuilding both sides at an identical commit produced correct output.
+  Smaller models (1.5B) worked correctly despite the same mismatch, so the
+  exact trigger threshold isn't fully characterized, but the core problem
+  is clear and severe: **there is currently no way for an operator to
+  detect this from the API surface alone.** This ranks above the
+  authentication gap below in severity — an unauthenticated-but-correct
+  compute contribution is a trust problem; a silently-wrong answer that
+  reports itself as healthy is a correctness problem, and a much easier
+  one to ship without noticing. Needs a real fix before any "production
+  trustworthy" claim: at minimum, a version/build-fingerprint handshake at
+  RPC-connect time that refuses (or loudly warns on) a mismatch, not a
+  documentation-only caveat.
+- **Two related resilience gaps found in the same session**, lower
+  severity but real: (1) the spawned `ggml-rpc-server` contributor child
+  process isn't supervised — if it crashes (a real, separate bug: quantized
+  KV cache combined with the RPC-CPU backend aborts on an unimplemented op,
+  see `BENCHMARKS.md`), the node keeps *advertising* itself as RPC-capable
+  via discovery while actually unreachable, and nothing restarts it. (2)
+  the hardcoded 90-second model-ready timeout in `native_engine.rs` doesn't
+  account for real cross-machine RPC transfer time — a real load that
+  would have succeeded at 5 minutes gets aborted and reported as a failure
+  well before that. Both are concrete, scoped fixes, not research problems.
 - **Priority Zero shipped as an additive, off-by-default change**
   (`distributed_inference` defaults false; a single node reproduces prior
   behavior exactly) — still needs the CI integration test from Horizon 1
@@ -329,3 +481,9 @@ Bigger, riskier, higher payoff if the moat above is already real.
   broadcasting hardware specs — a meaningfully bigger blast radius if a
   hostile device is already on the network. Worth an explicit allowlist or
   auth shim ahead of any "enable this on an untrusted network" claim.
+  **Status check (2026-08-08): still unaddressed** — no allowlist or auth
+  shim exists in `rpc_cluster.rs` today. Given `contribute_compute` is a
+  real security boundary once RBAC/multi-user work (Horizon 2 item 5)
+  starts inviting more than a single trusted operator, this is worth
+  pulling forward alongside the Horizon 2 plugin-marketplace work rather
+  than leaving it last in Horizon 1's list.
