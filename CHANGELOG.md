@@ -4,6 +4,37 @@ All notable changes to Ghostlink Studio are documented here.
 
 ---
 
+## [Unreleased] - GUI accessibility, MCP server editor, chat attachments, model-list fixes, iGPU perf tuning
+
+### Added
+
+- **MCP server editor** (`McpTab.tsx`, `crates/ghost-link/src/mcp/{config,registry}.rs`): add/edit/delete MCP servers (stdio or HTTP transport) directly from the GUI instead of hand-editing `mcp_servers.toml`. Changes take effect immediately — connects/disconnects the affected server live via new `McpConfigManager::add/update/remove` + `McpRegistry::add_server/update_server/remove_server`, no restart required. Also wired up the enable/disable toggle switch, which was calling `POST /api/mcp/servers/:name/toggle` — a route that didn't exist; the connect/disconnect logic (`McpRegistry::set_enabled`) was already fully implemented and tested but had no caller.
+- **Text-file attachments in chat** (`ChatTab.tsx`): paperclip button + drag-and-drop onto the composer. Scoped to text-based files (code, markdown, JSON, CSV, logs, config — no images/binaries, which are rejected with an explicit toast rather than silently doing nothing) since there's no multimodal/upload endpoint; files are read client-side (256KB/file cap) and inlined as labeled fenced code blocks ahead of the message.
+- **`eslint-plugin-jsx-a11y` + axe-core Playwright suite** (`ghostlink_gui_modern/eslint.config.js`, `e2e/accessibility.spec.ts`): first automated accessibility regression gate for the GUI — scans the app shell and every primary tab (plus the new MCP add-server dialog) for WCAG 2 A/AA violations. `color-contrast` is deliberately excluded for now (see Documentation below).
+
+### Fixed
+
+- **Models tab listed the same model twice**: `handle_gui_model_download`'s completion handler (`crates/ghost-link/src/main.rs`) removed only the in-flight placeholder record (keyed by the original request name) before pushing the completed one, so re-downloading an already-installed model left the old record behind instead of replacing it — both records then survived indefinitely with the same name but different sizes. Also removed four hardcoded "Ready" placeholder models (`load_persistent_models`) that were seeded on first run with no real file behind them and never reconciled against a real scanned/downloaded model, since the merge only matched on exact name equality.
+- **Delete button missing for native/llama.cpp models**: gated to `currentEngine === 'ollama'` in `ModelsTab.tsx`, even though the backend's `DELETE /api/models/:name` already fully supports removing local GGUF files for any engine. Split into its own `canDeleteModel` flag — shown for native and Ollama, still hidden for vLLM (genuinely server-managed).
+- **iGPU VRAM misdetection on the native launch path** (`launch-native.ps1`): `Win32_VideoController.AdapterRAM` (WMI) and DXGI's `DedicatedVideoMemory` both undercount a unified-memory iGPU — neither reads `SharedSystemMemory` — so hardware auto-detection was landing on `native_engine.rs`'s worst-case "<4GB" perf tier regardless of the real hardware. `GHOSTLINK_GPU_NAME`/`GHOSTLINK_VRAM_GB`/`GHOSTLINK_COMPUTE_CAPABILITY` now pinned explicitly (`ghostlink-core::system_profile::detect_gpu_from_env` takes absolute priority over the flawed probes). `VRAM_GB=8` was picked empirically — benchmarked 4 vs 8 on the reference machine (AMD Radeon 860M) with the same model; the larger prompt micro-batch it unlocks measured ~2.3x throughput (31.3 → 71.8 tok/s).
+
+### Changed
+
+- **Accessibility pass across the GUI**: live-region announcements for streaming chat replies and Metrics tab state changes (throttled to meaningful transitions, not every poll tick, to avoid drowning a screen reader); skip-to-content link and landmark wiring; restored focus rings on the Command Palette input and chat composer (both had stripped the default outline with no replacement); `prefers-reduced-motion` support; every scrollable tab body made keyboard-scrollable (`tabindex`/`role="region"`) — a real WCAG 2.1.1 gap the new axe suite caught that wasn't part of the original ask.
+- **Chat markdown readability**: assistant replies bumped from `prose-sm` to base `prose` (14px → 16px) outside Compare Mode; heading sizes tamed to fit a chat bubble instead of a full-width article; GFM tables wrap in a scroll container instead of blowing out bubble/page width; inline `` `code` `` swapped from the default backtick-quote style to a background pill, scoped so it can't also shrink code inside fenced blocks; code block font bumped 12px → 13px.
+
+### Documentation
+
+- Deliberately did **not** fix pervasive `color-contrast` failures the axe suite surfaced (the app's muted `slate-500`/`slate-600`-on-dark text falls short of WCAG AA in dozens of places across every tab) — that's a design-system change affecting the whole app's visual character, not a mechanical accessibility fix, and is out of scope for this change. Excluded from `e2e/accessibility.spec.ts` with a comment explaining why, so the suite still gates real regressions in the meantime.
+- Also not addressed here: no user-facing theme/keyboard-shortcut persistence, no MCP config hot-reload for hand-edited `mcp_servers.toml` beyond the enable/disable toggle fixed above.
+
+### Validation
+
+- `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace` — all clean (421 tests across `ghost-link`, `ghostlink-core`, `mcp-calculator`, `mcp-rag`, `mcp-vision`, 0 failures).
+- `cargo audit` — 3 pre-existing advisory warnings (`paste`, `anyhow`, `lru`; unmaintained/unsound transitive deps), unrelated to this change, no new findings.
+- GUI: `tsc --noEmit` and `eslint .` clean, 142/142 `vitest` unit tests passing, 11/11 new axe accessibility tests passing.
+- All of the above verified live against a real running stack (Rust `ghost-link serve` + Go control-plane + Vite dev server), not just automated tests: real chat completions with real streamed tokens, real MCP server add/edit/delete/toggle round-trips, real model list deduplication against the actual `models.json` on disk.
+
 ## [1.17.0] - 2026-08-08 (Real distributed-inference testing, three bug fixes, RPC allowlist, install script, JS SDK)
 
 ### Added
