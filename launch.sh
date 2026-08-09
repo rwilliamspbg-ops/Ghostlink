@@ -321,13 +321,29 @@ detect_gpu() {
         BACKEND="rocm"
     fi
     
-    # AMD/Intel via lspci (Linux)
+    # AMD/Intel/NVIDIA via lspci (Linux)
     if [ -z "$gpu_vendor" ] && command -v lspci >/dev/null 2>&1; then
-        local gpu_line
+        local gpu_line vendor_str device_str combined_str
         gpu_line=$(lspci -mm 2>/dev/null | grep -iE "(VGA compatible|3D controller)" | head -1)
         if [ -n "$gpu_line" ]; then
-            gpu_name=$(echo "$gpu_line" | grep -iEo '"([^"]*)"' | tail -1 | tr -d '"')
-            if echo "$gpu_name" | grep -qiE "amd|radeon|advanced micro"; then
+            # `-mm` quotes each field in order: Class, Vendor, Device[,
+            # SVendor, SDevice]. Match keywords against BOTH the vendor
+            # (field 2) and device/model (field 3) strings -- vendor names
+            # almost always resolve correctly (pci.ids' vendor list is
+            # small and stable), but a newer or less-common GPU's exact
+            # model name can easily be missing from this box's local
+            # pci.ids (which lags behind new chip releases, especially on
+            # minimal cloud/container images), falling back to literal
+            # "Device <hex>" text with zero vendor hint in it. Previously
+            # only the device field was checked, so any such GPU (seen
+            # live as GPU_NAME="Device 800e") was misclassified into the
+            # generic/unknown branch below even though the vendor right
+            # next to it was perfectly identifiable.
+            vendor_str=$(echo "$gpu_line" | grep -oE '"[^"]*"' | sed -n '2p' | tr -d '"')
+            device_str=$(echo "$gpu_line" | grep -oE '"[^"]*"' | sed -n '3p' | tr -d '"')
+            gpu_name="${device_str:-$vendor_str}"
+            combined_str="${vendor_str} ${device_str}"
+            if echo "$combined_str" | grep -qiE "amd|radeon|advanced micro"; then
                 echo -e "  ${GREEN}╡${NC} ${WHITE}GPU${NC}          ${GREEN}AMD: ${gpu_name:-AMD GPU}${NC}"
                 GPU_NAME="${gpu_name:-AMD GPU}"
                 gpu_vendor="amd"
@@ -338,15 +354,36 @@ detect_gpu() {
                 # integrated Radeon chips), so use the generic Vulkan backend
                 # rather than assuming a HIP/ROCm toolchain is usable.
                 BACKEND="vulkan"
-            elif echo "$gpu_name" | grep -qiE "intel|arc|iris|uhd"; then
+            elif echo "$combined_str" | grep -qiE "intel|arc|iris|uhd"; then
                 echo -e "  ${GREEN}╡${NC} ${WHITE}GPU${NC}          ${GREEN}Intel: ${gpu_name}${NC}"
                 GPU_NAME="$gpu_name"
                 gpu_vendor="intel"
                 GPU_VENDOR="intel"
                 BACKEND="vulkan"
-            else
-                echo -e "  ${GREEN}╡${NC} ${WHITE}GPU${NC}          ${GREEN}GPU: ${gpu_name}${NC}"
+            elif echo "$combined_str" | grep -qiE "nvidia"; then
+                # nvidia-smi already gets its own (earlier, preferred)
+                # detection branch above; reaching this means an NVIDIA GPU
+                # exists but nvidia-smi isn't on PATH (driver/toolkit not
+                # installed, or a driverless passthrough) -- no CUDA
+                # telemetry available to read real VRAM from, so leave
+                # VRAM_GB at its 0/unknown default rather than guessing, and
+                # fall back to the generic Vulkan backend.
+                echo -e "  ${GREEN}╡${NC} ${WHITE}GPU${NC}          ${GREEN}NVIDIA (no nvidia-smi on PATH): ${gpu_name}${NC}"
                 GPU_NAME="$gpu_name"
+                gpu_vendor="nvidia"
+                GPU_VENDOR="nvidia"
+                BACKEND="vulkan"
+            else
+                # Vendor string is unresolved too (rare -- see above), so
+                # there's genuinely no name-based signal available. Fall
+                # back to the raw numeric PCI vendor:device ID, which
+                # `lspci -n` always prints regardless of pci.ids, so the log
+                # shows something actionable instead of an opaque
+                # "GPU: Device <hex>" with no way to identify the hardware.
+                local numeric_id
+                numeric_id=$(lspci -n 2>/dev/null | grep -E "^[0-9a-f:.]+ 03(00|02): " | head -1 | awk '{print $3}')
+                echo -e "  ${GREEN}╡${NC} ${WHITE}GPU${NC}          ${GREEN}GPU: ${gpu_name:-unknown}${NC} ${DIM}(PCI ID ${numeric_id:-unresolved} -- run 'lspci -nn' to identify)${NC}"
+                GPU_NAME="${gpu_name:-GPU $numeric_id}"
                 gpu_vendor="other"
                 GPU_VENDOR="other"
                 BACKEND="vulkan"
@@ -1246,10 +1283,25 @@ start_services() {
         return 1
     fi
 
+    # Every route but /health now requires a real bearer token (see auth.rs) —
+    # load the key ghost-link just persisted (cwd was $PROJECT_ROOT when it
+    # started, so that's where it wrote api_key.txt, unless overridden) so
+    # the checks below authenticate instead of always getting a 401 that
+    # looks like a broken server.
+    local API_KEY_PATH="${GHOSTLINK_API_KEY_PATH:-$PROJECT_ROOT/api_key.txt}"
+    local API_KEY=""
+    if [ -f "$API_KEY_PATH" ]; then
+        API_KEY=$(cat "$API_KEY_PATH")
+    fi
+    local AUTH_HEADER=()
+    if [ -n "$API_KEY" ]; then
+        AUTH_HEADER=(-H "Authorization: Bearer $API_KEY")
+    fi
+
     # Verify critical GUI routes (GET). 405 here means wrong server (e.g. POST-only proxy).
     local code
     for path in /api/settings /api/models; do
-        code=$(curl -sk -o /dev/null -w "%{http_code}" "${API_SCHEME}://${BACKEND_HOST}:${BACKEND_PORT}${path}" || echo "000")
+        code=$(curl -sk "${AUTH_HEADER[@]}" -o /dev/null -w "%{http_code}" "${API_SCHEME}://${BACKEND_HOST}:${BACKEND_PORT}${path}" || echo "000")
         if [ "$API_LAUNCH_MODE" = "bin" ] && { [ "$code" = "404" ] || [ "$code" = "405" ]; }; then
             echo -e "  ${YELLOW}⚠${NC} GET ${path} returned ${code} from prebuilt API binary; retrying with cargo run"
 
@@ -1289,7 +1341,7 @@ start_services() {
                 return 1
             fi
 
-            code=$(curl -sk -o /dev/null -w "%{http_code}" "${API_SCHEME}://${BACKEND_HOST}:${BACKEND_PORT}${path}" || echo "000")
+            code=$(curl -sk "${AUTH_HEADER[@]}" -o /dev/null -w "%{http_code}" "${API_SCHEME}://${BACKEND_HOST}:${BACKEND_PORT}${path}" || echo "000")
         fi
         if [ "$code" = "405" ]; then
             echo -e "  ${RED}✗${NC} GET ${path} returned 405 Method Not Allowed"
@@ -1303,7 +1355,7 @@ start_services() {
     done
 
     # Chat endpoint must accept POST (not 404/405). Empty body → 4xx is OK; 405 is not.
-    code=$(curl -sk -o /dev/null -w "%{http_code}" -X POST \
+    code=$(curl -sk "${AUTH_HEADER[@]}" -o /dev/null -w "%{http_code}" -X POST \
         -H "Content-Type: application/json" \
         -d '{}' \
         "${API_SCHEME}://${BACKEND_HOST}:${BACKEND_PORT}/api/inference/chat" || echo "000")
