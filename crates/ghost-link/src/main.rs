@@ -8337,35 +8337,16 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
     let models = load_persistent_models();
     save_persistent_models(&models);
 
-    // Auto-compute ngl from GPU VRAM if still at default (-1) AND the
-    // operator didn't explicitly ask for -1. `load_settings()` above copies
-    // `GHOSTLINK_LLAMA_NGL` straight into `settings.ngl` when the env var is
-    // set, so an explicit `GHOSTLINK_LLAMA_NGL=-1` (native_engine.rs's own
-    // documented "let llama-server decide, offload all it can" value) is
-    // indistinguishable from "never configured" by value alone — without
-    // this check it gets silently reinterpreted as unconfigured and
-    // overwritten by the VRAM-tier guess below on every single startup.
-    let ngl_explicitly_set = std::env::var("GHOSTLINK_LLAMA_NGL").is_ok();
-    if settings.ngl < 0 && !ngl_explicitly_set {
-        let ngl = if profile.node_resources.vram_gb >= 12.0 {
-            40
-        } else if profile.node_resources.vram_gb >= 8.0 {
-            24
-        } else if profile.node_resources.vram_gb >= 4.0 {
-            12
-        } else {
-            -1
-        };
-        if ngl > 0 {
-            settings.ngl = ngl;
-            // Also set the env var so NativeEngineClient::get_ngl() picks it up
-            std::env::set_var("GHOSTLINK_LLAMA_NGL", ngl.to_string());
-            eprintln!(
-                "[startup] Auto-configured ngl={} from detected VRAM ({:.1} GB)",
-                ngl, profile.node_resources.vram_gb
-            );
-        }
-    }
+    // Deliberately NOT auto-computing/pinning `ngl` here anymore (this used
+    // to guess a layer count from detected VRAM at startup and lock it in
+    // via `GHOSTLINK_LLAMA_NGL`, before any model was even chosen). Found
+    // the hard way: that pinned env var was then indistinguishable from a
+    // genuine user override, which permanently defeated
+    // `NativeEngineClient::get_ngl`'s model-size-aware capping (added after
+    // a 13.6GB model + a VRAM-tier-guessed ngl=24 left a 27.6GB host under
+    // 1GB free — see that function's doc comment for the measured numbers).
+    // `get_ngl` now makes this decision correctly at model-load time, when
+    // it actually knows the model's size, instead of blindly at startup.
 
     // Auto-compute threads from available parallelism if still at default (4)
     if settings.threads <= 1 {

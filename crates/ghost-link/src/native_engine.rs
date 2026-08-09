@@ -6,6 +6,7 @@
 #![allow(dead_code)]
 
 use futures::Stream;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::process::{Child, Command, Stdio};
@@ -299,15 +300,26 @@ impl NativeEngineClient {
     /// too tight for a single `fetch`-sized observation plus normal conversation —
     /// that observation path now truncates any single tool result, but headroom
     /// here still matters for multi-turn tool use within `MAX_TOOL_ITERATIONS`.
-    fn get_ctx_size() -> u32 {
+    ///
+    /// `GHOSTLINK_CTX_SIZE` is an explicit, unconditional override — set it and
+    /// you get exactly that value, full stop, same as always. Below that, the
+    /// VRAM-tier default is further capped by `model_size_gb`: KV cache and
+    /// model weights compete for the same finite memory on a unified-memory
+    /// iGPU, so a VRAM tier sized for a small model can starve a large one.
+    /// Found the hard way: a 13.6GB model + 16384 ctx (this function's old
+    /// unconditional-16384-if-VRAM=8 behavior) left a 27.6GB host with under
+    /// 1GB free — one more allocation away from OOM, not a hypothetical.
+    fn get_ctx_size(model_size_gb: f32) -> u32 {
         if let Ok(val) = std::env::var("GHOSTLINK_CTX_SIZE") {
             if let Ok(n) = val.trim().parse::<u32>() {
                 return n.clamp(512, 131072);
             }
         }
-        if let Ok(val) = std::env::var("GHOSTLINK_VRAM_GB") {
-            if let Ok(vram) = val.trim().parse::<f32>() {
-                return if vram >= 16.0 {
+        let vram_tier = std::env::var("GHOSTLINK_VRAM_GB")
+            .ok()
+            .and_then(|v| v.trim().parse::<f32>().ok())
+            .map(|vram| {
+                if vram >= 16.0 {
                     32768
                 } else if vram >= 12.0 {
                     16384
@@ -315,10 +327,19 @@ impl NativeEngineClient {
                     8192
                 } else {
                     4096
-                };
-            }
-        }
-        8192
+                }
+            })
+            .unwrap_or(8192);
+
+        let model_cap = if model_size_gb >= 10.0 {
+            4096
+        } else if model_size_gb >= 5.0 {
+            8192
+        } else {
+            u32::MAX
+        };
+
+        vram_tier.min(model_cap)
     }
 
     /// VRAM-aware batch defaults for prompt eval + Flash Attention + compact KV.
@@ -377,18 +398,36 @@ impl NativeEngineClient {
     /// Determine GPU offload layers (`-ngl`).
     ///
     /// Priority:
-    /// 1. `GHOSTLINK_LLAMA_NGL` env var
-    /// 2. Auto-detect from `GHOSTLINK_VRAM_GB` env var (set by launch scripts)
+    /// 1. `GHOSTLINK_LLAMA_NGL` env var — explicit, unconditional, always wins
+    /// 2. Auto-detect from `GHOSTLINK_VRAM_GB` env var (set by launch scripts),
+    ///    further capped down for large models (see below)
     /// 3. `-1` — let llama-server decide (offload all layers it can)
-    fn get_ngl() -> i32 {
+    ///
+    /// On a discrete GPU, offloading layers moves their weights out of system
+    /// RAM into separate VRAM — a real memory *trade*. On a unified-memory
+    /// iGPU (this function's main audience — see `launch-native.ps1`), "VRAM"
+    /// is the same physical RAM, and measured directly on the reference
+    /// hardware (AMD Radeon 860M, Vulkan backend): loading a 13.6GB model
+    /// costs ~0.54GB of real (committed, non-reclaimable) memory CPU-only,
+    /// ~7.35GB at a 24-layer partial offload, ~14.15GB at full offload —
+    /// while decode throughput only went 6.48 -> 7.54 -> ~18 tok/s over that
+    /// same range. The Vulkan device-local buffer is a genuine *second*
+    /// allocation alongside the CPU-side one, not a move — offloading a large
+    /// model on this hardware trades most of the system's free RAM for a
+    /// modest speed gain, and at 24GB+ of duplicated weights left a 27.6GB
+    /// host under 1GB free. So large models are capped toward CPU-only here,
+    /// independent of the VRAM tier, unless `GHOSTLINK_LLAMA_NGL` overrides it.
+    fn get_ngl(model_size_gb: f32) -> i32 {
         if let Ok(val) = std::env::var("GHOSTLINK_LLAMA_NGL") {
             if let Ok(n) = val.trim().parse::<i32>() {
                 return n;
             }
         }
-        if let Ok(val) = std::env::var("GHOSTLINK_VRAM_GB") {
-            if let Ok(vram) = val.trim().parse::<f32>() {
-                return if vram >= 12.0 {
+        let vram_tier = std::env::var("GHOSTLINK_VRAM_GB")
+            .ok()
+            .and_then(|v| v.trim().parse::<f32>().ok())
+            .map(|vram| {
+                if vram >= 12.0 {
                     40
                 } else if vram >= 8.0 {
                     24
@@ -399,10 +438,15 @@ impl NativeEngineClient {
                     // most 7B+ models — fall back to CPU-only rather than
                     // guessing a layer count that fits.
                     0
-                };
-            }
+                }
+            })
+            .unwrap_or(-1);
+
+        if model_size_gb >= 10.0 {
+            0
+        } else {
+            vram_tier
         }
-        -1
     }
 
     /// Determine thread count (`-t`).
@@ -663,9 +707,12 @@ impl NativeEngineClient {
                 "llama-server binary not found at '{bin}'. Set GHOSTLINK_LLAMA_SERVER_BIN."
             ));
         }
-        let ngl = Self::get_ngl();
+        let model_size_gb = fs::metadata(&resolved)
+            .map(|m| m.len() as f32 / (1024.0 * 1024.0 * 1024.0))
+            .unwrap_or(0.0);
+        let ngl = Self::get_ngl(model_size_gb);
         let threads = Self::get_threads();
-        let ctx = Self::get_ctx_size();
+        let ctx = Self::get_ctx_size(model_size_gb);
         let parallel_slots = Self::get_parallel_slots();
         let mut extra_args = Self::get_llama_server_args();
         if let Some(servers) = rpc_servers.filter(|s| !s.is_empty()) {
@@ -1961,9 +2008,11 @@ mod tests {
         let _guard = env_lock().lock().expect("env lock poisoned");
         std::env::remove_var("GHOSTLINK_LLAMA_NGL");
 
+        // Small model (well under the 10GB large-model cap) so this test
+        // exercises only the VRAM tiering, unaffected by model size.
         let case = |vram: &str| {
             std::env::set_var("GHOSTLINK_VRAM_GB", vram);
-            let n = NativeEngineClient::get_ngl();
+            let n = NativeEngineClient::get_ngl(1.0);
             std::env::remove_var("GHOSTLINK_VRAM_GB");
             n
         };
@@ -1991,12 +2040,83 @@ mod tests {
             last = n;
         }
 
-        // GHOSTLINK_LLAMA_NGL takes priority over auto-detect from VRAM.
+        // GHOSTLINK_LLAMA_NGL takes priority over auto-detect from VRAM,
+        // even for a large model that would otherwise be capped to 0.
         std::env::set_var("GHOSTLINK_LLAMA_NGL", "7");
         std::env::set_var("GHOSTLINK_VRAM_GB", "16");
-        assert_eq!(NativeEngineClient::get_ngl(), 7);
+        assert_eq!(NativeEngineClient::get_ngl(20.0), 7);
         std::env::remove_var("GHOSTLINK_LLAMA_NGL");
         std::env::remove_var("GHOSTLINK_VRAM_GB");
+    }
+
+    #[test]
+    fn get_ngl_caps_large_models_to_cpu_only_regardless_of_vram_tier() {
+        let _guard = env_lock().lock().expect("env lock poisoned");
+        std::env::remove_var("GHOSTLINK_LLAMA_NGL");
+
+        // Measured directly on the reference hardware (AMD Radeon 860M,
+        // Vulkan backend, 27.6GB host): loading a 13.6GB model cost ~0.54GB
+        // committed memory CPU-only vs ~14.15GB at full offload, for only
+        // 6.48 -> ~18 tok/s — a 26x memory cost for well under 3x speed,
+        // and the full-offload case left under 1GB free RAM. A generous
+        // VRAM tier must not undo that safety margin for a large model.
+        std::env::set_var("GHOSTLINK_VRAM_GB", "16");
+        assert_eq!(NativeEngineClient::get_ngl(13.6), 0);
+        assert_eq!(NativeEngineClient::get_ngl(10.0), 0);
+        // Just under the cap: ordinary VRAM tiering applies.
+        assert_eq!(NativeEngineClient::get_ngl(9.9), 40);
+        std::env::remove_var("GHOSTLINK_VRAM_GB");
+
+        // Same cap applies with no VRAM env var set (the "-1, let
+        // llama-server decide" default) — that default meant "offload
+        // everything" before this fix, which is exactly the dangerous case.
+        assert_eq!(NativeEngineClient::get_ngl(13.6), 0);
+    }
+
+    #[test]
+    fn get_ctx_size_is_capped_down_for_large_models_regardless_of_vram_tier() {
+        let _guard = env_lock().lock().expect("env lock poisoned");
+        std::env::remove_var("GHOSTLINK_CTX_SIZE");
+        std::env::set_var("GHOSTLINK_VRAM_GB", "8");
+
+        // Regression: a 13.6GB model + the ">=8GB" VRAM tier's nominal 8192
+        // ctx used to combine with model weights to leave a 27.6GB host
+        // under 1GB free RAM. Large models must get a much smaller ceiling
+        // than the VRAM tier alone would grant, since KV cache and model
+        // weights share the same finite memory on a unified-memory iGPU.
+        assert_eq!(NativeEngineClient::get_ctx_size(13.6), 4096);
+        assert_eq!(NativeEngineClient::get_ctx_size(10.0), 4096);
+        // Mid-size: capped, but less aggressively.
+        assert_eq!(NativeEngineClient::get_ctx_size(7.0), 8192);
+        assert_eq!(NativeEngineClient::get_ctx_size(5.0), 8192);
+        // Small model: uncapped, gets the full VRAM-tier ceiling.
+        assert_eq!(NativeEngineClient::get_ctx_size(0.6), 8192);
+
+        std::env::remove_var("GHOSTLINK_VRAM_GB");
+    }
+
+    #[test]
+    fn get_ctx_size_explicit_override_wins_regardless_of_model_size() {
+        let _guard = env_lock().lock().expect("env lock poisoned");
+        std::env::set_var("GHOSTLINK_CTX_SIZE", "32768");
+        std::env::set_var("GHOSTLINK_VRAM_GB", "4");
+
+        // GHOSTLINK_CTX_SIZE is an explicit "I know what I'm doing" override
+        // — it must win even for a large model that would otherwise be capped.
+        assert_eq!(NativeEngineClient::get_ctx_size(20.0), 32768);
+
+        std::env::remove_var("GHOSTLINK_CTX_SIZE");
+        std::env::remove_var("GHOSTLINK_VRAM_GB");
+    }
+
+    #[test]
+    fn get_ctx_size_defaults_to_8192_without_vram_env_var() {
+        let _guard = env_lock().lock().expect("env lock poisoned");
+        std::env::remove_var("GHOSTLINK_CTX_SIZE");
+        std::env::remove_var("GHOSTLINK_VRAM_GB");
+
+        assert_eq!(NativeEngineClient::get_ctx_size(0.6), 8192);
+        assert_eq!(NativeEngineClient::get_ctx_size(13.6), 4096);
     }
 
     #[test]

@@ -282,28 +282,47 @@ $env:GHOSTLINK_LLAMA_THREADS = [Math]::Max(1, $logicalCores - 1)
 # "<4GB" perf-tier bucket regardless of the real hardware.
 #
 # 8 was picked empirically, not from a detected number: benchmarked on this
-# machine at 4GB vs 8GB with the same model, and 8GB's larger prompt
+# machine at 4GB vs 8GB with a small (~0.6GB) model, and 8GB's larger prompt
 # micro-batch (-b 1024 -ub 512 vs -b 512 -ub 256) measured ~2.3x the
-# throughput (31.3 -> 71.8 tok/s). GHOSTLINK_LLAMA_NGL is pinned to -1
-# (offload every layer llama-server can fit, its own default) so raising
-# GHOSTLINK_VRAM_GB doesn't also feed the separate VRAM->ngl cap table in
-# get_ngl(), which would otherwise cap offload at a fixed layer count -- a
-# regression from the full-offload that's already working today.
+# throughput (31.3 -> 71.8 tok/s).
+#
+# GHOSTLINK_LLAMA_NGL is pinned to -1 (offload every layer) as a deliberate,
+# *measured* choice, not the default get_ngl() in native_engine.rs would
+# pick on its own for a large model. This machine's GPU is integrated --
+# "VRAM" is the same physical RAM as everything else, so llama.cpp's Vulkan
+# backend offloading a layer doesn't move its weights out of system RAM, it
+# duplicates them into a separate device-local allocation. Measured with a
+# controlled back-to-back comparison (same 13.6GB model, same prompt, same
+# seed, same direct llama-server timings) at ngl 0 / 24 / -1:
+#
+#   ngl    decode speed   committed memory   free system RAM while loaded
+#   0      8.78 tok/s     0.54GB             ~18GB
+#   24     8.03 tok/s     7.35GB             ~11GB   (worse than 0 -- not a viable middle ground)
+#   -1     16.84 tok/s    14.15GB            ~0.4GB  (reproduced twice)
+#
+# Full offload is genuinely ~1.9x faster, at the cost of leaving well under
+# 1GB free for everything else on this 27.6GB host while a model is loaded.
+# That's a real, known, accepted risk on this machine -- not an oversight --
+# chosen for the throughput. get_ngl() still defaults large models toward
+# CPU-only automatically when GHOSTLINK_LLAMA_NGL is *not* set, as a safety
+# net for other deployments/hosts that haven't made this same measured
+# tradeoff; this script opts out of that default explicitly.
 $env:GHOSTLINK_GPU_NAME = "AMD Radeon 860M Graphics"
 $env:GHOSTLINK_VRAM_GB = "8"
 $env:GHOSTLINK_COMPUTE_CAPABILITY = "gpu"
 $env:GHOSTLINK_LLAMA_NGL = "-1"
 
-# GHOSTLINK_VRAM_GB=8 above also drives native_engine.rs's get_ctx_size() VRAM
-# tier table, which would cap context at its ">=8GB" bucket (8192) -- lower
-# than we actually want (q8_0 KV + Flash Attention are already on by default,
-# so the real per-token KV cost is small and 16384 comfortably fits). Set it
-# explicitly here so GHOSTLINK_CTX_SIZE (which takes priority over the VRAM
-# tiering in get_ctx_size()) wins instead -- but only if the caller hasn't
-# already exported one, so manual overrides still win.
-if (-not $env:GHOSTLINK_CTX_SIZE) {
-    $env:GHOSTLINK_CTX_SIZE = "16384"
-}
+# Deliberately NOT forcing GHOSTLINK_CTX_SIZE here (this launch path used to
+# unconditionally set it to 16384). Found the hard way: that value was tuned
+# against a small ~0.6GB model and never re-checked against a large one --
+# loading Qwen3-Coder-30B (13.6GB) with 16384 ctx left a 27.6GB host under
+# 1GB free RAM, one allocation away from OOM. get_ctx_size() in
+# native_engine.rs now scales context down automatically as the *loaded
+# model's* file size grows (independent of the VRAM_GB tier above, since KV
+# cache and model weights compete for the same finite memory on a
+# unified-memory iGPU), so leaving GHOSTLINK_CTX_SIZE unset lets that
+# per-model sizing actually take effect. Set GHOSTLINK_CTX_SIZE yourself if
+# you want a fixed value regardless of model size -- it still wins outright.
 
 $ApiScheme = Get-ApiScheme
 if ($ApiScheme -eq "https") {
