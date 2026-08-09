@@ -953,6 +953,52 @@ start_services() {
     if [ -n "${GHOSTLINK_LLAMA_BACKEND:-}" ]; then
         BACKEND="$GHOSTLINK_LLAMA_BACKEND"
     fi
+    # Docs (docs/LOCAL_INFERENCE_TUNING.md) tell users to `export
+    # GHOSTLINK_VRAM_GB=N` to override the detected tier, but nothing here
+    # ever actually read that env var into $VRAM_GB -- it was only ever
+    # *written* (below, to hand VRAM_GB through to the Rust process), which
+    # silently overwrote whatever the user had set before the ngl tiering
+    # or the Rust process ever saw it. Seed it first so the documented
+    # override actually works.
+    if [ -n "${GHOSTLINK_VRAM_GB:-}" ]; then
+        VRAM_GB=$GHOSTLINK_VRAM_GB
+    fi
+
+    # Needed below (before TOTAL_RAM_GB's other use, MLOCK_FLAG, further
+    # down) to estimate a usable iGPU memory tier from total system RAM.
+    local TOTAL_RAM_GB
+    if [[ "$(uname -s)" == "Darwin" ]]; then
+        TOTAL_RAM_GB=$(sysctl -n hw.memsize 2>/dev/null | awk '{printf "%.0f", $1/1073741824}' || echo 4)
+    else
+        TOTAL_RAM_GB=$(awk '/MemTotal/ {printf "%.0f", $2/1048576}' /proc/meminfo 2>/dev/null || echo 4)
+    fi
+
+    # AMD/Intel iGPUs (lspci-detected, BACKEND=vulkan) share the same
+    # physical RAM as the rest of the system rather than having dedicated
+    # VRAM -- detect_gpu() above has no way to read a real "VRAM" figure
+    # for them (there isn't one), so VRAM_GB stays 0/unknown here and the
+    # ngl tiering below would otherwise always degrade to CPU-only, even on
+    # a box with plenty of headroom for a small model.
+    #
+    # VRAM_GB is used purely as a tuning-tier input below, not a literal
+    # memory reservation: llama.cpp's Vulkan backend duplicates offloaded
+    # weights into a separate device-local allocation rather than freeing
+    # them from host RAM (see docs/LOCAL_INFERENCE_TUNING.md and
+    # native_engine.rs::get_ngl's own comment for the measured numbers), so
+    # the real danger case -- a large model on this backend -- is already
+    # guarded independently by the model-size cap applied after the model
+    # file is resolved further down, regardless of what VRAM_GB says here.
+    # This estimate only needs to be a *reasonable* tier for everything
+    # else, not a safety boundary in its own right: 1/3 of total RAM,
+    # capped at 8GB (the tier already measured safe on the Windows
+    # reference machine's iGPU for a small model -- see launch-native.ps1).
+    # An explicit GHOSTLINK_VRAM_GB always wins outright either way.
+    if [ "$BACKEND" = "vulkan" ] && [ "${VRAM_GB:-0}" -eq 0 ] 2>/dev/null && [ -z "${GHOSTLINK_VRAM_GB:-}" ]; then
+        VRAM_GB=$(( TOTAL_RAM_GB / 3 ))
+        if [ "$VRAM_GB" -gt 8 ] 2>/dev/null; then
+            VRAM_GB=8
+        fi
+    fi
 
     local LOGICAL_CORES
     if [[ "$(uname -s)" == "Darwin" ]]; then
@@ -997,12 +1043,6 @@ start_services() {
     fi
 
     local MLOCK_FLAG=""
-    local TOTAL_RAM_GB
-    if [[ "$(uname -s)" == "Darwin" ]]; then
-        TOTAL_RAM_GB=$(sysctl -n hw.memsize 2>/dev/null | awk '{printf "%.0f", $1/1073741824}' || echo 4)
-    else
-        TOTAL_RAM_GB=$(awk '/MemTotal/ {printf "%.0f", $2/1048576}' /proc/meminfo 2>/dev/null || echo 4)
-    fi
     if [ "$TOTAL_RAM_GB" -ge 8 ] 2>/dev/null; then
         MLOCK_FLAG="--mlock"
     fi

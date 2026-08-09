@@ -62,6 +62,19 @@ tradeoff and it's worth it, like `launch-native.ps1`'s reference machine
 does), set `GHOSTLINK_LLAMA_NGL=-1` yourself — that's a permanent, explicit
 opt-in, not something to leave to chance on a host you haven't measured.
 
+### iGPU VRAM estimate on `launch.sh`
+
+`detect_gpu()` has no way to read a real "VRAM" figure for an AMD/Intel iGPU
+(there isn't one — it's shared system RAM), so `launch.sh` estimates a tier
+instead of always falling back to CPU-only: **1/3 of total system RAM,
+capped at 8GB**, applied only when the Vulkan backend was detected and
+`GHOSTLINK_VRAM_GB` wasn't set explicitly. This is a tuning-tier input, not
+a memory reservation — the actual danger case (a large model on this
+backend) is already handled by the model-size cap above regardless of what
+this estimate lands on, so it can afford to be reasonably generous rather
+than maximally conservative. `GHOSTLINK_VRAM_GB` always wins outright when
+set.
+
 Docker Compose uses:
 
 ```yaml
