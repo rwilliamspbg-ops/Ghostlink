@@ -286,23 +286,31 @@ $env:GHOSTLINK_LLAMA_THREADS = [Math]::Max(1, $logicalCores - 1)
 # micro-batch (-b 1024 -ub 512 vs -b 512 -ub 256) measured ~2.3x the
 # throughput (31.3 -> 71.8 tok/s).
 #
-# GHOSTLINK_LLAMA_NGL is deliberately NOT pinned here (this launch path used
-# to force it to -1, "offload every layer"). Found the hard way on a large
-# model: this machine's GPU is integrated -- "VRAM" is the same physical RAM
-# as everything else, so llama.cpp's Vulkan backend offloading a layer
-# doesn't move its weights out of system RAM, it *duplicates* them into a
-# separate device-local allocation. Measured loading a 13.6GB model: ~0.54GB
-# committed CPU-only vs ~14.15GB at full offload (-ngl -1), for only
-# 6.48 -> ~18 tok/s -- a 26x memory cost for well under 3x speed, and full
-# offload left a 27.6GB host under 1GB free. get_ngl() in native_engine.rs
-# now caps large models toward CPU-only automatically for exactly this
-# reason; leaving GHOSTLINK_LLAMA_NGL unset lets that per-model sizing take
-# effect instead of forcing full offload regardless of model size. Set
-# GHOSTLINK_LLAMA_NGL yourself for a fixed value regardless of model size --
-# it still wins outright.
+# GHOSTLINK_LLAMA_NGL is pinned to -1 (offload every layer) as a deliberate,
+# *measured* choice, not the default get_ngl() in native_engine.rs would
+# pick on its own for a large model. This machine's GPU is integrated --
+# "VRAM" is the same physical RAM as everything else, so llama.cpp's Vulkan
+# backend offloading a layer doesn't move its weights out of system RAM, it
+# duplicates them into a separate device-local allocation. Measured with a
+# controlled back-to-back comparison (same 13.6GB model, same prompt, same
+# seed, same direct llama-server timings) at ngl 0 / 24 / -1:
+#
+#   ngl    decode speed   committed memory   free system RAM while loaded
+#   0      8.78 tok/s     0.54GB             ~18GB
+#   24     8.03 tok/s     7.35GB             ~11GB   (worse than 0 -- not a viable middle ground)
+#   -1     16.84 tok/s    14.15GB            ~0.4GB  (reproduced twice)
+#
+# Full offload is genuinely ~1.9x faster, at the cost of leaving well under
+# 1GB free for everything else on this 27.6GB host while a model is loaded.
+# That's a real, known, accepted risk on this machine -- not an oversight --
+# chosen for the throughput. get_ngl() still defaults large models toward
+# CPU-only automatically when GHOSTLINK_LLAMA_NGL is *not* set, as a safety
+# net for other deployments/hosts that haven't made this same measured
+# tradeoff; this script opts out of that default explicitly.
 $env:GHOSTLINK_GPU_NAME = "AMD Radeon 860M Graphics"
 $env:GHOSTLINK_VRAM_GB = "8"
 $env:GHOSTLINK_COMPUTE_CAPABILITY = "gpu"
+$env:GHOSTLINK_LLAMA_NGL = "-1"
 
 # Deliberately NOT forcing GHOSTLINK_CTX_SIZE here (this launch path used to
 # unconditionally set it to 16384). Found the hard way: that value was tuned
