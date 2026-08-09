@@ -427,16 +427,16 @@ describe('GhostlinkAPI', () => {
   });
 
   describe('Inference Engines', () => {
-    it('should fall back to Ollama descriptors when the endpoint is missing', async () => {
+    it('surfaces an error instead of fabricating an Ollama identity when the endpoint is missing', async () => {
       const error: any = new Error('Not Found');
       error.response = { status: 404 };
       mockAxiosInstance.get.mockRejectedValue(error);
 
       const result = await api.getInferenceEngines();
 
-      expect(result.current).toBe('ollama');
-      expect(result.engines).toHaveLength(3);
-      expect(result.engines[0].name).toBe('ollama');
+      expect(result.error).toBeTruthy();
+      expect(result.current).toBe('');
+      expect(result.engines).toHaveLength(0);
       expect(mockAxiosInstance.get).toHaveBeenCalledWith('/api/inference/engines');
     });
   });

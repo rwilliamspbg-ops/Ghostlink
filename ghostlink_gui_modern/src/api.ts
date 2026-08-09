@@ -1,6 +1,6 @@
 import axios, { AxiosInstance } from 'axios';
 import { Model, Metric, Session, Worker, Settings, McpServer, McpServerInput, WorkspaceEntry } from './store';
-import { createInferenceEngineDescriptors, InferenceEngineDescriptor } from './types/engines';
+import { InferenceEngineDescriptor } from './types/engines';
 
 export interface MetricsHistoryPoint {
   timestamp_ms: number;
@@ -735,19 +735,19 @@ export class GhostlinkAPI {
       const response = await this.http.get('/api/inference/engines');
       return {
         engines: response.data.engines || [],
-        current: response.data.current || 'ollama',
+        current: response.data.current || '',
       };
     } catch (error: any) {
-      if (this.isNotFound(error)) {
-        return {
-          current: 'ollama',
-          engines: createInferenceEngineDescriptors('ollama'),
-        };
-      }
-
+      // Previously fabricated a full "Ollama, active" result here with no
+      // `error` field set on a 404 specifically — indistinguishable from a
+      // real successful response to any caller that only checks
+      // `result.error`, so a stale build or misconfigured proxy in front of
+      // this route looked exactly like the user had genuinely selected
+      // Ollama (which doesn't support tool calls in this app), silently
+      // disabling tool calling with no indication anything was wrong.
       return {
         engines: [],
-        current: 'ollama',
+        current: '',
         error: error.response?.data?.error || error.message,
       };
     }
