@@ -938,9 +938,20 @@ start_services() {
     elif [ "$VRAM_GB" -ge 8 ] 2>/dev/null; then
         LLAMA_NGL=24
     elif [ "$VRAM_GB" -ge 4 ] 2>/dev/null; then
-        LLAMA_NGL=99
+        LLAMA_NGL=12
     else
-        LLAMA_NGL=99
+        # VRAM_GB is 0/unknown here for any non-NVIDIA GPU (the rocm-smi and
+        # lspci detection branches below never populate it, and Apple Metal
+        # doesn't either) -- this used to fall through to `99`,
+        # llama.cpp's "offload every layer" sentinel, which blindly tries to
+        # offload everything with zero idea whether there's VRAM to fit it
+        # in. Degrade to CPU-only instead, matching
+        # NativeEngineClient::get_ngl()'s own equivalent tier in
+        # crates/ghost-link/src/native_engine.rs (Rust and this shell
+        # tiering are independent, hand-duplicated implementations -- this
+        # regression was already fixed on the Rust side but never carried
+        # over here).
+        LLAMA_NGL=0
     fi
 
     if [ "$BACKEND" = "rocm" ]; then
@@ -1052,12 +1063,42 @@ start_services() {
         fi
         MODEL_ALIAS=$(basename "$MODEL_FILE" .gguf)
 
+        # Model file size in GB, used below to cap ngl/ctx down for large
+        # models on an integrated GPU regardless of the VRAM tier -- `stat`'s
+        # flag differs between GNU (Linux) and BSD (macOS) coreutils, hence
+        # trying both.
+        MODEL_SIZE_GB=0
+        MODEL_SIZE_BYTES=$(stat -c%s "$MODEL_FILE" 2>/dev/null || stat -f%z "$MODEL_FILE" 2>/dev/null || echo 0)
+        if [ "${MODEL_SIZE_BYTES:-0}" -gt 0 ] 2>/dev/null; then
+            MODEL_SIZE_GB=$(( MODEL_SIZE_BYTES / 1073741824 ))
+        fi
+
+        # A large model on the Vulkan backend (lspci-detected AMD/Intel iGPU,
+        # unified host/device memory) doesn't get a real memory win from
+        # offload the way a discrete GPU does: llama.cpp's Vulkan backend
+        # duplicates offloaded weights into a separate device-local
+        # allocation instead of moving them out of host RAM. Verified
+        # directly on a Windows AMD Radeon 860M (same Vulkan backend, same
+        # duplication mechanism): loading a 13.6GB model left a 27.6GB host
+        # under 1GB free at ngl=-1, vs ~18GB free at ngl=0, for well under 2x
+        # the speed. CUDA (real discrete NVIDIA VRAM) and ROCm don't have
+        # this problem, so the cap is scoped to Vulkan only -- and an
+        # explicit GHOSTLINK_LLAMA_NGL still wins outright either way.
+        if [ "$BACKEND" = "vulkan" ] && [ -z "${GHOSTLINK_LLAMA_NGL:-}" ] \
+            && [ "${MODEL_SIZE_GB:-0}" -ge 10 ] 2>/dev/null; then
+            LLAMA_NGL=0
+        fi
+
         progress_bar 3 3
         echo " ${GREEN}Native stack ready${NC}            "
         echo ""
         # Context size: never leave model default (often 128k) on consumer GPUs.
         if [ -n "${GHOSTLINK_CTX_SIZE:-}" ]; then
             CTX_SIZE=$GHOSTLINK_CTX_SIZE
+        elif [ "$BACKEND" = "vulkan" ] && [ "${MODEL_SIZE_GB:-0}" -ge 10 ] 2>/dev/null; then
+            CTX_SIZE=4096
+        elif [ "$BACKEND" = "vulkan" ] && [ "${MODEL_SIZE_GB:-0}" -ge 5 ] 2>/dev/null; then
+            CTX_SIZE=8192
         elif [ "${VRAM_GB:-0}" -ge 16 ] 2>/dev/null; then
             CTX_SIZE=16384
         elif [ "${VRAM_GB:-0}" -ge 12 ] 2>/dev/null; then

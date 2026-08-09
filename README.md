@@ -330,6 +330,15 @@ flag was omitted entirely in that case, and llama-server's own default
 GPU offload and no warning on any launch path that didn't set
 `GHOSTLINK_VRAM_GB`/`GHOSTLINK_LLAMA_NGL` itself.
 
+That auto-detect default is itself capped to CPU-only for large (≥10GB)
+models on an integrated GPU, regardless of VRAM tier — measured directly,
+full offload on this class of hardware duplicates weights into RAM rather
+than freeing it the way a discrete GPU would, and can leave a host with
+under 1GB free while a large model is loaded. `GHOSTLINK_LLAMA_NGL` always
+overrides this either way. See
+[docs/LOCAL_INFERENCE_TUNING.md](docs/LOCAL_INFERENCE_TUNING.md) for the
+measured numbers and the reasoning.
+
 Compiling with `RUSTFLAGS="-C target-cpu=native"` further improves performance by enabling CPU-specific instruction sets (opt-in; not set by default — a multi-node cluster can't assume every node shares one CPU microarchitecture).
 
 ### Build profile
