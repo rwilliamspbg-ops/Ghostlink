@@ -113,12 +113,43 @@ const CodeBlock: React.FC<{ children?: React.ReactNode }> = ({ children, ...rest
       >
         {copied ? <Check size={13} className="text-green-400" aria-hidden="true" /> : <Copy size={13} aria-hidden="true" />}
       </button>
-      <pre {...rest} className="!bg-slate-950 !border !border-slate-800 !rounded-xl !p-4 overflow-x-auto text-xs">
+      <pre {...rest} className="!bg-slate-950 !border !border-slate-800 !rounded-xl !p-4 overflow-x-auto text-[13px] leading-relaxed">
         {children}
       </pre>
     </div>
   );
 };
+
+// GFM tables (remark-gfm) render at their natural width, which routinely
+// blows past a chat bubble's — wrap in a scroll container instead of letting
+// them force the whole bubble (and page) wider or mangle-wrap every cell.
+const MarkdownTable: React.FC<React.TableHTMLAttributes<HTMLTableElement>> = (props) => (
+  <div className="overflow-x-auto">
+    <table {...props} />
+  </div>
+);
+
+// Shared knobs for both markdown renders below: tames default heading sizes
+// (typography's h1/h2/h3 scale reads fine on a full-width article, but is
+// oversized inside a narrow chat bubble — a one-line reply with a "# Summary"
+// heading shouldn't render that heading larger than the rest of the message
+// combined), tightens list/paragraph rhythm, and swaps the plugin's
+// backtick-quoted inline `code` styling for a subtler background pill.
+const MARKDOWN_PROSE_CLASSES =
+  'max-w-none break-words ' +
+  'prose-headings:font-semibold ' +
+  'prose-h1:text-lg prose-h1:mt-4 prose-h1:mb-2 first:prose-h1:mt-0 ' +
+  'prose-h2:text-base prose-h2:mt-4 prose-h2:mb-2 first:prose-h2:mt-0 ' +
+  'prose-h3:text-sm prose-h3:mt-3 prose-h3:mb-1 first:prose-h3:mt-0 ' +
+  'prose-p:leading-relaxed prose-li:my-1 prose-ul:my-2 prose-ol:my-2 ' +
+  // `prose-code:` targets every <code>, inside <pre> or not — scoping to
+  // `:not(pre)>code` keeps this to inline code so it can't also shrink/pill
+  // the syntax-highlighted text inside fenced code blocks (CodeBlock already
+  // styles those directly).
+  '[&_:not(pre)>code]:before:content-none [&_:not(pre)>code]:after:content-none ' +
+  '[&_:not(pre)>code]:bg-slate-800 [&_:not(pre)>code]:text-slate-200 [&_:not(pre)>code]:font-normal ' +
+  '[&_:not(pre)>code]:rounded [&_:not(pre)>code]:px-1.5 [&_:not(pre)>code]:py-0.5 ' +
+  '[&_:not(pre)>code]:text-[0.85em] [&_:not(pre)>code]:break-words';
 
 // One column of a Compare Mode turn — a deliberately trimmed-down sibling of
 // the full message bubble below (no tool-call cards, no pending-confirmation
@@ -143,8 +174,8 @@ const CompareColumn: React.FC<{
     </div>
     <div className="text-sm leading-relaxed text-slate-200 min-h-[1.5em]">
       {msg.content ? (
-        <div className="prose prose-invert prose-sm max-w-none break-words">
-          <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]} components={{ pre: CodeBlock }}>
+        <div className={`prose prose-invert prose-sm ${MARKDOWN_PROSE_CLASSES}`}>
+          <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]} components={{ pre: CodeBlock, table: MarkdownTable }}>
             {msg.content}
           </ReactMarkdown>
           {isLoading && <span className="inline-block w-[7px] h-[1em] bg-blue-400 align-text-bottom ml-0.5 animate-pulse" />}
@@ -1249,11 +1280,11 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                                 : 'text-slate-200 bg-transparent'
                         }`}>
                             {msg.role === 'assistant' ? (
-                              <div className="prose prose-invert prose-sm max-w-none break-words">
+                              <div className={`prose prose-invert ${MARKDOWN_PROSE_CLASSES}`}>
                                 <ReactMarkdown
                                   remarkPlugins={[remarkGfm]}
                                   rehypePlugins={[rehypeHighlight]}
-                                  components={{ pre: CodeBlock }}
+                                  components={{ pre: CodeBlock, table: MarkdownTable }}
                                 >
                                   {msg.content}
                                 </ReactMarkdown>
