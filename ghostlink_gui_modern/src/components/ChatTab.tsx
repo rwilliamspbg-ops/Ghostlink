@@ -107,7 +107,8 @@ const CodeBlock: React.FC<{ children?: React.ReactNode }> = ({ children, ...rest
       <button
         onClick={handleCopy}
         aria-label="Copy code"
-        className="absolute top-2 right-2 p-1.5 rounded-lg bg-slate-800/80 border border-slate-700 text-slate-400 hover:text-white hover:bg-slate-700 opacity-0 group-hover/code:opacity-100 focus:opacity-100 transition"
+        title="Copy code"
+        className="absolute top-2 right-2 p-1.5 rounded-lg bg-slate-800/80 border border-slate-700 text-slate-400 hover:text-white hover:bg-slate-700 opacity-0 group-hover/code:opacity-100 focus-visible:opacity-100 focus:opacity-100 focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none transition"
       >
         {copied ? <Check size={13} className="text-green-400" aria-hidden="true" /> : <Copy size={13} aria-hidden="true" />}
       </button>
@@ -154,8 +155,9 @@ const CompareColumn: React.FC<{
     {msg.content && !isLoading && (
       <button
         onClick={() => onCopy(msg.content, msg.id)}
-        className="self-start p-1.5 rounded-lg hover:bg-slate-800 text-slate-500 hover:text-slate-300 transition"
+        className="self-start p-1.5 rounded-lg hover:bg-slate-800 text-slate-500 hover:text-slate-300 focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none transition"
         aria-label="Copy response"
+        title="Copy response"
       >
         {copiedId === msg.id ? <Check size={12} className="text-green-400" aria-hidden="true" /> : <Copy size={12} aria-hidden="true" />}
       </button>

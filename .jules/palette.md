@@ -1,5 +1,9 @@
 # Palette's Journal
 
+## 2026-08-08 - [Markdown Code Blocks and Compare Mode Copy Tooltips and Focus Rings]
+**Learning:** Core user utilities such as copy-to-clipboard buttons (both nested inside markdown code blocks and listed within Compare Mode column segments) are easily lost during keyboard navigation if they lack distinct, high-contrast focus visible indicator classes. Sighted desktop users expect visual hover confirmation via browser `title` tooltips, while keyboard/assistive navigators require the elements to become visually apparent and highlighted (e.g. `focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-blue-500`) to track active cursor context correctly.
+**Action:** Always provide custom high-contrast focus outlines and descriptive `title` attributes on all localized, action-oriented clipboard utility trigger elements.
+
 ## 2026-08-07 - [Metrics Tab Header Accessibility]
 **Learning:** Live monitoring headers often contain specialized quick-action buttons (like Export CSV and Manual Refresh) that lack text labels to keep the dashboard visual design minimal. While they have correct `aria-label` and `title` attributes, they must also be styled with customized, high-contrast focus rings (`focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none`) to preserve keyboard navigation. Without explicit indicators, users tabbing through live performance monitors will lose their selection completely, severely degrading the accessibility of critical dashboard features.
 **Action:** Always complement icon-only action triggers in live monitors and charts with explicit focus rings to guarantee seamless, visual keyboard tracking.
