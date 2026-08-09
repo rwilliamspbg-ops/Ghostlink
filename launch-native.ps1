@@ -270,28 +270,37 @@ if ($InferenceBackend -eq "native") {
 $logicalCores = [Environment]::ProcessorCount
 $env:GHOSTLINK_LLAMA_THREADS = [Math]::Max(1, $logicalCores - 1)
 
-# GHOSTLINK_VRAM_GB was never set on this launch path, so native_engine.rs's
-# perf-tier tables (crates/ghost-link/src/native_engine.rs:default_perf_args)
-# always fell back to their worst-case "<4GB" bucket regardless of the real
-# hardware -- -b 512 -ub 128, the smallest prompt micro-batch in the table,
-# directly tanking prefill throughput / time-to-first-token. /api/metrics
-# already detects this machine's AMD Radeon 860M at ~4GB via
-# ghostlink-core::system_profile, so wire that same figure in here to move
-# batch/ubatch/ctx tiering up to their ">=4GB" values instead. GHOSTLINK_LLAMA_NGL
-# is pinned to -1 (offload every layer llama-server can fit, its own default)
-# so this doesn't also feed the separate VRAM->ngl cap table in get_ngl(),
-# which would otherwise cap offload at a fixed 12 layers -- a regression from
-# the full-offload that's already working today.
-$env:GHOSTLINK_VRAM_GB = "4"
+# GHOSTLINK_GPU_NAME / GHOSTLINK_VRAM_GB / GHOSTLINK_COMPUTE_CAPABILITY feed
+# ghostlink-core::system_profile::detect_gpu_from_env(), which takes absolute
+# priority over the platform GPU probes (crates/ghostlink-core/src/system_profile.rs)
+# -- and those probes are the wrong tool for this machine's iGPU. The Windows
+# WMI path reads Win32_VideoController.AdapterRAM, a 32-bit field that's
+# unreliable for integrated GPUs (frequently 0 or a tiny fixed carve-out); the
+# DXGI fallback only reads DedicatedVideoMemory, never SharedSystemMemory, so
+# it has the same blind spot for a unified-memory iGPU like the 860M. Without
+# an override, this machine was landing on native_engine.rs's worst-case
+# "<4GB" perf-tier bucket regardless of the real hardware.
+#
+# 8 was picked empirically, not from a detected number: benchmarked on this
+# machine at 4GB vs 8GB with the same model, and 8GB's larger prompt
+# micro-batch (-b 1024 -ub 512 vs -b 512 -ub 256) measured ~2.3x the
+# throughput (31.3 -> 71.8 tok/s). GHOSTLINK_LLAMA_NGL is pinned to -1
+# (offload every layer llama-server can fit, its own default) so raising
+# GHOSTLINK_VRAM_GB doesn't also feed the separate VRAM->ngl cap table in
+# get_ngl(), which would otherwise cap offload at a fixed layer count -- a
+# regression from the full-offload that's already working today.
+$env:GHOSTLINK_GPU_NAME = "AMD Radeon 860M Graphics"
+$env:GHOSTLINK_VRAM_GB = "8"
+$env:GHOSTLINK_COMPUTE_CAPABILITY = "gpu"
 $env:GHOSTLINK_LLAMA_NGL = "-1"
 
-# GHOSTLINK_VRAM_GB=4 above also drives native_engine.rs's get_ctx_size() VRAM
-# tier table, which caps context at its smallest bucket (4096) -- that's sized
-# off the 860M's fixed VRAM carve-out, not the ~29GB of system RAM this iGPU
-# actually shares (q8_0 KV + Flash Attention are already on by default, so the
-# real per-token KV cost is small). GHOSTLINK_CTX_SIZE takes priority over the
-# VRAM tiering in get_ctx_size(), so set it explicitly here -- but only if the
-# caller hasn't already exported one, so manual overrides still win.
+# GHOSTLINK_VRAM_GB=8 above also drives native_engine.rs's get_ctx_size() VRAM
+# tier table, which would cap context at its ">=8GB" bucket (8192) -- lower
+# than we actually want (q8_0 KV + Flash Attention are already on by default,
+# so the real per-token KV cost is small and 16384 comfortably fits). Set it
+# explicitly here so GHOSTLINK_CTX_SIZE (which takes priority over the VRAM
+# tiering in get_ctx_size()) wins instead -- but only if the caller hasn't
+# already exported one, so manual overrides still win.
 if (-not $env:GHOSTLINK_CTX_SIZE) {
     $env:GHOSTLINK_CTX_SIZE = "16384"
 }
