@@ -378,13 +378,18 @@ export const McpTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
               )}
 
               <div>
-                <label htmlFor="mcp-name" className="block text-xs font-bold text-slate-400 mb-1">Name</label>
+                <label htmlFor="mcp-name" className="block text-xs font-bold text-slate-400 mb-1">
+                  Name <span className="text-red-500" title="Required">*</span>
+                </label>
                 <input
                   id="mcp-name"
                   type="text"
+                  required
                   value={form.name}
                   onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
-                  className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500/50"
+                  placeholder="e.g. filesystem-server"
+                  title="Enter the unique name of the MCP server"
+                  className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
                 />
               </div>
 
@@ -397,7 +402,9 @@ export const McpTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                   type="text"
                   value={form.slot}
                   onChange={(e) => setForm((f) => ({ ...f, slot: e.target.value }))}
-                  className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500/50"
+                  placeholder="e.g. workspace_tools"
+                  title="Assign an optional slot or tool category for this server"
+                  className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
                 />
               </div>
 
@@ -405,13 +412,13 @@ export const McpTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                 <legend className="block text-xs font-bold text-slate-400 mb-1">Transport</legend>
                 <div className="flex gap-4" role="radiogroup" aria-label="Transport">
                   {(['stdio', 'http'] as const).map((t) => (
-                    <label key={t} className="flex items-center gap-1.5 text-sm text-slate-300">
+                    <label key={t} className="flex items-center gap-1.5 text-sm text-slate-300 cursor-pointer select-none">
                       <input
                         type="radio"
                         name="mcp-transport"
                         checked={form.transport === t}
                         onChange={() => setForm((f) => ({ ...f, transport: t }))}
-                        className="accent-blue-600"
+                        className="accent-blue-600 focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
                       />
                       {t === 'stdio' ? 'Stdio (local command)' : 'HTTP'}
                     </label>
@@ -422,14 +429,18 @@ export const McpTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
               {form.transport === 'stdio' ? (
                 <>
                   <div>
-                    <label htmlFor="mcp-command" className="block text-xs font-bold text-slate-400 mb-1">Command</label>
+                    <label htmlFor="mcp-command" className="block text-xs font-bold text-slate-400 mb-1">
+                      Command <span className="text-red-500" title="Required">*</span>
+                    </label>
                     <input
                       id="mcp-command"
                       type="text"
+                      required={form.transport === 'stdio'}
                       value={form.command}
                       onChange={(e) => setForm((f) => ({ ...f, command: e.target.value }))}
-                      placeholder="npx"
-                      className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 font-mono focus:outline-none focus:ring-2 focus:ring-blue-500/50"
+                      placeholder="e.g. npx"
+                      title="Enter the local command executable name"
+                      className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 font-mono focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
                     />
                   </div>
                   <div>
@@ -442,7 +453,8 @@ export const McpTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                       onChange={(e) => setArgsText(e.target.value)}
                       rows={3}
                       placeholder={'-y\n@modelcontextprotocol/server-filesystem'}
-                      className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 font-mono focus:outline-none focus:ring-2 focus:ring-blue-500/50 resize-y"
+                      title="Enter arguments to pass to the command, one per line"
+                      className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 font-mono focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none resize-y"
                     />
                   </div>
                   <div>
@@ -455,21 +467,26 @@ export const McpTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                       onChange={(e) => setEnvText(e.target.value)}
                       rows={3}
                       placeholder={'BRAVE_API_KEY=${BRAVE_API_KEY}'}
-                      className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 font-mono focus:outline-none focus:ring-2 focus:ring-blue-500/50 resize-y"
+                      title="Environment variables for the stdio process, formatted as KEY=value on each line"
+                      className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 font-mono focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none resize-y"
                     />
                   </div>
                 </>
               ) : (
                 <>
                   <div>
-                    <label htmlFor="mcp-url" className="block text-xs font-bold text-slate-400 mb-1">URL</label>
+                    <label htmlFor="mcp-url" className="block text-xs font-bold text-slate-400 mb-1">
+                      URL <span className="text-red-500" title="Required">*</span>
+                    </label>
                     <input
                       id="mcp-url"
                       type="text"
+                      required={form.transport === 'http'}
                       value={form.url}
                       onChange={(e) => setForm((f) => ({ ...f, url: e.target.value }))}
-                      placeholder="https://mcp.example.com/mcp"
-                      className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 font-mono focus:outline-none focus:ring-2 focus:ring-blue-500/50"
+                      placeholder="e.g. https://mcp.example.com/mcp"
+                      title="Enter the remote HTTP/SSE MCP endpoint URL"
+                      className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 font-mono focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
                     />
                   </div>
                   <div>
@@ -482,7 +499,8 @@ export const McpTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                       onChange={(e) => setEnvText(e.target.value)}
                       rows={3}
                       placeholder={'X-Api-Key=${REMOTE_TOOLS_API_KEY}'}
-                      className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 font-mono focus:outline-none focus:ring-2 focus:ring-blue-500/50 resize-y"
+                      title="Custom HTTP headers to include in remote calls, formatted as KEY=value on each line"
+                      className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 font-mono focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none resize-y"
                     />
                   </div>
                 </>
@@ -496,21 +514,22 @@ export const McpTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                   min={1}
                   value={form.timeout_secs}
                   onChange={(e) => setForm((f) => ({ ...f, timeout_secs: Math.max(1, Number(e.target.value) || 1) }))}
-                  className="w-32 bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500/50"
+                  title="Request timeout in seconds"
+                  className="w-32 bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
                 />
               </div>
 
               <div className="flex items-center gap-4">
-                <label className="flex items-center gap-2 text-sm text-slate-300">
+                <label className="flex items-center gap-2 text-sm text-slate-300 cursor-pointer select-none">
                   <input
                     type="checkbox"
                     checked={form.enabled}
                     onChange={(e) => setForm((f) => ({ ...f, enabled: e.target.checked }))}
-                    className="accent-blue-600"
+                    className="accent-blue-600 focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
                   />
                   Enabled
                 </label>
-                <label className="flex items-center gap-2 text-sm text-slate-300">
+                <label className="flex items-center gap-2 text-sm text-slate-300 cursor-pointer select-none">
                   <input
                     type="checkbox"
                     checked={form.requires_confirmation}
