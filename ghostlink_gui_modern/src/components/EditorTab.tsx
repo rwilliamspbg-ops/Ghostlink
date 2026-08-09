@@ -534,7 +534,7 @@ export const EditorTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
 
         if (token.isCancellationRequested || !result.success) return { items: [] };
 
-        let suggestion = (result.data?.response ?? '')
+        const suggestion = (result.data?.response ?? '')
           .replace(/^```[a-zA-Z0-9_-]*\r?\n?/, '')
           .replace(/```\s*$/, '')
           .replace(/^\r?\n+/, '')
@@ -596,7 +596,7 @@ export const EditorTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
             </button>
           </div>
         )}
-        <div className="flex-1 overflow-y-auto py-2">
+        <div className="flex-1 overflow-y-auto py-2" tabIndex={0} role="region" aria-label="Workspace file tree">
           {treeError && <div className="px-3 py-2 text-xs text-red-400">{treeError}</div>}
           {!treeError && rootEntries.length === 0 && !treeLoading && (
             <div className="px-3 py-2 text-xs text-slate-600">Empty workspace</div>

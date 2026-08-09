@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { AnimatePresence, motion } from 'framer-motion';
+import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
 import {
   Search,
   MessageSquare,
@@ -51,6 +51,7 @@ export const CommandPalette: React.FC = () => {
   const [highlight, setHighlight] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
   const triggerRef = useRef<HTMLElement | null>(null);
+  const shouldReduceMotion = useReducedMotion();
 
   const commands = useMemo<Command[]>(
     () => [
@@ -169,17 +170,17 @@ export const CommandPalette: React.FC = () => {
           onClick={() => setOpen(false)}
         >
           <motion.div
-            initial={{ opacity: 0, scale: 0.96, y: -8 }}
-            animate={{ opacity: 1, scale: 1, y: 0 }}
-            exit={{ opacity: 0, scale: 0.96, y: -8 }}
-            transition={{ duration: 0.15, ease: [0.16, 1, 0.3, 1] }}
+            initial={shouldReduceMotion ? { opacity: 0 } : { opacity: 0, scale: 0.96, y: -8 }}
+            animate={shouldReduceMotion ? { opacity: 1 } : { opacity: 1, scale: 1, y: 0 }}
+            exit={shouldReduceMotion ? { opacity: 0 } : { opacity: 0, scale: 0.96, y: -8 }}
+            transition={{ duration: shouldReduceMotion ? 0.01 : 0.15, ease: [0.16, 1, 0.3, 1] }}
             role="dialog"
             aria-modal="true"
             aria-label="Command palette"
             onClick={(e) => e.stopPropagation()}
             className="w-full max-w-lg mx-4 bg-slate-900 border border-slate-800 rounded-2xl shadow-2xl overflow-hidden"
           >
-        <div className="flex items-center gap-3 px-4 py-3 border-b border-slate-800">
+        <div className="flex items-center gap-3 px-4 py-3 border-b border-slate-800 focus-within:ring-2 focus-within:ring-inset focus-within:ring-blue-500">
           <Search size={16} className="text-slate-500 shrink-0" aria-hidden="true" />
           <input
             ref={inputRef}
@@ -196,6 +197,9 @@ export const CommandPalette: React.FC = () => {
           />
           <kbd className="text-[10px] text-slate-500 bg-slate-950 px-1.5 py-0.5 rounded border border-slate-700">Esc</kbd>
         </div>
+        <div className="sr-only" role="status" aria-live="polite">
+          {filtered.length === 0 ? 'No matching commands' : `${filtered.length} command${filtered.length === 1 ? '' : 's'} found`}
+        </div>
         <ul id="command-palette-list" role="listbox" aria-label="Commands" className="max-h-80 overflow-y-auto p-2">
           {filtered.length === 0 ? (
             <li className="px-3 py-6 text-center text-sm text-slate-500">No matching commands</li>
@@ -203,6 +207,7 @@ export const CommandPalette: React.FC = () => {
             filtered.map((cmd, i) => {
               const Icon = cmd.icon;
               return (
+                // eslint-disable-next-line jsx-a11y/click-events-have-key-events -- combobox/listbox pattern: keyboard selection is handled by the input's onKeyDown via aria-activedescendant, this option never receives focus itself; onClick is the mouse/touch equivalent
                 <li
                   key={cmd.id}
                   id={`command-${cmd.id}`}

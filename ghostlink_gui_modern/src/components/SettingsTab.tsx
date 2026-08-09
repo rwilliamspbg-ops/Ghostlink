@@ -309,7 +309,7 @@ export const SettingsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
         </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto p-6">
+      <div className="flex-1 overflow-y-auto p-6" tabIndex={0} role="region" aria-label="Settings">
         <div className="max-w-5xl mx-auto space-y-6">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             <Section title="Compute Backend" icon={Gauge}>

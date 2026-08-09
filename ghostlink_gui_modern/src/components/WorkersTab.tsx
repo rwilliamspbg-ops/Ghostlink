@@ -173,6 +173,7 @@ export const WorkersTab: React.FC<{ api: any }> = ({ api }) => {
       </div>
 
       {showAddForm && (
+        // eslint-disable-next-line jsx-a11y/no-static-element-interactions -- wrapper only delegates Escape from the real interactive inputs/buttons inside, not a control itself
         <div
           className="px-6 py-4 border-b border-slate-800 bg-slate-900/30"
           onKeyDown={(e) => { if (e.key === 'Escape') setShowAddForm(false); }}
@@ -213,7 +214,7 @@ export const WorkersTab: React.FC<{ api: any }> = ({ api }) => {
         </div>
       )}
 
-      <div className="flex-1 overflow-y-auto p-6">
+      <div className="flex-1 overflow-y-auto p-6" tabIndex={0} role="region" aria-label="Workers">
         <div className="max-w-5xl mx-auto">
             {topology && (
               <div className="mb-6 bg-slate-900/50 border border-slate-800 rounded-3xl p-6 overflow-hidden">

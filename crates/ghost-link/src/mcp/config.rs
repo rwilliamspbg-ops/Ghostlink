@@ -112,10 +112,6 @@ impl McpConfigManager {
         Ok(file.servers)
     }
 
-    // Only called from set_enabled() below, which itself has no caller yet
-    // (see McpRegistry::set_enabled's doc comment) - kept for that same
-    // planned GUI enable/disable toggle rather than deleted.
-    #[allow(dead_code)]
     pub fn save(&self, servers: &[McpServerConfig]) -> Result<(), String> {
         for server in servers {
             validate_server(server)?;
@@ -131,7 +127,6 @@ impl McpConfigManager {
         Ok(())
     }
 
-    #[allow(dead_code)]
     pub fn set_enabled(&self, name: &str, enabled: bool) -> Result<(), String> {
         let mut servers = self.load()?;
         let server = servers
@@ -139,6 +134,50 @@ impl McpConfigManager {
             .find(|s| s.name == name)
             .ok_or_else(|| format!("no MCP server named '{name}'"))?;
         server.enabled = enabled;
+        self.save(&servers)
+    }
+
+    /// Appends a new server entry. Rejects a duplicate `name` rather than
+    /// silently overwriting it — renaming/replacing an existing server goes
+    /// through `update` instead, which is explicit about which entry it's
+    /// replacing.
+    pub fn add(&self, server: McpServerConfig) -> Result<(), String> {
+        let mut servers = self.load()?;
+        if servers.iter().any(|s| s.name == server.name) {
+            return Err(format!(
+                "an MCP server named '{}' already exists",
+                server.name
+            ));
+        }
+        servers.push(server);
+        self.save(&servers)
+    }
+
+    /// Replaces the server currently named `name` with `server` in full
+    /// (including allowing a rename via `server.name`).
+    pub fn update(&self, name: &str, server: McpServerConfig) -> Result<(), String> {
+        let mut servers = self.load()?;
+        let idx = servers
+            .iter()
+            .position(|s| s.name == name)
+            .ok_or_else(|| format!("no MCP server named '{name}'"))?;
+        if server.name != name && servers.iter().any(|s| s.name == server.name) {
+            return Err(format!(
+                "an MCP server named '{}' already exists",
+                server.name
+            ));
+        }
+        servers[idx] = server;
+        self.save(&servers)
+    }
+
+    pub fn remove(&self, name: &str) -> Result<(), String> {
+        let mut servers = self.load()?;
+        let before = servers.len();
+        servers.retain(|s| s.name != name);
+        if servers.len() == before {
+            return Err(format!("no MCP server named '{name}'"));
+        }
         self.save(&servers)
     }
 }
@@ -411,6 +450,88 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "./mcp_workspace"]
         }];
 
         assert!(manager.save(&servers).is_ok());
+        let _ = std::fs::remove_file(path);
+    }
+
+    fn stdio_server(name: &str) -> McpServerConfig {
+        McpServerConfig {
+            name: name.to_string(),
+            slot: "".to_string(),
+            enabled: true,
+            transport: McpTransport::Stdio {
+                command: "npx".to_string(),
+                args: vec![],
+                env: HashMap::new(),
+            },
+            requires_confirmation: false,
+            timeout_secs: 30,
+        }
+    }
+
+    #[test]
+    fn add_appends_a_new_server() {
+        let path = temp_config_path();
+        let manager = McpConfigManager::new(&path);
+        manager.add(stdio_server("filesystem")).unwrap();
+        let loaded = manager.load().unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].name, "filesystem");
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn add_rejects_duplicate_name() {
+        let path = temp_config_path();
+        let manager = McpConfigManager::new(&path);
+        manager.add(stdio_server("filesystem")).unwrap();
+        assert!(manager.add(stdio_server("filesystem")).is_err());
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn update_replaces_existing_server_and_allows_rename() {
+        let path = temp_config_path();
+        let manager = McpConfigManager::new(&path);
+        manager.add(stdio_server("filesystem")).unwrap();
+
+        let mut renamed = stdio_server("filesystem-v2");
+        renamed.requires_confirmation = true;
+        manager.update("filesystem", renamed).unwrap();
+
+        let loaded = manager.load().unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].name, "filesystem-v2");
+        assert!(loaded[0].requires_confirmation);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn update_missing_server_fails() {
+        let path = temp_config_path();
+        let manager = McpConfigManager::new(&path);
+        assert!(manager.update("nope", stdio_server("nope")).is_err());
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn remove_deletes_the_named_server() {
+        let path = temp_config_path();
+        let manager = McpConfigManager::new(&path);
+        manager.add(stdio_server("filesystem")).unwrap();
+        manager.add(stdio_server("calculator")).unwrap();
+        manager.remove("filesystem").unwrap();
+
+        let loaded = manager.load().unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].name, "calculator");
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn remove_missing_server_fails() {
+        let path = temp_config_path();
+        let manager = McpConfigManager::new(&path);
+        assert!(manager.remove("nope").is_err());
         let _ = std::fs::remove_file(path);
     }
 

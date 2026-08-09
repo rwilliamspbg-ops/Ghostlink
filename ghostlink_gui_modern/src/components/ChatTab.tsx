@@ -26,7 +26,8 @@ import {
   GitCompare,
   Pencil,
   Mic,
-  LayoutGrid,
+  Paperclip,
+  FileText,
 } from 'lucide-react';
 import { useAppStore, ChatMessage } from '../store';
 import { GhostlinkAPI } from '../api';
@@ -183,6 +184,17 @@ const CompareRow: React.FC<{
   </div>
 );
 
+// Attachments are read entirely client-side and inlined as fenced code
+// blocks — there's no upload/multimodal endpoint, so only text-ish files
+// make sense here; a 256KB cap keeps one large paste from blowing the
+// conversation token budget.
+const MAX_ATTACHMENT_BYTES = 256 * 1024;
+const TEXT_FILE_EXTENSIONS = new Set([
+  'txt', 'md', 'markdown', 'json', 'csv', 'tsv', 'log', 'yaml', 'yml', 'toml', 'ini', 'cfg', 'conf', 'env',
+  'py', 'js', 'jsx', 'ts', 'tsx', 'rs', 'go', 'java', 'kt', 'c', 'h', 'cpp', 'hpp', 'cs', 'rb', 'php',
+  'sh', 'bash', 'ps1', 'sql', 'css', 'scss', 'html', 'htm', 'xml', 'svg',
+]);
+
 // Pre-configured start prompts to improve immediate UX and help-seeking onboarding.
 const SUGGESTIONS = [
   { text: 'Check active cluster node health', label: 'Ask about active cluster node health' },
@@ -235,6 +247,15 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
   const { selectedEngine } = useInferenceEngines(api);
   const [confirmingId, setConfirmingId] = useState<string | null>(null);
 
+  // File attachments: read entirely client-side and inlined into the
+  // outgoing message as fenced code blocks. There's no multimodal/upload
+  // path on the backend (the chat request is plain text), so this is
+  // deliberately scoped to text-ish files rather than pretending to support
+  // images the model will never actually see.
+  const [attachments, setAttachments] = useState<{ id: string; name: string; content: string; size: number }[]>([]);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [isDraggingFile, setIsDraggingFile] = useState(false);
+
   // Compare Mode: send one turn to two models at once and render the
   // replies side-by-side. Deliberately scoped down from full conversation
   // branching (a tree data model + branch-navigation UI) to something
@@ -250,6 +271,22 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
   const genStartRef = useRef<number | null>(null);
   const genTokenCountRef = useRef(0);
   const [genTick, setGenTick] = useState(0);
+
+  // Screen readers can't sensibly narrate a response as it streams token by
+  // token, so instead of a live region on the growing bubble itself, this
+  // announces once when a response finishes — enough for a screen-reader
+  // user to know it's safe to go read the reply.
+  const [streamAnnouncement, setStreamAnnouncement] = useState('');
+  const prevStreamingIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (prevStreamingIdRef.current && !streamingId) {
+      setStreamAnnouncement('Response complete.');
+      const clear = setTimeout(() => setStreamAnnouncement(''), 3000);
+      prevStreamingIdRef.current = streamingId;
+      return () => clearTimeout(clear);
+    }
+    prevStreamingIdRef.current = streamingId;
+  }, [streamingId]);
 
   // One checkbox per legacy "tool slot" (calculator, file_operations, ...) that
   // has a real MCP server configured for it — replaces the old hardcoded
@@ -537,10 +574,67 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
     }
   };
 
+  const addFiles = async (files: FileList | File[]) => {
+    for (const file of Array.from(files)) {
+      const ext = file.name.split('.').pop()?.toLowerCase() ?? '';
+      const looksTexty =
+        TEXT_FILE_EXTENSIONS.has(ext) || file.type.startsWith('text/') || file.type === 'application/json';
+      if (!looksTexty) {
+        addToast({
+          type: 'error',
+          message: `${file.name}: only text-based files are supported (code, markdown, JSON, CSV, logs, config). Images and other binaries aren't sent to the model.`,
+        });
+        continue;
+      }
+      if (file.size > MAX_ATTACHMENT_BYTES) {
+        addToast({
+          type: 'error',
+          message: `${file.name}: ${(file.size / 1024).toFixed(0)}KB exceeds the ${MAX_ATTACHMENT_BYTES / 1024}KB attachment limit.`,
+        });
+        continue;
+      }
+      try {
+        const content = await file.text();
+        setAttachments((prev) => [
+          ...prev,
+          { id: `${Date.now()}-${Math.random().toString(36).slice(2)}`, name: file.name, content, size: file.size },
+        ]);
+      } catch {
+        addToast({ type: 'error', message: `Failed to read ${file.name}.` });
+      }
+    }
+  };
+
+  const handleFileInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files) addFiles(e.target.files);
+    e.target.value = '';
+  };
+
+  const removeAttachment = (id: string) => setAttachments((prev) => prev.filter((a) => a.id !== id));
+
+  const handleComposerDragOver = (e: React.DragEvent) => {
+    if (!e.dataTransfer.types.includes('Files')) return;
+    e.preventDefault();
+    setIsDraggingFile(true);
+  };
+  const handleComposerDragLeave = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDraggingFile(false);
+  };
+  const handleComposerDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDraggingFile(false);
+    if (e.dataTransfer.files?.length) addFiles(e.dataTransfer.files);
+  };
+
   const handleSend = async () => {
     // CRITICAL FIX #1: Capture input BEFORE clearing
-    const messageText = input.trim();
+    const attachmentsBlock = attachments
+      .map((a) => `**Attached: ${a.name}**\n\`\`\`\n${a.content}\n\`\`\`\n`)
+      .join('\n');
+    const messageText = (attachmentsBlock ? `${attachmentsBlock}\n${input}` : input).trim();
     if (!messageText || loading) return;
+    setAttachments([]);
 
     const userMessage: Message = {
       role: 'user',
@@ -755,6 +849,7 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
       {/* Header / Model Selector */}
       <div className="flex items-center justify-between px-6 py-3 border-b border-slate-900 bg-slate-950/50 backdrop-blur-md sticky top-0 z-10">
         <div className="flex items-center gap-2">
+            {/* eslint-disable-next-line jsx-a11y/no-static-element-interactions -- wrapper only delegates Escape from its real interactive children (button/role=option below), not a control itself */}
             <div
                 className="relative"
                 ref={modelSelectorRef}
@@ -806,6 +901,7 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                 )}
             </div>
 
+            {/* eslint-disable-next-line jsx-a11y/no-static-element-interactions -- wrapper only delegates Escape from its real interactive children, not a control itself */}
             <div
                 className="relative"
                 ref={compareSelectorRef}
@@ -862,6 +958,7 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                 )}
             </div>
 
+            {/* eslint-disable-next-line jsx-a11y/no-static-element-interactions -- wrapper only delegates Escape/arrow-key roving focus from its real interactive children, not a control itself */}
             <div
                 className="relative"
                 ref={sessionsRef}
@@ -990,9 +1087,6 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                 {structuredOutputsSupported && <span className="text-emerald-400">Structured outputs</span>}
               </div>
             )}
-            <button className="p-2 rounded-lg hover:bg-slate-900 text-slate-400 hover:text-white transition">
-                <LayoutGrid size={18} />
-            </button>
             {(() => {
                 const ratio = conversationTokenLimit > 0 ? historyTokens / conversationTokenLimit : 0;
                 const tone = ratio >= 0.9
@@ -1017,8 +1111,9 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
       </div>
 
       {/* Message Area */}
-      <div className="flex-1 overflow-y-auto px-4 py-8 space-y-8">
-        <div className="max-w-3xl mx-auto space-y-10">
+      <div className="sr-only" role="status" aria-live="polite">{streamAnnouncement}</div>
+      <div className="flex-1 overflow-y-auto px-4 py-8 space-y-8" tabIndex={0} role="region" aria-label="Chat">
+        <div className="max-w-3xl mx-auto space-y-10" role="log" aria-label="Conversation" aria-live="polite" aria-relevant="additions">
             {messages.length === 0 && (
                 <div className="flex flex-col items-center justify-center h-[50vh] text-center space-y-4 animate-in fade-in duration-500">
                     <div className="w-16 h-16 bg-slate-900 rounded-2xl flex items-center justify-center mb-2 shadow-2xl border border-slate-800">
@@ -1111,8 +1206,12 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                         )}
 
                         {msg.pendingToolCall && (
-                            <div className="flex flex-col gap-2 px-4 py-3 rounded-2xl border border-amber-500/30 bg-amber-500/10 w-full max-w-md">
-                                <div className="flex items-center gap-2 text-amber-400 text-xs font-bold">
+                            <div
+                                role="alert"
+                                aria-labelledby={`tool-approval-heading-${msg.id}`}
+                                className="flex flex-col gap-2 px-4 py-3 rounded-2xl border border-amber-500/30 bg-amber-500/10 w-full max-w-md"
+                            >
+                                <div id={`tool-approval-heading-${msg.id}`} className="flex items-center gap-2 text-amber-400 text-xs font-bold">
                                     <ShieldAlert size={14} aria-hidden="true" />
                                     Approval needed
                                 </div>
@@ -1125,16 +1224,18 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                                 </pre>
                                 <div className="flex gap-2">
                                     <button
+                                        // eslint-disable-next-line jsx-a11y/no-autofocus -- this is an alert demanding an immediate approve/deny decision; moving focus here matches WAI-ARIA alertdialog guidance
+                                        autoFocus
                                         onClick={() => handleConfirmToolCall(msg.id, msg.pendingToolCall!.request_id, true)}
                                         disabled={confirmingId === msg.pendingToolCall.request_id}
-                                        className="flex-1 px-3 py-1.5 bg-green-600 hover:bg-green-500 disabled:opacity-50 text-white text-xs font-bold rounded-lg transition"
+                                        className="flex-1 px-3 py-1.5 bg-green-600 hover:bg-green-500 disabled:opacity-50 text-white text-xs font-bold rounded-lg transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
                                     >
                                         Approve
                                     </button>
                                     <button
                                         onClick={() => handleConfirmToolCall(msg.id, msg.pendingToolCall!.request_id, false)}
                                         disabled={confirmingId === msg.pendingToolCall.request_id}
-                                        className="flex-1 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-slate-300 text-xs font-bold rounded-lg transition"
+                                        className="flex-1 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-slate-300 text-xs font-bold rounded-lg transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
                                     >
                                         Deny
                                     </button>
@@ -1284,9 +1385,39 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
             </div>
           )}
 
+          {attachments.length > 0 && (
+            <div className="flex flex-wrap gap-2 mb-2 px-1">
+              {attachments.map((a) => (
+                <div key={a.id} className="flex items-center gap-1.5 px-2 py-1 rounded-full bg-blue-500/10 border border-blue-500/20 text-[10px] text-blue-300 font-medium">
+                  <FileText size={10} aria-hidden="true" />
+                  {a.name}
+                  <span className="text-blue-400/60">{(a.size / 1024).toFixed(0)}KB</span>
+                  <button onClick={() => removeAttachment(a.id)} className="hover:text-white" aria-label={`Remove attachment ${a.name}`}>
+                    <X size={10} aria-hidden="true" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <input
+            ref={fileInputRef}
+            type="file"
+            multiple
+            onChange={handleFileInputChange}
+            className="sr-only"
+            aria-label="Attach files to message"
+          />
+
+          {/* eslint-disable-next-line jsx-a11y/no-static-element-interactions -- wrapper only delegates Escape from the real interactive textarea/buttons inside, not a control itself */}
           <div
-            className="relative bg-slate-900 border border-slate-800 rounded-3xl p-2 shadow-2xl focus-within:border-slate-700 transition-all duration-300"
+            className={`relative bg-slate-900 border rounded-3xl p-2 shadow-2xl focus-within:border-blue-500 focus-within:ring-2 focus-within:ring-blue-500/50 transition-all duration-300 ${
+              isDraggingFile ? 'border-blue-500 ring-2 ring-blue-500/50' : 'border-slate-800'
+            }`}
             onKeyDown={(e) => { if (e.key === 'Escape') setShowTools(false); }}
+            onDragOver={handleComposerDragOver}
+            onDragLeave={handleComposerDragLeave}
+            onDrop={handleComposerDrop}
           >
             <textarea
               ref={textareaRef}
@@ -1318,6 +1449,14 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                 >
                     <Plus size={20} aria-hidden="true" />
                 </button>
+                <button
+                    onClick={() => fileInputRef.current?.click()}
+                    title="Attach text files (code, markdown, JSON, CSV, logs, config)"
+                    aria-label="Attach files"
+                    className="p-2 rounded-xl transition text-slate-500 hover:text-slate-300 hover:bg-slate-800 focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
+                >
+                    <Paperclip size={18} aria-hidden="true" />
+                </button>
             </div>
 
             <div className="absolute right-3 bottom-3 flex items-center gap-1">
@@ -1341,10 +1480,10 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                 )}
                 <button
                     onClick={handleSend}
-                    disabled={!input.trim() || loading}
+                    disabled={(!input.trim() && attachments.length === 0) || loading}
                     aria-label="Send message"
                     className={`p-2 rounded-full transition shadow-lg focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none ${
-                        !input.trim() || loading
+                        (!input.trim() && attachments.length === 0) || loading
                             ? 'bg-slate-800 text-slate-600'
                             : 'bg-white text-black hover:bg-slate-200'
                     }`}

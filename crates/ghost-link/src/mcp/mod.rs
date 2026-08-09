@@ -9,7 +9,7 @@ mod registry;
 pub mod toolcall;
 
 pub use client::McpToolSchema;
-pub use config::McpConfigManager;
+pub use config::{McpConfigManager, McpServerConfig};
 pub use registry::McpRegistry;
 
 /// Default path for the MCP server registry file, alongside `ghostlink.toml`.
