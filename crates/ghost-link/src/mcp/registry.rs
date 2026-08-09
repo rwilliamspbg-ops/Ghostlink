@@ -7,7 +7,7 @@ use serde_json::Value;
 use tokio::sync::RwLock;
 
 use super::client::{McpServerHandle, McpToolSchema, ToolCallOutcome};
-use super::config::McpConfigManager;
+use super::config::{McpConfigManager, McpTransport};
 
 pub struct McpRegistry {
     config_manager: McpConfigManager,
@@ -31,6 +31,12 @@ pub struct McpServerStatus {
     pub connected: bool,
     pub tool_count: usize,
     pub requires_confirmation: bool,
+    /// Included so the GUI's MCP editor can prefill an edit form without a
+    /// second round-trip. Safe to expose: `mcp_servers.toml` may only hold
+    /// `${VAR_NAME}` references or non-secret literals here, never a real
+    /// secret (enforced by `validate_server` at save time).
+    pub transport: McpTransport,
+    pub timeout_secs: u64,
 }
 
 impl McpRegistry {
@@ -112,6 +118,8 @@ impl McpRegistry {
                     connected: live.is_some(),
                     tool_count: live.map(|handle| handle.tools().len()).unwrap_or(0),
                     requires_confirmation: config.requires_confirmation,
+                    transport: config.transport,
+                    timeout_secs: config.timeout_secs,
                 }
             })
             .collect())
@@ -120,12 +128,7 @@ impl McpRegistry {
     /// Toggles a server's `enabled` flag in `mcp_servers.toml` and takes effect
     /// immediately: connects it now if enabling, or tears it down now if
     /// disabling — so the GUI doesn't need a Ghostlink restart to see the change.
-    ///
-    /// No route calls this yet (the MCP tab's per-server toggle, if/when
-    /// added, is the natural caller) - `GET /api/mcp/servers` only reads
-    /// status today. Kept rather than deleted since it's fully correct and
-    /// ready for that follow-up.
-    #[allow(dead_code)]
+    /// Called by `POST /api/mcp/servers/:name/toggle` (the MCP tab's per-server switch).
     pub async fn set_enabled(&self, name: &str, enabled: bool) -> Result<(), String> {
         self.config_manager.set_enabled(name, enabled)?;
 
@@ -147,6 +150,73 @@ impl McpRegistry {
             tracing::info!("mcp: disconnected server '{name}'");
         }
 
+        Ok(())
+    }
+
+    /// Adds a new server to `mcp_servers.toml` and connects it immediately if
+    /// `enabled` — no restart needed to start using it.
+    pub async fn add_server(&self, config: super::config::McpServerConfig) -> Result<(), String> {
+        self.config_manager.add(config.clone())?;
+        if config.enabled {
+            match McpServerHandle::connect(&config).await {
+                Ok(handle) => {
+                    tracing::info!(
+                        "mcp: connected newly added server '{}' ({} tools)",
+                        config.name,
+                        handle.tools().len()
+                    );
+                    self.servers.write().await.insert(config.name, handle);
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        "mcp: added server '{}' but failed to connect: {err}",
+                        config.name
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Replaces the server currently named `name` (including renaming it via
+    /// `config.name`) and reconnects it live to match the new config.
+    pub async fn update_server(
+        &self,
+        name: &str,
+        config: super::config::McpServerConfig,
+    ) -> Result<(), String> {
+        self.config_manager.update(name, config.clone())?;
+        if let Some(handle) = self.servers.write().await.remove(name) {
+            handle.shutdown().await;
+        }
+        if config.enabled {
+            match McpServerHandle::connect(&config).await {
+                Ok(handle) => {
+                    tracing::info!(
+                        "mcp: reconnected updated server '{}' ({} tools)",
+                        config.name,
+                        handle.tools().len()
+                    );
+                    self.servers.write().await.insert(config.name, handle);
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        "mcp: updated server '{}' but failed to reconnect: {err}",
+                        config.name
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Removes a server from `mcp_servers.toml` and disconnects it immediately.
+    pub async fn remove_server(&self, name: &str) -> Result<(), String> {
+        self.config_manager.remove(name)?;
+        if let Some(handle) = self.servers.write().await.remove(name) {
+            handle.shutdown().await;
+            tracing::info!("mcp: disconnected removed server '{name}'");
+        }
         Ok(())
     }
 

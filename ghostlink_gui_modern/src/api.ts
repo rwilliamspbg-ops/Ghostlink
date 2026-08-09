@@ -1,5 +1,5 @@
 import axios, { AxiosInstance } from 'axios';
-import { Model, Metric, Session, Worker, Settings, McpServer, WorkspaceEntry } from './store';
+import { Model, Metric, Session, Worker, Settings, McpServer, McpServerInput, WorkspaceEntry } from './store';
 import { createInferenceEngineDescriptors, InferenceEngineDescriptor } from './types/engines';
 
 export interface MetricsHistoryPoint {
@@ -455,6 +455,53 @@ export class GhostlinkAPI {
         `/api/mcp/servers/${encodeURIComponent(name)}/toggle`,
         { enabled }
       );
+      return {
+        success: response.data.success !== false,
+        servers: response.data.servers,
+        error: response.data.error,
+      };
+    } catch (error: any) {
+      return { success: false, error: error.response?.data?.error || error.message };
+    }
+  }
+
+  async createMcpServer(
+    config: McpServerInput
+  ): Promise<{ success: boolean; servers?: McpServer[]; error?: string }> {
+    try {
+      const response = await this.http.post('/api/mcp/servers', config);
+      return {
+        success: response.data.success !== false,
+        servers: response.data.servers,
+        error: response.data.error,
+      };
+    } catch (error: any) {
+      return { success: false, error: error.response?.data?.error || error.message };
+    }
+  }
+
+  async updateMcpServer(
+    name: string,
+    config: McpServerInput
+  ): Promise<{ success: boolean; servers?: McpServer[]; error?: string }> {
+    try {
+      const response = await this.http.post(
+        `/api/mcp/servers/${encodeURIComponent(name)}/update`,
+        config
+      );
+      return {
+        success: response.data.success !== false,
+        servers: response.data.servers,
+        error: response.data.error,
+      };
+    } catch (error: any) {
+      return { success: false, error: error.response?.data?.error || error.message };
+    }
+  }
+
+  async deleteMcpServer(name: string): Promise<{ success: boolean; servers?: McpServer[]; error?: string }> {
+    try {
+      const response = await this.http.delete(`/api/mcp/servers/${encodeURIComponent(name)}`);
       return {
         success: response.data.success !== false,
         servers: response.data.servers,

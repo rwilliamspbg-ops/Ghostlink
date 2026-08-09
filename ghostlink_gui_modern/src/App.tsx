@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Plus, ChevronRight, Menu, Cpu, Zap, Wifi, Search } from 'lucide-react';
 import { useAppStore } from './store';
 import { GhostlinkAPI } from './api';
@@ -120,6 +120,52 @@ function App() {
     if (window.innerWidth < 768) setSidebarOpen(false);
   };
   const isOnline = useOnlineStatus();
+  const sidebarRef = useRef<HTMLDivElement>(null);
+  const sidebarOpenButtonRef = useRef<HTMLButtonElement>(null);
+
+  // On mobile the sidebar renders as a modal-like overlay (see backdrop below),
+  // so opening it moves focus in, Escape closes it, and Tab is trapped inside
+  // until it closes; on desktop it's a persistent panel and none of this applies.
+  useEffect(() => {
+    if (!sidebarOpen || window.innerWidth >= 768) return;
+    const container = sidebarRef.current;
+    if (!container) return;
+
+    const focusable = () =>
+      Array.from(
+        container.querySelectorAll<HTMLElement>(
+          'a[href], button:not([disabled]), input, select, textarea, [tabindex]:not([tabindex="-1"])'
+        )
+      );
+
+    focusable()[0]?.focus();
+
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        setSidebarOpen(false);
+        return;
+      }
+      if (e.key !== 'Tab') return;
+      const items = focusable();
+      if (items.length === 0) return;
+      const first = items[0];
+      const last = items[items.length - 1];
+      if (e.shiftKey && document.activeElement === first) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault();
+        first.focus();
+      }
+    };
+
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('keydown', onKeyDown);
+      sidebarOpenButtonRef.current?.focus();
+    };
+  }, [sidebarOpen]);
 
   // CRITICAL FIX: Initialize API base on app load
   useEffect(() => {
@@ -231,6 +277,12 @@ function App() {
   return (
     <ErrorBoundary>
       <div className="flex h-screen bg-slate-950 text-slate-100 font-sans overflow-hidden relative">
+        <a
+          href="#main-content"
+          className="sr-only focus:not-sr-only focus:fixed focus:top-2 focus:left-2 focus:z-50 focus:px-4 focus:py-2 focus:rounded-lg focus:bg-blue-600 focus:text-white focus:text-sm focus:font-medium"
+        >
+          Skip to main content
+        </a>
         <OfflineBanner isOnline={isOnline} />
         <CommandPalette />
         <Toaster />
@@ -244,6 +296,8 @@ function App() {
         )}
         {/* Sidebar */}
       <div
+        id="primary-sidebar"
+        ref={sidebarRef}
         className={`${
           sidebarOpen ? 'w-64 max-md:fixed max-md:inset-y-0 max-md:left-0 max-md:z-40 max-md:shadow-2xl' : 'w-0'
         } transition-all duration-300 bg-slate-900 border-r border-slate-800 flex flex-col overflow-hidden relative`}
@@ -331,9 +385,12 @@ function App() {
         {/* Toggle Sidebar Button (Float) */}
         {!sidebarOpen && (
             <button
+                ref={sidebarOpenButtonRef}
                 onClick={() => setSidebarOpen(true)}
                 aria-label="Open sidebar"
-                className="absolute left-4 top-4 z-10 p-2 bg-slate-900 border border-slate-800 rounded-lg text-slate-400 hover:text-white transition"
+                aria-expanded={false}
+                aria-controls="primary-sidebar"
+                className="absolute left-4 top-4 z-10 p-2 bg-slate-900 border border-slate-800 rounded-lg text-slate-400 hover:text-white transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
             >
                 <Menu size={20} aria-hidden="true" />
             </button>
@@ -343,14 +400,16 @@ function App() {
             <button
                 onClick={() => setSidebarOpen(false)}
                 aria-label="Collapse sidebar"
-                className="absolute left-[-12px] top-1/2 -translate-y-1/2 z-20 p-1 bg-slate-800 border border-slate-700 rounded-full text-slate-500 hover:text-white transition"
+                aria-expanded={true}
+                aria-controls="primary-sidebar"
+                className="absolute left-[-12px] top-1/2 -translate-y-1/2 z-20 p-1 bg-slate-800 border border-slate-700 rounded-full text-slate-500 hover:text-white transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
             >
                 <ChevronRight size={16} className="rotate-180" aria-hidden="true" />
             </button>
         )}
 
         {/* Content */}
-        <main className="flex-1 overflow-hidden">
+        <main id="main-content" tabIndex={-1} className="flex-1 overflow-hidden">
           {renderTab()}
         </main>
       </div>

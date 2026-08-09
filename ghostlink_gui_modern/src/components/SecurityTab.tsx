@@ -83,7 +83,7 @@ export const SecurityTab: React.FC<{ api: any }> = ({ api }) => {
         <h2 className="text-xl font-bold text-white">Security & Access</h2>
       </div>
 
-      <div className="flex-1 overflow-y-auto p-6">
+      <div className="flex-1 overflow-y-auto p-6" tabIndex={0} role="region" aria-label="Security">
         <div className="max-w-5xl mx-auto space-y-6">
           {/* API Key Section */}
           <div className="bg-slate-900/50 border border-slate-800 rounded-3xl p-6 space-y-4">

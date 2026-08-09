@@ -85,6 +85,13 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
   const canManageRemoteCatalog = currentEngine === 'ollama';
   const canShowModelDefinition = currentEngine === 'ollama';
   const canDownloadLocalModels = currentEngine !== 'vllm';
+  // Deleting a model removes a local file (or an Ollama-managed one) — the
+  // backend's DELETE /api/models/:name already handles both cases. Only
+  // vLLM's inventory is genuinely server-managed and un-deletable from here;
+  // gating this the same as canManageRemoteCatalog (Ollama-only) hid the
+  // delete button entirely for native/llama.cpp GGUF models even though
+  // deleting those local files works fine.
+  const canDeleteModel = currentEngine !== 'vllm';
   const [partialDownloads, setPartialDownloads] = useState<{ filename: string; size_bytes: number; age_secs: number }[]>([]);
   const [discardingPartial, setDiscardingPartial] = useState<string | null>(null);
 
@@ -281,11 +288,14 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
   };
 
   const handleDeleteModel = async (name: string) => {
-    if (!canManageRemoteCatalog) {
+    if (!canDeleteModel) {
       setMessage(`${engineLabel} models are server-managed and cannot be deleted from this UI.`);
       return;
     }
-    if (!window.confirm(`Are you sure you want to delete the model "${name}" from Ollama? This cannot be undone.`)) {
+    const confirmMessage = canManageRemoteCatalog
+      ? `Are you sure you want to delete the model "${name}" from Ollama? This cannot be undone.`
+      : `Are you sure you want to delete "${name}"? This removes the local model file and cannot be undone.`;
+    if (!window.confirm(confirmMessage)) {
       return;
     }
     setPendingActions(prev => ({ ...prev, [name]: 'deleting' }));
@@ -497,8 +507,10 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
       <div className="flex items-center justify-between px-6 py-4 border-b border-slate-900 sticky top-0 bg-slate-950/50 backdrop-blur-md z-10">
         <div className="flex items-center gap-4" role="tablist" aria-label="Model source">
           <button
+            id="models-tab-local"
             role="tab"
             aria-selected={activeTab === 'local'}
+            aria-controls="models-tabpanel"
             onClick={() => setActiveTab('local')}
             className={`px-3 py-1.5 rounded-lg text-sm font-bold transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none ${
               activeTab === 'local' ? 'bg-blue-600 text-white shadow-lg shadow-blue-500/20' : 'text-slate-400 hover:bg-slate-900'
@@ -507,8 +519,10 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
             My Models
           </button>
           <button
+            id="models-tab-recommended"
             role="tab"
             aria-selected={activeTab === 'recommended'}
+            aria-controls="models-tabpanel"
             onClick={() => setActiveTab('recommended')}
             className={`px-3 py-1.5 rounded-lg text-sm font-bold transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none ${
               activeTab === 'recommended' ? 'bg-blue-600 text-white shadow-lg shadow-blue-500/20' : 'text-slate-400 hover:bg-slate-900'
@@ -517,8 +531,10 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
             Recommended
           </button>
           <button
+            id="models-tab-huggingface"
             role="tab"
             aria-selected={activeTab === 'huggingface'}
+            aria-controls="models-tabpanel"
             onClick={() => setActiveTab('huggingface')}
             className={`px-3 py-1.5 rounded-lg text-sm font-bold transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none ${
               activeTab === 'huggingface' ? 'bg-blue-600 text-white shadow-lg shadow-blue-500/20' : 'text-slate-400 hover:bg-slate-900'
@@ -551,7 +567,15 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
           </button>
         </div>
       </div>
-      <div className="flex-1 overflow-y-auto p-6">
+      <div
+        id="models-tabpanel"
+        role="tabpanel"
+        aria-labelledby={
+          activeTab === 'local' ? 'models-tab-local' : activeTab === 'recommended' ? 'models-tab-recommended' : 'models-tab-huggingface'
+        }
+        tabIndex={0}
+        className="flex-1 overflow-y-auto p-6"
+      >
         {activeTab === 'local' ? (
           <div className="space-y-4">
             <div className="flex items-center justify-between px-4 py-3 bg-slate-800 rounded-lg">
@@ -662,13 +686,13 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                             <Copy size={16} aria-hidden="true" />
                           </button>
                         )}
-                        {canManageRemoteCatalog && (
+                        {canDeleteModel && (
                           <button
                             onClick={() => handleDeleteModel(model.name)}
                             disabled={pendingActions[model.name] === 'deleting' || loading}
                             className="p-1 hover:bg-slate-700 rounded-lg transition text-slate-400 hover:text-red-400 focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
-                            title="Delete from Ollama"
-                            aria-label={`Delete ${model.name} from Ollama`}
+                            title={canManageRemoteCatalog ? 'Delete from Ollama' : 'Delete model file'}
+                            aria-label={canManageRemoteCatalog ? `Delete ${model.name} from Ollama` : `Delete model file ${model.name}`}
                           >
                             {pendingActions[model.name] === 'deleting' ? (
                               <Loader size={16} className="mr-1" aria-hidden="true" />
@@ -857,8 +881,12 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                   </div>
                   <div className="flex items-center gap-4 shrink-0">
                     <div className="text-xs text-slate-400">
-                      <span className="mr-3">📥 {(m.downloads / 1000).toFixed(0)}K</span>
-                      <span>👍 {(m.likes / 1000).toFixed(1)}K</span>
+                      <span className="mr-3">
+                        <span aria-hidden="true">📥</span> <span className="sr-only">Downloads: </span>{(m.downloads / 1000).toFixed(0)}K
+                      </span>
+                      <span>
+                        <span aria-hidden="true">👍</span> <span className="sr-only">Likes: </span>{(m.likes / 1000).toFixed(1)}K
+                      </span>
                     </div>
                     <button
                       onClick={() => handleDownloadHFModel(m.id)}
@@ -886,7 +914,9 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
 
       {/* Modelfile Modal */}
       {showModelfile && (
+        // eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-static-element-interactions -- click-outside-to-dismiss backdrop; Escape (handled above) and the close button already cover keyboard/AT users
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={() => setShowModelfile(null)}>
+          {/* eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-noninteractive-element-interactions -- onClick here only stops the backdrop's close-on-click from firing when clicking inside the dialog, it's not a control */}
           <div
             role="dialog"
             aria-modal="true"

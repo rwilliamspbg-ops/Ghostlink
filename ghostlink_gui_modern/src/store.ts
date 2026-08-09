@@ -105,6 +105,10 @@ export interface WorkspaceEntry {
   size: number;
 }
 
+export type McpTransport =
+  | { transport: 'stdio'; command: string; args: string[]; env: Record<string, string> }
+  | { transport: 'http'; url: string; headers: Record<string, string> };
+
 export interface McpServer {
   name: string;
   slot: string;
@@ -112,6 +116,25 @@ export interface McpServer {
   connected: boolean;
   tool_count: number;
   requires_confirmation: boolean;
+  transport: McpTransport;
+  timeout_secs: number;
+}
+
+// Payload shape for create/update — mirrors the backend's internally-tagged
+// McpServerConfig JSON (transport as a literal "stdio"/"http" discriminator
+// with that transport's fields flattened alongside the rest).
+export interface McpServerInput {
+  name: string;
+  slot: string;
+  enabled: boolean;
+  requires_confirmation: boolean;
+  timeout_secs: number;
+  transport: 'stdio' | 'http';
+  command?: string;
+  args?: string[];
+  env?: Record<string, string>;
+  url?: string;
+  headers?: Record<string, string>;
 }
 
 export interface ToolCallTrace {

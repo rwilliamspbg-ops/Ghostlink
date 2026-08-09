@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { RefreshCw, Activity, Cpu, Database, Zap, Clock, ShieldCheck, Server, TrendingUp, HeartPulse, Thermometer, Download, Network } from 'lucide-react';
 import { MetricsHistoryPoint } from '../api';
 import {
@@ -134,6 +134,29 @@ export const MetricsTab: React.FC<{ api: any }> = React.memo(({ api }) => {
     ? `${(metrics?.gpu ?? 0).toFixed(0)}% utilized`
     : 'probe unavailable';
 
+  // Metrics poll every 3s — announcing every tick would drown out a screen
+  // reader, so this only speaks up on meaningful state transitions (API
+  // connectivity, GPU probe availability), not every changing number.
+  const [liveAnnouncement, setLiveAnnouncement] = useState('');
+  const prevConnectedRef = useRef<boolean | null>(null);
+  const prevGpuAvailableRef = useRef<boolean | null>(null);
+  useEffect(() => {
+    const connected = !!metrics;
+    const gpuAvailable = !!metrics?.gpu_available;
+    const messages: string[] = [];
+    if (prevConnectedRef.current !== null && prevConnectedRef.current !== connected) {
+      messages.push(connected ? 'API server connected.' : 'API server offline.');
+    }
+    if (connected && prevGpuAvailableRef.current !== null && prevGpuAvailableRef.current !== gpuAvailable) {
+      messages.push(gpuAvailable ? 'GPU probe now available.' : 'GPU probe unavailable.');
+    }
+    if (messages.length > 0) {
+      setLiveAnnouncement(messages.join(' '));
+    }
+    prevConnectedRef.current = connected;
+    prevGpuAvailableRef.current = gpuAvailable;
+  }, [metrics]);
+
   const throughputSparkline = useMemo(() => buildSparkline(history, 'throughput', 220, 56), [history]);
   const latencySparkline = useMemo(() => buildSparkline(history, 'latency_p95', 220, 56), [history]);
   const historySummary = history.length > 0
@@ -152,6 +175,7 @@ export const MetricsTab: React.FC<{ api: any }> = React.memo(({ api }) => {
 
   return (
     <div className="flex flex-col h-full bg-slate-950">
+      <div className="sr-only" role="status" aria-live="polite">{liveAnnouncement}</div>
       <div className="flex items-center justify-between px-6 py-4 border-b border-slate-900 sticky top-0 bg-slate-950/50 backdrop-blur-md z-10">
         <div>
           <h2 className="text-xl font-bold text-white">System Performance</h2>
@@ -182,7 +206,7 @@ export const MetricsTab: React.FC<{ api: any }> = React.memo(({ api }) => {
         </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto p-6">
+      <div className="flex-1 overflow-y-auto p-6" tabIndex={0} role="region" aria-label="System performance">
         <div className="max-w-5xl mx-auto space-y-6">
           <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
             <StatCard

@@ -3055,40 +3055,16 @@ fn load_persistent_models() -> Vec<ModelRecord> {
             }
         }
     }
-    vec![
-        ModelRecord {
-            name: "meta-llama/Llama-3-8B-Instruct".to_string(),
-            size_gb: 8.0,
-            model_type: "LLM".to_string(),
-            quantization: "Q4_K_M".to_string(),
-            status: "Ready".to_string(),
-            local_path: String::new(),
-        },
-        ModelRecord {
-            name: "mistralai/Mistral-7B-Instruct-v0.2".to_string(),
-            size_gb: 7.2,
-            model_type: "LLM".to_string(),
-            quantization: "Q4_K_M".to_string(),
-            status: "Ready".to_string(),
-            local_path: String::new(),
-        },
-        ModelRecord {
-            name: "google/gemma-7b-it".to_string(),
-            size_gb: 7.0,
-            model_type: "LLM".to_string(),
-            quantization: "Q4_K_M".to_string(),
-            status: "Ready".to_string(),
-            local_path: String::new(),
-        },
-        ModelRecord {
-            name: "ghostlink-30b-v1".to_string(),
-            size_gb: 30.0,
-            model_type: "LLM".to_string(),
-            quantization: "Q4_K_M".to_string(),
-            status: "Ready".to_string(),
-            local_path: String::new(),
-        },
-    ]
+    // Previously seeded 4 hardcoded "Ready" placeholder entries here
+    // (meta-llama/Llama-3-8B-Instruct, mistralai/Mistral-7B-Instruct-v0.2,
+    // google/gemma-7b-it, ghostlink-30b-v1) with an empty local_path. They
+    // claimed status "Ready" despite never being backed by a real file, and
+    // handle_gui_models' name-exact-match merge (main.rs) never reconciled
+    // them against a real scanned/downloaded model with a different
+    // filename-derived name — so they persisted forever as confusing
+    // near-duplicates in the GUI's "My Models" list. The Recommended /
+    // Popular Models tabs already cover "suggest something to download".
+    vec![]
 }
 
 fn save_persistent_models(models: &[ModelRecord]) {
@@ -3349,6 +3325,10 @@ struct OllamaChatRequest {
 #[derive(Debug, Deserialize)]
 struct OllamaNameRequest {
     name: String,
+}
+#[derive(Debug, Deserialize)]
+struct McpToggleRequest {
+    enabled: bool,
 }
 #[derive(Debug, Deserialize)]
 struct WorkerAddRequest {
@@ -5238,7 +5218,18 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                     let size_gb = size_bytes as f32 / (1024.0 * 1024.0 * 1024.0);
 
                     let mut backend = lock_state(&spawn_state);
-                    backend.models.retain(|m| m.name != spawn_model_id);
+                    // Drop both the in-flight placeholder (keyed by the
+                    // original request name, e.g. a HF repo id like
+                    // "org/repo") AND any prior completed record that
+                    // resolved to this same on-disk filename (e.g. a
+                    // re-download of an already-installed model) — without
+                    // the second clause, re-downloading pushed a second
+                    // ModelRecord with an identical `name` instead of
+                    // replacing the old one, leaving the same model listed
+                    // twice in the GUI with two different sizes.
+                    backend
+                        .models
+                        .retain(|m| m.name != spawn_model_id && m.name != name);
                     backend.models.push(ModelRecord {
                         name,
                         size_gb,
@@ -6554,6 +6545,76 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         match registry.list_all_servers().await {
             Ok(servers) => Json(serde_json::json!({ "servers": servers })),
             Err(err) => Json(serde_json::json!({ "servers": [], "error": err })),
+        }
+    }
+
+    async fn handle_mcp_server_toggle(
+        State(state): State<Arc<Mutex<BackendState>>>,
+        Path(name): Path<String>,
+        Json(req): Json<McpToggleRequest>,
+    ) -> Json<serde_json::Value> {
+        let registry = {
+            let backend = lock_state(&state);
+            Arc::clone(&backend.mcp_registry)
+        };
+        if let Err(err) = registry.set_enabled(&name, req.enabled).await {
+            return Json(serde_json::json!({ "success": false, "error": err }));
+        }
+        match registry.list_all_servers().await {
+            Ok(servers) => Json(serde_json::json!({ "success": true, "servers": servers })),
+            Err(err) => Json(serde_json::json!({ "success": true, "error": err })),
+        }
+    }
+
+    async fn handle_mcp_server_create(
+        State(state): State<Arc<Mutex<BackendState>>>,
+        Json(req): Json<mcp::McpServerConfig>,
+    ) -> Json<serde_json::Value> {
+        let registry = {
+            let backend = lock_state(&state);
+            Arc::clone(&backend.mcp_registry)
+        };
+        if let Err(err) = registry.add_server(req).await {
+            return Json(serde_json::json!({ "success": false, "error": err }));
+        }
+        match registry.list_all_servers().await {
+            Ok(servers) => Json(serde_json::json!({ "success": true, "servers": servers })),
+            Err(err) => Json(serde_json::json!({ "success": true, "error": err })),
+        }
+    }
+
+    async fn handle_mcp_server_update(
+        State(state): State<Arc<Mutex<BackendState>>>,
+        Path(name): Path<String>,
+        Json(req): Json<mcp::McpServerConfig>,
+    ) -> Json<serde_json::Value> {
+        let registry = {
+            let backend = lock_state(&state);
+            Arc::clone(&backend.mcp_registry)
+        };
+        if let Err(err) = registry.update_server(&name, req).await {
+            return Json(serde_json::json!({ "success": false, "error": err }));
+        }
+        match registry.list_all_servers().await {
+            Ok(servers) => Json(serde_json::json!({ "success": true, "servers": servers })),
+            Err(err) => Json(serde_json::json!({ "success": true, "error": err })),
+        }
+    }
+
+    async fn handle_mcp_server_delete(
+        State(state): State<Arc<Mutex<BackendState>>>,
+        Path(name): Path<String>,
+    ) -> Json<serde_json::Value> {
+        let registry = {
+            let backend = lock_state(&state);
+            Arc::clone(&backend.mcp_registry)
+        };
+        if let Err(err) = registry.remove_server(&name).await {
+            return Json(serde_json::json!({ "success": false, "error": err }));
+        }
+        match registry.list_all_servers().await {
+            Ok(servers) => Json(serde_json::json!({ "success": true, "servers": servers })),
+            Err(err) => Json(serde_json::json!({ "success": true, "error": err })),
         }
     }
 
@@ -8603,7 +8664,19 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                 post(handle_tool_confirm),
             )
             .route("/api/inference/engines", get(handle_inference_engines))
-            .route("/api/mcp/servers", get(handle_mcp_servers))
+            .route(
+                "/api/mcp/servers",
+                get(handle_mcp_servers).post(handle_mcp_server_create),
+            )
+            .route(
+                "/api/mcp/servers/:name/toggle",
+                post(handle_mcp_server_toggle),
+            )
+            .route(
+                "/api/mcp/servers/:name/update",
+                post(handle_mcp_server_update),
+            )
+            .route("/api/mcp/servers/:name", delete(handle_mcp_server_delete))
             // Accept GET/POST/PUT for settings — some clients issue PUT and previously got 405.
             .route(
                 "/api/settings",

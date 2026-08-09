@@ -97,6 +97,7 @@ export function useApiRetry<T extends (...args: any[]) => Promise<any>>(
           await new Promise(resolve => setTimeout(resolve, delay));
           
           if (!isMountedRef.current) {
+            // eslint-disable-next-line preserve-caught-error -- this isn't re-wrapping `error`, it's a distinct unmount condition
             throw new Error('Component unmounted during retry');
           }
           

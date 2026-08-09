@@ -113,3 +113,17 @@ body {
 .hljs-strong {
   font-weight: 700;
 }
+
+/* Respect the OS-level "reduce motion" preference: neutralize every
+   CSS animation/transition (spin/pulse/bounce/ping, fade-in, hover
+   transitions, etc.) instead of hunting down each Tailwind utility. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
