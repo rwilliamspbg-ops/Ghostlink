@@ -191,13 +191,11 @@ impl Clone for ApiResponseCache {
 /// corruption detection, a different threat model) this doesn't halve the
 /// effective space to make it worse.
 fn compute_etag(body: &[u8]) -> String {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-
-    let mut hasher = DefaultHasher::new();
-    body.len().hash(&mut hasher);
-    body.hash(&mut hasher);
-    format!("W/\"{:x}-{:x}\"", hasher.finish(), body.len())
+    // Optimize: Replace slower DefaultHasher (SipHash) with the hardware-accelerated CRC32 checksum.
+    // This utilizes crc32fast instructions (SSE 4.2 / ARM PMULL) and completely avoids the CPU cycles
+    // spent on cryptographic-strength SipHash for generating a simple API response ETag.
+    let crc = crate::protocol::crc32(body);
+    format!("W/\"{:x}-{:x}\"", crc, body.len())
 }
 
 #[cfg(test)]
