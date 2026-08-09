@@ -1246,10 +1246,25 @@ start_services() {
         return 1
     fi
 
+    # Every route but /health now requires a real bearer token (see auth.rs) —
+    # load the key ghost-link just persisted (cwd was $PROJECT_ROOT when it
+    # started, so that's where it wrote api_key.txt, unless overridden) so
+    # the checks below authenticate instead of always getting a 401 that
+    # looks like a broken server.
+    local API_KEY_PATH="${GHOSTLINK_API_KEY_PATH:-$PROJECT_ROOT/api_key.txt}"
+    local API_KEY=""
+    if [ -f "$API_KEY_PATH" ]; then
+        API_KEY=$(cat "$API_KEY_PATH")
+    fi
+    local AUTH_HEADER=()
+    if [ -n "$API_KEY" ]; then
+        AUTH_HEADER=(-H "Authorization: Bearer $API_KEY")
+    fi
+
     # Verify critical GUI routes (GET). 405 here means wrong server (e.g. POST-only proxy).
     local code
     for path in /api/settings /api/models; do
-        code=$(curl -sk -o /dev/null -w "%{http_code}" "${API_SCHEME}://${BACKEND_HOST}:${BACKEND_PORT}${path}" || echo "000")
+        code=$(curl -sk "${AUTH_HEADER[@]}" -o /dev/null -w "%{http_code}" "${API_SCHEME}://${BACKEND_HOST}:${BACKEND_PORT}${path}" || echo "000")
         if [ "$API_LAUNCH_MODE" = "bin" ] && { [ "$code" = "404" ] || [ "$code" = "405" ]; }; then
             echo -e "  ${YELLOW}⚠${NC} GET ${path} returned ${code} from prebuilt API binary; retrying with cargo run"
 
@@ -1289,7 +1304,7 @@ start_services() {
                 return 1
             fi
 
-            code=$(curl -sk -o /dev/null -w "%{http_code}" "${API_SCHEME}://${BACKEND_HOST}:${BACKEND_PORT}${path}" || echo "000")
+            code=$(curl -sk "${AUTH_HEADER[@]}" -o /dev/null -w "%{http_code}" "${API_SCHEME}://${BACKEND_HOST}:${BACKEND_PORT}${path}" || echo "000")
         fi
         if [ "$code" = "405" ]; then
             echo -e "  ${RED}✗${NC} GET ${path} returned 405 Method Not Allowed"
@@ -1303,7 +1318,7 @@ start_services() {
     done
 
     # Chat endpoint must accept POST (not 404/405). Empty body → 4xx is OK; 405 is not.
-    code=$(curl -sk -o /dev/null -w "%{http_code}" -X POST \
+    code=$(curl -sk "${AUTH_HEADER[@]}" -o /dev/null -w "%{http_code}" -X POST \
         -H "Content-Type: application/json" \
         -d '{}' \
         "${API_SCHEME}://${BACKEND_HOST}:${BACKEND_PORT}/api/inference/chat" || echo "000")
