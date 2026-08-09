@@ -231,12 +231,14 @@ impl LoadBalancer {
             }
 
             if end_idx > start_idx {
-                let slices: Vec<TensorSlice> = sorted_layers[start_idx..end_idx]
+                let size_gb: f32 = sorted_layers[start_idx..end_idx]
                     .iter()
-                    .map(|l| TensorSlice::new((l.index, l.index + 1), l.vram_gb))
-                    .collect();
-
-                distributions.push((node.id.clone(), slices));
+                    .map(|l| l.vram_gb)
+                    .sum();
+                let start_layer = sorted_layers[start_idx].index;
+                let end_layer = sorted_layers[end_idx - 1].index + 1;
+                let slice = TensorSlice::new((start_layer, end_layer), size_gb);
+                distributions.push((node.id.clone(), vec![slice]));
                 current_layer_idx = end_idx;
             }
         }
