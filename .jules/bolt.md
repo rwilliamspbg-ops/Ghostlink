@@ -1,3 +1,7 @@
+## 2026-08-10 - [RwLock-based Parallel Index for Local RAG]
+**Learning:** Using `tokio::sync::Mutex` to synchronize access to an in-process RAG index causes unnecessary serialization of concurrent read/search queries. Since the read paths do not yield (have no `.await` boundaries), they do not need to hold locks across async points. Replacing the async `Mutex` with a synchronous `std::sync::RwLock` enables fully concurrent, parallel search operations and eliminates the task-scheduling and allocation overhead of futures-based locking on CPU-bound paths.
+**Action:** Always use synchronous `RwLock` instead of async `Mutex` for synchronizing state that does not need to span across `.await` points, especially when read concurrency is desired.
+
 ## 2026-08-09 - [Hardware-Accelerated CRC32 for API Cache ETags]
 **Learning:** Using the default standard library `DefaultHasher` (which compiles to SipHash 1-3) to hash API response bodies for ETag generation introduces significant, unnecessary cryptographic-strength CPU overhead on cache misses/populates. Since conditional-GET ETags only require identifying if a response has changed rather than preventing hash collision/flooding attacks, replacing `DefaultHasher` with a hardware-accelerated CRC32 checksum (utilizing `crc32fast` instructions) combined with body length dramatically speeds up ETag calculation, especially on multi-megabyte payloads.
 **Action:** Prefer non-cryptographic, hardware-accelerated checksums (like CRC32 or FxHash) over SipHash for fast, non-security-critical fingerprinting/ETag tasks.
