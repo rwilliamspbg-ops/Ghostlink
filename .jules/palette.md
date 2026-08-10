@@ -1,5 +1,9 @@
 # Palette's Journal
 
+## 2026-08-10 - [Model Selector Download Redirection & Focus Visibility]
+**Learning:** Custom drop-down popups (like the Model Selector dropdown) that contain helpful quick-links (like "+ Download Models") are highly frustrating when they act as non-functional static links. Making them interactive by wiring them to programmatically switch tabs (`setActiveTab(1)`) greatly reduces cognitive friction. Additionally, aligning standard form inputs (like the MCP 'requires_confirmation' checkbox and popular model card buttons) with high-contrast, accessible `focus-visible:` keyboard rings guarantees keyboard and screen-reader navigators do not lose context in dark-theme interfaces.
+**Action:** Always ensure helper actions in dropdowns are functional and correctly redirect to their corresponding full interface tab, and verify all checkboxes/buttons have consistent, high-contrast focus rings.
+
 ## 2026-08-09 - [MCP Dialog Input Forms Accessibility & Micro-UX]
 **Learning:** Dialog entry forms (such as the MCP server creation and edit form) that have dense parameters benefit immensely from explicit required marks (`*`), contextual placeholders, clear tooltips via `title` attributes, and `cursor-pointer` label target enhancement for checkboxes and radio fields. Providing clear `focus-visible:` keyboard rings across all text inputs, textareas, radios, and checkboxes ensures users are never visually lost during dense forms setup.
 **Action:** Always mark mandatory form inputs explicitly, widen interactive click targets, and add detailed placeholders, informative tooltips, and high-visibility keyboard focus rings to interactive forms.

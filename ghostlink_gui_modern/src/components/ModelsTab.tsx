@@ -765,7 +765,7 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                             : isPending
                               ? 'bg-blue-900/30 border border-blue-700 cursor-wait'
                               : 'bg-slate-800 hover:bg-blue-900/30 border border-slate-700'
-                        }`}
+                        } focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none`}
                       >
                         <div className="flex items-center gap-2 mb-2">
                           <span className="font-bold text-slate-200 truncate w-full">{m.name}</span>
