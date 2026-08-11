@@ -82,6 +82,11 @@ impl PipelinePlan {
         device_by_node: &std::collections::HashMap<String, DeviceKind>,
         cluster: &crate::cluster::ClusterState,
     ) -> Self {
+        let metrics_guard = cluster
+            .metrics
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+
         let stages = assignments
             .iter()
             .map(|assignment| {
@@ -92,7 +97,7 @@ impl PipelinePlan {
 
                 // Use measured latency if available (converted from us to ms per layer)
                 let per_layer_cost_ms =
-                    if let Some(metrics) = cluster.get_metrics(&assignment.node_id) {
+                    if let Some(metrics) = metrics_guard.get(&assignment.node_id) {
                         if metrics.latency_samples > 0 && assignment.num_layers > 0 {
                             (metrics.avg_latency_us / 1000.0) / assignment.num_layers as f32
                         } else {
