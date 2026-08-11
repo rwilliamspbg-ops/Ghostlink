@@ -3,8 +3,22 @@ import { RefreshCw, XCircle, Clock, Database, Zap } from 'lucide-react';
 import { useAppStore } from '../store';
 import { EmptyState, ErrorPanel } from './StatusViews';
 
+// The status badge used to be hardcoded green regardless of this value, so a
+// cancelled/error session rendered with the same "healthy" style as a saved
+// one. Keys are matched case-insensitively against whatever the backend sent.
+const SESSION_STATUS_CLASSES: Record<string, string> = {
+  error: 'bg-red-500/10 text-red-400',
+  failed: 'bg-red-500/10 text-red-400',
+  cancelled: 'bg-red-500/10 text-red-400',
+  downloading: 'bg-amber-500/10 text-amber-400',
+  pending: 'bg-amber-500/10 text-amber-400',
+};
+function sessionStatusClasses(status: string): string {
+  return SESSION_STATUS_CLASSES[status.toLowerCase()] ?? 'bg-green-500/10 text-green-400';
+}
+
 export const SessionsTab: React.FC<{ api: any }> = ({ api }) => {
-  const { sessions, setSessions } = useAppStore();
+  const { sessions, setSessions, addToast } = useAppStore();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
@@ -25,7 +39,11 @@ export const SessionsTab: React.FC<{ api: any }> = ({ api }) => {
   }, [api]);
 
   const handleCancel = async (id: string) => {
-    await api.cancelSession(id);
+    const result = await api.cancelSession(id);
+    if (result?.success === false) {
+      addToast({ type: 'error', message: result.error || `Failed to cancel session ${id}` });
+      return;
+    }
     refreshSessions();
   };
 
@@ -72,7 +90,7 @@ export const SessionsTab: React.FC<{ api: any }> = ({ api }) => {
                       </div>
                     </div>
                     <div className="flex items-center gap-3">
-                        <div className="px-3 py-1 rounded-full bg-green-500/10 text-green-400 text-[10px] font-bold uppercase tracking-wider">
+                        <div className={`px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider ${sessionStatusClasses(session.status)}`}>
                             {session.status}
                         </div>
                         <button

@@ -59,7 +59,7 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
             )}
             <button
               onClick={this.handleRetry}
-              className="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-sm font-medium transition"
+              className="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-sm font-medium transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
             >
               <RefreshCw size={16} aria-hidden="true" /> Try Again
             </button>
@@ -94,7 +94,7 @@ export const ConnectionErrorBoundary: React.FC<ConnectionErrorBoundaryProps> = (
           </p>
           <button
             onClick={() => window.location.reload()}
-            className="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-sm font-medium transition"
+            className="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-sm font-medium transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
           >
             <RefreshCw size={16} aria-hidden="true" /> Reconnect
           </button>

@@ -3,6 +3,12 @@
 .env.*
 !.env.example
 
+# Root-level node_modules (no root package.json commits deps here, but
+# various npx/vitest invocations transiently create one) — a stray vitest
+# cache file under it was accidentally committed at some point and kept
+# showing as "modified" on every local test run since.
+/node_modules/
+
 # Python local environment artifacts
 .venv/
 __pycache__/

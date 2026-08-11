@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Shield, Key, RefreshCw, AlertTriangle, Eye, EyeOff, CheckCircle2 } from 'lucide-react';
+import { useAppStore } from '../store';
 
 interface AuditEntry {
   event: string;
@@ -10,10 +11,15 @@ interface AuditEntry {
 }
 
 export const SecurityTab: React.FC<{ api: any }> = ({ api }) => {
+  const { addToast } = useAppStore();
   const [loading, setLoading] = useState(false);
   const [showToken, setShowShowToken] = useState(false);
   const [pqcEnabled, setPqcEnabled] = useState(false);
-  const [token, setToken] = useState('eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...');
+  // null (not an empty/placeholder-looking string) until a real token is
+  // fetched — this used to default to a fake JWT-shaped literal that
+  // rendered as-is the moment "Show token" was clicked, before Refresh was
+  // ever called, which reads as a real credential when it's actually inert.
+  const [token, setToken] = useState<string | null>(null);
   const [auditLog, setAuditLog] = useState<AuditEntry[]>([]);
   const [apiKeyInput, setApiKeyInput] = useState('');
   const [apiKeySaved, setApiKeySaved] = useState(false);
@@ -54,7 +60,11 @@ export const SecurityTab: React.FC<{ api: any }> = ({ api }) => {
     setLoading(true);
     try {
       const result = await api.refreshJWT();
-      if (result.success) setToken(result.data?.token || token);
+      if (result.success) {
+        setToken(result.data?.token || token);
+      } else {
+        addToast({ type: 'error', message: result.error || 'Failed to refresh token' });
+      }
     } finally {
       setLoading(false);
     }
@@ -71,6 +81,8 @@ export const SecurityTab: React.FC<{ api: any }> = ({ api }) => {
         setPqcRestartRequired(true);
       } else if (result.success) {
         setPqcEnabled(true);
+      } else {
+        addToast({ type: 'error', message: result.error || 'Failed to enable PQC' });
       }
     } finally {
       setLoading(false);
@@ -152,7 +164,9 @@ export const SecurityTab: React.FC<{ api: any }> = ({ api }) => {
                   </button>
                 </div>
                 <div className="font-mono text-xs break-all text-slate-400 pr-8">
-                  {showToken ? token : '••••••••••••••••••••••••••••••••••••••••••••••••'}
+                  {showToken
+                    ? token ?? 'Not yet fetched — click Refresh below'
+                    : '••••••••••••••••••••••••••••••••••••••••••••••••'}
                 </div>
               </div>
 

@@ -20,7 +20,12 @@ slot = "api_call"
 enabled = true
 transport = "stdio"
 command = "uvx"
-args = ["mcp-server-fetch"]
+# mcp-server-fetch has no upper bound on its `mcp` dependency, so a bare
+# `uvx mcp-server-fetch` can resolve a newer `mcp` SDK than the package was
+# built against and fail to import. Pin a known-compatible version with `==`,
+# not `<`/`>` — this command runs via `cmd /C` on Windows (see client.rs
+# build_command) and cmd.exe reads a bare `<` as stdin redirection.
+args = ["--with", "mcp==1.9.4", "mcp-server-fetch"]
 requires_confirmation = false
 timeout_secs = 30
 
@@ -102,23 +107,14 @@ timeout_secs = 30
 
 [mcp_servers.env]
 
-[[mcp_servers]]
-name = "image-generation"
-slot = "image_generation"
-enabled = false
-transport = "stdio"
-command = "unconfigured"
-args = []
-requires_confirmation = false
-timeout_secs = 30
-
-[mcp_servers.env]
-
 # --- Standalone additions (no legacy tool slot; addressed by server name) ---
 
 [[mcp_servers]]
 name = "sequential-thinking"
-slot = ""
+# A real slot (not "") keeps this behind a Tools-panel checkbox instead of
+# always-on — models kept calling it unprompted on trivial messages, adding
+# a slow, pointless round-trip. Same pattern as git_tools/docker_gateway.
+slot = "sequential_thinking"
 enabled = true
 transport = "stdio"
 command = "npx"
@@ -130,7 +126,9 @@ timeout_secs = 30
 
 [[mcp_servers]]
 name = "vision"
-slot = ""
+# A real slot (not "") keeps this behind a Tools-panel checkbox instead of
+# always-on, same as git_tools/sequential_thinking above.
+slot = "vision"
 # Wraps Ghostlink's own local Ollama connection to call a vision-capable model
 # (llava, moondream, bakllava, ...) instead of adding a cloud dependency.
 # Disabled by default: enable once you've `ollama pull`ed a vision model.
@@ -147,7 +145,11 @@ OLLAMA_VISION_MODEL = "llava"
 
 [[mcp_servers]]
 name = "rag"
-slot = ""
+# A real slot pulls this out of the always-on chat path and into a Tools-panel
+# checkbox — doesn't affect the Editor tab's auto-index (POST
+# /api/workspace/index), which calls "rag"/"index_document" directly by
+# server name, not through this slot lookup.
+slot = "rag"
 # Local retrieval-augmented generation: chunks + embeds documents via a local
 # Ollama embedding model into a brute-force cosine-similarity index (JSON
 # file, no external vector DB) so chat can look them up later with search().
@@ -167,14 +169,34 @@ OLLAMA_EMBED_MODEL = "nomic-embed-text"
 
 [[mcp_servers]]
 name = "docker-mcp-gateway"
-slot = ""
-# Aggregates Docker MCP Toolkit's whole catalog behind one connection. Disabled
-# by default: requires Docker Desktop running.
+# Aggregates Docker MCP Toolkit's whole catalog behind one connection. A real
+# slot (not "") keeps its 8 tools out of standalone_tool_schemas() and behind
+# a Tools-panel checkbox instead — same pattern as docker-code-execution/
+# docker-terminal above. Disabled by default: requires Docker Desktop running.
+slot = "docker_gateway"
 enabled = false
 transport = "stdio"
 command = "docker"
 args = ["mcp", "gateway", "run"]
 requires_confirmation = true
+timeout_secs = 30
+
+[mcp_servers.env]
+
+[[mcp_servers]]
+name = "git"
+# Read/inspect git history, diffs, status, and blame for the repo Ghostlink is
+# running in — pairs with `filesystem` to make chat a real coding agent.
+# Requires `uvx` (bundled with `uv`); no API key. Same `mcp` version pin as
+# `fetch` above — mcp-server-git breaks against the newest `mcp` SDK too.
+# A real slot (not "") keeps its 12 tools out of standalone_tool_schemas()
+# and behind a Tools-panel checkbox, same as docker-mcp-gateway above.
+slot = "git_tools"
+enabled = true
+transport = "stdio"
+command = "uvx"
+args = ["--with", "mcp==1.9.4", "mcp-server-git", "--repository", "."]
+requires_confirmation = false
 timeout_secs = 30
 
 [mcp_servers.env]

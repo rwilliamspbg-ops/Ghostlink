@@ -1609,23 +1609,33 @@ struct BackendState {
     /// download, updated live from the background download task and read by
     /// `/api/models/download/progress` for the GUI's polling loop.
     download_progress: HashMap<String, DownloadProgressInfo>,
-    /// Serializes the full model load/unload sequence end to end — the
-    /// llama-server stage/kill/spawn dance in `NativeEngineClient::load_model_into_slot`
-    /// plus the `BackendState` updates (`current_model`, model status, settings)
-    /// that follow it. Without this, two overlapping `/api/models/load` (or
-    /// load+unload) requests each independently ran `free_llama_port`'s
+    /// Guards the model-switch race between `/api/models/load` and every
+    /// chat request. `load_model_into_slot` kills the old llama-server and
+    /// spawns/warms up a new one — real wall-clock time during which the
+    /// real port has nothing listening — and a chat request landing in that
+    /// gap used to get a raw "connection refused" straight to the user
+    /// instead of a clear "model is loading" message.
+    ///
+    /// A `RwLock` rather than a `Mutex` so the two sides can have different
+    /// semantics: `handle_gui_model_load` takes a **write** lock around the
+    /// whole stage/kill/spawn dance (serializing concurrent loads against
+    /// each other too — see below), while `handle_gui_chat` takes a
+    /// **write**-excluded but reader-shared **read** lock, bounded by a
+    /// timeout, before dispatching to the Native engine: many chats run
+    /// concurrently as normal, but the moment a load takes the write lock,
+    /// new chat reads queue behind it instead of racing the dead port, and
+    /// resume the instant the new server is confirmed healthy.
+    ///
+    /// Also fixes the load/load and load/unload race this field was
+    /// originally added for (ea8d56c) but never wired up: two overlapping
+    /// `/api/models/load` requests each independently ran `free_llama_port`'s
     /// system-wide `taskkill /F /IM llama-server.exe` and raced to bind the
     /// same port — confirmed by firing concurrent load requests and seeing
     /// each response report a *different* `current_model`, since the final
     /// `backend.current_model = selected_model` write was a plain
     /// last-writer-wins race with no relation to which process actually
     /// survived the taskkill/spawn collision.
-    ///
-    /// Also independently lost to ea8d56c: nothing currently calls
-    /// `.lock()` on this — the fix this field describes isn't wired into
-    /// `/api/models/load` yet. Same follow-up as `download_progress` above.
-    #[allow(dead_code)]
-    model_lifecycle_lock: Arc<tokio::sync::Mutex<()>>,
+    model_lifecycle_lock: Arc<tokio::sync::RwLock<()>>,
     /// Custom inference backends registered via `backend_plugin` — checked
     /// by the OpenAI-compatible REST handlers before falling through to the
     /// built-in Native/Ollama dispatch. See `backend_plugin` module docs.
@@ -4953,7 +4963,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             return Json(serde_json::json!({ "error": "model cannot be empty" }));
         }
 
-        let (inference_backend, ollama_client, ollama_available, vllm_client) = {
+        let (inference_backend, ollama_client, ollama_available, vllm_client, model_lifecycle_lock) = {
             let backend = lock_state(&state);
             // Prefer live settings string (updated by Settings UI / runtime select)
             // so load and chat cannot disagree on which backend is active.
@@ -4963,6 +4973,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                 backend.ollama_client.clone(),
                 Arc::clone(&backend.ollama_available),
                 backend.vllm_client.clone(),
+                Arc::clone(&backend.model_lifecycle_lock),
             )
         };
 
@@ -5208,6 +5219,12 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                 }));
             };
 
+            // Held across the whole stage/kill/spawn dance — see the doc
+            // comment on `model_lifecycle_lock` for why this is a write lock:
+            // it blocks new chat reads from starting against a real port that
+            // `load_model_into_slot` is about to tear down and rebind, and
+            // serializes this against any other concurrent load/unload.
+            let _model_swap_guard = model_lifecycle_lock.write().await;
             let result = tokio::task::spawn_blocking(move || {
                 native_engine_client.load_model_into_slot(
                     &path,
@@ -5218,6 +5235,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             .await
             .map_err(|e| format!("task join error: {}", e))
             .and_then(|r| r);
+            drop(_model_swap_guard);
 
             if let Err(e) = result {
                 return Json(serde_json::json!({
@@ -5226,6 +5244,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             }
         } else if let Some(path) = local_path.clone() {
             if native_engine == "llama_server" || native_engine == "llama-server" {
+                let _model_swap_guard = model_lifecycle_lock.write().await;
                 let result = tokio::task::spawn_blocking(move || {
                     native_engine_client.load_model_into_slot(
                         &path,
@@ -5236,6 +5255,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                 .await
                 .map_err(|e| format!("task join error: {}", e))
                 .and_then(|r| r);
+                drop(_model_swap_guard);
 
                 if let Err(e) = result {
                     return Json(serde_json::json!({
@@ -7225,6 +7245,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             settings,
             mcp_registry,
             pending_tool_calls,
+            model_lifecycle_lock,
         ) = {
             let backend = lock_state(&state);
             let inference_backend = InferenceEngine::parse(&backend.settings.inference_backend);
@@ -7239,7 +7260,38 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                 backend.settings.clone(),
                 Arc::clone(&backend.mcp_registry),
                 Arc::clone(&backend.pending_tool_calls),
+                Arc::clone(&backend.model_lifecycle_lock),
             )
+        };
+
+        // A model switch (`handle_gui_model_load`) holds `model_lifecycle_lock`
+        // as a writer for the entire kill-old/spawn-new/wait-for-healthy dance,
+        // during which the real llama-server port has nothing listening. Without
+        // this, a chat request landing in that gap got a raw "connection
+        // refused" instead of ever reaching the model. Waiting on a read lock
+        // costs nothing when no swap is running (readers don't block readers)
+        // and queues cleanly behind an in-progress one instead of racing it;
+        // the timeout is only a backstop against a genuinely wedged/crashed load.
+        let model_swap_wait_secs = std::env::var("GHOSTLINK_MODEL_SWAP_WAIT_SECS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(120)
+            .clamp(5, 600);
+        let _model_swap_read_guard = match tokio::time::timeout(
+            Duration::from_secs(model_swap_wait_secs),
+            model_lifecycle_lock.read(),
+        )
+        .await
+        {
+            Ok(guard) => guard,
+            Err(_) => {
+                return Json(serde_json::json!({
+                    "error": format!(
+                        "model is still loading (waited {model_swap_wait_secs}s) — try again shortly"
+                    ),
+                }))
+                .into_response();
+            }
         };
 
         // Real MCP-backed tools: resolve each enabled slot to its connected
@@ -7254,6 +7306,11 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                 enabled_tools.extend(mcp_registry.tool_schemas_for_server(&server_name).await);
             }
         }
+        // Standalone servers (sequential-thinking, docker-mcp-gateway, rag,
+        // git, ...) have no checkbox slot to opt into — they're always
+        // available once connected, same as the comment above already
+        // documented for server_for_slot but never actually wired up here.
+        enabled_tools.extend(mcp_registry.standalone_tool_schemas().await);
 
         let token_estimate = req.message.split_whitespace().count().clamp(1, 1024);
         let (history_turns, history_truncated) = trim_conversation_history(
@@ -8642,7 +8699,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         mcp_registry: Arc::clone(&mcp_registry),
         pending_tool_calls: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
         download_progress: HashMap::new(),
-        model_lifecycle_lock: Arc::new(tokio::sync::Mutex::new(())),
+        model_lifecycle_lock: Arc::new(tokio::sync::RwLock::new(())),
         plugin_registry: backend_plugin::BackendPluginRegistry::from_env(),
         enable_tls_active: use_tls,
         audit_log: std::collections::VecDeque::new(),
@@ -11195,7 +11252,7 @@ mod tests {
             ))),
             pending_tool_calls: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             download_progress: HashMap::new(),
-            model_lifecycle_lock: Arc::new(tokio::sync::Mutex::new(())),
+            model_lifecycle_lock: Arc::new(tokio::sync::RwLock::new(())),
             enable_tls_active: false,
             plugin_registry: backend_plugin::BackendPluginRegistry::from_env(),
             audit_log: std::collections::VecDeque::new(),

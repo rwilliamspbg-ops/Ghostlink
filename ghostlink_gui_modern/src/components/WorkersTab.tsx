@@ -4,8 +4,19 @@ import { ClusterTopology } from '../api';
 import { useAppStore } from '../store';
 import { EmptyState } from './StatusViews';
 
+// Badge used to be hardcoded green regardless of this value — a
+// disconnected/error worker still showed the healthy-green pulse.
+// `healthyCount` above already branches on 'connected' correctly; this
+// mirrors that same check for the per-card badge.
+function workerStatusClasses(status: string | undefined): { pill: string; dot: string } {
+  if (status?.toLowerCase() === 'connected') {
+    return { pill: 'bg-green-500/10 text-green-400', dot: 'bg-green-400 animate-pulse' };
+  }
+  return { pill: 'bg-red-500/10 text-red-400', dot: 'bg-red-400' };
+}
+
 export const WorkersTab: React.FC<{ api: any }> = ({ api }) => {
-  const { workers, setWorkers } = useAppStore();
+  const { workers, setWorkers, addToast } = useAppStore();
   const [loading, setLoading] = useState(false);
   const [topology, setTopology] = useState<ClusterTopology | null>(null);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
@@ -97,6 +108,8 @@ export const WorkersTab: React.FC<{ api: any }> = ({ api }) => {
     const result = await api.disconnectWorker(workerId);
     if (result.success) {
       refreshWorkers();
+    } else {
+      addToast({ type: 'error', message: result.error || `Failed to disconnect ${workerHost}` });
     }
   };
 
@@ -156,7 +169,14 @@ export const WorkersTab: React.FC<{ api: any }> = ({ api }) => {
                 <Plus size={14} aria-hidden="true" /> Add Worker
             </button>
             <button
-                onClick={async () => { const r = await api.discoverPeers(); if (r.success) refreshWorkers(); }}
+                onClick={async () => {
+                  const r = await api.discoverPeers();
+                  if (r.success) {
+                    refreshWorkers();
+                  } else {
+                    addToast({ type: 'error', message: r.error || 'Failed to discover peers' });
+                  }
+                }}
                 className="flex items-center gap-2 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-white text-xs font-bold rounded-lg transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
                 title="Discover peers on network"
             >
@@ -266,7 +286,7 @@ export const WorkersTab: React.FC<{ api: any }> = ({ api }) => {
                         <button
                           key={node.id}
                           onClick={() => setSelectedNodeId(node.id)}
-                          className={`px-3 py-2 rounded-xl text-xs font-bold transition border ${selectedNode?.id === node.id ? 'bg-cyan-500/10 text-cyan-300 border-cyan-500/30' : 'bg-slate-950/60 text-slate-400 border-slate-800 hover:text-white hover:border-slate-700'}`}
+                          className={`px-3 py-2 rounded-xl text-xs font-bold transition border focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none ${selectedNode?.id === node.id ? 'bg-cyan-500/10 text-cyan-300 border-cyan-500/30' : 'bg-slate-950/60 text-slate-400 border-slate-800 hover:text-white hover:border-slate-700'}`}
                         >
                           {node.label}
                         </button>
@@ -282,7 +302,7 @@ export const WorkersTab: React.FC<{ api: any }> = ({ api }) => {
                           <button
                             key={size}
                             onClick={() => setHistoryWindow(size as 8 | 16 | 32)}
-                            className={`px-2.5 py-1 rounded-lg text-[10px] font-bold transition ${historyWindow === size ? 'bg-blue-600 text-white' : 'bg-slate-900 text-slate-400 hover:text-white'}`}
+                            className={`px-2.5 py-1 rounded-lg text-[10px] font-bold transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none ${historyWindow === size ? 'bg-blue-600 text-white' : 'bg-slate-900 text-slate-400 hover:text-white'}`}
                           >
                             {size}
                           </button>
@@ -335,8 +355,8 @@ export const WorkersTab: React.FC<{ api: any }> = ({ api }) => {
                 {workers.map((worker) => (
                   <div key={worker.id} className="bg-slate-900/50 border border-slate-800 rounded-3xl p-6 hover:border-slate-700 transition-all relative overflow-hidden group">
                     <div className="absolute top-0 right-0 p-4">
-                        <div className="flex items-center gap-2 px-3 py-1 bg-green-500/10 text-green-400 rounded-full text-[10px] font-bold">
-                            <div className="w-1.5 h-1.5 bg-green-400 rounded-full animate-pulse"></div>
+                        <div className={`flex items-center gap-2 px-3 py-1 rounded-full text-[10px] font-bold ${workerStatusClasses(worker.status).pill}`}>
+                            <div className={`w-1.5 h-1.5 rounded-full ${workerStatusClasses(worker.status).dot}`}></div>
                             {worker.status}
                         </div>
                     </div>
