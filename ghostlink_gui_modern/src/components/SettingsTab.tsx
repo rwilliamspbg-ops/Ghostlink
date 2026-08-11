@@ -15,6 +15,7 @@ import {
   Info,
   Cpu as CpuIcon,
   Loader2,
+  Layers,
 } from 'lucide-react';
 import { Settings as SettingsType } from '../store';
 import { GhostlinkAPI } from '../api';
@@ -144,6 +145,16 @@ export const SettingsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
     setSettings({ ...settings, [key]: value });
   };
 
+  // For the Auto/Manual tuning controls below: flipping "Auto" off needs to
+  // seed a sane starting value in the same update, not just flip the flag —
+  // otherwise unchecking Auto would save `ngl: 0`/`ctx_size: 0` (whatever
+  // the field happened to hold, likely never edited) as the new explicit
+  // override the moment the user saves.
+  const updateFields = (patch: Partial<SettingsType>) => {
+    if (!settings) return;
+    setSettings({ ...settings, ...patch });
+  };
+
   if (loading) {
     return (
       <div className="flex items-center justify-center h-full text-slate-400">
@@ -190,10 +201,16 @@ export const SettingsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
     </div>
   );
 
-  const SliderField = ({ label, desc, value, min, max, step, onChange, unit }: {
+  const SliderField = ({ label, desc, value, min, max, step, onChange, unit, auto, onAutoChange, autoNote }: {
     label: string; desc?: string; value: number; min: number; max: number; step?: number; onChange: (v: number) => void; unit?: string;
+    /** Optional "Auto" checkbox in the header row. When `auto` is true, the
+     * slider itself is replaced by an explanatory note instead of being
+     * disabled-but-visible, so it's unambiguous (including to a screen
+     * reader) that this control isn't the thing currently in effect. */
+    auto?: boolean; onAutoChange?: (v: boolean) => void; autoNote?: string;
   }) => {
     const fieldId = label.toLowerCase().replace(/\s+/g, '-');
+    const hasAuto = onAutoChange !== undefined;
     // Settings round-trip through an f32 backend, so fractional values arrive
     // as things like 0.8999999761581421 — round for display to the precision
     // `step` actually offers instead of showing the float32 artifact.
@@ -204,44 +221,137 @@ export const SettingsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
         : value.toFixed(Math.max(0, -Math.floor(Math.log10(step)))));
     return (
       <div className="space-y-1.5">
-        <div className="flex items-center justify-between">
+        <div className="flex items-center justify-between gap-2">
           <label htmlFor={fieldId} className="text-sm font-medium text-slate-300">{label}</label>
-          <span className="text-xs font-mono text-blue-400 bg-blue-500/10 px-2 py-0.5 rounded-md">{displayValue}{unit}</span>
+          <div className="flex items-center gap-2">
+            {hasAuto && (
+              <label htmlFor={`${fieldId}-auto`} className="flex items-center gap-1.5 text-xs text-slate-400 cursor-pointer select-none">
+                <input
+                  id={`${fieldId}-auto`}
+                  name={`${fieldId}-auto`}
+                  type="checkbox"
+                  checked={!!auto}
+                  onChange={(e) => onAutoChange!(e.target.checked)}
+                  title={`Auto: let Ghostlink choose ${label.toLowerCase()} automatically from detected hardware and model size, instead of the fixed value below`}
+                  className="rounded border-slate-700 bg-slate-800 text-blue-500 focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
+                />
+                Auto
+              </label>
+            )}
+            {!(hasAuto && auto) && (
+              <span className="text-xs font-mono text-blue-400 bg-blue-500/10 px-2 py-0.5 rounded-md">{displayValue}{unit}</span>
+            )}
+          </div>
         </div>
         {desc && <p className="text-[10px] text-slate-500">{desc}</p>}
-        <input
-          id={fieldId}
-          name={fieldId}
-          type="range"
-          min={min}
-          max={max}
-          step={step || 1}
-          value={value ?? 0}
-          onChange={(e) => onChange(parseFloat(e.target.value))}
-          className="w-full h-1.5 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-blue-500 focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
-        />
-        <div className="flex justify-between text-[10px] text-slate-600">
-          <span>{min}</span>
-          <span>{max}</span>
+        {hasAuto && auto ? (
+          <p className="text-xs text-slate-500 italic bg-slate-900/50 rounded-xl px-3 py-2">
+            {autoNote || 'Decided automatically at model-load time from detected VRAM and model size.'}
+          </p>
+        ) : (
+          <>
+            <input
+              id={fieldId}
+              name={fieldId}
+              type="range"
+              min={min}
+              max={max}
+              step={step || 1}
+              value={value ?? 0}
+              onChange={(e) => onChange(parseFloat(e.target.value))}
+              className="w-full h-1.5 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-blue-500 focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
+            />
+            <div className="flex justify-between text-[10px] text-slate-600">
+              <span>{min}</span>
+              <span>{max}</span>
+            </div>
+          </>
+        )}
+      </div>
+    );
+  };
+
+  const ToggleField = ({ label, desc, checked, onChange, warning, disabled }: {
+    label: string; desc?: string; checked: boolean; onChange: (v: boolean) => void; warning?: string; disabled?: boolean;
+  }) => {
+    const fieldId = label.toLowerCase().replace(/\s+/g, '-');
+    return (
+      <div className="space-y-1.5">
+        <label htmlFor={fieldId} className={`flex items-center justify-between gap-3 ${disabled ? 'opacity-50' : 'cursor-pointer select-none'}`}>
+          <span className="text-sm font-medium text-slate-300">{label}</span>
+          <input
+            id={fieldId}
+            name={fieldId}
+            type="checkbox"
+            checked={checked}
+            disabled={disabled}
+            onChange={(e) => onChange(e.target.checked)}
+            title={label}
+            className="h-4 w-4 rounded border-slate-700 bg-slate-800 text-blue-500 focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
+          />
+        </label>
+        {desc && <p className="text-[10px] text-slate-500">{desc}</p>}
+        {warning && (
+          <div role="status" className="flex items-start gap-2 text-xs text-orange-400 bg-orange-500/10 px-3 py-2 rounded-xl">
+            <AlertTriangle size={14} className="mt-0.5 shrink-0" aria-hidden="true" />
+            <span>{warning}</span>
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  const TriStateField = ({ label, desc, value, onChange }: {
+    label: string; desc?: string; value: boolean | null; onChange: (v: boolean | null) => void;
+  }) => {
+    const options: { key: string; optValue: boolean | null; text: string }[] = [
+      { key: 'auto', optValue: null, text: 'Auto' },
+      { key: 'on', optValue: true, text: 'On' },
+      { key: 'off', optValue: false, text: 'Off' },
+    ];
+    return (
+      <div className="space-y-1.5">
+        <span className="text-sm font-medium text-slate-300">{label}</span>
+        {desc && <p className="text-[10px] text-slate-500">{desc}</p>}
+        <div className="flex gap-2" role="radiogroup" aria-label={label}>
+          {options.map((opt) => (
+            <button
+              key={opt.key}
+              type="button"
+              role="radio"
+              aria-checked={value === opt.optValue}
+              onClick={() => onChange(opt.optValue)}
+              title={`${label}: ${opt.text}`}
+              className={`flex-1 px-3 py-2 rounded-xl text-xs font-medium transition border focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none ${
+                value === opt.optValue
+                  ? 'bg-blue-600/10 text-blue-400 border-blue-500/30'
+                  : 'text-slate-300 hover:bg-slate-800 border-slate-800'
+              }`}
+            >
+              {opt.text}
+            </button>
+          ))}
         </div>
       </div>
     );
   };
 
-  const SelectField = ({ label, desc, value, options, onChange }: {
-    label: string; desc?: string; value: string; options: { value: string; label: string }[]; onChange: (v: string) => void;
+  const SelectField = ({ label, desc, value, options, onChange, disabled }: {
+    label: string; desc?: string; value: string; options: { value: string; label: string }[]; onChange: (v: string) => void; disabled?: boolean;
   }) => {
     const fieldId = label.toLowerCase().replace(/\s+/g, '-');
     return (
       <div className="space-y-1.5">
-        <label htmlFor={fieldId} className="text-sm font-medium text-slate-300">{label}</label>
+        <label htmlFor={fieldId} className={`text-sm font-medium text-slate-300 ${disabled ? 'opacity-50' : ''}`}>{label}</label>
         {desc && <p className="text-[10px] text-slate-500">{desc}</p>}
         <select
           id={fieldId}
           name={fieldId}
           value={value ?? ''}
           onChange={(e) => onChange(e.target.value)}
-          className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2.5 text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500/50 focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
+          disabled={disabled}
+          title={disabled ? `${label} (disabled — see description above)` : label}
+          className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2.5 text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500/50 focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none disabled:opacity-50 disabled:cursor-not-allowed"
         >
           {options.map((o) => (
             <option key={o.value} value={o.value}>{o.label}</option>
@@ -595,6 +705,107 @@ export const SettingsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                 min={1} max={32} step={1}
                 onChange={(v) => update('chat_micro_batch', v)}
               />
+            </Section>
+
+            {/* Model Performance Section */}
+            <Section title="Model Performance" icon={Layers}>
+              {settings.inference_backend !== 'native' ? (
+                <div className="rounded-2xl border border-slate-800 bg-slate-950/60 p-4 text-sm text-slate-400">
+                  These controls configure the native llama-server engine (`-ngl`, `-c`, `-b`/`-ub`, KV cache
+                  quantization, mlock/mmap) and have no effect on the {settings.inference_backend === 'vllm' ? 'vLLM' : 'Ollama'} backend
+                  currently selected above — that runtime manages its own model loading. Switch{' '}
+                  <strong className="text-slate-300">Inference Engine → Backend</strong> to Native to use them.
+                </div>
+              ) : (
+                <>
+                  <p className="text-[10px] text-slate-500 -mt-2">
+                    Every control here defaults to <strong className="text-slate-400">Auto</strong> — Ghostlink already
+                    picks these from detected VRAM and the loaded model's size, including a safety cap that keeps large
+                    models from exhausting memory. Only switch one to a fixed value if you've measured it helps on your
+                    hardware. Takes effect on the <em>next</em> model load, not the current one.
+                  </p>
+                  <SliderField
+                label="GPU Offload"
+                desc="Number of model layers to run on the GPU (-ngl). Auto offloads based on detected VRAM, capped toward CPU-only for large models on shared-memory (iGPU) hardware to avoid exhausting system RAM."
+                value={settings.ngl < 0 ? 0 : settings.ngl}
+                min={0} max={100} step={1}
+                onChange={(v) => update('ngl', v)}
+                auto={settings.ngl_auto}
+                onAutoChange={(a) => updateFields({ ngl_auto: a, ngl: a ? settings.ngl : Math.max(0, settings.ngl) })}
+                autoNote="Automatic — VRAM-tiered, with a safety cap toward CPU-only for large models on shared-memory GPUs."
+              />
+              <SliderField
+                label="Context Length"
+                desc="Context window size in tokens (-c). Auto scales with detected VRAM and is capped down further for large models, since KV cache and model weights compete for the same memory."
+                value={settings.ctx_size}
+                min={512} max={131072} step={512}
+                onChange={(v) => update('ctx_size', v)}
+                auto={settings.ctx_size_auto}
+                onAutoChange={(a) => updateFields({ ctx_size_auto: a })}
+              />
+              <SliderField
+                label="CPU Threads"
+                desc="Threads for llama-server (-t). Auto uses available parallelism, or whatever a launch script already configured. Has little effect when GPU Offload is high — most compute already runs on the GPU."
+                value={settings.threads}
+                min={1} max={128} step={1}
+                onChange={(v) => update('threads', v)}
+                auto={settings.threads_auto}
+                onAutoChange={(a) => updateFields({ threads_auto: a })}
+              />
+              <SliderField
+                label="Batch Size"
+                desc="Prompt-eval batch size (-b). Larger values speed up prompt processing at the cost of more memory."
+                value={settings.batch_size ?? 1024}
+                min={128} max={8192} step={128}
+                onChange={(v) => update('batch_size', v)}
+                auto={settings.batch_size === null}
+                onAutoChange={(a) => update('batch_size', a ? null : 1024)}
+              />
+              <SliderField
+                label="Micro-batch Size"
+                desc="Prompt-eval micro-batch size (-ub)."
+                value={settings.ubatch_size ?? 512}
+                min={32} max={2048} step={32}
+                onChange={(v) => update('ubatch_size', v)}
+                auto={settings.ubatch_size === null}
+                onAutoChange={(a) => update('ubatch_size', a ? null : 512)}
+              />
+              <SelectField
+                label="KV Cache Type"
+                desc={settings.flash_attention
+                  ? "Key/value cache quantization (-ctk/-ctv). q8_0 roughly halves cache memory vs f16 with negligible quality loss for agent/tool use."
+                  : "Disabled — llama.cpp requires Flash Attention for a quantized KV cache. Using f16 (unquantized) while Flash Attention is off."}
+                value={settings.flash_attention ? (settings.kv_cache_type ?? 'auto') : 'f16'}
+                options={[
+                  { value: 'auto', label: 'Auto (q8_0)' },
+                  { value: 'f16', label: 'F16 (unquantized)' },
+                  { value: 'q8_0', label: 'Q8_0' },
+                  { value: 'q4_0', label: 'Q4_0' },
+                ]}
+                onChange={(v) => update('kv_cache_type', v === 'auto' ? null : v)}
+                disabled={!settings.flash_attention}
+              />
+              <ToggleField
+                label="Flash Attention"
+                desc="Fused attention kernel — lower memory bandwidth on long context. Recommended on."
+                checked={settings.flash_attention}
+                onChange={(v) => update('flash_attention', v)}
+                warning={!settings.flash_attention ? 'Flash Attention is off: KV cache quantization is unavailable while this is off.' : undefined}
+              />
+              <TriStateField
+                label="Keep Model Locked in RAM (mlock)"
+                desc="Pins model pages so the OS can't swap them out. Auto enables it only on hosts with plenty of RAM (>=24GB) — forcing it on a memory-tight host can starve everything else instead of just risking swap."
+                value={settings.mlock}
+                onChange={(v) => update('mlock', v)}
+              />
+              <TriStateField
+                label="Disable Memory-Mapped Loading (no-mmap)"
+                desc="Reads the whole model into memory upfront instead of mapping it and faulting pages in lazily. No measured benefit from forcing this on — off (mmap stays enabled) unless you've tested otherwise."
+                value={settings.no_mmap}
+                onChange={(v) => update('no_mmap', v)}
+              />
+                </>
+              )}
             </Section>
 
             {/* Network Section */}

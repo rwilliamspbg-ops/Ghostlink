@@ -34,6 +34,15 @@ pub struct CpuInfo {
     pub arch: String,
     /// Set of detected CPU features.
     pub features: CpuFeatures,
+    /// Performance-core count on a hybrid CPU (e.g. Intel 12th gen+
+    /// P-cores). `None` when undetectable (non-Windows currently — see
+    /// `detect_hybrid_core_counts`) or when the CPU has no real P/E split
+    /// (every core reporting the same `EfficiencyClass`, which is the
+    /// common case, including this repo's AMD Zen reference hardware).
+    pub performance_cores: Option<usize>,
+    /// Efficiency-core count on a hybrid CPU. Same availability rules as
+    /// `performance_cores`.
+    pub efficiency_cores: Option<usize>,
 }
 
 /// CPU SIMD / accelerator features.
@@ -332,6 +341,7 @@ fn detect_cpu_info() -> CpuInfo {
         (brand.join().unwrap(), physical_cores.join().unwrap())
     });
     let physical_cores = physical_cores.unwrap_or(logical_cores / 2).max(1);
+    let (performance_cores, efficiency_cores) = detect_hybrid_core_counts();
 
     CpuInfo {
         brand,
@@ -339,7 +349,109 @@ fn detect_cpu_info() -> CpuInfo {
         physical_cores,
         arch,
         features,
+        performance_cores,
+        efficiency_cores,
     }
+}
+
+/// Detects a hybrid CPU's performance/efficiency core split.
+///
+/// Windows only, via `GetLogicalProcessorInformationEx(RelationProcessorCore, ...)`
+/// — the only OS-level API that reports the per-core `EfficiencyClass` Intel
+/// Thread Director / AMD's equivalent uses. There's no Linux/macOS
+/// equivalent probed here yet: Linux exposes core type through
+/// `/sys/devices/cpu_core`/`cpu_atom` on very new kernels (6.x+) or
+/// `cpufreq` base-frequency comparison, and macOS deliberately doesn't
+/// expose thread-level affinity/topology like this at all — both left as
+/// `(None, None)` rather than guessing from an unverified heuristic.
+#[cfg(target_os = "windows")]
+fn detect_hybrid_core_counts() -> (Option<usize>, Option<usize>) {
+    use windows_sys::Win32::System::SystemInformation::{
+        GetLogicalProcessorInformationEx, RelationProcessorCore,
+    };
+
+    let mut len: u32 = 0;
+    // First call with a null buffer: fails by design, populates `len` with
+    // the required buffer size. Return code/GetLastError aren't checked
+    // here because the only signal that matters is whether `len` came back
+    // non-zero — if it didn't, there's nothing to parse either way.
+    unsafe {
+        GetLogicalProcessorInformationEx(RelationProcessorCore, std::ptr::null_mut(), &mut len);
+    }
+    if len == 0 {
+        return (None, None);
+    }
+
+    let mut buf = vec![0u8; len as usize];
+    let ok = unsafe {
+        GetLogicalProcessorInformationEx(RelationProcessorCore, buf.as_mut_ptr().cast(), &mut len)
+    };
+    if ok == 0 {
+        return (None, None);
+    }
+    buf.truncate(len as usize);
+    parse_processor_core_relationships(&buf)
+}
+
+#[cfg(not(target_os = "windows"))]
+fn detect_hybrid_core_counts() -> (Option<usize>, Option<usize>) {
+    (None, None)
+}
+
+/// Parses a `GetLogicalProcessorInformationEx(RelationProcessorCore, ...)`
+/// result buffer into `(performance_cores, efficiency_cores)`.
+///
+/// Pure and platform-independent (no `windows-sys` types) specifically so
+/// it can be unit-tested with hand-built synthetic buffers — this repo has
+/// no real hybrid P/E-core hardware to test `detect_hybrid_core_counts`
+/// itself against, so correctness has to come from testing this parsing
+/// logic directly against the documented struct layout instead.
+///
+/// Each variable-length `SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX` record
+/// (winnt.h):
+///   offset 0: `Relationship` (u32) — `RelationProcessorCore` == 0
+///   offset 4: `Size` (u32) — total record length, used to advance to the
+///             next record; a request for `RelationProcessorCore` only
+///             returns records with this relationship, so no other variant
+///             needs to be understood here
+///   offset 8: `PROCESSOR_RELATIONSHIP.Flags` (u8)
+///   offset 9: `PROCESSOR_RELATIONSHIP.EfficiencyClass` (u8) — higher value
+///             = more performant; a uniform value across every core means
+///             no real hybrid split (true for the overwhelming majority of
+///             CPUs, hybrid or not, that this ever runs against)
+///
+/// Returns `(None, None)` if the buffer is empty, too short to contain any
+/// full record, or every core reports the same `EfficiencyClass`. A
+/// malformed trailing record (`Size` of 0, or claiming to extend past the
+/// buffer) stops parsing at that point rather than reading out of bounds —
+/// records already parsed are still used.
+fn parse_processor_core_relationships(buf: &[u8]) -> (Option<usize>, Option<usize>) {
+    const RELATION_PROCESSOR_CORE: u32 = 0;
+
+    let mut classes: Vec<u8> = Vec::new();
+    let mut offset = 0usize;
+    while offset + 8 <= buf.len() {
+        let relationship = u32::from_ne_bytes(buf[offset..offset + 4].try_into().unwrap());
+        let size = u32::from_ne_bytes(buf[offset + 4..offset + 8].try_into().unwrap()) as usize;
+        if size < 8 || offset + size > buf.len() {
+            break;
+        }
+        if relationship == RELATION_PROCESSOR_CORE && offset + 10 <= buf.len() {
+            classes.push(buf[offset + 9]);
+        }
+        offset += size;
+    }
+
+    if classes.is_empty() {
+        return (None, None);
+    }
+    let max_class = *classes.iter().max().expect("classes is non-empty");
+    if classes.iter().all(|&c| c == max_class) {
+        return (None, None);
+    }
+    let performance = classes.iter().filter(|&&c| c == max_class).count();
+    let efficiency = classes.len() - performance;
+    (Some(performance), Some(efficiency))
 }
 
 fn detect_cpu_brand() -> String {
@@ -1801,6 +1913,82 @@ mod tests {
         let sp = SystemProfile::detect_fast();
         assert!(sp.cpu.logical_cores >= 1);
         assert!(!sp.cpu.arch.is_empty());
+    }
+
+    /// Builds one synthetic `SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX`
+    /// record with `Relationship = RelationProcessorCore` (0) and the given
+    /// `EfficiencyClass`. The exact record length doesn't need to match a
+    /// real Windows-supplied buffer byte-for-byte — `parse_processor_core_relationships`
+    /// only ever trusts each record's own `Size` field to advance, never an
+    /// assumption about a fixed struct size, so any self-consistent length
+    /// here exercises the real parsing logic faithfully.
+    fn synthetic_core_record(efficiency_class: u8) -> Vec<u8> {
+        let total_size: u32 = 48;
+        let mut rec = vec![0u8; total_size as usize];
+        rec[0..4].copy_from_slice(&0u32.to_ne_bytes()); // RelationProcessorCore
+        rec[4..8].copy_from_slice(&total_size.to_ne_bytes());
+        rec[8] = 0; // PROCESSOR_RELATIONSHIP.Flags
+        rec[9] = efficiency_class;
+        rec
+    }
+
+    fn synthetic_non_core_record(relationship: u32, size: u32) -> Vec<u8> {
+        let mut rec = vec![0u8; size as usize];
+        rec[0..4].copy_from_slice(&relationship.to_ne_bytes());
+        rec[4..8].copy_from_slice(&size.to_ne_bytes());
+        rec
+    }
+
+    #[test]
+    fn parse_processor_core_relationships_detects_hybrid_split() {
+        let mut buf = Vec::new();
+        for _ in 0..6 {
+            buf.extend(synthetic_core_record(1)); // performance cores
+        }
+        for _ in 0..8 {
+            buf.extend(synthetic_core_record(0)); // efficiency cores
+        }
+        assert_eq!(parse_processor_core_relationships(&buf), (Some(6), Some(8)));
+    }
+
+    #[test]
+    fn parse_processor_core_relationships_returns_none_for_uniform_cpu() {
+        let mut buf = Vec::new();
+        for _ in 0..8 {
+            buf.extend(synthetic_core_record(0));
+        }
+        assert_eq!(parse_processor_core_relationships(&buf), (None, None));
+    }
+
+    #[test]
+    fn parse_processor_core_relationships_handles_empty_buffer() {
+        assert_eq!(parse_processor_core_relationships(&[]), (None, None));
+    }
+
+    #[test]
+    fn parse_processor_core_relationships_stops_at_malformed_record_without_panicking() {
+        let mut buf = Vec::new();
+        buf.extend(synthetic_core_record(1));
+        buf.extend(synthetic_core_record(0));
+        // Malformed trailing record: a full 8-byte header claiming
+        // Relationship = RelationProcessorCore and Size = 100, but no
+        // payload actually follows in the buffer. Must not read out of
+        // bounds or panic — the two valid records already parsed should
+        // still be used.
+        let mut bad_tail = vec![0u8; 8];
+        bad_tail[0..4].copy_from_slice(&0u32.to_ne_bytes());
+        bad_tail[4..8].copy_from_slice(&100u32.to_ne_bytes());
+        buf.extend(bad_tail);
+        assert_eq!(parse_processor_core_relationships(&buf), (Some(1), Some(1)));
+    }
+
+    #[test]
+    fn parse_processor_core_relationships_ignores_non_core_relationships() {
+        let mut buf = Vec::new();
+        buf.extend(synthetic_non_core_record(1, 16)); // RelationNumaNode, irrelevant
+        buf.extend(synthetic_core_record(1));
+        buf.extend(synthetic_core_record(0));
+        assert_eq!(parse_processor_core_relationships(&buf), (Some(1), Some(1)));
     }
 
     #[test]

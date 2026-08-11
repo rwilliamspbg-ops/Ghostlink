@@ -342,40 +342,114 @@ impl NativeEngineClient {
         vram_tier.min(model_cap)
     }
 
-    /// VRAM-aware batch defaults for prompt eval + Flash Attention + compact KV.
-    fn default_perf_args() -> Vec<String> {
+    /// Batch size (`-b`) and micro-batch size (`-ub`) for prompt eval.
+    ///
+    /// Priority:
+    /// 1. `GHOSTLINK_LLAMA_BATCH` / `GHOSTLINK_LLAMA_UBATCH` — explicit,
+    ///    independently-settable overrides (either can be set without the
+    ///    other; an unset or unparseable/zero value falls through to the
+    ///    VRAM tier instead of producing a `-b 0` llama-server would reject)
+    /// 2. VRAM-tier default (`docs/LOCAL_INFERENCE_TUNING.md`)
+    fn get_batch_ubatch() -> (u32, u32) {
         let vram = std::env::var("GHOSTLINK_VRAM_GB")
             .ok()
             .and_then(|v| v.trim().parse::<f32>().ok())
             .unwrap_or(0.0);
-        let (tier, batch, ubatch) = if vram >= 12.0 {
-            (">=12GB", 2048, 512)
+        let (default_batch, default_ubatch) = if vram >= 12.0 {
+            (2048, 512)
         } else if vram >= 8.0 {
-            (">=8GB", 1024, 512)
+            (1024, 512)
         } else if vram >= 4.0 {
-            (">=4GB", 512, 256)
+            (512, 256)
         } else {
-            ("<4GB", 512, 128)
+            (512, 128)
         };
+        let batch = std::env::var("GHOSTLINK_LLAMA_BATCH")
+            .ok()
+            .and_then(|v| v.trim().parse::<u32>().ok())
+            .filter(|&n| n > 0)
+            .unwrap_or(default_batch);
+        let ubatch = std::env::var("GHOSTLINK_LLAMA_UBATCH")
+            .ok()
+            .and_then(|v| v.trim().parse::<u32>().ok())
+            .filter(|&n| n > 0)
+            .unwrap_or(default_ubatch);
+        (batch, ubatch)
+    }
+
+    /// KV cache quantization type for `-ctk`/`-ctv` — shared for K and V;
+    /// this repo has never split them independently.
+    ///
+    /// Priority:
+    /// 1. `GHOSTLINK_LLAMA_KV_CACHE_TYPE` — `"f16"`, `"q8_0"`, or `"q4_0"`;
+    ///    any other value (typo, unsupported type) falls back to the
+    ///    default rather than passing something llama-server might reject
+    /// 2. `"q8_0"` — this repo's prior hardcoded default (~2x less cache
+    ///    memory than f16, negligible quality cost for agent/tool loops)
+    ///
+    /// Only used when `get_flash_attention()` is true — llama.cpp requires
+    /// Flash Attention for quantized KV cache, so `default_perf_args` skips
+    /// `-ctk`/`-ctv` entirely when FA is off, regardless of this value.
+    fn get_kv_cache_type() -> &'static str {
+        match std::env::var("GHOSTLINK_LLAMA_KV_CACHE_TYPE")
+            .ok()
+            .as_deref()
+            .map(str::trim)
+        {
+            Some("f16") => "f16",
+            Some("q4_0") => "q4_0",
+            _ => "q8_0",
+        }
+    }
+
+    /// Whether to pass `-fa on` (Flash Attention).
+    ///
+    /// Priority:
+    /// 1. `GHOSTLINK_LLAMA_FLASH_ATTN=0` (or `"off"`) — explicit opt-out
+    /// 2. On — matches this repo's prior *unconditional* behavior exactly,
+    ///    so nothing changes for anyone not setting this env var.
+    fn get_flash_attention() -> bool {
+        !matches!(
+            std::env::var("GHOSTLINK_LLAMA_FLASH_ATTN").ok().as_deref(),
+            Some("0") | Some("off")
+        )
+    }
+
+    /// VRAM-aware batch defaults for prompt eval + Flash Attention + compact KV.
+    fn default_perf_args() -> Vec<String> {
+        let (batch, ubatch) = Self::get_batch_ubatch();
+        let flash_attention = Self::get_flash_attention();
+        let kv_cache_type = Self::get_kv_cache_type();
+
+        let mut args = Vec::new();
+        if flash_attention {
+            args.push("-fa".to_string());
+            args.push("on".to_string());
+        }
+        args.push("-b".to_string());
+        args.push(batch.to_string());
+        args.push("-ub".to_string());
+        args.push(ubatch.to_string());
+        if flash_attention {
+            args.push("-ctk".to_string());
+            args.push(kv_cache_type.to_string());
+            args.push("-ctv".to_string());
+            args.push(kv_cache_type.to_string());
+        }
+
         // Cheap, greppable proof at boot that the VRAM-scaled tuning table in
         // docs/LOCAL_INFERENCE_TUNING.md actually landed for this hardware,
         // instead of only being inferable later from slow generations.
         eprintln!(
-            "[perf-tier] Detected VRAM={vram}GB -> tier {tier} (-b {batch} -ub {ubatch} -fa on -ctk/-ctv q8_0)"
+            "[perf-tier] -b {batch} -ub {ubatch} -fa {} -ctk/-ctv {}",
+            if flash_attention { "on" } else { "off" },
+            if flash_attention {
+                kv_cache_type
+            } else {
+                "n/a (Flash Attention off)"
+            }
         );
-        // q8_0 KV cuts cache memory ~2× vs f16 → more room for GPU layers / speed.
-        vec![
-            "-fa".to_string(),
-            "on".to_string(),
-            "-b".to_string(),
-            batch.to_string(),
-            "-ub".to_string(),
-            ubatch.to_string(),
-            "-ctk".to_string(),
-            "q8_0".to_string(),
-            "-ctv".to_string(),
-            "q8_0".to_string(),
-        ]
+        args
     }
 
     /// Parse host and port from `GHOSTLINK_LLAMA_SERVER_URL`.
@@ -447,6 +521,53 @@ impl NativeEngineClient {
         } else {
             vram_tier
         }
+    }
+
+    /// Whether to pass `--mlock` (pin model pages in RAM so they can't be
+    /// swapped out).
+    ///
+    /// Priority:
+    /// 1. `GHOSTLINK_MLOCK=1` / `=0` — explicit, unconditional override
+    /// 2. RAM-tier default from `GHOSTLINK_SYSTEM_MEMORY_GB` (the same env
+    ///    var `system_profile.rs` honors as its own RAM override): on only
+    ///    when total system RAM is >=24GB
+    /// 3. Off, if the RAM var isn't set — deliberately not falling back to
+    ///    live OS detection here (e.g. `SystemProfile::detect_fast()`):
+    ///    that call is 30s-cached process-wide, so a load-time decision made
+    ///    through it could silently serve a stale answer, and mlock is risky
+    ///    enough (see `launch.sh`'s reference-machine comment on this) that
+    ///    guessing beats staying off only when there's no data at all.
+    ///
+    /// Mirrors `launch.sh`'s existing `GHOSTLINK_MLOCK`/`MLOCK_FLAG` heuristic
+    /// ("mlock only when RAM is plentiful, avoids thrash on 16-32GB hosts
+    /// under load") so GUI/API-driven loads (which go through this Rust path,
+    /// not the shell launch scripts) get the same behavior instead of never
+    /// setting `--mlock` at all.
+    fn get_mlock() -> bool {
+        match std::env::var("GHOSTLINK_MLOCK").ok().as_deref() {
+            Some("1") => return true,
+            Some("0") => return false,
+            _ => {}
+        }
+        std::env::var("GHOSTLINK_SYSTEM_MEMORY_GB")
+            .ok()
+            .and_then(|v| v.trim().parse::<f32>().ok())
+            .map(|ram_gb| ram_gb >= 24.0)
+            .unwrap_or(false)
+    }
+
+    /// Whether to pass `--no-mmap` (read the whole model into memory upfront
+    /// instead of mapping it and faulting pages in lazily).
+    ///
+    /// Opt-in only via `GHOSTLINK_NO_MMAP=1` — unlike `--mlock`, there's no
+    /// measured hardware case in this repo showing a throughput win from
+    /// disabling mmap by default, so it stays off unless explicitly
+    /// requested rather than guessing at a heuristic.
+    fn get_no_mmap() -> bool {
+        matches!(
+            std::env::var("GHOSTLINK_NO_MMAP").ok().as_deref(),
+            Some("1")
+        )
     }
 
     /// Determine thread count (`-t`).
@@ -714,6 +835,8 @@ impl NativeEngineClient {
         let threads = Self::get_threads();
         let ctx = Self::get_ctx_size(model_size_gb);
         let parallel_slots = Self::get_parallel_slots();
+        let mlock = Self::get_mlock();
+        let no_mmap = Self::get_no_mmap();
         let mut extra_args = Self::get_llama_server_args();
         if let Some(servers) = rpc_servers.filter(|s| !s.is_empty()) {
             eprintln!("[model-load] Distributed inference enabled: --rpc {servers}");
@@ -758,6 +881,12 @@ impl NativeEngineClient {
             // explicitly, confirming this build of llama-server accepts it.
             cmd.arg("-ngl").arg(ngl.to_string());
             cmd.arg("-t").arg(threads.to_string());
+            if mlock {
+                cmd.arg("--mlock");
+            }
+            if no_mmap {
+                cmd.arg("--no-mmap");
+            }
             for arg in args {
                 cmd.arg(arg);
             }
@@ -2145,6 +2274,176 @@ mod tests {
         assert_eq!(NativeEngineClient::get_parallel_slots(), 1);
 
         std::env::remove_var("GHOSTLINK_PARALLEL_SLOTS");
+    }
+
+    #[test]
+    fn get_mlock_explicit_override_wins_regardless_of_ram() {
+        let _guard = env_lock().lock().expect("env lock poisoned");
+
+        std::env::set_var("GHOSTLINK_MLOCK", "1");
+        assert!(NativeEngineClient::get_mlock());
+
+        std::env::set_var("GHOSTLINK_MLOCK", "0");
+        assert!(!NativeEngineClient::get_mlock());
+
+        std::env::remove_var("GHOSTLINK_MLOCK");
+    }
+
+    #[test]
+    fn get_mlock_defaults_off_below_24gb_ram() {
+        let _guard = env_lock().lock().expect("env lock poisoned");
+        std::env::remove_var("GHOSTLINK_MLOCK");
+        std::env::set_var("GHOSTLINK_SYSTEM_MEMORY_GB", "16");
+
+        // Mirrors launch.sh: mlock is a real risk on a memory-tight host
+        // (pinning model pages can starve everything else instead of just
+        // risking swap), so it must stay off by default there.
+        assert!(!NativeEngineClient::get_mlock());
+
+        std::env::remove_var("GHOSTLINK_SYSTEM_MEMORY_GB");
+    }
+
+    #[test]
+    fn get_mlock_defaults_on_at_24gb_ram_and_above() {
+        let _guard = env_lock().lock().expect("env lock poisoned");
+        std::env::remove_var("GHOSTLINK_MLOCK");
+        std::env::set_var("GHOSTLINK_SYSTEM_MEMORY_GB", "32");
+
+        assert!(NativeEngineClient::get_mlock());
+
+        std::env::remove_var("GHOSTLINK_SYSTEM_MEMORY_GB");
+    }
+
+    #[test]
+    fn get_no_mmap_is_opt_in_only() {
+        let _guard = env_lock().lock().expect("env lock poisoned");
+
+        std::env::remove_var("GHOSTLINK_NO_MMAP");
+        assert!(!NativeEngineClient::get_no_mmap());
+
+        std::env::set_var("GHOSTLINK_NO_MMAP", "1");
+        assert!(NativeEngineClient::get_no_mmap());
+
+        std::env::set_var("GHOSTLINK_NO_MMAP", "0");
+        assert!(!NativeEngineClient::get_no_mmap());
+
+        std::env::remove_var("GHOSTLINK_NO_MMAP");
+    }
+
+    #[test]
+    fn get_batch_ubatch_tiers_with_vram_and_never_increase_as_vram_decreases() {
+        let _guard = env_lock().lock().expect("env lock poisoned");
+        std::env::remove_var("GHOSTLINK_LLAMA_BATCH");
+        std::env::remove_var("GHOSTLINK_LLAMA_UBATCH");
+
+        let case = |vram: &str| {
+            std::env::set_var("GHOSTLINK_VRAM_GB", vram);
+            let r = NativeEngineClient::get_batch_ubatch();
+            std::env::remove_var("GHOSTLINK_VRAM_GB");
+            r
+        };
+
+        assert_eq!(case("16"), (2048, 512));
+        assert_eq!(case("12"), (2048, 512));
+        assert_eq!(case("8"), (1024, 512));
+        assert_eq!(case("4"), (512, 256));
+        assert_eq!(case("2"), (512, 128));
+
+        let tiers = [16.0, 12.0, 8.0, 4.0, 2.0];
+        let mut last = (u32::MAX, u32::MAX);
+        for vram in tiers {
+            let (b, ub) = case(&vram.to_string());
+            assert!(
+                b <= last.0 && ub <= last.1,
+                "batch/ubatch must not increase as VRAM decreases: {vram}GB -> ({b},{ub}), previous -> {last:?}"
+            );
+            last = (b, ub);
+        }
+    }
+
+    #[test]
+    fn get_batch_ubatch_explicit_overrides_are_independent() {
+        let _guard = env_lock().lock().expect("env lock poisoned");
+        std::env::set_var("GHOSTLINK_VRAM_GB", "16");
+
+        // Only batch overridden -- ubatch still comes from the VRAM tier.
+        std::env::set_var("GHOSTLINK_LLAMA_BATCH", "4096");
+        std::env::remove_var("GHOSTLINK_LLAMA_UBATCH");
+        assert_eq!(NativeEngineClient::get_batch_ubatch(), (4096, 512));
+
+        // Only ubatch overridden -- batch still comes from the VRAM tier.
+        std::env::remove_var("GHOSTLINK_LLAMA_BATCH");
+        std::env::set_var("GHOSTLINK_LLAMA_UBATCH", "1024");
+        assert_eq!(NativeEngineClient::get_batch_ubatch(), (2048, 1024));
+
+        // Zero/unparseable overrides fall through to the tier default rather
+        // than producing a `-b 0` llama-server would reject.
+        std::env::set_var("GHOSTLINK_LLAMA_BATCH", "0");
+        std::env::set_var("GHOSTLINK_LLAMA_UBATCH", "not-a-number");
+        assert_eq!(NativeEngineClient::get_batch_ubatch(), (2048, 512));
+
+        std::env::remove_var("GHOSTLINK_LLAMA_BATCH");
+        std::env::remove_var("GHOSTLINK_LLAMA_UBATCH");
+        std::env::remove_var("GHOSTLINK_VRAM_GB");
+    }
+
+    #[test]
+    fn get_kv_cache_type_defaults_to_q8_0_and_rejects_unknown_values() {
+        let _guard = env_lock().lock().expect("env lock poisoned");
+
+        std::env::remove_var("GHOSTLINK_LLAMA_KV_CACHE_TYPE");
+        assert_eq!(NativeEngineClient::get_kv_cache_type(), "q8_0");
+
+        std::env::set_var("GHOSTLINK_LLAMA_KV_CACHE_TYPE", "f16");
+        assert_eq!(NativeEngineClient::get_kv_cache_type(), "f16");
+
+        std::env::set_var("GHOSTLINK_LLAMA_KV_CACHE_TYPE", "q4_0");
+        assert_eq!(NativeEngineClient::get_kv_cache_type(), "q4_0");
+
+        // Unknown/typo'd value falls back to the safe default instead of
+        // passing something llama-server might reject outright.
+        std::env::set_var("GHOSTLINK_LLAMA_KV_CACHE_TYPE", "q99_bogus");
+        assert_eq!(NativeEngineClient::get_kv_cache_type(), "q8_0");
+
+        std::env::remove_var("GHOSTLINK_LLAMA_KV_CACHE_TYPE");
+    }
+
+    #[test]
+    fn get_flash_attention_defaults_on_matching_prior_unconditional_behavior() {
+        let _guard = env_lock().lock().expect("env lock poisoned");
+
+        std::env::remove_var("GHOSTLINK_LLAMA_FLASH_ATTN");
+        assert!(NativeEngineClient::get_flash_attention());
+
+        std::env::set_var("GHOSTLINK_LLAMA_FLASH_ATTN", "0");
+        assert!(!NativeEngineClient::get_flash_attention());
+
+        std::env::set_var("GHOSTLINK_LLAMA_FLASH_ATTN", "off");
+        assert!(!NativeEngineClient::get_flash_attention());
+
+        // Anything else (including a typo) stays on the safe/prior default.
+        std::env::set_var("GHOSTLINK_LLAMA_FLASH_ATTN", "nope");
+        assert!(NativeEngineClient::get_flash_attention());
+
+        std::env::remove_var("GHOSTLINK_LLAMA_FLASH_ATTN");
+    }
+
+    #[test]
+    fn default_perf_args_omits_kv_cache_flags_when_flash_attention_is_off() {
+        let _guard = env_lock().lock().expect("env lock poisoned");
+        std::env::remove_var("GHOSTLINK_LLAMA_SERVER_ARGS");
+        std::env::set_var("GHOSTLINK_LLAMA_FLASH_ATTN", "0");
+
+        // Regression: llama.cpp requires Flash Attention for quantized KV
+        // cache -- passing -ctk/-ctv without -fa on would make the server
+        // fail to load instead of silently ignoring the flags.
+        let args = NativeEngineClient::get_llama_server_args();
+        assert!(!args.contains(&"-fa".to_string()));
+        assert!(!args.contains(&"-ctk".to_string()));
+        assert!(!args.contains(&"-ctv".to_string()));
+        assert!(args.contains(&"-b".to_string()));
+
+        std::env::remove_var("GHOSTLINK_LLAMA_FLASH_ATTN");
     }
 
     #[test]

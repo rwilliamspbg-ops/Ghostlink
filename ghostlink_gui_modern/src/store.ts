@@ -67,6 +67,25 @@ export interface Settings {
   discovery_auth_token: string;
   tcp_auth_token: string;
   xdp_interface: string;
+  // Model-load performance tuning. `*_auto: true` (the default for every
+  // pre-existing settings.json) means "don't override — defer to the
+  // backend's own VRAM-tier/large-model-safety-cap logic, or whatever a
+  // launch script already configured." Only the value fields flip an
+  // `_auto` flag off when a user explicitly edits them in the GUI — see
+  // `apply_native_engine_tuning_env` in main.rs for why this never forces
+  // an already-configured value back to "unset."
+  ngl: number;
+  ngl_auto: boolean;
+  ctx_size: number;
+  ctx_size_auto: boolean;
+  threads: number;
+  threads_auto: boolean;
+  batch_size: number | null;
+  ubatch_size: number | null;
+  kv_cache_type: 'f16' | 'q8_0' | 'q4_0' | null;
+  flash_attention: boolean;
+  mlock: boolean | null;
+  no_mmap: boolean | null;
 }
 
 export interface Worker {

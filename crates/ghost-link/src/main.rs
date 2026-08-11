@@ -1795,6 +1795,124 @@ struct RuntimeSettings {
     /// allow-all empty vec, not full-struct defaults).
     #[serde(default)]
     rpc_allowed_peers: Vec<String>,
+
+    // -- Model-load performance tuning (GUI "Model Performance" section) --
+    //
+    // `ngl`/`ctx_size`/`threads` already existed above but were, until this
+    // section, never actually translated into the `GHOSTLINK_*` env vars
+    // `native_engine.rs` reads — editing them via `/api/settings` silently
+    // did nothing. Wiring them up meant deciding what an *old* settings.json
+    // (saved before this feature existed, with e.g. `ctx_size: 4096` from
+    // `RuntimeSettings::default()`) should do now that the field is finally
+    // live: treating that pre-existing numeric value as a newly-active
+    // explicit override would resurrect the exact OOM this repo already hit
+    // once (a large model + a stale/generous ctx_size — see `get_ctx_size`'s
+    // doc comment in native_engine.rs). So each of the three gets its own
+    // `_auto` flag, decoupled from the numeric value, defaulting to `true`
+    // via `#[serde(default = "default_true")]` — a key serde has never seen
+    // before is *always* absent from an old file, so every pre-existing
+    // settings.json comes back as "auto" (today's real behavior) regardless
+    // of whatever number happens to be sitting in `ngl`/`ctx_size`/`threads`.
+    // Only a settings.json written by this feature (i.e. a user who actually
+    // touched the new GUI control) can have `_auto: false`.
+    /// When true (default, including every pre-existing settings.json),
+    /// `ngl` below is ignored and `native_engine::get_ngl`'s own
+    /// VRAM-tier/large-model-safety-cap logic decides layer offload.
+    #[serde(default = "default_true")]
+    ngl_auto: bool,
+    #[serde(default = "default_true")]
+    ctx_size_auto: bool,
+    #[serde(default = "default_true")]
+    threads_auto: bool,
+    /// `-b`. `None` (the default — new field, no legacy value to worry
+    /// about, so a plain `Option` is safe here unlike the three above) means
+    /// "use `native_engine::get_batch_ubatch`'s VRAM-tier default".
+    #[serde(default)]
+    batch_size: Option<u32>,
+    /// `-ub`. Same auto semantics as `batch_size`.
+    #[serde(default)]
+    ubatch_size: Option<u32>,
+    /// `-ctk`/`-ctv` (shared K/V type — this repo has never split them
+    /// independently). `None` means "use the `q8_0` default"; `Some` must be
+    /// `"f16"`, `"q8_0"`, or `"q4_0"` (anything else is treated as unset by
+    /// `native_engine::get_kv_cache_type`, never forwarded to llama-server
+    /// verbatim).
+    #[serde(default)]
+    kv_cache_type: Option<String>,
+    /// `-fa on`/off. Defaults `true`, matching this repo's *prior*
+    /// unconditional behavior exactly (Flash Attention was always on, no
+    /// override existed) — so every pre-existing settings.json keeps
+    /// today's real behavior with zero migration risk, same reasoning as
+    /// the `_auto` flags above just via a plain bool since there's no
+    /// ambiguous legacy "off" state to preserve.
+    #[serde(default = "default_true")]
+    flash_attention: bool,
+    /// `--mlock`. `None` (default) defers to `native_engine::get_mlock`'s
+    /// own `GHOSTLINK_MLOCK`/RAM-tier logic (off unless RAM is plentiful).
+    /// `Some(true)`/`Some(false)` force it on/off regardless of RAM.
+    #[serde(default)]
+    mlock: Option<bool>,
+    /// `--no-mmap`. `None` (default) keeps mmap on — this repo has never
+    /// had a default heuristic for disabling it, only an explicit opt-in.
+    #[serde(default)]
+    no_mmap: Option<bool>,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+/// Translates the model-load-affecting fields of `RuntimeSettings` into the
+/// `GHOSTLINK_*` env vars `native_engine.rs` reads, called once right
+/// before `load_model_into_slot`.
+///
+/// Deliberately **only ever sets env vars, never removes one** — even when
+/// a field is back at its "auto" state. The reason isn't laziness: this
+/// process's env already carries whatever a launch script set before
+/// `ghost-link` even started (`launch-native.ps1`'s reference-machine block
+/// pins `GHOSTLINK_LLAMA_NGL=-1` as a deliberate, measured, permanent
+/// override — see `native_engine::NativeEngineClient::get_ngl`'s doc
+/// comment). Every `RuntimeSettings` field defaults to "auto" for *every*
+/// pre-existing settings.json (see the field doc comments on
+/// `RuntimeSettings`), so if "auto" meant "actively clear this env var",
+/// the very first model load after adding this function would silently
+/// erase that launch script's override and fall back to `get_ngl`'s
+/// large-model safety cap — cutting a tuned machine's decode throughput
+/// without any user action. "Auto" here means "don't introduce a *new*
+/// override on top of whatever's already configured," not "force
+/// detection no matter what already exists." A GUI control set explicitly
+/// and later flipped back to "auto" may leave its own env var sticking for
+/// the rest of this process's lifetime — a minor, self-inflicted,
+/// session-scoped rough edge — which is the correct tradeoff against
+/// silently undoing infrastructure this process didn't set up itself.
+fn apply_native_engine_tuning_env(settings: &RuntimeSettings) {
+    if !settings.ngl_auto {
+        std::env::set_var("GHOSTLINK_LLAMA_NGL", settings.ngl.to_string());
+    }
+    if !settings.ctx_size_auto {
+        std::env::set_var("GHOSTLINK_CTX_SIZE", settings.ctx_size.to_string());
+    }
+    if !settings.threads_auto {
+        std::env::set_var("GHOSTLINK_LLAMA_THREADS", settings.threads.to_string());
+    }
+    if let Some(batch) = settings.batch_size {
+        std::env::set_var("GHOSTLINK_LLAMA_BATCH", batch.to_string());
+    }
+    if let Some(ubatch) = settings.ubatch_size {
+        std::env::set_var("GHOSTLINK_LLAMA_UBATCH", ubatch.to_string());
+    }
+    if let Some(kv_type) = &settings.kv_cache_type {
+        std::env::set_var("GHOSTLINK_LLAMA_KV_CACHE_TYPE", kv_type);
+    }
+    if !settings.flash_attention {
+        std::env::set_var("GHOSTLINK_LLAMA_FLASH_ATTN", "0");
+    }
+    if let Some(mlock) = settings.mlock {
+        std::env::set_var("GHOSTLINK_MLOCK", if mlock { "1" } else { "0" });
+    }
+    if let Some(no_mmap) = settings.no_mmap {
+        std::env::set_var("GHOSTLINK_NO_MMAP", if no_mmap { "1" } else { "0" });
+    }
 }
 
 fn default_rpc_port() -> u16 {
@@ -1866,6 +1984,15 @@ impl Default for RuntimeSettings {
             contribute_compute: false,
             rpc_port: default_rpc_port(),
             rpc_allowed_peers: Vec::new(),
+            ngl_auto: true,
+            ctx_size_auto: true,
+            threads_auto: true,
+            batch_size: None,
+            ubatch_size: None,
+            kv_cache_type: None,
+            flash_attention: true,
+            mlock: None,
+            no_mmap: None,
         }
     }
 }
@@ -4958,6 +5085,12 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         ) = {
             let mut backend = lock_state(&state);
 
+            // Must run before `load_model_into_slot` reads any
+            // `GHOSTLINK_LLAMA_*`/`GHOSTLINK_MLOCK`/`GHOSTLINK_NO_MMAP` env
+            // var below — see `apply_native_engine_tuning_env`'s doc
+            // comment for why it only ever sets, never clears, one of them.
+            apply_native_engine_tuning_env(&backend.settings);
+
             // Real cross-process model-parallel inference via llama.cpp's
             // own RPC backend when enabled and the cluster has other nodes
             // contributing compute — see `rpc_cluster` module docs. Empty
@@ -4973,12 +5106,14 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                 if peers.is_empty() {
                     (None, None)
                 } else {
-                    let local_vram = backend
-                        .cluster
-                        .get_metrics(&backend.local_node_id)
-                        .map(|m| m.vram_gb)
+                    let local_metrics = backend.cluster.get_metrics(&backend.local_node_id);
+                    let local_vram = local_metrics.as_ref().map(|m| m.vram_gb).unwrap_or(0.0);
+                    let local_system_memory = local_metrics
+                        .as_ref()
+                        .map(|m| m.system_memory_gb)
                         .unwrap_or(0.0);
-                    let split = rpc_cluster::compute_tensor_split(local_vram, &peers);
+                    let split =
+                        rpc_cluster::compute_tensor_split(local_vram, local_system_memory, &peers);
                     (
                         Some(rpc_cluster::rpc_flag_value(&peers)),
                         Some(rpc_cluster::tensor_split_flag_value(&split)),
@@ -8019,6 +8154,41 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                                 .collect();
                         }
                     }
+                    "ngl_auto" => {
+                        if let Some(v) = value.as_bool() {
+                            current.ngl_auto = v;
+                        }
+                    }
+                    "ctx_size_auto" => {
+                        if let Some(v) = value.as_bool() {
+                            current.ctx_size_auto = v;
+                        }
+                    }
+                    "threads_auto" => {
+                        if let Some(v) = value.as_bool() {
+                            current.threads_auto = v;
+                        }
+                    }
+                    "batch_size" => {
+                        current.batch_size = value.as_u64().map(|v| v as u32);
+                    }
+                    "ubatch_size" => {
+                        current.ubatch_size = value.as_u64().map(|v| v as u32);
+                    }
+                    "kv_cache_type" => {
+                        current.kv_cache_type = value.as_str().map(|s| s.to_string());
+                    }
+                    "flash_attention" => {
+                        if let Some(v) = value.as_bool() {
+                            current.flash_attention = v;
+                        }
+                    }
+                    "mlock" => {
+                        current.mlock = value.as_bool();
+                    }
+                    "no_mmap" => {
+                        current.no_mmap = value.as_bool();
+                    }
                     "conversation_token_limit" => {
                         if let Some(v) = value.as_u64() {
                             current.conversation_token_limit = v as usize;
@@ -10816,6 +10986,175 @@ mod tests {
     fn env_lock() -> &'static Mutex<()> {
         static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         ENV_LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    #[test]
+    fn apply_native_engine_tuning_env_leaves_env_untouched_when_every_field_is_auto() {
+        let _guard = env_lock().lock().expect("env lock poisoned");
+        for var in [
+            "GHOSTLINK_LLAMA_NGL",
+            "GHOSTLINK_CTX_SIZE",
+            "GHOSTLINK_LLAMA_THREADS",
+            "GHOSTLINK_LLAMA_BATCH",
+            "GHOSTLINK_LLAMA_UBATCH",
+            "GHOSTLINK_LLAMA_KV_CACHE_TYPE",
+            "GHOSTLINK_LLAMA_FLASH_ATTN",
+            "GHOSTLINK_MLOCK",
+            "GHOSTLINK_NO_MMAP",
+        ] {
+            std::env::remove_var(var);
+        }
+
+        // Regression guard for the exact scenario the function's doc
+        // comment describes: `RuntimeSettings::default()` (what every
+        // pre-existing settings.json deserializes as for these new fields)
+        // must not introduce a single new env var.
+        apply_native_engine_tuning_env(&RuntimeSettings::default());
+
+        assert!(std::env::var("GHOSTLINK_LLAMA_NGL").is_err());
+        assert!(std::env::var("GHOSTLINK_CTX_SIZE").is_err());
+        assert!(std::env::var("GHOSTLINK_LLAMA_THREADS").is_err());
+        assert!(std::env::var("GHOSTLINK_LLAMA_BATCH").is_err());
+        assert!(std::env::var("GHOSTLINK_LLAMA_UBATCH").is_err());
+        assert!(std::env::var("GHOSTLINK_LLAMA_KV_CACHE_TYPE").is_err());
+        assert!(std::env::var("GHOSTLINK_LLAMA_FLASH_ATTN").is_err());
+        assert!(std::env::var("GHOSTLINK_MLOCK").is_err());
+        assert!(std::env::var("GHOSTLINK_NO_MMAP").is_err());
+    }
+
+    #[test]
+    fn apply_native_engine_tuning_env_never_clears_a_preexisting_launch_script_override() {
+        let _guard = env_lock().lock().expect("env lock poisoned");
+
+        // Simulates launch-native.ps1's reference-machine block: a deliberate,
+        // permanent override set before ghost-link even starts.
+        std::env::set_var("GHOSTLINK_LLAMA_NGL", "-1");
+
+        // Every field at its default "auto" state must not erase it.
+        apply_native_engine_tuning_env(&RuntimeSettings::default());
+        assert_eq!(std::env::var("GHOSTLINK_LLAMA_NGL").as_deref(), Ok("-1"));
+
+        std::env::remove_var("GHOSTLINK_LLAMA_NGL");
+    }
+
+    #[test]
+    fn apply_native_engine_tuning_env_sets_explicit_overrides() {
+        let _guard = env_lock().lock().expect("env lock poisoned");
+        for var in [
+            "GHOSTLINK_LLAMA_NGL",
+            "GHOSTLINK_CTX_SIZE",
+            "GHOSTLINK_LLAMA_THREADS",
+            "GHOSTLINK_LLAMA_BATCH",
+            "GHOSTLINK_LLAMA_UBATCH",
+            "GHOSTLINK_LLAMA_KV_CACHE_TYPE",
+            "GHOSTLINK_LLAMA_FLASH_ATTN",
+            "GHOSTLINK_MLOCK",
+            "GHOSTLINK_NO_MMAP",
+        ] {
+            std::env::remove_var(var);
+        }
+
+        let settings = RuntimeSettings {
+            ngl_auto: false,
+            ngl: 24,
+            ctx_size_auto: false,
+            ctx_size: 16384,
+            threads_auto: false,
+            threads: 8,
+            batch_size: Some(2048),
+            ubatch_size: Some(512),
+            kv_cache_type: Some("f16".to_string()),
+            flash_attention: false,
+            mlock: Some(true),
+            no_mmap: Some(true),
+            ..Default::default()
+        };
+
+        apply_native_engine_tuning_env(&settings);
+
+        assert_eq!(std::env::var("GHOSTLINK_LLAMA_NGL").as_deref(), Ok("24"));
+        assert_eq!(std::env::var("GHOSTLINK_CTX_SIZE").as_deref(), Ok("16384"));
+        assert_eq!(std::env::var("GHOSTLINK_LLAMA_THREADS").as_deref(), Ok("8"));
+        assert_eq!(
+            std::env::var("GHOSTLINK_LLAMA_BATCH").as_deref(),
+            Ok("2048")
+        );
+        assert_eq!(
+            std::env::var("GHOSTLINK_LLAMA_UBATCH").as_deref(),
+            Ok("512")
+        );
+        assert_eq!(
+            std::env::var("GHOSTLINK_LLAMA_KV_CACHE_TYPE").as_deref(),
+            Ok("f16")
+        );
+        assert_eq!(
+            std::env::var("GHOSTLINK_LLAMA_FLASH_ATTN").as_deref(),
+            Ok("0")
+        );
+        assert_eq!(std::env::var("GHOSTLINK_MLOCK").as_deref(), Ok("1"));
+        assert_eq!(std::env::var("GHOSTLINK_NO_MMAP").as_deref(), Ok("1"));
+
+        for var in [
+            "GHOSTLINK_LLAMA_NGL",
+            "GHOSTLINK_CTX_SIZE",
+            "GHOSTLINK_LLAMA_THREADS",
+            "GHOSTLINK_LLAMA_BATCH",
+            "GHOSTLINK_LLAMA_UBATCH",
+            "GHOSTLINK_LLAMA_KV_CACHE_TYPE",
+            "GHOSTLINK_LLAMA_FLASH_ATTN",
+            "GHOSTLINK_MLOCK",
+            "GHOSTLINK_NO_MMAP",
+        ] {
+            std::env::remove_var(var);
+        }
+    }
+
+    #[test]
+    fn runtime_settings_deserializes_old_json_missing_new_tuning_fields_as_auto() {
+        // Simulates a settings.json saved before this feature existed: none
+        // of the new keys are present at all.
+        let old_json = serde_json::json!({
+            "inference_backend": "native",
+            "native_engine": "llama_server",
+            "ngl": -1,
+            "model_path": "",
+            "models_dir": "models",
+            "llama_server_url": "http://127.0.0.1:8080/completion",
+            "vllm_base_url": "http://127.0.0.1:8000",
+            "vllm_api_key": "",
+            "llama_port": 8080,
+            "api_host": "127.0.0.1",
+            "api_port": 8003,
+            "gui_port": 5173,
+            "threads": 4,
+            "ctx_size": 4096,
+            "temperature": 0.7,
+            "top_p": 0.9,
+            "top_k": 40,
+            "repeat_penalty": 1.1,
+            "max_tokens": 2048,
+            "chat_exec_tokens": 1024,
+            "chat_micro_batch": 4,
+            "tcp_max_inflight": 256,
+            "discovery_listen": "0.0.0.0:45885",
+            "discovery_broadcast": "255.255.255.255:45885",
+            "discovery_auth_token": "",
+            "tcp_auth_token": "",
+            "xdp_interface": "eth0",
+        });
+
+        let settings: RuntimeSettings =
+            serde_json::from_value(old_json).expect("old settings.json shape must still parse");
+
+        assert!(settings.ngl_auto);
+        assert!(settings.ctx_size_auto);
+        assert!(settings.threads_auto);
+        assert_eq!(settings.batch_size, None);
+        assert_eq!(settings.ubatch_size, None);
+        assert_eq!(settings.kv_cache_type, None);
+        assert!(settings.flash_attention);
+        assert_eq!(settings.mlock, None);
+        assert_eq!(settings.no_mmap, None);
     }
 
     fn test_backend_state() -> Arc<Mutex<BackendState>> {

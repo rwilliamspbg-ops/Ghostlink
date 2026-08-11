@@ -352,7 +352,9 @@ function App() {
                   key={tab.id}
                   onClick={() => { setActiveTab(tab.id); closeSidebarOnMobile(); }}
                   aria-current={isActive ? 'page' : undefined}
-                  className={`flex items-center gap-3 w-full px-3 py-2.5 rounded-xl transition text-sm font-medium ${
+                  aria-label={tab.label}
+                  title={tab.label}
+                  className={`flex items-center gap-3 w-full px-3 py-2.5 rounded-xl transition text-sm font-medium focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none ${
                     isActive
                       ? 'bg-blue-600/10 text-blue-400'
                       : 'text-slate-400 hover:bg-slate-800 hover:text-slate-200'
