@@ -360,7 +360,9 @@ impl LoadBalancer {
             if transfers.len() >= cfg.max_concurrent_rebalances {
                 break;
             }
-            if let Some(target_name) = self.find_best_target_name(&underloaded_nodes, overloaded_name) {
+            if let Some(target_name) =
+                self.find_best_target_name(&underloaded_nodes, overloaded_name)
+            {
                 transfers.push((overloaded_name.clone(), target_name.clone()));
             }
         }
