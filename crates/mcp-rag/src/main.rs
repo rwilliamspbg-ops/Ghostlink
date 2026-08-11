@@ -12,7 +12,7 @@ use rmcp::{
 };
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use tokio::sync::Mutex;
+use std::sync::RwLock;
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 struct IndexDocumentRequest {
@@ -251,7 +251,7 @@ struct Rag {
     embed_model: String,
     client: reqwest::Client,
     index_path: PathBuf,
-    index: std::sync::Arc<Mutex<RagIndex>>,
+    index: std::sync::Arc<RwLock<RagIndex>>,
 }
 
 impl Rag {
@@ -267,7 +267,7 @@ impl Rag {
                 .unwrap_or_else(|_| "nomic-embed-text".to_string()),
             client: reqwest::Client::new(),
             index_path,
-            index: std::sync::Arc::new(Mutex::new(index)),
+            index: std::sync::Arc::new(RwLock::new(index)),
         }
     }
 
@@ -344,7 +344,9 @@ impl Rag {
         }
 
         let indexed = new_entries.len();
-        let mut index = self.index.lock().await;
+        // Optimize: Use write lock on std::sync::RwLock instead of tokio::sync::Mutex to completely
+        // bypass tokio's task scheduling, futures allocation, and synchronization overhead on hot/read-heavy paths.
+        let mut index = self.index.write().unwrap();
         replace_document_entries(&mut index.entries, &doc_id, new_entries);
         if let Err(err) = index.save(&self.index_path) {
             return format!(
@@ -366,7 +368,10 @@ impl Rag {
             Ok(e) => e,
             Err(err) => return err,
         };
-        let index = self.index.lock().await;
+        // Optimize: Use read lock on std::sync::RwLock instead of tokio::sync::Mutex.
+        // This enables fully concurrent read/search queries to run in parallel without blocking each other,
+        // and eliminates the CPU and allocation overhead of futures-based tokio locking.
+        let index = self.index.read().unwrap();
         if index.entries.is_empty() {
             return "error: the retrieval index is empty — call index_document first".to_string();
         }
