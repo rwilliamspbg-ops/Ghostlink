@@ -242,6 +242,7 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
     chatStreamingId: streamingId, setChatStreamingId: setStreamingId,
     chatError: error, setChatError: setError,
     addToast,
+    setActiveTab,
   } = useAppStore();
   const [input, setInput] = useState('');
   const [copiedId, setCopiedId] = useState<string | null>(null);
@@ -924,7 +925,10 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                             )}
                         </div>
                         <div className="p-2 border-t border-slate-800 bg-slate-900/50">
-                            <button className="flex items-center gap-2 w-full px-3 py-2 rounded-xl text-xs font-bold text-slate-400 hover:text-white hover:bg-slate-800 transition">
+                            <button
+                                onClick={() => setActiveTab(1)}
+                                className="flex items-center gap-2 w-full px-3 py-2 rounded-xl text-xs font-bold text-slate-400 hover:text-white hover:bg-slate-800 transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
+                            >
                                 <Plus size={14} aria-hidden="true" /> Download Models
                             </button>
                         </div>
@@ -1100,7 +1104,7 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                       <button
                         onClick={handleSaveSession}
                         disabled={!sessionName.trim() || messages.length === 0}
-                        className="flex items-center gap-2 w-full px-3 py-2 rounded-xl text-xs font-bold transition disabled:opacity-50 disabled:cursor-not-allowed bg-blue-600 text-white hover:bg-blue-500"
+                        className="flex items-center gap-2 w-full px-3 py-2 rounded-xl text-xs font-bold transition disabled:opacity-50 disabled:cursor-not-allowed bg-blue-600 text-white hover:bg-blue-500 focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
                       >
                         <Save size={14} /> Save Current Chat
                       </button>

@@ -534,7 +534,7 @@ export const McpTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                     type="checkbox"
                     checked={form.requires_confirmation}
                     onChange={(e) => setForm((f) => ({ ...f, requires_confirmation: e.target.checked }))}
-                    className="accent-blue-600"
+                    className="accent-blue-600 focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
                   />
                   Require confirmation before tool calls
                 </label>
