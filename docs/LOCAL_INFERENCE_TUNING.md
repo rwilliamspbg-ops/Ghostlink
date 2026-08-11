@@ -15,7 +15,8 @@ native engine (`native_engine.rs`) now enable:
 | Flash Attention | `-fa on` | always on (requires value on current llama.cpp) |
 | Batch size | `-b` | 2048 (≥12GB) / 1024 (≥8GB) / 512 (else) |
 | µ-batch size | `-ub` | 512 (≥8GB) / 256 (≥4GB) / 128 (else) |
-| mlock | `--mlock` | off by default on ≤24GB RAM hosts |
+| mlock | `--mlock` | off unless `GHOSTLINK_MLOCK=1` or `GHOSTLINK_SYSTEM_MEMORY_GB>=24` — see below |
+| mmap | `--no-mmap` | off (mmap stays on) unless `GHOSTLINK_NO_MMAP=1` |
 
 Override anytime:
 
@@ -23,7 +24,19 @@ Override anytime:
 export GHOSTLINK_LLAMA_SERVER_ARGS="-fa on -b 2048 -ub 512"
 export GHOSTLINK_VRAM_GB=12
 export GHOSTLINK_LLAMA_NGL=40
+export GHOSTLINK_MLOCK=1        # or 0 to force off; unset = RAM-tier default
+export GHOSTLINK_NO_MMAP=1      # opt-in only, no default heuristic
 ```
+
+`--mlock`/`--no-mmap` used to only be set by the shell launch scripts
+(`launch.sh`), so any model load that went through the Rust engine directly
+(GUI, API, `launch-native.ps1`) never got them. `native_engine.rs`'s
+`get_mlock()`/`get_no_mmap()` now set them the same way `launch.sh` already
+did: `GHOSTLINK_MLOCK` wins outright if set; otherwise mlock defaults on only
+when `GHOSTLINK_SYSTEM_MEMORY_GB>=24` (unset → off, since guessing wrong
+about a memory-tight host is worse than skipping mlock). `--no-mmap` has no
+default heuristic — it's opt-in only via `GHOSTLINK_NO_MMAP=1`, since nothing
+in this repo has measured a throughput case for turning it on by default.
 
 ## GPU offload and large models — read this before setting `-ngl -1` on an iGPU
 
@@ -74,6 +87,72 @@ backend) is already handled by the model-size cap above regardless of what
 this estimate lands on, so it can afford to be reasonably generous rather
 than maximally conservative. `GHOSTLINK_VRAM_GB` always wins outright when
 set.
+
+### Context length is capped by the same device-local heap as `-ngl -1`, not just system RAM
+
+Measured directly on the reference hardware (AMD Radeon 860M, Vulkan
+backend, Qwen3-Coder-30B-A3B-Instruct-Q3_K_L, `-ngl -1`): raising `-c`
+past its auto-tiered default (4096 for this model) fails to load —
+`ggml_vulkan: Device memory allocation ... failed: ErrorOutOfDeviceMemory`
+— even from `+25%` (5120) and even with **9.6GB of general system RAM
+free at the time**. This is not a system-memory question: full offload's
+weight buffers already leave the Vulkan device-local heap essentially
+full, so *any* extra KV-cache allocation for a longer context fails
+regardless of how much ordinary RAM is free. Tried at three KV cache
+types (`q8_0`, `q4_0`, and the auto-retry's unquantized `f16` fallback)
+— all failed identically, confirming it's the extra allocation itself,
+not which quant it's made of.
+
+Practical takeaway: on this class of hardware, full GPU offload and a
+context window bigger than the auto-tiered default are mutually
+exclusive for a model this size — there's no safe middle ground to tune
+into via `-c`/`-ctk`/`-ctv` alone. Getting more context headroom means
+giving up device-local heap somewhere else: lower `-ngl` (accepting the
+speed cost documented above), a smaller/more-quantized model, or fewer
+concurrently-loaded buffers. Confirmed safe throughout testing: a failed
+load attempt leaves the previously-running server untouched (staging
+loads the new config on a scratch port and only swaps over once it's
+confirmed healthy — see `NativeEngineClient::load_model_into_slot`), so
+experimenting with this is low-risk even on a memory-tight host.
+
+## Hybrid CPU (P/E-core) detection
+
+`SystemProfile::detect()`/`detect_fast()` now report `cpu.performance_cores`
+/`cpu.efficiency_cores` on Windows via `GetLogicalProcessorInformationEx`'s
+per-core `EfficiencyClass` — `None`/`None` when the CPU has no real
+heterogeneous split (still the common case) or on non-Windows (no
+equivalent probe implemented yet). Verified live on this repo's own AMD
+Ryzen AI 7 350 dev machine: `physical_cores=8` splits as
+`performance_cores=Some(4)` / `efficiency_cores=Some(4)` — AMD's "Strix
+Point" mobile chips genuinely mix full Zen5 and compact Zen5c cores, this
+isn't Intel-only.
+
+This is detection only — `native_engine.rs`'s `get_threads()` does **not**
+yet default `-t` to `performance_cores` on a hybrid CPU. Intel's P/E split
+has a large well-documented per-thread speed gap (Atom-derived E-cores),
+where capping threads to P-cores is a known win because a synchronized
+thread pool is only as fast as its slowest thread. AMD's Zen5c cores are
+the same microarchitecture at a lower clock, a much smaller gap — whether
+capping helps, hurts, or does nothing on this specific chip hasn't been
+measured, and guessing wrong here would regress CPU-bound throughput
+instead of improving it. Until that's measured, set
+`GHOSTLINK_LLAMA_THREADS` yourself to experiment (e.g. `=4` to test
+P-core-only) — the explicit override always wins over anything an
+autodetected default would pick anyway.
+
+## Distributed (`--rpc`) peer health
+
+`rpc_cluster::discover_rpc_peers` now excludes a peer whose
+`delivery_ratio` metric has dropped below `0.90`, even if it's still
+`NodeStatus::Active` (heartbeat still arriving) — a struggling-but-alive
+peer can hurt overall throughput more than dropping it. A peer with no
+samples yet defaults to `delivery_ratio = 1.0`, so freshly-joined nodes are
+never penalized before they have real data. This does *not* also gate on
+observed latency: `NodeMetrics::avg_latency_us` is populated with
+millisecond-scale values in some real call sites despite the field's name,
+so a fixed cutoff there risks silently excluding every peer (or none)
+depending on which unit actually applies — not applied until it's measured
+against this real path specifically.
 
 Docker Compose uses:
 

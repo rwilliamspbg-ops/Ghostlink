@@ -59,6 +59,14 @@ use ghostlink_core::cluster::{ClusterState, NodeStatus};
 /// overflowing/panicking.
 const RPC_INTERNAL_PORT_OFFSET: u16 = 1000;
 
+/// Minimum `NodeMetrics::delivery_ratio` a peer must have to be offered as
+/// an `--rpc` target in `discover_rpc_peers`. Matches
+/// `planning::RebalanceTrigger::default()`'s `0.90` delivery-ratio cutoff
+/// for consistency — unlike that trigger's latency threshold, delivery
+/// ratio is a plain 0.0-1.0 fraction with no cross-module unit ambiguity,
+/// so it's safe to reuse the same number here.
+const RPC_PEER_MIN_DELIVERY_RATIO: f32 = 0.90;
+
 /// True once this process has spawned its (single, process-lifetime)
 /// allowlist proxy task. Guards `maybe_start_allowlist_proxy` so the
 /// periodic respawn-supervision loop in `main.rs` (which calls
@@ -459,6 +467,9 @@ pub struct RpcPeer {
     pub node_id: String,
     pub addr: SocketAddr,
     pub vram_gb: f32,
+    /// System RAM in GB, used as a `compute_tensor_split` fallback signal
+    /// when this peer has no VRAM to report (CPU-only node).
+    pub system_memory_gb: f32,
 }
 
 /// Finds healthy, RPC-contributing peers (excluding `local_node_id`) from
@@ -505,6 +516,33 @@ pub fn discover_rpc_peers(
                 return None;
             }
 
+            // Real-time health gate: a peer that's technically `Active` (its
+            // heartbeat hasn't timed out) can still be struggling badly
+            // enough that routing layers to it hurts overall throughput more
+            // than excluding it would. `delivery_ratio` defaults to 1.0 for
+            // a peer with no samples yet, so this never penalizes a
+            // freshly-joined node before it has real data.
+            //
+            // Deliberately NOT also gating on `metrics.avg_latency_us` here:
+            // that field is named as microseconds but is populated with
+            // millisecond-scale values elsewhere in this codebase (e.g.
+            // `record_latency(120.0)`/`record_latency(180.0)` in main.rs),
+            // and `planning::RebalanceTrigger`'s existing `> 15.0` threshold
+            // for it was written for the synthetic pipeline path, not
+            // measured against this real RPC heartbeat path. Copying an
+            // ambiguously-scaled cutoff here risks silently excluding every
+            // real peer (or none) depending on which unit actually applies
+            // — worse than not gating on it at all.
+            if metrics.delivery_ratio < RPC_PEER_MIN_DELIVERY_RATIO {
+                tracing::warn!(
+                    "rpc_cluster: excluding peer '{}' \u{2014} delivery_ratio {:.3} is below the \
+                     {RPC_PEER_MIN_DELIVERY_RATIO} health floor for distributed inference.",
+                    node.id,
+                    metrics.delivery_ratio,
+                );
+                return None;
+            }
+
             match (local_rpc_build_id, node.rpc_build_id.as_deref()) {
                 (Some(local), Some(peer)) if local != peer => {
                     tracing::warn!(
@@ -539,6 +577,7 @@ pub fn discover_rpc_peers(
                 node_id: node.id.clone(),
                 addr,
                 vram_gb: node.vram_gb,
+                system_memory_gb: metrics.system_memory_gb,
             })
         })
         .collect();
@@ -552,7 +591,28 @@ pub fn discover_rpc_peers(
 /// the order given), so the split array's positions must line up with it.
 /// Proportional to each device's reported VRAM; llama.cpp normalizes the
 /// values itself; these don't need to sum to 1.
-pub fn compute_tensor_split(local_vram_gb: f32, peers: &[RpcPeer]) -> Vec<f32> {
+///
+/// If *no* device in the split (local or any peer) reports real VRAM — an
+/// all-CPU-only cluster — falls back to a split proportional to system RAM
+/// instead. Without this, every device's weight floors to the same 0.1 and
+/// the split silently becomes uniform regardless of how differently capable
+/// the CPU-only nodes actually are, overloading the weaker one. RAM is only
+/// used as a fallback *within* an all-CPU-only split (comparing RAM against
+/// another node's real VRAM would need an unmeasured GPU/CPU conversion
+/// factor this repo hasn't benchmarked — see docs/LOCAL_INFERENCE_TUNING.md's
+/// "measure, don't guess" stance) — a mixed GPU/CPU cluster still uses the
+/// plain VRAM-with-0.1-floor behavior for its CPU-only members.
+pub fn compute_tensor_split(
+    local_vram_gb: f32,
+    local_system_memory_gb: f32,
+    peers: &[RpcPeer],
+) -> Vec<f32> {
+    let all_vram_unreported = local_vram_gb <= 0.0 && peers.iter().all(|p| p.vram_gb <= 0.0);
+    if all_vram_unreported {
+        let mut split = vec![local_system_memory_gb.max(0.1)];
+        split.extend(peers.iter().map(|p| p.system_memory_gb.max(0.1)));
+        return split;
+    }
     let mut split = vec![local_vram_gb.max(0.1)];
     split.extend(peers.iter().map(|p| p.vram_gb.max(0.1)));
     split
@@ -668,6 +728,47 @@ mod tests {
         assert_eq!(peers[0].node_id, "contributor");
         assert_eq!(peers[0].addr, loopback(50052));
         assert_eq!(peers[0].vram_gb, 12.0);
+    }
+
+    #[test]
+    fn excludes_peer_with_low_delivery_ratio_even_if_status_is_active() {
+        let cluster = ClusterState::new();
+        register_peer(
+            &cluster,
+            "flaky",
+            12.0,
+            Some(50052),
+            Some(loopback(9001)),
+            NodeStatus::Active,
+        );
+        // Below the heartbeat-timeout threshold that would flip status to
+        // Failed, but bad enough that routing real inference layers here
+        // would hurt throughput more than excluding it.
+        cluster.get_metrics_mut("flaky", |m| m.delivery_ratio = 0.5);
+
+        let peers = discover_rpc_peers(&cluster, "local", None);
+
+        assert!(peers.is_empty());
+    }
+
+    #[test]
+    fn keeps_fresh_peer_with_no_delivery_samples_yet() {
+        let cluster = ClusterState::new();
+        register_peer(
+            &cluster,
+            "fresh",
+            12.0,
+            Some(50052),
+            Some(loopback(9001)),
+            NodeStatus::Active,
+        );
+        // delivery_ratio defaults to 1.0 until real samples come in — must
+        // not be treated as "below the health floor" before it has data.
+
+        let peers = discover_rpc_peers(&cluster, "local", None);
+
+        assert_eq!(peers.len(), 1);
+        assert_eq!(peers[0].node_id, "fresh");
     }
 
     #[test]
@@ -843,21 +944,64 @@ mod tests {
                 node_id: "a".to_string(),
                 addr: loopback(1),
                 vram_gb: 12.0,
+                system_memory_gb: 32.0,
             },
             RpcPeer {
                 node_id: "b".to_string(),
                 addr: loopback(2),
                 vram_gb: 8.0,
+                system_memory_gb: 16.0,
             },
         ];
-        let split = compute_tensor_split(16.0, &peers);
+        let split = compute_tensor_split(16.0, 64.0, &peers);
         assert_eq!(split, vec![16.0, 12.0, 8.0]);
     }
 
     #[test]
     fn tensor_split_floors_zero_vram_to_avoid_a_dead_device_entry() {
-        let split = compute_tensor_split(0.0, &[]);
+        let split = compute_tensor_split(0.0, 0.0, &[]);
         assert_eq!(split, vec![0.1]);
+    }
+
+    #[test]
+    fn tensor_split_falls_back_to_ram_proportional_when_no_device_reports_vram() {
+        // All-CPU-only cluster: every peer's vram_gb is 0, so the plain
+        // VRAM-with-0.1-floor path would previously produce a uniform
+        // 0.1/0.1/0.1 split regardless of how differently capable these
+        // nodes actually are. RAM should drive the split instead.
+        let peers = vec![
+            RpcPeer {
+                node_id: "a".to_string(),
+                addr: loopback(1),
+                vram_gb: 0.0,
+                system_memory_gb: 32.0,
+            },
+            RpcPeer {
+                node_id: "b".to_string(),
+                addr: loopback(2),
+                vram_gb: 0.0,
+                system_memory_gb: 8.0,
+            },
+        ];
+        let split = compute_tensor_split(0.0, 64.0, &peers);
+        assert_eq!(split, vec![64.0, 32.0, 8.0]);
+    }
+
+    #[test]
+    fn tensor_split_uses_vram_floor_not_ram_when_cluster_is_mixed() {
+        // Mixed cluster: local device has real VRAM, so even a CPU-only
+        // peer (0 VRAM) must stay on the plain VRAM-with-0.1-floor path,
+        // not get promoted to a RAM-proportional weight — comparing RAM
+        // directly against another device's VRAM would need an unmeasured
+        // conversion factor this repo hasn't benchmarked.
+        let peers = vec![RpcPeer {
+            node_id: "a".to_string(),
+            addr: loopback(1),
+            vram_gb: 0.0,
+            system_memory_gb: 128.0,
+        }];
+        let split = compute_tensor_split(16.0, 32.0, &peers);
+        assert_eq!(split, vec![16.0, 0.1]);
     }
 
     #[test]
@@ -867,11 +1011,13 @@ mod tests {
                 node_id: "a".to_string(),
                 addr: loopback(50052),
                 vram_gb: 8.0,
+                system_memory_gb: 16.0,
             },
             RpcPeer {
                 node_id: "b".to_string(),
                 addr: loopback(50053),
                 vram_gb: 8.0,
+                system_memory_gb: 16.0,
             },
         ];
         assert_eq!(rpc_flag_value(&peers), "127.0.0.1:50052,127.0.0.1:50053");

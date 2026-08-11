@@ -339,6 +339,17 @@ overrides this either way. See
 [docs/LOCAL_INFERENCE_TUNING.md](docs/LOCAL_INFERENCE_TUNING.md) for the
 measured numbers and the reasoning.
 
+GPU offload, context length, threads, batch/µ-batch size, KV cache
+quantization, Flash Attention, and mlock/no-mmap can all be tuned live from
+the GUI's Settings tab ("Model Performance" section) as well as via env
+vars — both paths default to "Auto" for every value that already has a
+measured, VRAM/model-size-aware default, so touching the GUI never
+silently disables the safety caps above unless you explicitly opt out of
+"Auto" for that field. See
+[docs/LOCAL_INFERENCE_TUNING.md](docs/LOCAL_INFERENCE_TUNING.md) for the
+full env var list and a measured context-length-vs-full-offload ceiling on
+integrated GPUs.
+
 Compiling with `RUSTFLAGS="-C target-cpu=native"` further improves performance by enabling CPU-specific instruction sets (opt-in; not set by default — a multi-node cluster can't assume every node shares one CPU microarchitecture).
 
 ### Build profile

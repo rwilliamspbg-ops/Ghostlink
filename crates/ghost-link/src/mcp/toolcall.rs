@@ -9,7 +9,19 @@ use super::client::McpToolSchema;
 
 /// Hard cap on tool round-trips per user turn, so a model that keeps requesting
 /// tools (or misunderstands the marker) can't loop forever.
-pub const MAX_TOOL_ITERATIONS: usize = 3;
+///
+/// Raised from 3 to 6 (2026-08-10): 3 was cutting off legitimate multi-step
+/// agent tasks (e.g. filesystem lookup -> compute -> write back) before they
+/// could finish, forcing the "(stopped after N tool round-trips without a
+/// final answer)" bailout even on the happy path. Each round trip is one
+/// real inference call, so this doubles the worst-case latency/compute for a
+/// turn where the model is genuinely stuck — that tradeoff is deliberate,
+/// not an oversight. Context-window headroom for the accumulated scratchpad
+/// across more rounds is the model-load `ctx_size` setting's job (see the
+/// Model Performance section in the GUI, or `GHOSTLINK_CTX_SIZE`), not this
+/// constant's — raising one without enough of the other just moves the
+/// failure mode from "gave up early" to "truncated mid-loop."
+pub const MAX_TOOL_ITERATIONS: usize = 6;
 
 const MARKER: &str = "TOOL_CALL:";
 

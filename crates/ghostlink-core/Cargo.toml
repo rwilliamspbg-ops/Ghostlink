@@ -54,6 +54,13 @@ dirs-next = "2"
 # cloud VPCs) that filter broadcast traffic but still carry multicast.
 mdns-sd = "0.20"
 
+[target.'cfg(windows)'.dependencies]
+# P/E-core (hybrid CPU) detection via GetLogicalProcessorInformationEx.
+windows-sys = { version = "0.59", features = [
+    "Win32_System_SystemInformation",
+    "Win32_Foundation",
+] }
+
 [dev-dependencies]
 tempfile = "3"
 tokio-test = "0.4"
