@@ -425,6 +425,16 @@ fn detect_hybrid_core_counts() -> (Option<usize>, Option<usize>) {
 /// malformed trailing record (`Size` of 0, or claiming to extend past the
 /// buffer) stops parsing at that point rather than reading out of bounds —
 /// records already parsed are still used.
+///
+/// `#[cfg(any(windows, test))]`: the only real caller
+/// (`detect_hybrid_core_counts`) is itself Windows-only, so on a non-Windows
+/// *non-test* build this function is genuinely unused — without the `test`
+/// half of this gate, `cargo build`/`clippy` on Linux/macOS fail outright on
+/// `-D warnings`'s dead-code lint. The `test` half keeps it (and its
+/// `#[cfg(test)] mod tests` coverage below) compiled on every CI platform,
+/// which is the whole reason this parser was written pure and
+/// platform-independent in the first place — see the doc comment above.
+#[cfg(any(windows, test))]
 fn parse_processor_core_relationships(buf: &[u8]) -> (Option<usize>, Option<usize>) {
     const RELATION_PROCESSOR_CORE: u32 = 0;
 
