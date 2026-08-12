@@ -55,3 +55,7 @@
 ## 2026-08-01 - [Interactive Controls Keyboard Visibility]
 **Learning:** Interactive controls like tab lists (e.g., in the Models Dashboard) and control action buttons/inputs (e.g., inside the Cluster Workers dashboard) must use high-contrast focus-visible rings. Relying on default focus styles leads to invisible focused items during tab traversal on dark-theme UI panels, leaving keyboard and screen-reader users completely blind.
 **Action:** Always style all dashboards' custom buttons, tab toggles, and input elements with `focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none`.
+
+## 2026-08-11 - [Settings Save and Reset Toast Notifications Feedback]
+**Learning:** Forms managing critical application-wide or cluster settings must provide prominent, high-fidelity feedback (such as transient toast alerts) for both success and failure outcomes during actions like "Save" and "Reset to Defaults". Failing to do so can result in silent errors when API requests fail, leaving users completely unaware that their modifications or resets were rejected.
+**Action:** Always integrate standard configuration-saving and state-reset operations with global/app-wide toast notification systems to guarantee visibility of results.
