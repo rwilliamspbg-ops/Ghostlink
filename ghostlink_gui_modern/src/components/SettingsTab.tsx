@@ -17,7 +17,7 @@ import {
   Loader2,
   Layers,
 } from 'lucide-react';
-import { Settings as SettingsType } from '../store';
+import { Settings as SettingsType, useAppStore } from '../store';
 import { GhostlinkAPI } from '../api';
 import { useInferenceEngines } from '../hooks/useInferenceEngines';
 
@@ -31,6 +31,7 @@ type BackendInfo = {
 };
 
 export const SettingsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
+  const addToast = useAppStore((s) => s.addToast);
   const [settings, setSettings] = useState<SettingsType | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -67,9 +68,12 @@ export const SettingsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
     const result = await api.updateSettings(settings);
     if (result.success) {
       setSaved(true);
+      addToast({ type: 'success', message: 'Runtime settings saved successfully.' });
       setTimeout(() => setSaved(false), 2000);
     } else {
-      setError(result.error || 'Save failed');
+      const errMsg = result.error || 'Save failed';
+      setError(errMsg);
+      addToast({ type: 'error', message: `Failed to save settings: ${errMsg}` });
     }
     setSaving(false);
   };
@@ -130,7 +134,11 @@ export const SettingsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
     if (result.success && result.settings) {
       setSettings(result.settings);
       setSaved(true);
+      addToast({ type: 'success', message: 'Settings reset to defaults.' });
       setTimeout(() => setSaved(false), 2000);
+    } else {
+      const errMsg = result.error || 'Reset failed';
+      addToast({ type: 'error', message: `Failed to reset settings: ${errMsg}` });
     }
     setSaving(false);
   };

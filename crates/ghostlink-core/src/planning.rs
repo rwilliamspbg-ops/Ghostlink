@@ -478,15 +478,20 @@ pub fn rebalance_assignments(cluster: &ClusterState, plan: &mut PlacementPlan) -
     // Check if any active node has high available VRAM
     let mut needs_rebalance = false;
 
+    let metrics = cluster
+        .metrics
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
+
     for assignment in &mut plan.assignments {
-        if let Some(metrics) = cluster.get_metrics(&assignment.node_id) {
-            if metrics.status != NodeStatus::Active {
+        if let Some(metric) = metrics.get(&assignment.node_id) {
+            if metric.status != NodeStatus::Active {
                 // Skip failed nodes
                 continue;
             }
 
             // Check if this node can take more layers
-            let available = metrics.available_vram_gb;
+            let available = metric.available_vram_gb;
             let avg_layer_size = assignment.avg_vram_per_layer();
 
             if available > 0.0 && avg_layer_size > 0.0 {
@@ -627,22 +632,36 @@ impl RebalanceTrigger {
         cluster: &ClusterState,
         current_plan: &PlacementPlan,
     ) -> Option<MigrationPlanner> {
-        let active_nodes = cluster.active_nodes();
-        if active_nodes.len() < 2 {
-            return None;
-        }
+        let (overtaxed, available) = {
+            let metrics = cluster
+                .metrics
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner());
 
-        // Detect high-load nodes and high-headroom nodes
-        let mut overtaxed = None;
-        let mut available = None;
-
-        for metrics in active_nodes {
-            if metrics.delivery_ratio < 0.90 || metrics.avg_latency_us > 15.0 {
-                overtaxed = Some(metrics.name.clone());
-            } else if metrics.available_vram_gb > 8.0 {
-                available = Some(metrics.name.clone());
+            let mut active_count = 0usize;
+            for m in metrics.values() {
+                if m.status == NodeStatus::Active {
+                    active_count += 1;
+                }
             }
-        }
+            if active_count < 2 {
+                return None;
+            }
+
+            let mut overtaxed_name = None;
+            let mut available_name = None;
+
+            for m in metrics.values() {
+                if m.status == NodeStatus::Active {
+                    if m.delivery_ratio < 0.90 || m.avg_latency_us > 15.0 {
+                        overtaxed_name = Some(m.name.clone());
+                    } else if m.available_vram_gb > 8.0 {
+                        available_name = Some(m.name.clone());
+                    }
+                }
+            }
+            (overtaxed_name, available_name)
+        };
 
         if let (Some(source), Some(target)) = (overtaxed, available) {
             if source == target {
