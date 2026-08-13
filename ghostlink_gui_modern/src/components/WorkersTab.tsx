@@ -5,7 +5,7 @@ import { useAppStore } from '../store';
 import { EmptyState } from './StatusViews';
 
 export const WorkersTab: React.FC<{ api: any }> = ({ api }) => {
-  const { workers, setWorkers } = useAppStore();
+  const { workers, setWorkers, addToast } = useAppStore();
   const [loading, setLoading] = useState(false);
   const [topology, setTopology] = useState<ClusterTopology | null>(null);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
@@ -96,7 +96,10 @@ export const WorkersTab: React.FC<{ api: any }> = ({ api }) => {
     }
     const result = await api.disconnectWorker(workerId);
     if (result.success) {
+      addToast({ type: 'success', message: `Disconnected worker ${workerHost} successfully.` });
       refreshWorkers();
+    } else {
+      addToast({ type: 'error', message: `Failed to disconnect worker ${workerHost}: ${result.error || 'Unknown error'}` });
     }
   };
 
@@ -116,9 +119,11 @@ export const WorkersTab: React.FC<{ api: any }> = ({ api }) => {
       setShowAddForm(false);
       setAddHost('');
       setAddPort('8003');
+      addToast({ type: 'success', message: `Connected to worker ${addHost.trim()} successfully.` });
       refreshWorkers();
     } else {
       setAddError(result.error || 'Failed to add worker');
+      addToast({ type: 'error', message: `Failed to connect to worker: ${result.error || 'Unknown error'}` });
     }
   };
 
@@ -156,7 +161,15 @@ export const WorkersTab: React.FC<{ api: any }> = ({ api }) => {
                 <Plus size={14} aria-hidden="true" /> Add Worker
             </button>
             <button
-                onClick={async () => { const r = await api.discoverPeers(); if (r.success) refreshWorkers(); }}
+                onClick={async () => {
+                    const r = await api.discoverPeers();
+                    if (r.success) {
+                        addToast({ type: 'success', message: `Discovery complete. Found ${r.count || 0} peers.` });
+                        refreshWorkers();
+                    } else {
+                        addToast({ type: 'error', message: `Peer discovery failed: ${r.error || 'Unknown error'}` });
+                    }
+                }}
                 className="flex items-center gap-2 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-white text-xs font-bold rounded-lg transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
                 title="Discover peers on network"
             >

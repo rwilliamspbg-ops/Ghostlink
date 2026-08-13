@@ -55,7 +55,7 @@ function serverToFormInput(server: McpServer): McpServerInput {
 }
 
 export const McpTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
-  const { mcpServers, setMcpServers } = useAppStore();
+  const { mcpServers, setMcpServers, addToast } = useAppStore();
   const [loading, setLoading] = useState(false);
   const [toggling, setToggling] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -95,8 +95,12 @@ export const McpTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
     if (result.servers) {
       setMcpServers(result.servers);
     }
-    if (!result.success && result.error) {
-      setError(result.error);
+    if (result.success) {
+      addToast({ type: 'success', message: `MCP server "${name}" is now ${enabled ? 'enabled' : 'disabled'}.` });
+    } else {
+      const errText = result.error || 'Unknown error';
+      setError(errText);
+      addToast({ type: 'error', message: `Failed to ${enabled ? 'enable' : 'disable'} MCP server "${name}": ${errText}` });
     }
     setToggling(null);
   };
@@ -110,8 +114,12 @@ export const McpTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
     if (result.servers) {
       setMcpServers(result.servers);
     }
-    if (!result.success && result.error) {
-      setError(result.error);
+    if (result.success) {
+      addToast({ type: 'success', message: `Removed MCP server "${name}" successfully.` });
+    } else {
+      const errText = result.error || 'Unknown error';
+      setError(errText);
+      addToast({ type: 'error', message: `Failed to remove MCP server "${name}": ${errText}` });
     }
     setDeleting(null);
   };
@@ -196,11 +204,13 @@ export const McpTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
 
     if (!result.success) {
       setFormError(result.error || 'Failed to save server.');
+      addToast({ type: 'error', message: `Failed to save MCP server "${name}": ${result.error || 'Unknown error'}` });
       return;
     }
     if (result.servers) {
       setMcpServers(result.servers);
     }
+    addToast({ type: 'success', message: `${editorTarget === '' ? 'Added' : 'Updated'} MCP server "${name}" successfully.` });
     closeEditor();
   };
 
