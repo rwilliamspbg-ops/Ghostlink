@@ -141,8 +141,8 @@ describe('SettingsTab', () => {
     expect(screen.getByText('Loading settings...')).toBeInTheDocument();
 
     await waitFor(() => {
-      expect(screen.getByText('Compute Backend')).toBeInTheDocument();
-      expect(screen.getByText('Current Backend')).toBeInTheDocument();
+      expect(screen.getByText('GPU Backend')).toBeInTheDocument();
+      expect(screen.getByText('Current GPU Backend')).toBeInTheDocument();
       expect(screen.getAllByText('AMD Radeon 860M').length).toBeGreaterThanOrEqual(1);
       // Status shows as "Active" or "ready" in the new UI
       expect(screen.getByText('Active')).toBeInTheDocument();
@@ -201,7 +201,7 @@ describe('SettingsTab', () => {
     render(<SettingsTab api={api} />);
 
     await waitFor(() => {
-      expect(screen.getByText('Compute Backend')).toBeInTheDocument();
+      expect(screen.getByText('GPU Backend')).toBeInTheDocument();
     });
 
     const resetBtn = screen.getByRole('button', { name: /reset/i });
@@ -221,7 +221,7 @@ describe('SettingsTab', () => {
     render(<SettingsTab api={api} />);
 
     await waitFor(() => {
-      expect(screen.getByText('Compute Backend')).toBeInTheDocument();
+      expect(screen.getByText('GPU Backend')).toBeInTheDocument();
     });
 
     const resetBtn = screen.getByRole('button', { name: /reset/i });

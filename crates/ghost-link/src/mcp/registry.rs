@@ -101,6 +101,23 @@ impl McpRegistry {
             .unwrap_or_default()
     }
 
+    /// Tool schemas for every connected standalone server (empty slot — see
+    /// `server_for_slot`). These have no Tools-panel checkbox to gate them, so
+    /// without this they'd connect and then never be reachable by the model:
+    /// `sequential-thinking`/`docker-mcp-gateway`/`rag`/`git`/etc. would just
+    /// idle as spawned subprocesses doing nothing. Risky ones (docker gateway)
+    /// still go through the same `requires_confirmation` approval gate as
+    /// slot-bound tools — this only affects visibility, not the safety check.
+    pub async fn standalone_tool_schemas(&self) -> Vec<McpToolSchema> {
+        self.servers
+            .read()
+            .await
+            .values()
+            .filter(|handle| handle.slot().is_empty())
+            .flat_map(|handle| handle.tools().to_vec())
+            .collect()
+    }
+
     /// Every server configured in `mcp_servers.toml`, merged with live
     /// connection status — used to render the GUI's MCP server list.
     pub async fn list_all_servers(&self) -> Result<Vec<McpServerStatus>, String> {

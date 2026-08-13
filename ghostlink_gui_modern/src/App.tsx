@@ -130,6 +130,7 @@ function App() {
     if (!sidebarOpen || window.innerWidth >= 768) return;
     const container = sidebarRef.current;
     if (!container) return;
+    const openButton = sidebarOpenButtonRef.current;
 
     const focusable = () =>
       Array.from(
@@ -163,7 +164,7 @@ function App() {
     document.addEventListener('keydown', onKeyDown);
     return () => {
       document.removeEventListener('keydown', onKeyDown);
-      sidebarOpenButtonRef.current?.focus();
+      openButton?.focus();
     };
   }, [sidebarOpen]);
 
@@ -368,16 +369,21 @@ function App() {
           </nav>
 
           <div className="mt-auto pt-4 border-t border-slate-800 space-y-1">
-            <div className="flex items-center gap-3 px-3 py-3 mt-2 rounded-xl bg-slate-800/50">
-                <div className="w-8 h-8 bg-gradient-to-br from-orange-400 to-pink-500 rounded-full flex items-center justify-center text-xs font-bold text-white uppercase">
+            <button
+                onClick={() => { setActiveTab(6); closeSidebarOnMobile(); }}
+                title="Open Settings"
+                aria-label={`Active model: ${currentModel}. Open Settings.`}
+                className="flex items-center gap-3 w-full px-3 py-3 mt-2 rounded-xl bg-slate-800/50 hover:bg-slate-800 transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
+            >
+                <div className="w-8 h-8 bg-gradient-to-br from-orange-400 to-pink-500 rounded-full flex items-center justify-center text-xs font-bold text-white uppercase shrink-0">
                     {currentModel.substring(0, 1)}
                 </div>
                 <div className="flex-1 min-w-0 text-left">
-                    <p className="text-xs font-bold truncate">Principal Engineer</p>
+                    <p className="text-xs font-bold truncate">Active Model</p>
                     <p className="text-[10px] text-slate-500 truncate">{currentModel}</p>
                 </div>
-                <ChevronRight size={14} className="text-slate-600" />
-            </div>
+                <ChevronRight size={14} className="text-slate-600" aria-hidden="true" />
+            </button>
           </div>
         </div>
       </div>

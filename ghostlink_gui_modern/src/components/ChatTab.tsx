@@ -65,6 +65,20 @@ interface Tool {
   enabled: boolean;
 }
 
+// Tool slot names (e.g. "git_tools", "docker_gateway") straight from
+// mcp_servers.toml are snake_case and meant for config, not display. This
+// used to be `tool.name.replace('_', ' ')` — lowercase, and only fixing the
+// *first* underscore (harmless today since every current slot has at most
+// one, but a latent bug for the next multi-word one) — while every other
+// label in the app is Title Case.
+const TOOL_LABEL_WORD_OVERRIDES: Record<string, string> = { api: 'API', rag: 'RAG', mcp: 'MCP' };
+function toolDisplayName(name: string): string {
+  return name
+    .split('_')
+    .map((word) => TOOL_LABEL_WORD_OVERRIDES[word.toLowerCase()] ?? word.charAt(0).toUpperCase() + word.slice(1))
+    .join(' ');
+}
+
 // Mirrors the backend's chars/4 heuristic (main.rs `estimate_tokens`) so the
 // chip's number and the server's actual truncation point roughly agree —
 // exact agreement isn't the point, just not being wildly off from each other.
@@ -377,7 +391,6 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
         setConversationTokenLimit(result.settings.conversation_token_limit);
       }
     });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [api]);
 
   // chatError is store-level (survives tab unmount) but display is now the
@@ -1479,7 +1492,7 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                     title={toolCallsSupported ? 'Select tools' : 'Tool calling is unavailable for this engine'}
                     aria-haspopup="menu"
                     aria-expanded={showTools}
-                    aria-label="Capabilities"
+                    aria-label="Tools"
                     className={`p-2 rounded-xl transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none ${showTools ? 'bg-slate-800 text-blue-400' : 'text-slate-500 hover:text-slate-300 hover:bg-slate-800'} ${!toolCallsSupported ? 'opacity-40 cursor-not-allowed hover:bg-transparent hover:text-slate-500' : ''}`}
                 >
                     <Plus size={20} aria-hidden="true" />
@@ -1529,10 +1542,10 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
 
             {/* Tool Selection Popup */}
             {showTools && (
-                <div role="menu" aria-label="Capabilities" className="absolute left-0 bottom-16 w-64 bg-slate-900 border border-slate-800 rounded-2xl p-4 shadow-2xl z-20 animate-in fade-in slide-in-from-bottom-2">
+                <div role="menu" aria-label="Tools" className="absolute left-0 bottom-16 w-64 bg-slate-900 border border-slate-800 rounded-2xl p-4 shadow-2xl z-20 animate-in fade-in slide-in-from-bottom-2">
                     <div className="flex items-center justify-between mb-3 px-1">
-                        <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider">Capabilities</h4>
-                        <button onClick={() => setShowTools(false)} className="text-slate-500 hover:text-white" aria-label="Close capabilities menu"><X size={14} aria-hidden="true" /></button>
+                        <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider">Tools</h4>
+                        <button onClick={() => setShowTools(false)} className="text-slate-500 hover:text-white focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none" aria-label="Close tools menu"><X size={14} aria-hidden="true" /></button>
                     </div>
                     <div className="grid grid-cols-1 gap-1">
                         {tools.map(tool => (
@@ -1541,13 +1554,13 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                                 role="menuitemcheckbox"
                                 aria-checked={tool.enabled}
                                 onClick={() => toggleTool(tool.name)}
-                                className={`flex items-center justify-between w-full px-3 py-2 rounded-xl transition text-xs ${
+                                className={`flex items-center justify-between w-full px-3 py-2 rounded-xl transition text-xs focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none ${
                                     tool.enabled ? 'bg-blue-600/20 text-blue-400' : 'text-slate-400 hover:bg-slate-800'
                                 }`}
                             >
                                 <div className="flex items-center gap-2">
                                     <Wand2 size={14} className={tool.enabled ? 'text-blue-400' : 'text-slate-600'} aria-hidden="true" />
-                                    <span>{tool.name.replace('_', ' ')}</span>
+                                    <span>{toolDisplayName(tool.name)}</span>
                                 </div>
                                 {tool.enabled && <div className="w-1.5 h-1.5 bg-blue-400 rounded-full shadow-[0_0_8px_rgba(96,165,250,0.5)]" aria-hidden="true"></div>}
                             </button>

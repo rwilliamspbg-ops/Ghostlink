@@ -80,7 +80,11 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
   const [availableMemoryGb, setAvailableMemoryGb] = useState<number>(0);
   const { currentEngine, selectedEngine } = useInferenceEngines(api);
 
-  const engineLabel = selectedEngine?.label || 'Ollama';
+  // Neutral fallback, not a specific engine name — this used to default to
+  // 'Ollama', which made messages like "Ollama does not support..." falsely
+  // name Ollama while selectedEngine was still resolving even when the real
+  // engine was native or vLLM.
+  const engineLabel = selectedEngine?.label || 'this engine';
   const canUnload = selectedEngine?.capabilities.model_unload ?? true;
   const canManageRemoteCatalog = currentEngine === 'ollama';
   const canShowModelDefinition = currentEngine === 'ollama';
@@ -115,13 +119,14 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
     setHfLoading(true);
     try {
       const result = await api.searchHuggingFace(query || 'llama');
-      if (result.models && result.models.length > 0) setHfResults(result.models);
+      if (result.models) setHfResults(result.models);
+      if (result.error) addToast({ type: 'error', message: result.error });
     } catch {
       // silent
     } finally {
       setHfLoading(false);
     }
-  }, [api]);
+  }, [api, addToast]);
 
   useEffect(() => {
     if (activeTab === 'huggingface' && hfResults.length === 0) {

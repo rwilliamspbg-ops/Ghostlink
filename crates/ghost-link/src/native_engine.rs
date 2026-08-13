@@ -72,6 +72,21 @@ impl NativeEngineClient {
         }
     }
 
+    /// Default system prompt for both the non-streaming (`generate_with_llama_server`)
+    /// and streaming (`generate_chat_stream`) chat paths. Small local models otherwise
+    /// default to run-on, ungrammatical prose with no Markdown structure — spelling out
+    /// formatting expectations here measurably improves readability since these models
+    /// have no other source of style guidance (no fine-tuning on Ghostlink's own output).
+    fn default_system_prompt() -> String {
+        format!(
+            "You are a helpful, precise assistant. Write clear, grammatically correct \
+             responses. Format with Markdown: blank line between paragraphs, bullet or \
+             numbered lists for multiple items, fenced code blocks with a language tag for \
+             code. Keep prose tight — no run-on paragraphs. Current local date and time: {}.",
+            chrono::Local::now().format("%A, %B %d, %Y, %H:%M")
+        )
+    }
+
     /// Get or initialize the llama-server process handle
     fn get_process_handle() -> Arc<Mutex<Option<Child>>> {
         LLAMA_SERVER_PROCESS
@@ -1260,10 +1275,7 @@ impl NativeEngineClient {
         // Models have no clock; give them the current local date/time so
         // questions like "what date is it today?" get a correct answer.
         // Use portable chrono format (avoid %-d which is Unix-only).
-        let system_prompt = format!(
-            "You are a helpful assistant. Current local date and time: {}.",
-            chrono::Local::now().format("%A, %B %d, %Y, %H:%M")
-        );
+        let system_prompt = Self::default_system_prompt();
 
         // Try chat completion endpoint first (for models with chat templates)
         let chat_url = format!("{base_url}/v1/chat/completions");
@@ -1446,10 +1458,7 @@ impl NativeEngineClient {
             .and_then(|v| v.parse::<u64>().ok())
             .unwrap_or(60)
             .clamp(5, 300);
-        let system_prompt = format!(
-            "You are a helpful assistant. Current local date and time: {}.",
-            chrono::Local::now().format("%A, %B %d, %Y, %H:%M")
-        );
+        let system_prompt = Self::default_system_prompt();
         let chat_url = format!("{base_url}/v1/chat/completions");
         let chat_payload = serde_json::json!({
             "model": model,

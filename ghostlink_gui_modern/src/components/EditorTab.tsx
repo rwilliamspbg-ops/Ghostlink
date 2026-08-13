@@ -264,7 +264,6 @@ export const EditorTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
       setRootEntries(result.entries);
     }
     setTreeLoading(false);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [api]);
 
   useEffect(() => {

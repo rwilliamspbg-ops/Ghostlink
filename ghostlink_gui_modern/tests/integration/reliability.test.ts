@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import { validateApiBaseUrl, calculateRetryDelay, isRetryableError, DEFAULT_RETRY_CONFIG, ApiError } from '../../src/types/api';
 
 describe('Launch Script Validation', () => {

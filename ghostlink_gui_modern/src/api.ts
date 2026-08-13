@@ -305,12 +305,7 @@ export class GhostlinkAPI {
       const response = await this.http.get('/api/models/search/huggingface', { params: { q: query } });
       return { models: response.data.models || [] };
     } catch (error: any) {
-      return {
-        models: [
-          { id: `meta-llama/Llama-3-${query}`, name: `Llama 3 ${query}`, downloads: 1000000, likes: 50000 },
-          { id: `mistralai/Mistral-${query}`, name: `Mistral ${query}`, downloads: 800000, likes: 40000 },
-        ],
-      };
+      return { models: [], error: error.response?.data?.error || error.message };
     }
   }
 
@@ -399,7 +394,7 @@ export class GhostlinkAPI {
                 if (typeof data.truncated === 'boolean') {
                   truncated = data.truncated;
                 }
-              } catch (e) {
+              } catch {
                 // Ignore incomplete JSON
               }
             }
@@ -991,7 +986,7 @@ export class GhostlinkAPI {
             try {
               const data = JSON.parse(line.slice(6));
               onProgress(data);
-            } catch (e) {
+            } catch {
               // Ignore parse errors
             }
           }

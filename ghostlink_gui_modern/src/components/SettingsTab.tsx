@@ -430,7 +430,7 @@ export const SettingsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
       <div className="flex-1 overflow-y-auto p-6" tabIndex={0} role="region" aria-label="Settings">
         <div className="max-w-5xl mx-auto space-y-6">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            <Section title="Compute Backend" icon={Gauge}>
+            <Section title="GPU Backend" icon={Gauge}>
               <div className="space-y-4">
                 {backendLoading ? (
                   <div className="flex items-center justify-center py-8">
@@ -446,7 +446,7 @@ export const SettingsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                             <CpuIcon size={20} />
                           </div>
                           <div>
-                            <p className="text-xs uppercase tracking-wider text-slate-500">Current Backend</p>
+                            <p className="text-xs uppercase tracking-wider text-slate-500">Current GPU Backend</p>
                             <p className="text-lg font-bold text-white capitalize">{currentBackend}</p>
                           </div>
                         </div>
