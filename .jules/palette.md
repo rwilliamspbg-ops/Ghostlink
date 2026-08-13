@@ -1,5 +1,9 @@
 # Palette's Journal
 
+## 2026-08-12 - [MCP & Workers Tab Operations Toast Notification Feedback]
+**Learning:** Asynchronous actions managing external cluster resources or protocol integrations (such as enabling/disabling MCP servers or connecting/disconnecting workers) must never alter state silently or fail without explicit feedback. Integrating success/failure toast notifications keeps the operator informed. Crucially, success state conditions must explicitly evaluate API response success flags (e.g. `result.success`) rather than compound error check fall-throughs, which otherwise risk showing false success alerts when requests fail without a descriptive error message.
+**Action:** Always secure asynchronous operations with high-fidelity toast alerts, and strictly evaluate success using explicit response success booleans rather than error-presence fall-throughs.
+
 ## 2026-08-10 - [Model Selector Download Redirection & Focus Visibility]
 **Learning:** Custom drop-down popups (like the Model Selector dropdown) that contain helpful quick-links (like "+ Download Models") are highly frustrating when they act as non-functional static links. Making them interactive by wiring them to programmatically switch tabs (`setActiveTab(1)`) greatly reduces cognitive friction. Additionally, aligning standard form inputs (like the MCP 'requires_confirmation' checkbox and popular model card buttons) with high-contrast, accessible `focus-visible:` keyboard rings guarantees keyboard and screen-reader navigators do not lose context in dark-theme interfaces.
 **Action:** Always ensure helper actions in dropdowns are functional and correctly redirect to their corresponding full interface tab, and verify all checkboxes/buttons have consistent, high-contrast focus rings.

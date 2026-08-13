@@ -302,7 +302,41 @@ enum ProbeMode {
     Full,
 }
 
+#[cfg(unix)]
 fn hostname() -> Option<String> {
+    let mut buf = [0u8; 512];
+    let res = unsafe { libc::gethostname(buf.as_mut_ptr() as *mut libc::c_char, buf.len()) };
+    if res == 0 {
+        let len = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+        if let Ok(s) = std::str::from_utf8(&buf[..len]) {
+            let trimmed = s.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        }
+    }
+    // Fallback to spawning hostname command
+    let output = Command::new("hostname").output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let name = String::from_utf8_lossy(&output.stdout);
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+#[cfg(not(unix))]
+fn hostname() -> Option<String> {
+    if let Ok(name) = std::env::var("COMPUTERNAME") {
+        let trimmed = name.trim();
+        if !trimmed.is_empty() {
+            return Some(trimmed.to_string());
+        }
+    }
     let output = Command::new("hostname").output().ok()?;
     if !output.status.success() {
         return None;
@@ -468,6 +502,18 @@ fn detect_cpu_brand() -> String {
     // Linux
     #[cfg(target_os = "linux")]
     {
+        if let Ok(content) = fs::read_to_string("/proc/cpuinfo") {
+            for line in content.lines() {
+                if line.starts_with("model name") || line.starts_with("Model name") {
+                    if let Some(name) = line.split(':').nth(1) {
+                        let trimmed = name.trim();
+                        if !trimmed.is_empty() {
+                            return trimmed.to_string();
+                        }
+                    }
+                }
+            }
+        }
         if let Ok(output) = Command::new("lscpu").output() {
             let text = String::from_utf8_lossy(&output.stdout);
             if let Some(line) = text.lines().find(|l| l.contains("Model name")) {
