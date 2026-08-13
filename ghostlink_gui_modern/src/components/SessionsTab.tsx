@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { RefreshCw, XCircle, Clock, Database, Zap } from 'lucide-react';
 import { useAppStore } from '../store';
 import { EmptyState, ErrorPanel } from './StatusViews';
@@ -22,7 +22,7 @@ export const SessionsTab: React.FC<{ api: any }> = ({ api }) => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
-  const refreshSessions = async () => {
+  const refreshSessions = useCallback(async () => {
     setLoading(true);
     setError('');
     const result = await api.getSessions();
@@ -32,11 +32,11 @@ export const SessionsTab: React.FC<{ api: any }> = ({ api }) => {
       setError(result.error);
     }
     setLoading(false);
-  };
+  }, [api, setSessions]);
 
   useEffect(() => {
     refreshSessions();
-  }, [api]);
+  }, [refreshSessions]);
 
   const handleCancel = async (id: string) => {
     const result = await api.cancelSession(id);

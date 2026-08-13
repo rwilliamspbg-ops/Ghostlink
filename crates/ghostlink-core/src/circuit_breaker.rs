@@ -95,12 +95,11 @@ impl CircuitBreaker {
 
     /// Check if the circuit allows a request attempt.
     ///
-    /// At most one caller gets `true` per half-open recovery window: the
-    /// thread that wins the `Open -> HalfOpen` transition claims the probe
-    /// slot in the same step, and every other concurrent caller (whether
-    /// racing that same transition or arriving after it) loses the
-    /// `half_open_probe_in_flight` CAS and gets `false` until
-    /// `record_success`/`record_failure` resolves the probe.
+    /// At most one caller gets `true` per half-open recovery window: a
+    /// caller must win the `half_open_probe_in_flight` CAS *before* the
+    /// `Open -> HalfOpen` state transition becomes visible, so a caller
+    /// that observes `HalfOpen` can never race in against a flag that
+    /// hasn't been claimed yet.
     pub fn should_attempt(&self) -> bool {
         match self.current_state() {
             CircuitState::Closed => true,
@@ -109,16 +108,34 @@ impl CircuitBreaker {
                 let last_failure = *self.last_failure.lock().unwrap();
                 let elapsed = last_failure.elapsed();
 
-                if elapsed > Duration::from_secs(self.config.open_duration_secs)
-                    && self
-                        .state
-                        .compare_exchange(1, 2, Ordering::AcqRel, Ordering::Relaxed)
-                        .is_ok()
+                if elapsed <= Duration::from_secs(self.config.open_duration_secs) {
+                    return false;
+                }
+
+                // Claim the probe slot before flipping the externally
+                // visible state. If we flipped state first, a thread that
+                // observes HalfOpen before we store the flag could win the
+                // flag CAS itself, granting two probes for one window.
+                if self
+                    .half_open_probe_in_flight
+                    .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
+                    .is_err()
                 {
-                    self.half_open_probe_in_flight
-                        .store(true, Ordering::Release);
+                    return false;
+                }
+
+                if self
+                    .state
+                    .compare_exchange(1, 2, Ordering::AcqRel, Ordering::Relaxed)
+                    .is_ok()
+                {
                     true
                 } else {
+                    // State changed underneath us (e.g. a concurrent reset)
+                    // before we could complete the transition; release the
+                    // probe slot we speculatively claimed.
+                    self.half_open_probe_in_flight
+                        .store(false, Ordering::Release);
                     false
                 }
             }

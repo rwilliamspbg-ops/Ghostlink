@@ -24,6 +24,7 @@ export interface NavTab {
 
 // Single source of truth for the sidebar nav + command palette "go to" entries
 // so the two never drift out of sync.
+// eslint-disable-next-line react-refresh/only-export-components
 export const NAV_TABS: NavTab[] = [
   { label: 'Chat', icon: MessageSquare, id: 0 },
   { label: 'Editor', icon: FileCode, id: 8 },

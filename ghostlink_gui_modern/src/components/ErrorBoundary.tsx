@@ -128,6 +128,7 @@ export const OfflineBanner: React.FC<OfflineBannerProps> = ({ isOnline }) => {
   );
 };
 
+// eslint-disable-next-line react-refresh/only-export-components
 export function useOnlineStatus(): boolean {
   const [isOnline, setIsOnline] = React.useState(
     typeof navigator !== 'undefined' ? navigator.onLine : true

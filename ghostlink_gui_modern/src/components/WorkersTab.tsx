@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { RefreshCw, Server, Shield, Cpu, Activity, Power, Plus, HeartPulse } from 'lucide-react';
 import { ClusterTopology } from '../api';
 import { useAppStore } from '../store';
@@ -68,7 +68,7 @@ export const WorkersTab: React.FC<{ api: any }> = ({ api }) => {
       .join(' ');
   };
 
-  const refreshWorkers = async () => {
+  const refreshWorkers = useCallback(async () => {
     setLoading(true);
     const [result, topologyResult] = await Promise.all([
       api.getWorkers(),
@@ -87,18 +87,18 @@ export const WorkersTab: React.FC<{ api: any }> = ({ api }) => {
       });
     }
     setLoading(false);
-  };
+  }, [api, setWorkers]);
 
   // CRITICAL FIX #2: Auto-refresh polling every 5 seconds
   useEffect(() => {
     refreshWorkers();
-    
+
     const interval = setInterval(() => {
       refreshWorkers();
     }, 5000);
 
     return () => clearInterval(interval);
-  }, [api, setWorkers]);
+  }, [refreshWorkers]);
 
   // CRITICAL FIX #3: Add disconnect handler
   const handleDisconnectWorker = async (workerId: string, workerHost: string) => {

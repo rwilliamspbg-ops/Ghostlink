@@ -130,6 +130,7 @@ function App() {
     if (!sidebarOpen || window.innerWidth >= 768) return;
     const container = sidebarRef.current;
     if (!container) return;
+    const openButton = sidebarOpenButtonRef.current;
 
     const focusable = () =>
       Array.from(
@@ -163,7 +164,7 @@ function App() {
     document.addEventListener('keydown', onKeyDown);
     return () => {
       document.removeEventListener('keydown', onKeyDown);
-      sidebarOpenButtonRef.current?.focus();
+      openButton?.focus();
     };
   }, [sidebarOpen]);
 

@@ -394,7 +394,7 @@ export class GhostlinkAPI {
                 if (typeof data.truncated === 'boolean') {
                   truncated = data.truncated;
                 }
-              } catch (e) {
+              } catch {
                 // Ignore incomplete JSON
               }
             }
@@ -986,7 +986,7 @@ export class GhostlinkAPI {
             try {
               const data = JSON.parse(line.slice(6));
               onProgress(data);
-            } catch (e) {
+            } catch {
               // Ignore parse errors
             }
           }

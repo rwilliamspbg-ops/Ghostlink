@@ -391,7 +391,6 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
         setConversationTokenLimit(result.settings.conversation_token_limit);
       }
     });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [api]);
 
   // chatError is store-level (survives tab unmount) but display is now the
