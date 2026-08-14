@@ -30,7 +30,7 @@ const ToastItem: React.FC<Toast> = ({ id, type, message }) => {
       <p className="text-sm flex-1 min-w-0 break-words">{message}</p>
       <button
         onClick={() => removeToast(id)}
-        className="text-current opacity-60 hover:opacity-100 transition shrink-0"
+        className="text-current opacity-60 hover:opacity-100 transition shrink-0 rounded focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
         aria-label="Dismiss notification"
       >
         <X size={14} aria-hidden="true" />
