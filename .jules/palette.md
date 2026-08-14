@@ -63,3 +63,7 @@
 ## 2026-08-11 - [Settings Save and Reset Toast Notifications Feedback]
 **Learning:** Forms managing critical application-wide or cluster settings must provide prominent, high-fidelity feedback (such as transient toast alerts) for both success and failure outcomes during actions like "Save" and "Reset to Defaults". Failing to do so can result in silent errors when API requests fail, leaving users completely unaware that their modifications or resets were rejected.
 **Action:** Always integrate standard configuration-saving and state-reset operations with global/app-wide toast notification systems to guarantee visibility of results.
+
+## 2026-08-13 - [Semantic Form Ergonomics on Cluster Workers Tab]
+**Learning:** Form structures managing external worker node connections in cluster setup tabs benefit immensely from semantic `<form>` containers instead of non-interactive nested wrappers. This allows users to press "Enter" from any text input field to submit the form cleanly without needing manual mouse interaction. Visually marking mandatory fields (such as Host and Port) with clear asterisks and explicit `required` validation keeps setup straightforward.
+**Action:** Always implement configuration input blocks using semantic `<form>` containers with standard validation and input submission ergonomics.

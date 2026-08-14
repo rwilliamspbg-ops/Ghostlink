@@ -197,16 +197,22 @@ export const WorkersTab: React.FC<{ api: any }> = ({ api }) => {
       </div>
 
       {showAddForm && (
-        // eslint-disable-next-line jsx-a11y/no-static-element-interactions -- wrapper only delegates Escape from the real interactive inputs/buttons inside, not a control itself
-        <div
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            handleAddWorker();
+          }}
           className="px-6 py-4 border-b border-slate-800 bg-slate-900/30"
           onKeyDown={(e) => { if (e.key === 'Escape') setShowAddForm(false); }}
         >
           <div className="flex items-end gap-3 max-w-lg">
             <div className="flex-1">
-              <label htmlFor="host" className="block text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1">Host</label>
+              <label htmlFor="host" className="block text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1">
+                Host <span className="text-red-500" title="Required">*</span>
+              </label>
               <input
                 type="text"
+                required
                 value={addHost}
                 onChange={(e) => setAddHost(e.target.value)}
                 placeholder="192.168.1.100"
@@ -216,9 +222,12 @@ export const WorkersTab: React.FC<{ api: any }> = ({ api }) => {
               />
             </div>
             <div className="w-24">
-              <label htmlFor="port" className="block text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1">Port</label>
+              <label htmlFor="port" className="block text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1">
+                Port <span className="text-red-500" title="Required">*</span>
+              </label>
               <input
                 type="number"
+                required
                 value={addPort}
                 onChange={(e) => setAddPort(e.target.value)}
                 placeholder="8003"
@@ -228,14 +237,14 @@ export const WorkersTab: React.FC<{ api: any }> = ({ api }) => {
               />
             </div>
             <button
-              onClick={handleAddWorker}
+              type="submit"
               className="px-4 py-1.5 bg-green-600 hover:bg-green-500 text-white text-xs font-bold rounded-lg transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
             >
               Connect
             </button>
           </div>
           {addError && <p role="alert" className="text-red-400 text-xs mt-2">{addError}</p>}
-        </div>
+        </form>
       )}
 
       <div className="flex-1 overflow-y-auto p-6" tabIndex={0} role="region" aria-label="Workers">
