@@ -906,13 +906,16 @@ fn _read_transport_batch_inner(
     session: Option<&SessionAuth>,
     payload_buf: &mut Vec<f32>,
 ) -> io::Result<Option<TransportBatch>> {
-    let mut source_stage_bytes = [0u8; 2];
-    match reader.read_exact(&mut source_stage_bytes) {
+    // Coalesce multiple read_exact calls into a single 19-byte read of the static packet header.
+    // Length breakdown: source_stage(2) + batch_id(8) + tokens(4) + payload_len(4) + tag_type(1) = 19 bytes.
+    let mut header_buf = [0u8; 19];
+    match reader.read_exact(&mut header_buf) {
         Ok(()) => {}
         Err(err) if err.kind() == io::ErrorKind::UnexpectedEof => return Ok(None),
         Err(err) => return Err(err),
     }
-    let source_stage = u16::from_le_bytes(source_stage_bytes) as usize;
+
+    let source_stage = u16::from_le_bytes(header_buf[0..2].try_into().unwrap()) as usize;
     if source_stage != expected_source_stage {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -920,15 +923,9 @@ fn _read_transport_batch_inner(
         ));
     }
 
-    let mut batch_id_bytes = [0u8; 8];
-    reader.read_exact(&mut batch_id_bytes)?;
-
-    let mut tokens_bytes = [0u8; 4];
-    reader.read_exact(&mut tokens_bytes)?;
-
-    let mut payload_len_bytes = [0u8; 4];
-    reader.read_exact(&mut payload_len_bytes)?;
-    let payload_len = u32::from_le_bytes(payload_len_bytes) as usize;
+    let batch_id = u64::from_le_bytes(header_buf[2..10].try_into().unwrap()) as usize;
+    let tokens_in_batch = u32::from_le_bytes(header_buf[10..14].try_into().unwrap()) as usize;
+    let payload_len = u32::from_le_bytes(header_buf[14..18].try_into().unwrap()) as usize;
 
     // Bound the wire-declared payload length BEFORE allocating. A corrupted or
     // cross-wired frame can otherwise declare up to u32::MAX elements (~17 GB
@@ -945,19 +942,15 @@ fn _read_transport_batch_inner(
         ));
     }
 
-    let mut tag_type_byte = [0u8; 1];
-    reader.read_exact(&mut tag_type_byte)?;
-    let tag_type = tag_type_byte[0];
+    let tag_type = header_buf[18];
 
     match tag_type {
         2 => {
-            // Session-level auth: read session_id + generation
-            let mut session_id_bytes = [0u8; 8];
-            reader.read_exact(&mut session_id_bytes)?;
-            let frame_session_id = u64::from_le_bytes(session_id_bytes);
-            let mut gen_bytes = [0u8; 8];
-            reader.read_exact(&mut gen_bytes)?;
-            let generation = u64::from_le_bytes(gen_bytes);
+            // Session-level auth: read session_id + generation in a single 16-byte read instead of two 8-byte reads.
+            let mut session_bytes = [0u8; 16];
+            reader.read_exact(&mut session_bytes)?;
+            let frame_session_id = u64::from_le_bytes(session_bytes[0..8].try_into().unwrap());
+            let generation = u64::from_le_bytes(session_bytes[8..16].try_into().unwrap());
 
             if session.is_none() {
                 return Err(io::Error::new(
@@ -993,8 +986,6 @@ fn _read_transport_batch_inner(
             payload_buf.resize(payload_len, 0.0);
             _read_payload(reader, payload_buf, payload_len)?;
 
-            let batch_id = u64::from_le_bytes(batch_id_bytes) as usize;
-            let tokens_in_batch = u32::from_le_bytes(tokens_bytes) as usize;
             let expected_tag = auth_tag(
                 source_stage,
                 batch_id,
@@ -1034,9 +1025,6 @@ fn _read_transport_batch_inner(
     // Common path: read payload after auth verification
     payload_buf.resize(payload_len, 0.0);
     _read_payload(reader, payload_buf, payload_len)?;
-
-    let batch_id = u64::from_le_bytes(batch_id_bytes) as usize;
-    let tokens_in_batch = u32::from_le_bytes(tokens_bytes) as usize;
 
     Ok(Some(TransportBatch {
         batch_id,
