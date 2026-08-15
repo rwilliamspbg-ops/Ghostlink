@@ -295,7 +295,37 @@ make the Priority Zero fix land on solid ground.
    `/metrics` endpoint — `docker-compose.yml` already exists; add a
    Prometheus + Grafana profile so `docker compose up --profile monitoring`
    gives a working dashboard immediately. Zero-config observability is a
-   real gap vs. every competitor here.
+   real gap vs. every competitor here. **Status check (2026-08-15):
+   shipped.** `deploy/prometheus/prometheus.yml` + `deploy/grafana/` (a
+   provisioned datasource and a real dashboard JSON covering every metric
+   `/metrics` exposes — throughput, p50/p95 latency, CPU/memory/GPU,
+   cluster node count and VRAM, uptime, sample rate); `docker-compose.yml`
+   gained `prometheus`/`grafana` services under `profiles: ["monitoring"]`,
+   so a plain `docker compose up` is unaffected and
+   `docker compose up --profile monitoring` brings both up pre-wired, no
+   manual "add datasource"/"import dashboard" click needed. One real,
+   non-obvious correctness catch along the way: `ghostlink-api` binds
+   `0.0.0.0` (`docker-compose.yml`'s `command: serve 0.0.0.0 8003`), and
+   `tls::is_loopback_host("0.0.0.0")` is deliberately `false` (it has its
+   own test asserting exactly that) — so the container unconditionally
+   forces HTTPS with a self-signed cert regardless of the `enable_tls`
+   setting. A first pass at the scrape config assumed plain HTTP and would
+   have silently scraped nothing; `prometheus.yml` now scrapes
+   `https://` with `insecure_skip_verify` (no CA to validate a self-signed
+   cert against in this deployment). Verified: YAML validated with
+   `docker compose config`, the dashboard JSON validated, and a real
+   locally-run `ghost-link serve 0.0.0.0` process confirmed to only answer
+   on HTTPS, not plain HTTP, exactly as the fix assumes. **Not verified**:
+   an actual live container scrape end-to-end — the Docker daemon wasn't
+   running in the environment this shipped from (CLI present, engine not
+   started), so this could only be validated statically plus against a
+   real non-containerized server process, not a genuine `docker compose up
+   --profile monitoring` run. The same 0.0.0.0-forces-HTTPS behavior also
+   surfaced a separate, likely pre-existing bug worth its own fix:
+   `ghostlink-api`'s Docker healthcheck curls plain `http://`, which this
+   same logic implies should already be failing — flagged separately
+   rather than fixed here, since confirming and fixing it needs a working
+   Docker daemon this environment didn't have.
 5. **One-line install script** (`curl | sh` / a signed installer per
    platform) using the now-multi-OS release artifacts. Ollama's biggest UX
    win is `curl -fsSL https://ollama.com/install.sh | sh`; Ghostlink should
@@ -513,7 +543,15 @@ speculative gold-plating.
 4. **OpenTelemetry tracing**, layered on top of the *already-real*
    Prometheus metrics, plus finally checking in the Grafana dashboard JSON
    that Horizon 1 item 4 has called for since before v1.17 and that's
-   still open.
+   still open. **Status check (2026-08-15): half done.** The Grafana
+   dashboard/monitoring-profile half shipped — see Horizon 1 item 4's own
+   status check for the full account. OpenTelemetry tracing itself has not
+   started: this is a genuinely separate, larger piece of work (choosing an
+   OTel crate and exporter, instrumenting spans across the request →
+   planning → RPC-hop path, and propagating trace context across process
+   boundaries for the RPC transport specifically — a real distributed-
+   tracing problem, not just adding a library) that deserves its own
+   focused pass rather than being folded into the dashboard work.
 5. Horizon 1 item 6 (config hot-reload) is a direct prerequisite for any
    of the above being usable in a headless/server deployment — still open,
    still worth doing first or alongside.

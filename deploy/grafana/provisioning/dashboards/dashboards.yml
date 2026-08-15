@@ -1,0 +1,14 @@
+# Auto-provisions every dashboard JSON under /var/lib/grafana/dashboards
+# (mounted from deploy/grafana/dashboards/ in docker-compose.yml) on Grafana
+# startup — no manual import needed.
+apiVersion: 1
+
+providers:
+  - name: Ghostlink
+    orgId: 1
+    folder: ""
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    options:
+      path: /var/lib/grafana/dashboards
