@@ -355,7 +355,28 @@ Once Priority Zero is real and provable, these make it hard to copy.
    unconfirmed is whether anything calls `rebalance()` in response to a
    live node join/leave/health-degrade event today, or whether it's only
    invoked from a static planning pass — worth a quick read of the call
-   sites before scoping this as greenfield.
+   sites before scoping this as greenfield. **Status check (2026-08-15):
+   read the call sites — it's greenfield after all, for the path that
+   actually matters.** `execute_pipeline_with_rebalance*`/`rebalance()`
+   has exactly one real caller (`main.rs`'s `ghost-link flow` CLI command,
+   gated behind `GHOSTLINK_FLOW_ENABLE_REBALANCE`), and that command is the
+   *synthetic* pipeline-benchmark path this roadmap's Priority Zero section
+   already established doesn't run real model layers — `PipelinePlan`
+   built from a fabricated 60-layer/0.5GB-per-layer spec, not a real GGUF.
+   The real distributed-inference serving path (`handle_gui_model_load` →
+   `rpc_cluster::discover_rpc_peers` → a single `llama-server --rpc ...`
+   process launch, see Priority Zero and Enterprise Trust Track item #2)
+   has no rebalancing concept at all — it's one process invocation per
+   model load, not a per-token pipeline Ghostlink's own runtime coordinates
+   step-by-step the way `runtime.rs`'s synthetic path does. So: real
+   continuous rebalancing for real distributed inference is still fully
+   unbuilt, not "needs live-event wiring added to an existing mechanism."
+   The Risks section's own assessment stands — "mid-generation migration
+   without corrupting output is a real research-adjacent problem... a
+   simpler 'drain and restart the affected request' fallback is an
+   acceptable first cut" — and that first cut hasn't been attempted either.
+   Deliberately not attempted in this pass: this needs its own dedicated
+   scoping, not a fast-follow bolted onto an unrelated feature.
 2. **Speculative decoding across heterogeneous nodes** — a small/fast node
    (or NPU) drafts, a large/slow node verifies. This is a genuinely novel
    angle: nobody targets *consumer heterogeneous* hardware for this pattern
