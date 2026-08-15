@@ -1,5 +1,9 @@
 # Palette's Journal
 
+## 2026-08-14 - [Disclosure Summary Focus & Tooltip Ergonomics]
+**Learning:** Native HTML `<details>` disclosure controls (such as ErrorBoundary component stack details) are interactive elements that receive keyboard focus via `<summary>`. In dark-themed applications, default browser focus rings on `<summary>` are often invisible or clipped, leaving keyboard navigators unable to determine focus state. Adding high-contrast `focus-visible:` outlines, `hover:` color transitions, and explicit `title` tooltips ensures disclosure controls are fully accessible and discoverable across both mouse and keyboard interactions.
+**Action:** Always complement native `<summary>` disclosure controls with explicit focus-visible rings (`focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none`) and descriptive hover tooltips.
+
 ## 2026-08-12 - [MCP & Workers Tab Operations Toast Notification Feedback]
 **Learning:** Asynchronous actions managing external cluster resources or protocol integrations (such as enabling/disabling MCP servers or connecting/disconnecting workers) must never alter state silently or fail without explicit feedback. Integrating success/failure toast notifications keeps the operator informed. Crucially, success state conditions must explicitly evaluate API response success flags (e.g. `result.success`) rather than compound error check fall-throughs, which otherwise risk showing false success alerts when requests fail without a descriptive error message.
 **Action:** Always secure asynchronous operations with high-fidelity toast alerts, and strictly evaluate success using explicit response success booleans rather than error-presence fall-throughs.

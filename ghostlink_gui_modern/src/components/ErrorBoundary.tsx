@@ -51,7 +51,12 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
             </p>
             {this.state.errorInfo && (
               <details className="text-left mb-4 p-3 bg-slate-900 border border-slate-700 rounded-lg text-xs">
-                <summary className="cursor-pointer text-slate-500 mb-2">Error Details</summary>
+                <summary
+                  title="Toggle error stack trace details"
+                  className="cursor-pointer text-slate-500 hover:text-slate-300 transition-colors mb-2 rounded focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
+                >
+                  Error Details
+                </summary>
                 <pre className="text-red-400 overflow-auto max-h-48">
                   {this.state.errorInfo.componentStack}
                 </pre>
