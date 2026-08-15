@@ -1653,7 +1653,7 @@ struct BackendState {
     /// restart) and capped at `AUDIT_LOG_CAP`; a genuinely persistent trail
     /// would need an append-only file, which is a bigger step than this
     /// first real version takes.
-    audit_log: std::collections::VecDeque<AuditLogEntry>,
+    audit_log: std::collections::VecDeque<audit_log::AuditLogEntry>,
     /// The live RBAC key store — every `auth_middleware` check and the new
     /// `/api/security/keys` admin endpoints read/write this. Loaded once at
     /// startup via `load_api_keys()` (which handles the bootstrap migration
@@ -1669,33 +1669,6 @@ struct BackendState {
     models_scan_cache: ApiResponseCache,
 }
 
-/// One row for the GUI's Security tab audit log — field names/shape match
-/// what `SecurityTab.tsx` already expects (it predates a real backend for
-/// this and was rendering against a permanently-empty list).
-#[derive(Debug, Clone, Serialize)]
-struct AuditLogEntry {
-    event: String,
-    /// "SUCCESS"/"AUTHENTICATED" render green in the GUI; anything else
-    /// (e.g. "FAILED", "DENIED") renders as a yellow warning badge.
-    status: String,
-    ip: String,
-    /// RFC3339 — the GUI does `new Date(e.time)` on this directly.
-    time: String,
-    detail: Option<String>,
-}
-
-const AUDIT_LOG_CAP: usize = 500;
-
-/// Appends one entry and trims from the front once over `AUDIT_LOG_CAP` —
-/// split out from `record_audit_event` so it's unit-testable against a bare
-/// `VecDeque` without needing to construct a full `BackendState`.
-fn push_audit_entry(log: &mut std::collections::VecDeque<AuditLogEntry>, entry: AuditLogEntry) {
-    log.push_back(entry);
-    while log.len() > AUDIT_LOG_CAP {
-        log.pop_front();
-    }
-}
-
 fn record_audit_event(
     backend: &mut BackendState,
     event: &str,
@@ -1703,20 +1676,24 @@ fn record_audit_event(
     ip: String,
     detail: Option<String>,
 ) {
-    push_audit_entry(
-        &mut backend.audit_log,
-        AuditLogEntry {
-            event: event.to_string(),
-            status: status.to_string(),
-            ip,
-            time: chrono::Utc::now().to_rfc3339(),
-            detail,
-        },
-    );
+    let entry = audit_log::AuditLogEntry {
+        event: event.to_string(),
+        status: status.to_string(),
+        ip,
+        time: chrono::Utc::now().to_rfc3339(),
+        detail,
+    };
+    audit_log::push_audit_entry(&mut backend.audit_log, entry.clone());
+    // Durable, restart-surviving trail — the in-memory VecDeque above stays
+    // capped and fast for the GUI's live feed; this is the complete history
+    // `GET /api/security/audit-log/export` reads from. Best-effort: a write
+    // failure is warned, not propagated, matching every other persistence
+    // function in this codebase.
+    audit_log::append_durable(&entry);
 }
 
 /// Minimum role required to access a route. A method-based default
-/// (GET/HEAD need only `Viewer`, every mutation needs `Operator`) plus two
+/// (GET/HEAD need only `Viewer`, every mutation needs `Operator`) plus
 /// named `Admin`-only carve-outs — not a per-route table, so it stays
 /// correct as new routes are added without a matching new entry each time.
 /// `/health` is exempted from auth entirely in `auth_middleware`, never
@@ -1724,8 +1701,15 @@ fn record_audit_event(
 /// carve-out below the GET-only `Viewer` default: proving identity isn't a
 /// mutation of server state, so every authenticated key — including
 /// `Viewer` — may exchange its key for a JWT.
+/// `/api/security/audit-log/export` is `Admin`-only despite being a GET,
+/// unlike the plain (capped, in-memory) `/api/security/audit-log`, which
+/// stays `Viewer`-readable: a bulk historical export is a materially
+/// different exposure than a live tail of the last 500 events.
 fn required_role(method: &axum::http::Method, path: &str) -> auth::Role {
-    if path.starts_with("/api/security/keys") || path == "/api/security/pqc/enable" {
+    if path.starts_with("/api/security/keys")
+        || path == "/api/security/pqc/enable"
+        || path.starts_with("/api/security/audit-log/export")
+    {
         return auth::Role::Admin;
     }
     if path == "/api/security/jwt/refresh" {
@@ -6850,8 +6834,35 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
     ) -> Json<serde_json::Value> {
         let backend = lock_state(&state);
         // Most-recent-first — a log feed reads top-to-bottom as newest-first.
-        let entries: Vec<&AuditLogEntry> = backend.audit_log.iter().rev().collect();
+        let entries: Vec<&audit_log::AuditLogEntry> = backend.audit_log.iter().rev().collect();
         Json(serde_json::json!({ "entries": entries }))
+    }
+
+    /// Exports the **full** durable audit trail (`audit_log::read_all_durable`),
+    /// not just the capped, in-memory, most-recent-500 view
+    /// `handle_gui_audit_log` serves — this is the SIEM-integration path
+    /// `docs/ROADMAP.md`'s Enterprise Trust Track names. `Admin`-gated in
+    /// `required_role` (a bulk historical export is a materially different
+    /// exposure than the existing capped live tail, which stays
+    /// `Viewer`-readable). `?format=json` (default) returns the same
+    /// `{"entries": [...]}` shape as the live endpoint; `?format=cef`
+    /// returns newline-separated CEF lines as `text/plain`.
+    async fn handle_security_audit_log_export(
+        Query(params): Query<HashMap<String, String>>,
+    ) -> axum::response::Response {
+        let entries = audit_log::read_all_durable();
+        match params.get("format").map(String::as_str) {
+            Some("cef") => (
+                StatusCode::OK,
+                [(
+                    axum::http::header::CONTENT_TYPE,
+                    "text/plain; charset=utf-8",
+                )],
+                audit_log::export_cef(&entries),
+            )
+                .into_response(),
+            _ => Json(serde_json::json!({ "entries": entries })).into_response(),
+        }
     }
 
     /// Lists every key in the RBAC store — `Admin`-gated by
@@ -9223,6 +9234,10 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             .route("/api/security/pqc/state", get(handle_gui_pqc_state))
             .route("/api/security/audit-log", get(handle_gui_audit_log))
             .route(
+                "/api/security/audit-log/export",
+                get(handle_security_audit_log_export),
+            )
+            .route(
                 "/api/security/keys",
                 get(handle_security_keys_list).post(handle_security_keys_create),
             )
@@ -11349,6 +11364,7 @@ fn run_gui_preflight_checks() -> Result<()> {
     Ok(())
 }
 
+mod audit_log;
 mod auth;
 mod backend_api;
 mod backend_config;
@@ -11636,40 +11652,8 @@ mod tests {
         std::env::remove_var("GHOSTLINK_NODE_ID");
     }
 
-    fn audit_entry(event: &str) -> AuditLogEntry {
-        AuditLogEntry {
-            event: event.to_string(),
-            status: "SUCCESS".to_string(),
-            ip: "127.0.0.1".to_string(),
-            time: chrono::Utc::now().to_rfc3339(),
-            detail: None,
-        }
-    }
-
-    #[test]
-    fn push_audit_entry_appends_in_order() {
-        let mut log = std::collections::VecDeque::new();
-        push_audit_entry(&mut log, audit_entry("first"));
-        push_audit_entry(&mut log, audit_entry("second"));
-        assert_eq!(log.len(), 2);
-        assert_eq!(log[0].event, "first");
-        assert_eq!(log[1].event, "second");
-    }
-
-    #[test]
-    fn push_audit_entry_trims_oldest_once_over_cap() {
-        let mut log = std::collections::VecDeque::new();
-        for i in 0..(AUDIT_LOG_CAP + 10) {
-            push_audit_entry(&mut log, audit_entry(&format!("event-{i}")));
-        }
-        assert_eq!(log.len(), AUDIT_LOG_CAP, "must never grow past the cap");
-        // The oldest 10 were pushed out; the front is now event-10.
-        assert_eq!(log.front().unwrap().event, "event-10");
-        assert_eq!(
-            log.back().unwrap().event,
-            format!("event-{}", AUDIT_LOG_CAP + 9)
-        );
-    }
+    // `push_audit_entry`/`AUDIT_LOG_CAP` tests moved to `audit_log.rs`
+    // alongside the durable-trail/CEF-export code they now live next to.
 
     #[test]
     fn test_parse_usize_arg() {

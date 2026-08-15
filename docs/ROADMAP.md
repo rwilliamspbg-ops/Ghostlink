@@ -489,6 +489,27 @@ speculative gold-plating.
    capped log (`AUDIT_LOG_CAP`) to append-only persistent storage plus a
    JSON/CEF export path. This extends what already shipped rather than
    building a new system, and is a prerequisite for any real SIEM story.
+   **Status check (2026-08-15): shipped.** New `audit_log.rs` module: every
+   `record_audit_event` call now also appends the entry as one JSON line to
+   an append-only `audit_log.jsonl` (`GHOSTLINK_AUDIT_LOG_PATH` override) —
+   the in-memory capped `VecDeque` is untouched and still serves the GUI's
+   live feed exactly as before. New `GET /api/security/audit-log/export`
+   (`?format=json|cef`, default json) reads the *full* durable history,
+   gated `Admin`-only (stricter than the existing capped live endpoint,
+   which stays `Viewer`-readable) since a bulk historical export is a
+   different exposure than a live tail. CEF output is real Common Event
+   Format with correct extension-value escaping — not a cosmetic detail:
+   several existing audit `detail` strings already contain raw `=`
+   characters (e.g. `"name='{}' id={}"` on the key-revocation event), which
+   would otherwise corrupt the field boundary for any real SIEM parser.
+   Verified live: durable file confirmed on disk with real events including
+   one deliberately containing both `=` and `|`; in-memory feed correctly
+   empties on restart while the durable export still returns the
+   pre-restart history; CEF export correctly escapes every `=` in the
+   stress-test event while leaving the literal `|` alone (valid inside an
+   extension value, unlike the pipe-delimited CEF header). Log
+   rotation/retention policy remains a deliberate fast-follow, not
+   attempted here — the file is append-only and unbounded.
 4. **OpenTelemetry tracing**, layered on top of the *already-real*
    Prometheus metrics, plus finally checking in the Grafana dashboard JSON
    that Horizon 1 item 4 has called for since before v1.17 and that's
