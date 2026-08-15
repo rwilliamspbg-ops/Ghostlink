@@ -59,7 +59,11 @@ services:
         condition: service_healthy
     command: serve 0.0.0.0 8003
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8003/health"]
+      # -k: binding 0.0.0.0 forces ghost-link's TLS-on-non-loopback rule
+      # (crates/ghost-link/src/tls.rs's is_loopback_host / main.rs's
+      # use_tls), so this serves a self-signed HTTPS cert, not plain HTTP —
+      # same reasoning as docker-compose.rpc-fabric.yml's healthcheck.
+      test: ["CMD", "curl", "-fk", "https://localhost:8003/health"]
       interval: 10s
       timeout: 5s
       retries: 3
@@ -78,7 +82,13 @@ services:
       - "8000:8000"
     environment:
       PORT: "8000"
-      GHOSTLINK_BACKEND_URL: http://ghostlink-api:8003
+      # https:// (not http://): ghostlink-api binds 0.0.0.0, which forces
+      # its self-signed-TLS listener on (see the matching comment on its
+      # healthcheck above) — proxy.go's NewChatProxy already skips cert
+      # verification for an https:// backend URL specifically to handle
+      # this, so plain http:// here would make every proxied request fail,
+      # not just the healthcheck.
+      GHOSTLINK_BACKEND_URL: https://ghostlink-api:8003
       # See the matching comment on ghostlink-api's GHOSTLINK_API_KEY_PATH
       # above — without this, control-plane's edge auth check silently
       # no-ops (empty key = skip), which also means requests that should

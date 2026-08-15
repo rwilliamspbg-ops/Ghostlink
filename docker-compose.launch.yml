@@ -46,7 +46,10 @@ services:
         condition: service_healthy
     command: serve 0.0.0.0 8003
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8003/health"]
+      # -k: binding 0.0.0.0 forces ghost-link's TLS-on-non-loopback rule
+      # (crates/ghost-link/src/tls.rs's is_loopback_host / main.rs's
+      # use_tls), so this serves a self-signed HTTPS cert, not plain HTTP.
+      test: ["CMD", "curl", "-fk", "https://localhost:8003/health"]
       interval: 10s
       timeout: 5s
       retries: 3
