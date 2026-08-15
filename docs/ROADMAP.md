@@ -454,6 +454,37 @@ speculative gold-plating.
    protocol-level auth, only IP allowlisting and a version-mismatch check.
    IP allowlisting stops "anyone on the LAN"; it does not stop a device
    already inside an allowlisted range or one spoofing a source address.
+   **Status check (2026-08-15): shipped, as an equivalent handshake rather
+   than mTLS.** Real mTLS turned out to be structurally blocked: upstream
+   llama.cpp's `--rpc` client speaks zero custom handshake and starts
+   sending raw `ggml-rpc` binary protocol the instant it connects, so any
+   additional auth step has to live outside that TCP stream, done by
+   Ghostlink's own processes on both ends — not inside it. The shipped
+   design (`rpc_cluster.rs`): a new `rpc_shared_secret` setting (empty/off
+   by default, manually distributed across nodes like `rpc_allowed_peers`
+   already is) gates a dedicated auth port
+   (`rpc_port + RPC_AUTH_PORT_OFFSET`). Before opening the real `--rpc`
+   connection, the coordinator does a nonce-based HMAC-SHA256 handshake
+   there (`admit_via_secret`); success temporarily admits its source IP
+   (`RPC_ADMISSION_TTL`, 30s) and the allowlist proxy now requires a *live*
+   admission, not just allowlist membership, before splicing a connection
+   through. A fresh nonce per handshake means a captured response can't be
+   replayed. Verified live against a real running peer process: an
+   unadmitted connection to the real RPC port is reset; a wrong-secret
+   handshake is acked as a mismatch and leaves the port still rejecting;
+   the correct secret is acked as a match and the *same* connection the
+   proxy previously reset is then accepted and forwarded toward the local
+   `ggml-rpc-server` (confirmed via the proxy's own "could not reach
+   ggml-rpc-server" log line firing only because no real binary was present
+   in that dev checkout, not because gating failed). Honestly scoped, same
+   as the existing IP-allowlist caveat: this proves the connecting node held
+   the secret at admission time and authorizes its source IP for a short
+   window — it does **not** encrypt the actual `ggml-rpc` byte stream itself
+   (still plain TCP), and an on-path attacker riding the same source IP
+   during the admission window isn't stopped by it. True wire-level
+   confidentiality would need a dual-proxy TLS tunnel on both ends (reusing
+   `tls.rs`'s existing cert infra) — noted as a further follow-up, not
+   attempted here.
 3. **Durable, exportable audit log** — upgrade the existing in-memory
    capped log (`AUDIT_LOG_CAP`) to append-only persistent storage plus a
    JSON/CEF export path. This extends what already shipped rather than
@@ -640,4 +671,9 @@ lands.
   the Horizon 2 plugin-marketplace work rather than treating this as fully
   closed. **This is item #2 in the "Enterprise Trust Track" section above**,
   paired with RBAC as the two highest-priority security items on this
-  roadmap.
+  roadmap. **Status check (2026-08-15): shipped** — see that section's status
+  check for the `rpc_shared_secret` handshake design and what it does and
+  doesn't close (a device already inside an allowlisted range can no longer
+  ride through without the secret; the actual RPC byte stream itself is
+  still unencrypted plain TCP, an honestly-documented remaining gap, not a
+  silent one).

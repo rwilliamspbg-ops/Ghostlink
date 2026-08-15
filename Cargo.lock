@@ -1023,6 +1023,7 @@ dependencies = [
  "chrono",
  "futures",
  "ghostlink-core",
+ "hmac",
  "http",
  "jsonwebtoken",
  "rand 0.8.6",

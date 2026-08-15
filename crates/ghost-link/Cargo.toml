@@ -79,3 +79,5 @@ rcgen = "0.14.7"
 
 # API key hashing for the RBAC key store (already a workspace dependency via ghostlink-core)
 sha2 = "0.10"
+# HMAC-SHA256 for the RPC peer auth handshake (rpc_cluster::admit_via_secret)
+hmac = "0.12"

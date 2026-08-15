@@ -1892,6 +1892,19 @@ struct RuntimeSettings {
     /// allow-all empty vec, not full-struct defaults).
     #[serde(default)]
     rpc_allowed_peers: Vec<String>,
+    /// Shared secret for the RPC-auth handshake (see `rpc_cluster`'s
+    /// top-of-file SECURITY doc) — closes the specific gap `rpc_allowed_peers`
+    /// alone can't: a device already inside an allowlisted range, or one
+    /// able to spoof a source IP, isn't stopped by IP allowlisting, but
+    /// can't complete this handshake without the real secret. Manually
+    /// distributed across every node in the cluster, same operational model
+    /// as `rpc_allowed_peers`. Empty (the default) means no handshake is
+    /// required and no auth-port listener is started — the exact same
+    /// behavior as before this field existed. `#[serde(default)]` so
+    /// settings.json files saved before this field existed still
+    /// deserialize.
+    #[serde(default)]
+    rpc_shared_secret: String,
 
     // -- Model-load performance tuning (GUI "Model Performance" section) --
     //
@@ -2081,6 +2094,7 @@ impl Default for RuntimeSettings {
             contribute_compute: false,
             rpc_port: default_rpc_port(),
             rpc_allowed_peers: Vec::new(),
+            rpc_shared_secret: String::new(),
             ngl_auto: true,
             ctx_size_auto: true,
             threads_auto: true,
@@ -5257,16 +5271,89 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             requested_model.clone()
         };
 
+        // Distributed-inference RPC peer discovery + rpc_shared_secret
+        // admission (see `rpc_cluster` module docs). Computed here, before
+        // the main state lock below, since `rpc_cluster::admit_via_secret`
+        // does real async network I/O and this codebase never holds a std
+        // Mutex guard across an `.await`. Empty when disabled, no
+        // qualifying peers, or (once `rpc_shared_secret` is set) every peer
+        // fails the handshake — all of which reproduce single-node
+        // behavior exactly.
+        let (rpc_servers, tensor_split) = {
+            let (peers, local_vram, local_system_memory, shared_secret) = {
+                let backend = lock_state(&state);
+                if backend.settings.distributed_inference {
+                    let local_build_id = native_engine::NativeEngineClient::get_llama_build_id();
+                    let peers = rpc_cluster::discover_rpc_peers(
+                        &backend.cluster,
+                        &backend.local_node_id,
+                        local_build_id.as_deref(),
+                    );
+                    let local_metrics = backend.cluster.get_metrics(&backend.local_node_id);
+                    let local_vram = local_metrics.as_ref().map(|m| m.vram_gb).unwrap_or(0.0);
+                    let local_system_memory = local_metrics
+                        .as_ref()
+                        .map(|m| m.system_memory_gb)
+                        .unwrap_or(0.0);
+                    (
+                        peers,
+                        local_vram,
+                        local_system_memory,
+                        backend.settings.rpc_shared_secret.clone(),
+                    )
+                } else {
+                    (Vec::new(), 0.0, 0.0, String::new())
+                }
+            }; // <-- short-lived discovery lock dropped here, before any .await
+
+            // When a shared secret is configured, each discovered peer must
+            // complete the RPC-auth handshake before it's trusted enough to
+            // route real layers through — see `rpc_cluster`'s top-of-file
+            // SECURITY doc. Best-effort per peer: a peer that fails
+            // (wrong/missing secret, unreachable, timeout) is excluded and
+            // warned about, not a hard failure for the whole request.
+            let peers = if peers.is_empty() || shared_secret.is_empty() {
+                peers
+            } else {
+                let admitted_flags =
+                    futures::future::join_all(peers.iter().map(|p| {
+                        let secret = shared_secret.clone();
+                        let addr = p.addr;
+                        async move {
+                            rpc_cluster::admit_via_secret(addr.ip(), addr.port(), &secret).await
+                        }
+                    }))
+                    .await;
+                let admitted: Vec<_> = peers
+                    .into_iter()
+                    .zip(admitted_flags)
+                    .filter_map(|(peer, ok)| ok.then_some(peer))
+                    .collect();
+                if admitted.is_empty() {
+                    tracing::warn!(
+                        "rpc_cluster: every distributed-inference peer failed the \
+                         rpc_shared_secret handshake \u{2014} falling back to single-node for \
+                         this request"
+                    );
+                }
+                admitted
+            };
+
+            if peers.is_empty() {
+                (None, None)
+            } else {
+                let split =
+                    rpc_cluster::compute_tensor_split(local_vram, local_system_memory, &peers);
+                (
+                    Some(rpc_cluster::rpc_flag_value(&peers)),
+                    Some(rpc_cluster::tensor_split_flag_value(&split)),
+                )
+            }
+        };
+
         // Extract model info and settings under the lock, then drop it before
         // the potentially-long blocking load_model_into_slot call.
-        let (
-            native_engine_client,
-            local_path,
-            native_engine,
-            selected_model,
-            rpc_servers,
-            tensor_split,
-        ) = {
+        let (native_engine_client, local_path, native_engine, selected_model) = {
             let mut backend = lock_state(&state);
 
             // Must run before `load_model_into_slot` reads any
@@ -5274,38 +5361,6 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             // var below — see `apply_native_engine_tuning_env`'s doc
             // comment for why it only ever sets, never clears, one of them.
             apply_native_engine_tuning_env(&backend.settings);
-
-            // Real cross-process model-parallel inference via llama.cpp's
-            // own RPC backend when enabled and the cluster has other nodes
-            // contributing compute — see `rpc_cluster` module docs. Empty
-            // when disabled or no qualifying peers, which reproduces
-            // single-node behavior exactly.
-            let (rpc_servers, tensor_split) = if backend.settings.distributed_inference {
-                let local_build_id = native_engine::NativeEngineClient::get_llama_build_id();
-                let peers = rpc_cluster::discover_rpc_peers(
-                    &backend.cluster,
-                    &backend.local_node_id,
-                    local_build_id.as_deref(),
-                );
-                if peers.is_empty() {
-                    (None, None)
-                } else {
-                    let local_metrics = backend.cluster.get_metrics(&backend.local_node_id);
-                    let local_vram = local_metrics.as_ref().map(|m| m.vram_gb).unwrap_or(0.0);
-                    let local_system_memory = local_metrics
-                        .as_ref()
-                        .map(|m| m.system_memory_gb)
-                        .unwrap_or(0.0);
-                    let split =
-                        rpc_cluster::compute_tensor_split(local_vram, local_system_memory, &peers);
-                    (
-                        Some(rpc_cluster::rpc_flag_value(&peers)),
-                        Some(rpc_cluster::tensor_split_flag_value(&split)),
-                    )
-                }
-            } else {
-                (None, None)
-            };
 
             // Merge local scans so we can find local_path for locally-downloaded models
             let local = scan_local_models_dir(&backend.settings.models_dir);
@@ -5374,8 +5429,6 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                 local_path,
                 backend.settings.native_engine.clone(),
                 selected,
-                rpc_servers,
-                tensor_split,
             )
         }; // <-- state lock dropped here
 
@@ -8494,6 +8547,20 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                                 .collect();
                         }
                     }
+                    "rpc_shared_secret" => {
+                        if let Some(s) = value.as_str() {
+                            // Same next-restart caveat as rpc_allowed_peers:
+                            // the auth-port listener (if any) is only stood
+                            // up once, at startup, in `rpc_cluster::
+                            // ensure_contributing`. The *coordinator* side
+                            // (admit_via_secret at model-load time) does
+                            // read this live from `backend.settings`, so a
+                            // coordinator-side change takes effect on the
+                            // next distributed model load without a restart
+                            // — only the receiving/contributing side needs one.
+                            current.rpc_shared_secret = s.to_string();
+                        }
+                    }
                     "ngl_auto" => {
                         if let Some(v) = value.as_bool() {
                             current.ngl_auto = v;
@@ -8731,6 +8798,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             host,
             settings.rpc_port,
             &settings.rpc_allowed_peers,
+            &settings.rpc_shared_secret,
             &rt_handle,
         );
 
@@ -8748,6 +8816,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         let contribute_host = host.to_string();
         let contribute_port = settings.rpc_port;
         let contribute_allowed_peers = settings.rpc_allowed_peers.clone();
+        let contribute_shared_secret = settings.rpc_shared_secret.clone();
         let contribute_rt_handle = rt_handle.clone();
         thread::spawn(move || loop {
             thread::sleep(Duration::from_secs(30));
@@ -8755,6 +8824,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                 &contribute_host,
                 contribute_port,
                 &contribute_allowed_peers,
+                &contribute_shared_secret,
                 &contribute_rt_handle,
             );
         });
