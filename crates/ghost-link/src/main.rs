@@ -7762,10 +7762,25 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         request_tracker.decrement().await;
 
         if req.stream.unwrap_or(false) {
-            let tokens: Vec<String> = response_text
-                .split_whitespace()
-                .map(|s| format!("{} ", s))
-                .collect();
+            // Fakes a token stream for the GUI's typing effect from an
+            // already-fully-generated response_text. Chunk on each whitespace
+            // char and keep it attached to the token (rather than
+            // split_whitespace(), which collapses every run of whitespace —
+            // including the blank lines between Markdown paragraphs/headings
+            // — down to nothing, so `tokens.concat()` no longer equals
+            // response_text and the GUI's markdown renderer sees one
+            // run-on line instead of the model's actual structure).
+            let mut tokens: Vec<String> = Vec::new();
+            let mut current = String::new();
+            for ch in response_text.chars() {
+                current.push(ch);
+                if ch.is_whitespace() {
+                    tokens.push(std::mem::take(&mut current));
+                }
+            }
+            if !current.is_empty() {
+                tokens.push(current);
+            }
 
             let stream = stream::iter(tokens).map(move |token| {
                 let chunk = serde_json::json!({

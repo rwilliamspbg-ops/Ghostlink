@@ -80,9 +80,10 @@ impl NativeEngineClient {
     fn default_system_prompt() -> String {
         format!(
             "You are a helpful, precise assistant. Write clear, grammatically correct \
-             responses. Format with Markdown: blank line between paragraphs, bullet or \
-             numbered lists for multiple items, fenced code blocks with a language tag for \
-             code. Keep prose tight — no run-on paragraphs. Current local date and time: {}.",
+             responses in clean Markdown: headings (#, ##, ###) on their own line with \
+             blank lines around them, lists for multiple items, **bold** labels before \
+             values, and fenced code blocks with a language tag. Keep prose tight — no \
+             run-on paragraphs. Current local date and time: {}.",
             chrono::Local::now().format("%A, %B %d, %Y, %H:%M")
         )
     }
