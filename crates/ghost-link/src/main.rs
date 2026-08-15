@@ -150,8 +150,8 @@ struct FlowOptions<'a> {
 }
 
 fn main() -> Result<()> {
-    // Initialize logging
-    tracing_subscriber::fmt().init();
+    // Initialize logging (+ optional OTel trace export — see otel.rs)
+    otel::init_tracing();
 
     let raw_args = std::env::args().skip(1).collect::<Vec<_>>();
     let bootstrap = extract_bootstrap_args(raw_args)?;
@@ -3989,6 +3989,8 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
     use std::sync::{Arc, Mutex};
     use std::time::{SystemTime, UNIX_EPOCH};
     use tower_http::cors::CorsLayer;
+    use tower_http::trace::TraceLayer;
+    use tracing::Instrument;
 
     fn lock_state(state: &Arc<Mutex<BackendState>>) -> std::sync::MutexGuard<'_, BackendState> {
         state.lock().unwrap_or_else(|poison| poison.into_inner())
@@ -5263,7 +5265,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         // qualifying peers, or (once `rpc_shared_secret` is set) every peer
         // fails the handshake — all of which reproduce single-node
         // behavior exactly.
-        let (rpc_servers, tensor_split) = {
+        let (rpc_servers, tensor_split) = async {
             let (peers, local_vram, local_system_memory, shared_secret) = {
                 let backend = lock_state(&state);
                 if backend.settings.distributed_inference {
@@ -5333,7 +5335,9 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                     Some(rpc_cluster::tensor_split_flag_value(&split)),
                 )
             }
-        };
+        }
+        .instrument(tracing::info_span!("rpc_peer_discovery_and_admission"))
+        .await;
 
         // Extract model info and settings under the lock, then drop it before
         // the potentially-long blocking load_model_into_slot call.
@@ -5435,12 +5439,22 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             // `load_model_into_slot` is about to tear down and rebind, and
             // serializes this against any other concurrent load/unload.
             let _model_swap_guard = model_lifecycle_lock.write().await;
-            let result = tokio::task::spawn_blocking(move || {
-                native_engine_client.load_model_into_slot(
-                    &path,
-                    rpc_servers.as_deref(),
-                    tensor_split.as_deref(),
-                )
+            // Span entered *inside* the spawn_blocking closure, not just
+            // wrapped around the outer .await — spawn_blocking runs on a
+            // separate OS thread, so tracing::Instrument on the future alone
+            // wouldn't attribute the actual load work (which happens on
+            // that other thread) to this span.
+            let load_span = tracing::info_span!("model_load", model = %selected_model);
+            let result = tokio::task::spawn_blocking({
+                let load_span = load_span.clone();
+                move || {
+                    let _guard = load_span.enter();
+                    native_engine_client.load_model_into_slot(
+                        &path,
+                        rpc_servers.as_deref(),
+                        tensor_split.as_deref(),
+                    )
+                }
             })
             .await
             .map_err(|e| format!("task join error: {}", e))
@@ -5455,12 +5469,17 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         } else if let Some(path) = local_path.clone() {
             if native_engine == "llama_server" || native_engine == "llama-server" {
                 let _model_swap_guard = model_lifecycle_lock.write().await;
-                let result = tokio::task::spawn_blocking(move || {
-                    native_engine_client.load_model_into_slot(
-                        &path,
-                        rpc_servers.as_deref(),
-                        tensor_split.as_deref(),
-                    )
+                let load_span = tracing::info_span!("model_load", model = %selected_model);
+                let result = tokio::task::spawn_blocking({
+                    let load_span = load_span.clone();
+                    move || {
+                        let _guard = load_span.enter();
+                        native_engine_client.load_model_into_slot(
+                            &path,
+                            rpc_servers.as_deref(),
+                            tensor_split.as_deref(),
+                        )
+                    }
                 })
                 .await
                 .map_err(|e| format!("task join error: {}", e))
@@ -7543,6 +7562,14 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         (kept, truncated)
     }
 
+    // `inference_generate` span covers the whole chat turn (including any
+    // tool-calling round trips, not just the raw generate call) — this
+    // handler has multiple `.generate()` call sites across its
+    // native/Ollama/vLLM/tool-loop branches, so a function-level
+    // `#[instrument]` is the safer, still-accurate placement rather than
+    // wrapping each call site individually. `skip_all` since several of the
+    // captured backend clients/registries aren't `Debug`.
+    #[tracing::instrument(name = "inference_generate", skip_all)]
     async fn handle_gui_chat(
         State(state): State<Arc<Mutex<BackendState>>>,
         Json(req): Json<GuiChatRequest>,
@@ -9304,7 +9331,14 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             .layer(CorsLayer::permissive())
             .layer(tower_governor::GovernorLayer {
                 config: governor_conf,
-            });
+            })
+            // Outermost — the automatic root span (method/URI/status/latency)
+            // this creates per request should cover everything below it,
+            // including rate-limiting and CORS. Exported as a real OTel
+            // trace when otel::init_tracing() registered the export layer
+            // (see otel.rs); otherwise it's just a normal tracing event, no
+            // behavior change from before this existed.
+            .layer(TraceLayer::new_for_http());
 
         // addr already parsed above; `use_tls` computed earlier alongside
         // `BackendState.enable_tls_active`.
@@ -11375,6 +11409,7 @@ mod inference_engine;
 mod mcp;
 mod native_engine;
 mod ollama;
+mod otel;
 mod rpc_cluster;
 mod runtime;
 mod runtime_switcher;

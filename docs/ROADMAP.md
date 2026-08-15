@@ -564,15 +564,37 @@ speculative gold-plating.
 4. **OpenTelemetry tracing**, layered on top of the *already-real*
    Prometheus metrics, plus finally checking in the Grafana dashboard JSON
    that Horizon 1 item 4 has called for since before v1.17 and that's
-   still open. **Status check (2026-08-15): half done.** The Grafana
-   dashboard/monitoring-profile half shipped — see Horizon 1 item 4's own
-   status check for the full account. OpenTelemetry tracing itself has not
-   started: this is a genuinely separate, larger piece of work (choosing an
-   OTel crate and exporter, instrumenting spans across the request →
-   planning → RPC-hop path, and propagating trace context across process
-   boundaries for the RPC transport specifically — a real distributed-
-   tracing problem, not just adding a library) that deserves its own
-   focused pass rather than being folded into the dashboard work.
+   still open. **Status check (2026-08-15): both halves shipped.** The
+   Grafana dashboard/monitoring-profile half shipped first — see Horizon 1
+   item 4's own status check for the full account. OpenTelemetry tracing
+   followed: new `otel.rs` (`opentelemetry`/`opentelemetry_sdk`/
+   `opentelemetry-otlp`/`tracing-opentelemetry`), entirely opt-in via
+   `GHOSTLINK_OTEL_EXPORTER_ENDPOINT` — unset reproduces the exact
+   plain-text console logging this codebase has always had, byte-for-byte.
+   When set: `tower-http`'s `TraceLayer` gives an automatic root span per
+   HTTP request (method/URI/status/latency, zero hand-written span code),
+   plus three hand-instrumented phase spans in the distributed-inference
+   model-load path (`rpc_peer_discovery_and_admission`, `model_load`, and
+   `inference_generate` covering the whole chat turn including any
+   tool-calling round trips). **A real architectural limit surfaced and is
+   documented rather than glossed over**: the same class of constraint RPC
+   peer auth hit — upstream llama.cpp's `--rpc` client speaks a raw binary
+   protocol with no header/metadata slot for W3C trace-context propagation,
+   so a trace cannot span *across* the actual `ggml-rpc` TCP hop the way a
+   textbook distributed trace would; it ends at "launched llama-server,
+   here's how long it took," the same honest boundary `rpc_cluster.rs`
+   already draws. Per the user's explicit choice, no trace backend is
+   bundled (no Jaeger/Collector added to docker-compose) — an operator
+   points the endpoint at whatever they already run. Uses the SDK's
+   synchronous `SimpleSpanProcessor` with a blocking HTTP client rather
+   than the batched async one, deliberately: this initializes in `main()`
+   before any tokio runtime exists (`main()` also dispatches non-`serve`
+   subcommands like `flow`/`stage-worker`/`probe`), so the exporter can't
+   depend on an ambient async reactor. Verified live: a real stub OTLP/HTTP
+   receiver confirmed genuine `application/x-protobuf` POST bodies arriving
+   from a running server issuing real requests — the full span-creation →
+   OTel-layer → OTLP-exporter → HTTP-POST pipeline proven end-to-end, not
+   just compiled.
 5. Horizon 1 item 6 (config hot-reload) is a direct prerequisite for any
    of the above being usable in a headless/server deployment — still open,
    still worth doing first or alongside.
