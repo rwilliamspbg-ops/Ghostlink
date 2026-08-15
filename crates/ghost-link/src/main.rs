@@ -1654,6 +1654,12 @@ struct BackendState {
     /// would need an append-only file, which is a bigger step than this
     /// first real version takes.
     audit_log: std::collections::VecDeque<AuditLogEntry>,
+    /// The live RBAC key store — every `auth_middleware` check and the new
+    /// `/api/security/keys` admin endpoints read/write this. Loaded once at
+    /// startup via `load_api_keys()` (which handles the bootstrap migration
+    /// from a pre-RBAC `api_key.txt`) and persisted to `api_keys.json` on
+    /// every create/revoke.
+    api_keys: Vec<auth::ApiKeyRecord>,
     /// Caches `scan_local_models_dir`'s result — a real `fs::read_dir` +
     /// `fs::metadata`-per-file disk scan `handle_gui_models` previously did
     /// on every single `GET /api/models` call. Short TTL (see
@@ -1707,6 +1713,87 @@ fn record_audit_event(
             detail,
         },
     );
+}
+
+/// Minimum role required to access a route. A method-based default
+/// (GET/HEAD need only `Viewer`, every mutation needs `Operator`) plus two
+/// named `Admin`-only carve-outs — not a per-route table, so it stays
+/// correct as new routes are added without a matching new entry each time.
+/// `/health` is exempted from auth entirely in `auth_middleware`, never
+/// reaching this function. `/api/security/jwt/refresh` is a deliberate
+/// carve-out below the GET-only `Viewer` default: proving identity isn't a
+/// mutation of server state, so every authenticated key — including
+/// `Viewer` — may exchange its key for a JWT.
+fn required_role(method: &axum::http::Method, path: &str) -> auth::Role {
+    if path.starts_with("/api/security/keys") || path == "/api/security/pqc/enable" {
+        return auth::Role::Admin;
+    }
+    if path == "/api/security/jwt/refresh" {
+        return auth::Role::Viewer;
+    }
+    if method == axum::http::Method::GET || method == axum::http::Method::HEAD {
+        auth::Role::Viewer
+    } else {
+        auth::Role::Operator
+    }
+}
+
+/// The JSON-safe view of a key record for list/create responses — never
+/// includes `key_hash` (the only thing that can authenticate as this key).
+fn key_record_public_json(record: &auth::ApiKeyRecord) -> serde_json::Value {
+    serde_json::json!({
+        "id": record.id,
+        "name": record.name,
+        "role": record.role,
+        "key_preview": record.key_preview,
+        "created_at": record.created_at,
+        "last_used_at": record.last_used_at,
+    })
+}
+
+/// Whether removing `id` from `keys` would leave zero `Admin`-role keys —
+/// the lockout condition `delete_key_from_store` refuses.
+fn would_remove_last_admin(keys: &[auth::ApiKeyRecord], id: &str) -> bool {
+    let target_is_admin = keys
+        .iter()
+        .any(|k| k.id == id && k.role == auth::Role::Admin);
+    if !target_is_admin {
+        return false;
+    }
+    keys.iter()
+        .filter(|k| k.role == auth::Role::Admin && k.id != id)
+        .count()
+        == 0
+}
+
+/// Removes a key by id from `keys` in place. Returns an error (status +
+/// message, matching the shape the handler returns directly) if the key
+/// doesn't exist or removing it would leave the store with no `Admin` key
+/// at all — split out from the handler so both conditions are unit-testable
+/// against a bare `Vec`, matching this file's existing
+/// `push_audit_entry`/`record_audit_event` split.
+fn delete_key_from_store(
+    keys: &mut Vec<auth::ApiKeyRecord>,
+    id: &str,
+) -> Result<auth::ApiKeyRecord, (axum::http::StatusCode, String)> {
+    if !keys.iter().any(|k| k.id == id) {
+        return Err((
+            axum::http::StatusCode::NOT_FOUND,
+            format!("no API key with id '{id}'"),
+        ));
+    }
+    if would_remove_last_admin(keys, id) {
+        return Err((
+            axum::http::StatusCode::BAD_REQUEST,
+            "cannot delete the last remaining Admin key — create another Admin key first"
+                .to_string(),
+        ));
+    }
+    let idx = keys
+        .iter()
+        .position(|k| k.id == id)
+        .expect("existence already checked above");
+    Ok(keys.remove(idx))
 }
 
 /// Real byte-level progress for an in-flight (or just-finished) model download.
@@ -3234,6 +3321,47 @@ fn save_persistent_sessions(sessions: &[SessionRecord]) {
     }
 }
 
+fn api_keys_path() -> PathBuf {
+    std::env::var("GHOSTLINK_API_KEYS_PATH")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("api_keys.json"))
+}
+
+/// Loads the persisted key store, migrating a fresh or pre-RBAC deployment
+/// on the fly: if `api_keys.json` doesn't exist yet (or somehow parses to
+/// zero keys — never persist a store no one can authenticate against), a
+/// single bootstrap `Admin` record is synthesized from the existing
+/// `auth::active_api_key()` value and persisted. An existing deployment's
+/// `api_key.txt` therefore keeps working completely unchanged after this
+/// feature ships — no manual migration step.
+fn load_api_keys() -> Vec<auth::ApiKeyRecord> {
+    let path = api_keys_path();
+    if path.exists() {
+        if let Ok(data) = fs::read_to_string(&path) {
+            if let Ok(keys) = serde_json::from_str::<Vec<auth::ApiKeyRecord>>(&data) {
+                if !keys.is_empty() {
+                    return keys;
+                }
+            }
+        }
+    }
+    let bootstrap = vec![auth::bootstrap_key_record()];
+    save_api_keys(&bootstrap);
+    bootstrap
+}
+
+fn save_api_keys(keys: &[auth::ApiKeyRecord]) {
+    if let Ok(data) = serde_json::to_string_pretty(keys) {
+        let _ = fs::write(api_keys_path(), data);
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct CreateApiKeyRequest {
+    name: String,
+    role: auth::Role,
+}
+
 fn load_settings() -> RuntimeSettings {
     let path = settings_path();
     let mut settings = if path.exists() {
@@ -3846,7 +3974,7 @@ fn detect_node_id() -> String {
 
 fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
     use axum::{
-        extract::{ConnectInfo, Path, Query, Request, State},
+        extract::{ConnectInfo, Extension, Path, Query, Request, State},
         http::StatusCode,
         middleware::{self, Next},
         response::{
@@ -3868,13 +3996,18 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         state.lock().unwrap_or_else(|poison| poison.into_inner())
     }
 
-    /// Guards every route except `/health` behind a real bearer token
-    /// (the persisted API key itself, or a JWT issued from it — see
-    /// `auth.rs`). Replaces having no auth check anywhere on this server.
+    /// Guards every route except `/health` behind a real bearer token —
+    /// resolved to an `AuthContext` (`auth::authenticate`) against the live
+    /// key store, then checked against `required_role`. A key without
+    /// sufficient role gets a 403, not a silent downgrade or a 401 (which
+    /// would misleadingly suggest the credential itself was invalid).
+    /// Successfully-authorized requests carry their `AuthContext` forward
+    /// via request extensions — see `handle_gui_jwt_refresh` for the one
+    /// handler in this pass that reads it.
     async fn auth_middleware(
         State(state): State<Arc<Mutex<BackendState>>>,
         ConnectInfo(addr): ConnectInfo<SocketAddr>,
-        req: Request,
+        mut req: Request,
         next: Next,
     ) -> axum::response::Response {
         if req.uri().path() == "/health" {
@@ -3887,28 +4020,68 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             .and_then(|v| v.to_str().ok());
         let token = auth::extract_bearer_token(header);
 
-        match token {
-            Some(t) if auth::verify_bearer_token(t) => next.run(req).await,
-            _ => {
-                record_audit_event(
-                    &mut lock_state(&state),
-                    "auth",
-                    "FAILED",
-                    addr.ip().to_string(),
-                    Some(format!("{} {}", req.method(), req.uri().path())),
-                );
-                (
-                    StatusCode::UNAUTHORIZED,
-                    Json(serde_json::json!({
-                        "error": {
-                            "message": "missing or invalid Authorization: Bearer <token> — see the API key printed at server startup, or POST /api/security/jwt/refresh with it to get a short-lived token",
-                            "type": "unauthorized"
-                        }
-                    })),
-                )
-                    .into_response()
+        let ctx = token.and_then(|t| auth::authenticate(t, &lock_state(&state).api_keys));
+
+        let Some(ctx) = ctx else {
+            record_audit_event(
+                &mut lock_state(&state),
+                "auth",
+                "FAILED",
+                addr.ip().to_string(),
+                Some(format!("{} {}", req.method(), req.uri().path())),
+            );
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(serde_json::json!({
+                    "error": {
+                        "message": "missing or invalid Authorization: Bearer <token> — see the API key printed at server startup, or POST /api/security/jwt/refresh with it to get a short-lived token",
+                        "type": "unauthorized"
+                    }
+                })),
+            )
+                .into_response();
+        };
+
+        let needed = required_role(req.method(), req.uri().path());
+        if !ctx.role.satisfies(needed) {
+            record_audit_event(
+                &mut lock_state(&state),
+                "authz",
+                "DENIED",
+                addr.ip().to_string(),
+                Some(format!(
+                    "{} {} — key '{}' has role {:?}, needs {:?}",
+                    req.method(),
+                    req.uri().path(),
+                    ctx.name,
+                    ctx.role,
+                    needed
+                )),
+            );
+            return (
+                StatusCode::FORBIDDEN,
+                Json(serde_json::json!({
+                    "error": {
+                        "message": format!(
+                            "key '{}' does not have sufficient permissions for this route",
+                            ctx.name
+                        ),
+                        "type": "forbidden"
+                    }
+                })),
+            )
+                .into_response();
+        }
+
+        {
+            let mut backend = lock_state(&state);
+            if let Some(record) = backend.api_keys.iter_mut().find(|k| k.id == ctx.key_id) {
+                record.last_used_at = Some(chrono::Utc::now().to_rfc3339());
             }
         }
+
+        req.extensions_mut().insert(ctx);
+        next.run(req).await
     }
 
     /// Waits for Ctrl+C, then force-tears-down every connected MCP server before
@@ -6530,23 +6703,26 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         }))
     }
 
-    /// Real JWT issuance (was a hardcoded `"new-token-123"`). Reaching this
-    /// handler at all already proves the caller presented a valid bearer
-    /// token (`auth_middleware` gates every route but `/health`) — no
-    /// separate credential to check here, just mint a fresh short-lived
-    /// token signed with the same API key that got them past the gate.
+    /// Real JWT issuance (was a hardcoded `"new-token-123"`, then a
+    /// hardcoded `"ghostlink-client"` subject once real signing landed).
+    /// Reaching this handler at all already proves the caller presented a
+    /// valid bearer token — `auth_middleware` resolved it to the
+    /// `AuthContext` extracted below before this handler ever runs — so the
+    /// issued JWT's subject is the caller's real key id, not a shared
+    /// placeholder every client's tokens would be indistinguishable under.
     async fn handle_gui_jwt_refresh(
         State(state): State<Arc<Mutex<BackendState>>>,
         ConnectInfo(addr): ConnectInfo<SocketAddr>,
+        Extension(ctx): Extension<auth::AuthContext>,
     ) -> Json<serde_json::Value> {
-        match auth::issue_jwt("ghostlink-client") {
+        match auth::issue_jwt(&ctx.key_id) {
             Ok(token) => {
                 record_audit_event(
                     &mut lock_state(&state),
                     "jwt_refresh",
                     "SUCCESS",
                     addr.ip().to_string(),
-                    None,
+                    Some(format!("key='{}'", ctx.name)),
                 );
                 Json(serde_json::json!({ "status": "ok", "token": token }))
             }
@@ -6623,6 +6799,98 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         // Most-recent-first — a log feed reads top-to-bottom as newest-first.
         let entries: Vec<&AuditLogEntry> = backend.audit_log.iter().rev().collect();
         Json(serde_json::json!({ "entries": entries }))
+    }
+
+    /// Lists every key in the RBAC store — `Admin`-gated by
+    /// `required_role`, since even a hash-free preview of who holds access
+    /// is sensitive. Never includes `key_hash` or a raw key value.
+    async fn handle_security_keys_list(
+        State(state): State<Arc<Mutex<BackendState>>>,
+    ) -> Json<serde_json::Value> {
+        let backend = lock_state(&state);
+        let entries: Vec<serde_json::Value> = backend
+            .api_keys
+            .iter()
+            .map(key_record_public_json)
+            .collect();
+        Json(serde_json::json!({ "keys": entries }))
+    }
+
+    /// Creates a new API key with the given name/role and returns its raw
+    /// value exactly once — the same "shown once, never recoverable again"
+    /// convention `auth::load_or_create_api_key`'s first-run banner already
+    /// uses, since only the key's hash is ever persisted.
+    async fn handle_security_keys_create(
+        State(state): State<Arc<Mutex<BackendState>>>,
+        ConnectInfo(addr): ConnectInfo<SocketAddr>,
+        Json(req): Json<CreateApiKeyRequest>,
+    ) -> (StatusCode, Json<serde_json::Value>) {
+        let (record, raw) = auth::create_key(req.name.clone(), req.role);
+        let backend = &mut *lock_state(&state);
+        backend.api_keys.push(record.clone());
+        save_api_keys(&backend.api_keys);
+        record_audit_event(
+            backend,
+            "security.key.created",
+            "SUCCESS",
+            addr.ip().to_string(),
+            Some(format!(
+                "name='{}' role={:?} id={}",
+                record.name, record.role, record.id
+            )),
+        );
+        (
+            StatusCode::CREATED,
+            Json(serde_json::json!({
+                "id": record.id,
+                "name": record.name,
+                "role": record.role,
+                "key": raw,
+                "note": "this raw key is shown once and cannot be retrieved again — store it now"
+            })),
+        )
+    }
+
+    /// Revokes a key by id. Refuses (400) to remove the last remaining
+    /// `Admin` key — see `would_remove_last_admin` — since that would
+    /// permanently lock every caller out of key management with no
+    /// recovery path short of deleting `api_keys.json` and re-bootstrapping
+    /// from `api_key.txt`.
+    async fn handle_security_keys_delete(
+        State(state): State<Arc<Mutex<BackendState>>>,
+        ConnectInfo(addr): ConnectInfo<SocketAddr>,
+        Path(id): Path<String>,
+    ) -> (StatusCode, Json<serde_json::Value>) {
+        let backend = &mut *lock_state(&state);
+        match delete_key_from_store(&mut backend.api_keys, &id) {
+            Ok(removed) => {
+                save_api_keys(&backend.api_keys);
+                record_audit_event(
+                    backend,
+                    "security.key.revoked",
+                    "SUCCESS",
+                    addr.ip().to_string(),
+                    Some(format!("name='{}' id={}", removed.name, removed.id)),
+                );
+                (
+                    StatusCode::OK,
+                    Json(serde_json::json!({ "status": "ok", "id": removed.id })),
+                )
+            }
+            Err((status, message)) => {
+                record_audit_event(
+                    backend,
+                    "security.key.revoke_failed",
+                    "FAILED",
+                    addr.ip().to_string(),
+                    Some(format!("id={id}: {message}")),
+                );
+                (
+                    status,
+                    Json(serde_json::json!({ "error": { "message": message } })),
+                )
+            }
+        }
     }
 
     async fn handle_gui_runtime_select(
@@ -8629,12 +8897,14 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
     // choice below and `BackendState.enable_tls_active` (read by
     // `/api/security/pqc/state`) share one source of truth.
     let use_tls = settings.enable_tls || !tls::is_loopback_host(host);
-    // Eagerly generate/load (and, on first run, print) the API key here —
-    // `active_api_key()` is otherwise lazy-initialized on first use, which
-    // would mean the one-time "here's your key" banner never prints at
-    // all unless some request happens to trigger it first, leaving a
-    // fresh install with no way to discover the key it needs.
-    auth::active_api_key();
+    // Eagerly load (and, on first run, print) the API key store here —
+    // `load_api_keys()` is otherwise only reached from `BackendState`
+    // construction below, which would mean the one-time "here's your key"
+    // banner (fired the first time `auth::active_api_key()` runs, inside
+    // the bootstrap-migration path) never prints at all unless something
+    // triggers it first, leaving a fresh install with no way to discover
+    // the key it needs.
+    let api_keys = load_api_keys();
     let inference_backend = InferenceEngine::parse(&settings.inference_backend);
     let native_engine_client = native_engine::NativeEngineClient::new();
     let ollama_client = ollama::OllamaClient::new(ollama_url);
@@ -8718,6 +8988,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         plugin_registry: backend_plugin::BackendPluginRegistry::from_env(),
         enable_tls_active: use_tls,
         audit_log: std::collections::VecDeque::new(),
+        api_keys,
         models_scan_cache: ApiResponseCache::new(),
     }));
 
@@ -8881,6 +9152,14 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             .route("/api/security/pqc/enable", post(handle_gui_pqc_enable))
             .route("/api/security/pqc/state", get(handle_gui_pqc_state))
             .route("/api/security/audit-log", get(handle_gui_audit_log))
+            .route(
+                "/api/security/keys",
+                get(handle_security_keys_list).post(handle_security_keys_create),
+            )
+            .route(
+                "/api/security/keys/:id",
+                delete(handle_security_keys_delete),
+            )
             .route("/api/inference/chat", post(handle_gui_chat))
             .route(
                 "/api/inference/chat/tool-confirm",
@@ -11271,6 +11550,7 @@ mod tests {
             enable_tls_active: false,
             plugin_registry: backend_plugin::BackendPluginRegistry::from_env(),
             audit_log: std::collections::VecDeque::new(),
+            api_keys: vec![auth::create_key("test-admin".to_string(), auth::Role::Admin).0],
             models_scan_cache: ApiResponseCache::new(),
         }))
     }
@@ -11382,6 +11662,144 @@ mod tests {
             2,
             "clearing the cache (as the download/delete handlers do) must force a rescan"
         );
+    }
+
+    #[test]
+    fn required_role_gates_key_management_and_pqc_enable_to_admin_only() {
+        use axum::http::Method;
+        assert_eq!(
+            required_role(&Method::GET, "/api/security/keys"),
+            auth::Role::Admin
+        );
+        assert_eq!(
+            required_role(&Method::POST, "/api/security/keys"),
+            auth::Role::Admin
+        );
+        assert_eq!(
+            required_role(&Method::DELETE, "/api/security/keys/key_abc"),
+            auth::Role::Admin
+        );
+        assert_eq!(
+            required_role(&Method::POST, "/api/security/pqc/enable"),
+            auth::Role::Admin
+        );
+    }
+
+    #[test]
+    fn required_role_allows_jwt_refresh_below_the_get_only_viewer_default() {
+        use axum::http::Method;
+        assert_eq!(
+            required_role(&Method::POST, "/api/security/jwt/refresh"),
+            auth::Role::Viewer
+        );
+    }
+
+    #[test]
+    fn required_role_defaults_reads_to_viewer_and_mutations_to_operator() {
+        use axum::http::Method;
+        assert_eq!(
+            required_role(&Method::GET, "/api/models"),
+            auth::Role::Viewer
+        );
+        assert_eq!(
+            required_role(&Method::HEAD, "/api/security/audit-log"),
+            auth::Role::Viewer
+        );
+        assert_eq!(
+            required_role(&Method::GET, "/api/security/pqc/state"),
+            auth::Role::Viewer,
+            "reading PQC state is a GET, distinct from POST .../pqc/enable which is Admin-only"
+        );
+        assert_eq!(
+            required_role(&Method::POST, "/api/models/load"),
+            auth::Role::Operator
+        );
+        assert_eq!(
+            required_role(&Method::DELETE, "/api/models/foo"),
+            auth::Role::Operator
+        );
+        assert_eq!(
+            required_role(&Method::PUT, "/api/settings"),
+            auth::Role::Operator
+        );
+    }
+
+    #[test]
+    fn delete_key_from_store_refuses_to_remove_the_last_admin() {
+        let (admin, _raw) = auth::create_key("only-admin".to_string(), auth::Role::Admin);
+        let mut keys = vec![admin.clone()];
+
+        let err = delete_key_from_store(&mut keys, &admin.id).expect_err("must refuse");
+        assert_eq!(err.0, axum::http::StatusCode::BAD_REQUEST);
+        assert_eq!(keys.len(), 1, "the last admin key must remain in the store");
+    }
+
+    #[test]
+    fn delete_key_from_store_allows_removing_a_non_last_admin_or_any_non_admin() {
+        let (admin_a, _) = auth::create_key("admin-a".to_string(), auth::Role::Admin);
+        let (admin_b, _) = auth::create_key("admin-b".to_string(), auth::Role::Admin);
+        let (viewer, _) = auth::create_key("viewer".to_string(), auth::Role::Viewer);
+        let mut keys = vec![admin_a.clone(), admin_b.clone(), viewer.clone()];
+
+        let removed = delete_key_from_store(&mut keys, &viewer.id)
+            .expect("removing a non-admin should succeed");
+        assert_eq!(removed.id, viewer.id);
+        assert_eq!(keys.len(), 2);
+
+        let removed = delete_key_from_store(&mut keys, &admin_a.id)
+            .expect("removing one of two admins should succeed");
+        assert_eq!(removed.id, admin_a.id);
+        assert_eq!(keys.len(), 1);
+        assert_eq!(keys[0].id, admin_b.id);
+    }
+
+    #[test]
+    fn delete_key_from_store_returns_not_found_for_an_unknown_id() {
+        let mut keys: Vec<auth::ApiKeyRecord> = vec![];
+        let err =
+            delete_key_from_store(&mut keys, "key_does_not_exist").expect_err("must not find it");
+        assert_eq!(err.0, axum::http::StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn load_api_keys_migrates_a_pre_rbac_deployment_to_a_single_bootstrap_admin() {
+        // Only `GHOSTLINK_API_KEYS_PATH` is set here, deliberately —
+        // `GHOSTLINK_API_KEY_PATH` (the legacy single-key file) is also
+        // mutated by `auth.rs`'s own tests under a separate, module-private
+        // lock, so touching it here would race across modules. `auth::
+        // active_api_key()`'s value is cached process-wide in a `OnceLock`
+        // by the time any test reaches it anyway (see auth.rs's own test
+        // comments on this) — this test only asserts the structural
+        // properties `load_api_keys` guarantees regardless of which raw
+        // key value ends up hashed into the bootstrap record: exactly one
+        // record, the fixed bootstrap id/role, persisted, idempotent reload.
+        let _guard = env_lock().lock().expect("env lock poisoned");
+        let api_keys_path = std::env::temp_dir().join(format!(
+            "ghostlink-test-rbac-migrate-{}.json",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&api_keys_path);
+        std::env::set_var("GHOSTLINK_API_KEYS_PATH", &api_keys_path);
+
+        let keys = load_api_keys();
+        assert_eq!(keys.len(), 1);
+        assert_eq!(keys[0].id, auth::BOOTSTRAP_KEY_ID);
+        assert_eq!(keys[0].role, auth::Role::Admin);
+        assert!(
+            api_keys_path.exists(),
+            "the migrated store must be persisted"
+        );
+
+        let reloaded = load_api_keys();
+        assert_eq!(
+            reloaded.len(),
+            1,
+            "a second load must reuse the persisted store, not synthesize a second bootstrap key"
+        );
+        assert_eq!(reloaded[0].id, keys[0].id);
+
+        std::env::remove_var("GHOSTLINK_API_KEYS_PATH");
+        let _ = std::fs::remove_file(&api_keys_path);
     }
 
     #[tokio::test]

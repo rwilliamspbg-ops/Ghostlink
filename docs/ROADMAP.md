@@ -354,7 +354,9 @@ Once Priority Zero is real and provable, these make it hard to copy.
    resets on restart and isn't a persistent append-only trail, but "empty"
    is no longer accurate. What's still genuinely missing: multi-user API
    keys with scoped permissions (RBAC) — that's the remaining piece for
-   any team/household deployment beyond a single operator.
+   any team/household deployment beyond a single operator. **This is the
+   #1 priority in the "Enterprise Trust Track" section below** — see that
+   section for scope and sequencing relative to RPC peer auth.
 6. **Plugin marketplace-lite**: a `plugins.toml`-style registry (mirroring
    the existing `mcp_servers.toml` pattern) so third-party
    `InferenceBackendPlugin`/MCP-tool implementations can be discovered and
@@ -386,6 +388,146 @@ Bigger, riskier, higher payoff if the moat above is already real.
    management/updates/telemetry across many Ghostlink clusters, monetizing
    the "commercial support path" the README already gestures at, without
    compromising the open-source, self-hosted core.
+
+---
+
+## Enterprise Trust Track: reviewing the "default enterprise harness" proposal (2026-08-15)
+
+An external review proposed hardening Ghostlink into "the system teams
+actually run production private LLM workloads on" — full RBAC/multi-tenancy,
+mTLS everywhere, SSO/OIDC/SAML, SIEM-exportable audit trails, OpenTelemetry,
+continuous rebalancing, model governance/canary promotion, WAN connectivity,
+and Terraform/Ansible IaC. Rather than bolt this on as a parallel plan, it's
+worth reconciling against what's actually in the tree and against this
+roadmap's own stated identity — because about half the proposal either
+duplicates something already tracked above, or cuts against the "zero-config,
+single binary" differentiator the Risks section already warns not to
+dilute.
+
+**Fact-check against the current codebase**, since the proposal was written
+from the outside without reading the code:
+
+| Proposal's claim | Actual state, verified 2026-08-15 |
+| --- | --- |
+| "Basic auth/JWT" | Confirmed as described — a single global API key (`auth.rs`) signs JWTs; no scoped keys, no tenancy |
+| "Optional PQC-hybrid TLS" | Undersold, not overstated — ML-KEM-768 hybrid TLS is real and implemented (`tls.rs`), not a stub |
+| "Prometheus metrics" | Real — `/metrics` in Prometheus text-exposition format exists (`handle_metrics_prometheus` in `main.rs`), Grafana already referenced in `.env.example`/compose files |
+| "Populate the real audit endpoint" | Already done as of the 2026-08-08 status check above — proposal was written against a stale picture |
+| RBAC / scoped multi-user keys | **Confirmed genuinely absent** — correctly identified as the top gap |
+| mTLS / authenticated node-to-node RPC | **Confirmed genuinely absent** — `ggml-rpc` has an IP allowlist and a build-version-mismatch check (see Risks below) but no protocol-level auth |
+| OpenTelemetry tracing | Not found anywhere in the crates — correctly identified as missing |
+| SSO/OIDC/SAML | Not found — correctly identified as missing |
+
+So the proposal's two most emphasized items — RBAC and node-to-node
+authentication — are exactly the two gaps this roadmap's own Horizon 2
+item 5 and Risks section already flag as the most severe open issues,
+arrived at independently. That convergence is the strongest signal in this
+whole review: treat those two as the actual next security work, not
+speculative gold-plating.
+
+### Fold into Horizon 1/2 as-is (no identity risk, closes gaps this doc already flagged)
+
+1. **Scoped API keys / RBAC** — teams/projects namespacing, least-privilege
+   MCP tool access, model-level permissions. This *is* Horizon 2 item 5's
+   remaining piece, not a new item; sequencing note below. **Status check
+   (2026-08-15): the core (3-role RBAC) shipped.** `auth.rs` now persists a
+   hashed, multi-key store (`api_keys.json`) instead of one shared global
+   key — each key carries a role (`Admin`/`Operator`/`Viewer`), checked by
+   `main.rs`'s `required_role()` against every route (GET/HEAD default to
+   `Viewer`, mutations to `Operator`, key management and
+   `POST /api/security/pqc/enable` to `Admin`). `/api/security/keys`
+   (GET/POST/DELETE) lets an Admin create and revoke narrowly-scoped keys
+   via the API, shown once at creation like the original bootstrap key. An
+   existing deployment's `api_key.txt` migrates automatically into the new
+   store as the sole Admin key on first run — zero manual steps, verified
+   live end-to-end (fresh boot, created an Operator and a Viewer key,
+   confirmed 403s land exactly where the role model says they should,
+   confirmed revoking a key invalidates its outstanding JWTs immediately
+   rather than waiting out the 1h token lifetime, confirmed deleting the
+   last Admin key is refused). Deliberately out of scope for this pass, and
+   still open: team/project namespacing, per-model and per-MCP-tool
+   permissions, and a GUI (Security tab) for key management — all
+   backend/API-only today, reachable via `curl` the same way the rest of
+   this server already is.
+2. **RPC peer authentication** (mTLS or an equivalent handshake) — closes
+   the Risks section's top-ranked gap directly: `ggml-rpc` today has zero
+   protocol-level auth, only IP allowlisting and a version-mismatch check.
+   IP allowlisting stops "anyone on the LAN"; it does not stop a device
+   already inside an allowlisted range or one spoofing a source address.
+3. **Durable, exportable audit log** — upgrade the existing in-memory
+   capped log (`AUDIT_LOG_CAP`) to append-only persistent storage plus a
+   JSON/CEF export path. This extends what already shipped rather than
+   building a new system, and is a prerequisite for any real SIEM story.
+4. **OpenTelemetry tracing**, layered on top of the *already-real*
+   Prometheus metrics, plus finally checking in the Grafana dashboard JSON
+   that Horizon 1 item 4 has called for since before v1.17 and that's
+   still open.
+5. Horizon 1 item 6 (config hot-reload) is a direct prerequisite for any
+   of the above being usable in a headless/server deployment — still open,
+   still worth doing first or alongside.
+
+### Fold into Horizon 2/3, but strictly as opt-in layers on top of the zero-config default
+
+6. **OIDC** as an *additional* auth provider layered on top of, not
+   replacing, the existing API-key/JWT path — a household user on a LAN
+   should never see this. Deliberately **not SAML**: SAML is legacy,
+   heavier to implement and audit than OIDC, and covers no realistic
+   near-term customer this project has; only build it if a specific buyer
+   asks for it by name.
+7. **Confirm/finish continuous rebalancing** (Horizon 2 item 1) —
+   prerequisite groundwork for treating this as production-grade multi-
+   tenant infrastructure at all; a node degrading mid-generation under a
+   real RBAC'd multi-team deployment is a much bigger deal than in a
+   single-operator lab.
+8. **Optional guardrail/policy middleware** (PII redaction, prompt/response
+   filtering, usage quotas) — pluggable and off by default, sitting in
+   front of the request path rather than inside the low-latency ring-buffer
+   transport the Risks section already protects from feature creep.
+9. **Lightweight model registry versioning** with pin/rollback — extends
+   the existing HF integration and `plugins.toml`-style registry pattern
+   (Horizon 2 items 3 and 6). Deliberately scoped down from the proposal's
+   "canary/blue-green promotion" language: that's k8s-deployment-shaped
+   machinery this project has no runtime to support without the
+   rearchitecture the Risks section explicitly rules out.
+10. **Usage attribution and quotas per tenant** — only meaningful once #1
+    (RBAC) exists to define what a "tenant" is; sequence strictly after it,
+    not in parallel.
+
+### Explicitly rejected, or descoped hard, from the proposal
+
+- **No re-architecting around Kubernetes.** The proposal's "Scale &
+  Connectivity" and "Operational Polish" sections lean on
+  Terraform/Ansible/canary-promotion language that implicitly assumes a
+  k8s-shaped deployment model. This directly contradicts the Risks
+  section's existing guardrail: *"Don't chase Kubernetes-based competitors
+  on their home turf... If enterprise demand for a k8s deployment mode
+  materializes, ship it as an optional deployment target, not a
+  rearchitecture."* Terraform/Ansible are fine as thin, optional,
+  Horizon-3-or-later wrappers around the existing single binary — never a
+  prerequisite for using it.
+- **No heavyweight approval-workflow engine** for model promotion — the
+  realistic Ghostlink deployment is a small team or a household, not an
+  org with a change-approval board. Pin/rollback (item 9 above) gets the
+  real safety property (bad model doesn't silently stay hot) without the
+  process overhead.
+- **No cost/power-aware scheduling as a near-term item** — real, and
+  already partially covered by Horizon 3 item 2's speculative-decoding
+  work and the planner-ABI item, but it's speculative distributed-systems
+  work layered on top of RBAC/tenancy that doesn't exist yet. Revisit once
+  item 10 lands.
+
+### Recommended sequencing
+
+RBAC (#1) and RPC peer auth (#2) first, in parallel if there's bandwidth —
+both are prerequisites for nearly everything else in this section (tenancy,
+quotas, cost attribution, even a meaningful audit export all assume scoped
+identity exists), and both are the two gaps this roadmap already flagged
+independently of the external review. Durable audit log (#3) and OTel (#4)
+are the natural next pair once identity exists to attribute events to.
+Everything under "fold into Horizon 2/3" should wait for that foundation
+rather than being started opportunistically — a policy engine or quota
+system built against a single global API key will need rework once RBAC
+lands.
 
 ---
 
@@ -496,4 +638,6 @@ Bigger, riskier, higher payoff if the moat above is already real.
   inviting more than a single trusted operator, genuine protocol-level
   auth (not just IP allowlisting) is still worth pulling forward alongside
   the Horizon 2 plugin-marketplace work rather than treating this as fully
-  closed.
+  closed. **This is item #2 in the "Enterprise Trust Track" section above**,
+  paired with RBAC as the two highest-priority security items on this
+  roadmap.

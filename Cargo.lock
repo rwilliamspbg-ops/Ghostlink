@@ -1033,6 +1033,7 @@ dependencies = [
  "rustls",
  "serde",
  "serde_json",
+ "sha2",
  "sysinfo",
  "tokio",
  "tokio-stream",
