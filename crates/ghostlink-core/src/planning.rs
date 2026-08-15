@@ -180,7 +180,12 @@ pub fn select_quantization_mode(delivery_ratio: f32) -> QuantizationMode {
     }
 }
 
-/// Assign layers sequentially across nodes based on VRAM capacity
+/// Assign layers sequentially across nodes based on VRAM capacity.
+///
+/// OPTIMIZATION: Replaces per-layer `Option<LayerAssignment>` state tracking and repeated `.as_mut()`
+/// calls with a single-pass index range and VRAM accumulator. Pre-allocates output capacity for `nodes.len()`
+/// and constructs `LayerAssignment` objects only once per node transition or stream completion,
+/// preserving exact `LayerSpec.index` range boundaries while reducing allocation churn and instructions.
 pub fn assign_layers_sequentially(
     nodes: &[NodeResources],
     layers: &[LayerSpec],
@@ -192,51 +197,53 @@ pub fn assign_layers_sequentially(
         return Ok(Vec::new());
     }
 
-    let mut assignments = Vec::new();
-    let mut current_node_index = 0usize;
+    let mut assignments = Vec::with_capacity(nodes.len());
+    let mut node_idx = 0usize;
     let mut remaining_capacity = nodes[0].vram_gb;
-    let mut current_assignment: Option<LayerAssignment> = None;
+    let mut current_start = 0usize;
+    let mut current_vram = 0.0f32;
 
-    for layer in layers {
+    for (i, layer) in layers.iter().enumerate() {
         while layer.vram_gb > remaining_capacity {
-            // Need to move to next node
-            if let Some(assignment) = current_assignment.take() {
-                assignments.push(assignment);
+            // Need to move to next node: flush current accumulated layer assignment
+            if i > current_start {
+                let start_layer = layers[current_start].index;
+                let end_layer = layers[i - 1].index + 1;
+                assignments.push(LayerAssignment::new(
+                    nodes[node_idx].id.clone(),
+                    start_layer,
+                    end_layer,
+                    current_vram,
+                ));
             }
 
-            current_node_index += 1;
-            if current_node_index >= nodes.len() {
+            node_idx += 1;
+            if node_idx >= nodes.len() {
                 return Err(format!(
                     "insufficient cluster VRAM for layer {} (needs {:.2} GB)",
                     layer.index, layer.vram_gb
                 ));
             }
-            remaining_capacity = nodes[current_node_index].vram_gb;
+            remaining_capacity = nodes[node_idx].vram_gb;
+            current_start = i;
+            current_vram = 0.0;
         }
 
-        // Assign layer to current node
+        // Accumulate layer onto current node
         remaining_capacity -= layer.vram_gb;
-
-        match current_assignment.as_mut() {
-            Some(assignment) => {
-                assignment.end_layer = layer.index + 1;
-                assignment.used_vram_gb += layer.vram_gb;
-                assignment.num_layers += 1;
-            }
-            None => {
-                current_assignment = Some(LayerAssignment::new(
-                    nodes[current_node_index].id.clone(),
-                    layer.index,
-                    layer.index + 1,
-                    layer.vram_gb,
-                ));
-            }
-        }
+        current_vram += layer.vram_gb;
     }
 
-    // Finalize last assignment
-    if let Some(assignment) = current_assignment {
-        assignments.push(assignment);
+    // Finalize last assignment for remaining layers
+    if current_start < layers.len() {
+        let start_layer = layers[current_start].index;
+        let end_layer = layers[layers.len() - 1].index + 1;
+        assignments.push(LayerAssignment::new(
+            nodes[node_idx].id.clone(),
+            start_layer,
+            end_layer,
+            current_vram,
+        ));
     }
 
     Ok(assignments)
