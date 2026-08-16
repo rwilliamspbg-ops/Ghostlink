@@ -32,8 +32,8 @@ interface LoadingStateProps {
 }
 
 export const LoadingState: React.FC<LoadingStateProps> = ({ label = 'Loading…', className = '' }) => (
-  <div role="status" aria-live="polite" className={`flex flex-col items-center justify-center py-16 text-slate-500 ${className}`}>
-    <Loader size={32} className="mb-3 text-blue-500 animate-spin" aria-hidden="true" />
+  <div role="status" aria-live="polite" aria-busy="true" className={`flex flex-col items-center justify-center py-16 text-slate-500 ${className}`}>
+    <Loader size={32} className="mb-3 text-blue-500 motion-safe:animate-spin" aria-hidden="true" />
     <p className="text-sm">{label}</p>
   </div>
 );
@@ -48,6 +48,7 @@ interface ErrorPanelProps {
 export const ErrorPanel: React.FC<ErrorPanelProps> = ({ icon: Icon, title = 'Something went wrong', message, className = '' }) => (
   <div
     role="alert"
+    aria-live="assertive"
     className={`flex flex-col items-center justify-center text-center py-16 bg-slate-900/30 border border-red-800/50 border-dashed rounded-3xl ${className}`}
   >
     {Icon && <Icon size={48} className="mb-4 opacity-40 text-red-400" aria-hidden="true" />}
