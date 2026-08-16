@@ -463,116 +463,14 @@ pub struct DiscoveryFrame {
 }
 
 impl DiscoveryFrame {
-    /// Encode discovery frame to bytes using a stack-allocated fixed-size buffer.
-    /// Avoids all Vec capacity checks and `extend_from_slice` overhead.
+    /// Encode discovery frame to bytes.
+    /// Delegates directly to `encode_into` with a single allocation, eliminating
+    /// hand-duplicated payload serialization and avoiding double-copying from stack buffers.
     #[inline]
     pub fn encode(&self) -> Vec<u8> {
-        let mut buf = [0u8; MAX_FRAME_SIZE];
-        let et = GHOSTLINK_ETHERTYPE.to_le_bytes();
-        buf[0] = et[0];
-        buf[1] = et[1];
-        buf[2] = self.kind.as_u8();
-        buf[3] = PROTOCOL_VERSION;
-
-        let id_bytes = self.node.id.as_bytes();
-        let cc_bytes = self.node.compute_capability.as_bytes();
-
-        if id_bytes.len() > u8::MAX as usize || cc_bytes.len() > u8::MAX as usize {
-            buf[4..8].copy_from_slice(&crc32(&[]).to_le_bytes());
-            return buf[..8].to_vec();
-        }
-        if let Some(ref gpu_name) = self.node.gpu_name {
-            if gpu_name.len() > u8::MAX as usize {
-                buf[4..8].copy_from_slice(&crc32(&[]).to_le_bytes());
-                return buf[..8].to_vec();
-            }
-        }
-        if let Some(ref build_id) = self.node.rpc_build_id {
-            if build_id.len() > u8::MAX as usize {
-                buf[4..8].copy_from_slice(&crc32(&[]).to_le_bytes());
-                return buf[..8].to_vec();
-            }
-        }
-
-        // Guard against the combined fields overflowing the fixed-size stack
-        // buffer: each field is individually bounded by u8::MAX above, but
-        // their sum can still exceed MAX_PAYLOAD_SIZE and panic on the
-        // slice-index writes below if left unchecked.
-        let gpu_len = self.node.gpu_name.as_ref().map(|name| name.len());
-        // +2 for the trailing rpc_port field this hand-rolled duplicate of
-        // `NodeResources::encode_payload_into` previously omitted entirely —
-        // UDP discovery replies silently dropped rpc_port while the mDNS
-        // path (which does call encode_payload_into's TXT-record analog)
-        // carried it correctly, so a UDP-discovered peer could never be
-        // selected for distributed inference. See `decode_payload`, which
-        // already tolerated this field being absent/present either way.
-        //
-        // +1 (length prefix) + build_id bytes for rpc_build_id, appended
-        // after rpc_port for the same additive-compatibility reasoning —
-        // see `NodeResources::encode_payload_into`'s matching comment.
-        let build_id_len = self.node.rpc_build_id.as_ref().map(|id| id.len());
-        let payload_len = 11
-            + id_bytes.len()
-            + cc_bytes.len()
-            + gpu_len.map_or(0, |len| 1 + len)
-            + 2
-            + 1
-            + build_id_len.unwrap_or(0);
-        if payload_len > MAX_PAYLOAD_SIZE {
-            buf[4..8].copy_from_slice(&crc32(&[]).to_le_bytes());
-            return buf[..8].to_vec();
-        }
-
-        let mut pos = 8usize;
-
-        buf[pos] = id_bytes.len() as u8;
-        pos += 1;
-        buf[pos..pos + id_bytes.len()].copy_from_slice(id_bytes);
-        pos += id_bytes.len();
-
-        buf[pos..pos + 4].copy_from_slice(&self.node.vram_gb.to_le_bytes());
-        pos += 4;
-
-        buf[pos..pos + 4].copy_from_slice(&self.node.system_memory_gb.to_le_bytes());
-        pos += 4;
-
-        buf[pos] = cc_bytes.len() as u8;
-        pos += 1;
-        buf[pos..pos + cc_bytes.len()].copy_from_slice(cc_bytes);
-        pos += cc_bytes.len();
-
-        if let Some(ref gpu_name) = self.node.gpu_name {
-            let gpu_bytes = gpu_name.as_bytes();
-            buf[pos] = 1;
-            pos += 1;
-            buf[pos] = gpu_bytes.len() as u8;
-            pos += 1;
-            buf[pos..pos + gpu_bytes.len()].copy_from_slice(gpu_bytes);
-            pos += gpu_bytes.len();
-        } else {
-            buf[pos] = 0;
-            pos += 1;
-        }
-
-        let rpc_port_bytes = self.node.rpc_port.unwrap_or(0).to_le_bytes();
-        buf[pos..pos + 2].copy_from_slice(&rpc_port_bytes);
-        pos += 2;
-
-        if let Some(ref build_id) = self.node.rpc_build_id {
-            let build_id_bytes = build_id.as_bytes();
-            buf[pos] = build_id_bytes.len() as u8;
-            pos += 1;
-            buf[pos..pos + build_id_bytes.len()].copy_from_slice(build_id_bytes);
-            pos += build_id_bytes.len();
-        } else {
-            buf[pos] = 0;
-            pos += 1;
-        }
-
-        let crc = crc32(&buf[8..pos]);
-        buf[4..8].copy_from_slice(&crc.to_le_bytes());
-
-        buf[..pos].to_vec()
+        let mut buf = Vec::with_capacity(MAX_FRAME_SIZE);
+        self.encode_into(&mut buf);
+        buf
     }
 
     /// Encode discovery frame into a pre-allocated buffer (zero-copy hot path)
