@@ -1,5 +1,9 @@
 # Palette's Journal
 
+## 2026-08-15 - [Status Views Reduced Motion & Screen Reader Live Announcements]
+**Learning:** Shared status components (such as `LoadingState` and `ErrorPanel`) rendered across dashboard tabs can disrupt screen reader users and users with vestibular motion sensitivities if live regions and CSS animations are unconstrained. Adding `aria-busy="true"` on loading status containers and `aria-live="assertive"` on error alerts guarantees timely screen reader announcements. Using Tailwind's `motion-safe:animate-spin` ensures spinner animations automatically pause when users enable `prefers-reduced-motion` in their OS settings.
+**Action:** Always complement status indicators with `aria-busy` / `aria-live` attributes and scope spinning or pulse animations with `motion-safe:` variants.
+
 ## 2026-08-14 - [Disclosure Summary Focus & Tooltip Ergonomics]
 **Learning:** Native HTML `<details>` disclosure controls (such as ErrorBoundary component stack details) are interactive elements that receive keyboard focus via `<summary>`. In dark-themed applications, default browser focus rings on `<summary>` are often invisible or clipped, leaving keyboard navigators unable to determine focus state. Adding high-contrast `focus-visible:` outlines, `hover:` color transitions, and explicit `title` tooltips ensures disclosure controls are fully accessible and discoverable across both mouse and keyboard interactions.
 **Action:** Always complement native `<summary>` disclosure controls with explicit focus-visible rings (`focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none`) and descriptive hover tooltips.
