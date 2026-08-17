@@ -150,8 +150,8 @@ struct FlowOptions<'a> {
 }
 
 fn main() -> Result<()> {
-    // Initialize logging
-    tracing_subscriber::fmt().init();
+    // Initialize logging (+ optional OTel trace export — see otel.rs)
+    otel::init_tracing();
 
     let raw_args = std::env::args().skip(1).collect::<Vec<_>>();
     let bootstrap = extract_bootstrap_args(raw_args)?;
@@ -1653,7 +1653,13 @@ struct BackendState {
     /// restart) and capped at `AUDIT_LOG_CAP`; a genuinely persistent trail
     /// would need an append-only file, which is a bigger step than this
     /// first real version takes.
-    audit_log: std::collections::VecDeque<AuditLogEntry>,
+    audit_log: std::collections::VecDeque<audit_log::AuditLogEntry>,
+    /// The live RBAC key store — every `auth_middleware` check and the new
+    /// `/api/security/keys` admin endpoints read/write this. Loaded once at
+    /// startup via `load_api_keys()` (which handles the bootstrap migration
+    /// from a pre-RBAC `api_key.txt`) and persisted to `api_keys.json` on
+    /// every create/revoke.
+    api_keys: Vec<auth::ApiKeyRecord>,
     /// Caches `scan_local_models_dir`'s result — a real `fs::read_dir` +
     /// `fs::metadata`-per-file disk scan `handle_gui_models` previously did
     /// on every single `GET /api/models` call. Short TTL (see
@@ -1663,33 +1669,6 @@ struct BackendState {
     models_scan_cache: ApiResponseCache,
 }
 
-/// One row for the GUI's Security tab audit log — field names/shape match
-/// what `SecurityTab.tsx` already expects (it predates a real backend for
-/// this and was rendering against a permanently-empty list).
-#[derive(Debug, Clone, Serialize)]
-struct AuditLogEntry {
-    event: String,
-    /// "SUCCESS"/"AUTHENTICATED" render green in the GUI; anything else
-    /// (e.g. "FAILED", "DENIED") renders as a yellow warning badge.
-    status: String,
-    ip: String,
-    /// RFC3339 — the GUI does `new Date(e.time)` on this directly.
-    time: String,
-    detail: Option<String>,
-}
-
-const AUDIT_LOG_CAP: usize = 500;
-
-/// Appends one entry and trims from the front once over `AUDIT_LOG_CAP` —
-/// split out from `record_audit_event` so it's unit-testable against a bare
-/// `VecDeque` without needing to construct a full `BackendState`.
-fn push_audit_entry(log: &mut std::collections::VecDeque<AuditLogEntry>, entry: AuditLogEntry) {
-    log.push_back(entry);
-    while log.len() > AUDIT_LOG_CAP {
-        log.pop_front();
-    }
-}
-
 fn record_audit_event(
     backend: &mut BackendState,
     event: &str,
@@ -1697,16 +1676,108 @@ fn record_audit_event(
     ip: String,
     detail: Option<String>,
 ) {
-    push_audit_entry(
-        &mut backend.audit_log,
-        AuditLogEntry {
-            event: event.to_string(),
-            status: status.to_string(),
-            ip,
-            time: chrono::Utc::now().to_rfc3339(),
-            detail,
-        },
-    );
+    let entry = audit_log::AuditLogEntry {
+        event: event.to_string(),
+        status: status.to_string(),
+        ip,
+        time: chrono::Utc::now().to_rfc3339(),
+        detail,
+    };
+    audit_log::push_audit_entry(&mut backend.audit_log, entry.clone());
+    // Durable, restart-surviving trail — the in-memory VecDeque above stays
+    // capped and fast for the GUI's live feed; this is the complete history
+    // `GET /api/security/audit-log/export` reads from. Best-effort: a write
+    // failure is warned, not propagated, matching every other persistence
+    // function in this codebase.
+    audit_log::append_durable(&entry);
+}
+
+/// Minimum role required to access a route. A method-based default
+/// (GET/HEAD need only `Viewer`, every mutation needs `Operator`) plus
+/// named `Admin`-only carve-outs — not a per-route table, so it stays
+/// correct as new routes are added without a matching new entry each time.
+/// `/health` is exempted from auth entirely in `auth_middleware`, never
+/// reaching this function. `/api/security/jwt/refresh` is a deliberate
+/// carve-out below the GET-only `Viewer` default: proving identity isn't a
+/// mutation of server state, so every authenticated key — including
+/// `Viewer` — may exchange its key for a JWT.
+/// `/api/security/audit-log/export` is `Admin`-only despite being a GET,
+/// unlike the plain (capped, in-memory) `/api/security/audit-log`, which
+/// stays `Viewer`-readable: a bulk historical export is a materially
+/// different exposure than a live tail of the last 500 events.
+fn required_role(method: &axum::http::Method, path: &str) -> auth::Role {
+    if path.starts_with("/api/security/keys")
+        || path == "/api/security/pqc/enable"
+        || path.starts_with("/api/security/audit-log/export")
+    {
+        return auth::Role::Admin;
+    }
+    if path == "/api/security/jwt/refresh" {
+        return auth::Role::Viewer;
+    }
+    if method == axum::http::Method::GET || method == axum::http::Method::HEAD {
+        auth::Role::Viewer
+    } else {
+        auth::Role::Operator
+    }
+}
+
+/// The JSON-safe view of a key record for list/create responses — never
+/// includes `key_hash` (the only thing that can authenticate as this key).
+fn key_record_public_json(record: &auth::ApiKeyRecord) -> serde_json::Value {
+    serde_json::json!({
+        "id": record.id,
+        "name": record.name,
+        "role": record.role,
+        "key_preview": record.key_preview,
+        "created_at": record.created_at,
+        "last_used_at": record.last_used_at,
+    })
+}
+
+/// Whether removing `id` from `keys` would leave zero `Admin`-role keys —
+/// the lockout condition `delete_key_from_store` refuses.
+fn would_remove_last_admin(keys: &[auth::ApiKeyRecord], id: &str) -> bool {
+    let target_is_admin = keys
+        .iter()
+        .any(|k| k.id == id && k.role == auth::Role::Admin);
+    if !target_is_admin {
+        return false;
+    }
+    keys.iter()
+        .filter(|k| k.role == auth::Role::Admin && k.id != id)
+        .count()
+        == 0
+}
+
+/// Removes a key by id from `keys` in place. Returns an error (status +
+/// message, matching the shape the handler returns directly) if the key
+/// doesn't exist or removing it would leave the store with no `Admin` key
+/// at all — split out from the handler so both conditions are unit-testable
+/// against a bare `Vec`, matching this file's existing
+/// `push_audit_entry`/`record_audit_event` split.
+fn delete_key_from_store(
+    keys: &mut Vec<auth::ApiKeyRecord>,
+    id: &str,
+) -> Result<auth::ApiKeyRecord, (axum::http::StatusCode, String)> {
+    if !keys.iter().any(|k| k.id == id) {
+        return Err((
+            axum::http::StatusCode::NOT_FOUND,
+            format!("no API key with id '{id}'"),
+        ));
+    }
+    if would_remove_last_admin(keys, id) {
+        return Err((
+            axum::http::StatusCode::BAD_REQUEST,
+            "cannot delete the last remaining Admin key — create another Admin key first"
+                .to_string(),
+        ));
+    }
+    let idx = keys
+        .iter()
+        .position(|k| k.id == id)
+        .expect("existence already checked above");
+    Ok(keys.remove(idx))
 }
 
 /// Real byte-level progress for an in-flight (or just-finished) model download.
@@ -1805,6 +1876,19 @@ struct RuntimeSettings {
     /// allow-all empty vec, not full-struct defaults).
     #[serde(default)]
     rpc_allowed_peers: Vec<String>,
+    /// Shared secret for the RPC-auth handshake (see `rpc_cluster`'s
+    /// top-of-file SECURITY doc) — closes the specific gap `rpc_allowed_peers`
+    /// alone can't: a device already inside an allowlisted range, or one
+    /// able to spoof a source IP, isn't stopped by IP allowlisting, but
+    /// can't complete this handshake without the real secret. Manually
+    /// distributed across every node in the cluster, same operational model
+    /// as `rpc_allowed_peers`. Empty (the default) means no handshake is
+    /// required and no auth-port listener is started — the exact same
+    /// behavior as before this field existed. `#[serde(default)]` so
+    /// settings.json files saved before this field existed still
+    /// deserialize.
+    #[serde(default)]
+    rpc_shared_secret: String,
 
     // -- Model-load performance tuning (GUI "Model Performance" section) --
     //
@@ -1994,6 +2078,7 @@ impl Default for RuntimeSettings {
             contribute_compute: false,
             rpc_port: default_rpc_port(),
             rpc_allowed_peers: Vec::new(),
+            rpc_shared_secret: String::new(),
             ngl_auto: true,
             ctx_size_auto: true,
             threads_auto: true,
@@ -3234,6 +3319,47 @@ fn save_persistent_sessions(sessions: &[SessionRecord]) {
     }
 }
 
+fn api_keys_path() -> PathBuf {
+    std::env::var("GHOSTLINK_API_KEYS_PATH")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("api_keys.json"))
+}
+
+/// Loads the persisted key store, migrating a fresh or pre-RBAC deployment
+/// on the fly: if `api_keys.json` doesn't exist yet (or somehow parses to
+/// zero keys — never persist a store no one can authenticate against), a
+/// single bootstrap `Admin` record is synthesized from the existing
+/// `auth::active_api_key()` value and persisted. An existing deployment's
+/// `api_key.txt` therefore keeps working completely unchanged after this
+/// feature ships — no manual migration step.
+fn load_api_keys() -> Vec<auth::ApiKeyRecord> {
+    let path = api_keys_path();
+    if path.exists() {
+        if let Ok(data) = fs::read_to_string(&path) {
+            if let Ok(keys) = serde_json::from_str::<Vec<auth::ApiKeyRecord>>(&data) {
+                if !keys.is_empty() {
+                    return keys;
+                }
+            }
+        }
+    }
+    let bootstrap = vec![auth::bootstrap_key_record()];
+    save_api_keys(&bootstrap);
+    bootstrap
+}
+
+fn save_api_keys(keys: &[auth::ApiKeyRecord]) {
+    if let Ok(data) = serde_json::to_string_pretty(keys) {
+        let _ = fs::write(api_keys_path(), data);
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct CreateApiKeyRequest {
+    name: String,
+    role: auth::Role,
+}
+
 fn load_settings() -> RuntimeSettings {
     let path = settings_path();
     let mut settings = if path.exists() {
@@ -3846,7 +3972,7 @@ fn detect_node_id() -> String {
 
 fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
     use axum::{
-        extract::{ConnectInfo, Path, Query, Request, State},
+        extract::{ConnectInfo, Extension, Path, Query, Request, State},
         http::StatusCode,
         middleware::{self, Next},
         response::{
@@ -3863,18 +3989,25 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
     use std::sync::{Arc, Mutex};
     use std::time::{SystemTime, UNIX_EPOCH};
     use tower_http::cors::CorsLayer;
+    use tower_http::trace::TraceLayer;
+    use tracing::Instrument;
 
     fn lock_state(state: &Arc<Mutex<BackendState>>) -> std::sync::MutexGuard<'_, BackendState> {
         state.lock().unwrap_or_else(|poison| poison.into_inner())
     }
 
-    /// Guards every route except `/health` behind a real bearer token
-    /// (the persisted API key itself, or a JWT issued from it — see
-    /// `auth.rs`). Replaces having no auth check anywhere on this server.
+    /// Guards every route except `/health` behind a real bearer token —
+    /// resolved to an `AuthContext` (`auth::authenticate`) against the live
+    /// key store, then checked against `required_role`. A key without
+    /// sufficient role gets a 403, not a silent downgrade or a 401 (which
+    /// would misleadingly suggest the credential itself was invalid).
+    /// Successfully-authorized requests carry their `AuthContext` forward
+    /// via request extensions — see `handle_gui_jwt_refresh` for the one
+    /// handler in this pass that reads it.
     async fn auth_middleware(
         State(state): State<Arc<Mutex<BackendState>>>,
         ConnectInfo(addr): ConnectInfo<SocketAddr>,
-        req: Request,
+        mut req: Request,
         next: Next,
     ) -> axum::response::Response {
         if req.uri().path() == "/health" {
@@ -3887,28 +4020,68 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             .and_then(|v| v.to_str().ok());
         let token = auth::extract_bearer_token(header);
 
-        match token {
-            Some(t) if auth::verify_bearer_token(t) => next.run(req).await,
-            _ => {
-                record_audit_event(
-                    &mut lock_state(&state),
-                    "auth",
-                    "FAILED",
-                    addr.ip().to_string(),
-                    Some(format!("{} {}", req.method(), req.uri().path())),
-                );
-                (
-                    StatusCode::UNAUTHORIZED,
-                    Json(serde_json::json!({
-                        "error": {
-                            "message": "missing or invalid Authorization: Bearer <token> — see the API key printed at server startup, or POST /api/security/jwt/refresh with it to get a short-lived token",
-                            "type": "unauthorized"
-                        }
-                    })),
-                )
-                    .into_response()
+        let ctx = token.and_then(|t| auth::authenticate(t, &lock_state(&state).api_keys));
+
+        let Some(ctx) = ctx else {
+            record_audit_event(
+                &mut lock_state(&state),
+                "auth",
+                "FAILED",
+                addr.ip().to_string(),
+                Some(format!("{} {}", req.method(), req.uri().path())),
+            );
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(serde_json::json!({
+                    "error": {
+                        "message": "missing or invalid Authorization: Bearer <token> — see the API key printed at server startup, or POST /api/security/jwt/refresh with it to get a short-lived token",
+                        "type": "unauthorized"
+                    }
+                })),
+            )
+                .into_response();
+        };
+
+        let needed = required_role(req.method(), req.uri().path());
+        if !ctx.role.satisfies(needed) {
+            record_audit_event(
+                &mut lock_state(&state),
+                "authz",
+                "DENIED",
+                addr.ip().to_string(),
+                Some(format!(
+                    "{} {} — key '{}' has role {:?}, needs {:?}",
+                    req.method(),
+                    req.uri().path(),
+                    ctx.name,
+                    ctx.role,
+                    needed
+                )),
+            );
+            return (
+                StatusCode::FORBIDDEN,
+                Json(serde_json::json!({
+                    "error": {
+                        "message": format!(
+                            "key '{}' does not have sufficient permissions for this route",
+                            ctx.name
+                        ),
+                        "type": "forbidden"
+                    }
+                })),
+            )
+                .into_response();
+        }
+
+        {
+            let mut backend = lock_state(&state);
+            if let Some(record) = backend.api_keys.iter_mut().find(|k| k.id == ctx.key_id) {
+                record.last_used_at = Some(chrono::Utc::now().to_rfc3339());
             }
         }
+
+        req.extensions_mut().insert(ctx);
+        next.run(req).await
     }
 
     /// Waits for Ctrl+C, then force-tears-down every connected MCP server before
@@ -5084,16 +5257,91 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             requested_model.clone()
         };
 
+        // Distributed-inference RPC peer discovery + rpc_shared_secret
+        // admission (see `rpc_cluster` module docs). Computed here, before
+        // the main state lock below, since `rpc_cluster::admit_via_secret`
+        // does real async network I/O and this codebase never holds a std
+        // Mutex guard across an `.await`. Empty when disabled, no
+        // qualifying peers, or (once `rpc_shared_secret` is set) every peer
+        // fails the handshake — all of which reproduce single-node
+        // behavior exactly.
+        let (rpc_servers, tensor_split) = async {
+            let (peers, local_vram, local_system_memory, shared_secret) = {
+                let backend = lock_state(&state);
+                if backend.settings.distributed_inference {
+                    let local_build_id = native_engine::NativeEngineClient::get_llama_build_id();
+                    let peers = rpc_cluster::discover_rpc_peers(
+                        &backend.cluster,
+                        &backend.local_node_id,
+                        local_build_id.as_deref(),
+                    );
+                    let local_metrics = backend.cluster.get_metrics(&backend.local_node_id);
+                    let local_vram = local_metrics.as_ref().map(|m| m.vram_gb).unwrap_or(0.0);
+                    let local_system_memory = local_metrics
+                        .as_ref()
+                        .map(|m| m.system_memory_gb)
+                        .unwrap_or(0.0);
+                    (
+                        peers,
+                        local_vram,
+                        local_system_memory,
+                        backend.settings.rpc_shared_secret.clone(),
+                    )
+                } else {
+                    (Vec::new(), 0.0, 0.0, String::new())
+                }
+            }; // <-- short-lived discovery lock dropped here, before any .await
+
+            // When a shared secret is configured, each discovered peer must
+            // complete the RPC-auth handshake before it's trusted enough to
+            // route real layers through — see `rpc_cluster`'s top-of-file
+            // SECURITY doc. Best-effort per peer: a peer that fails
+            // (wrong/missing secret, unreachable, timeout) is excluded and
+            // warned about, not a hard failure for the whole request.
+            let peers = if peers.is_empty() || shared_secret.is_empty() {
+                peers
+            } else {
+                let admitted_flags =
+                    futures::future::join_all(peers.iter().map(|p| {
+                        let secret = shared_secret.clone();
+                        let addr = p.addr;
+                        async move {
+                            rpc_cluster::admit_via_secret(addr.ip(), addr.port(), &secret).await
+                        }
+                    }))
+                    .await;
+                let admitted: Vec<_> = peers
+                    .into_iter()
+                    .zip(admitted_flags)
+                    .filter_map(|(peer, ok)| ok.then_some(peer))
+                    .collect();
+                if admitted.is_empty() {
+                    tracing::warn!(
+                        "rpc_cluster: every distributed-inference peer failed the \
+                         rpc_shared_secret handshake \u{2014} falling back to single-node for \
+                         this request"
+                    );
+                }
+                admitted
+            };
+
+            if peers.is_empty() {
+                (None, None)
+            } else {
+                let split =
+                    rpc_cluster::compute_tensor_split(local_vram, local_system_memory, &peers);
+                (
+                    Some(rpc_cluster::rpc_flag_value(&peers)),
+                    Some(rpc_cluster::tensor_split_flag_value(&split)),
+                )
+            }
+        }
+        .instrument(tracing::info_span!("rpc_peer_discovery_and_admission"))
+        .await;
+
         // Extract model info and settings under the lock, then drop it before
         // the potentially-long blocking load_model_into_slot call.
-        let (
-            native_engine_client,
-            local_path,
-            native_engine,
-            selected_model,
-            rpc_servers,
-            tensor_split,
-        ) = {
+        let (native_engine_client, local_path, native_engine, selected_model) = {
             let mut backend = lock_state(&state);
 
             // Must run before `load_model_into_slot` reads any
@@ -5101,38 +5349,6 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             // var below — see `apply_native_engine_tuning_env`'s doc
             // comment for why it only ever sets, never clears, one of them.
             apply_native_engine_tuning_env(&backend.settings);
-
-            // Real cross-process model-parallel inference via llama.cpp's
-            // own RPC backend when enabled and the cluster has other nodes
-            // contributing compute — see `rpc_cluster` module docs. Empty
-            // when disabled or no qualifying peers, which reproduces
-            // single-node behavior exactly.
-            let (rpc_servers, tensor_split) = if backend.settings.distributed_inference {
-                let local_build_id = native_engine::NativeEngineClient::get_llama_build_id();
-                let peers = rpc_cluster::discover_rpc_peers(
-                    &backend.cluster,
-                    &backend.local_node_id,
-                    local_build_id.as_deref(),
-                );
-                if peers.is_empty() {
-                    (None, None)
-                } else {
-                    let local_metrics = backend.cluster.get_metrics(&backend.local_node_id);
-                    let local_vram = local_metrics.as_ref().map(|m| m.vram_gb).unwrap_or(0.0);
-                    let local_system_memory = local_metrics
-                        .as_ref()
-                        .map(|m| m.system_memory_gb)
-                        .unwrap_or(0.0);
-                    let split =
-                        rpc_cluster::compute_tensor_split(local_vram, local_system_memory, &peers);
-                    (
-                        Some(rpc_cluster::rpc_flag_value(&peers)),
-                        Some(rpc_cluster::tensor_split_flag_value(&split)),
-                    )
-                }
-            } else {
-                (None, None)
-            };
 
             // Merge local scans so we can find local_path for locally-downloaded models
             let local = scan_local_models_dir(&backend.settings.models_dir);
@@ -5201,8 +5417,6 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                 local_path,
                 backend.settings.native_engine.clone(),
                 selected,
-                rpc_servers,
-                tensor_split,
             )
         }; // <-- state lock dropped here
 
@@ -5225,12 +5439,22 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             // `load_model_into_slot` is about to tear down and rebind, and
             // serializes this against any other concurrent load/unload.
             let _model_swap_guard = model_lifecycle_lock.write().await;
-            let result = tokio::task::spawn_blocking(move || {
-                native_engine_client.load_model_into_slot(
-                    &path,
-                    rpc_servers.as_deref(),
-                    tensor_split.as_deref(),
-                )
+            // Span entered *inside* the spawn_blocking closure, not just
+            // wrapped around the outer .await — spawn_blocking runs on a
+            // separate OS thread, so tracing::Instrument on the future alone
+            // wouldn't attribute the actual load work (which happens on
+            // that other thread) to this span.
+            let load_span = tracing::info_span!("model_load", model = %selected_model);
+            let result = tokio::task::spawn_blocking({
+                let load_span = load_span.clone();
+                move || {
+                    let _guard = load_span.enter();
+                    native_engine_client.load_model_into_slot(
+                        &path,
+                        rpc_servers.as_deref(),
+                        tensor_split.as_deref(),
+                    )
+                }
             })
             .await
             .map_err(|e| format!("task join error: {}", e))
@@ -5245,12 +5469,17 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         } else if let Some(path) = local_path.clone() {
             if native_engine == "llama_server" || native_engine == "llama-server" {
                 let _model_swap_guard = model_lifecycle_lock.write().await;
-                let result = tokio::task::spawn_blocking(move || {
-                    native_engine_client.load_model_into_slot(
-                        &path,
-                        rpc_servers.as_deref(),
-                        tensor_split.as_deref(),
-                    )
+                let load_span = tracing::info_span!("model_load", model = %selected_model);
+                let result = tokio::task::spawn_blocking({
+                    let load_span = load_span.clone();
+                    move || {
+                        let _guard = load_span.enter();
+                        native_engine_client.load_model_into_slot(
+                            &path,
+                            rpc_servers.as_deref(),
+                            tensor_split.as_deref(),
+                        )
+                    }
                 })
                 .await
                 .map_err(|e| format!("task join error: {}", e))
@@ -6530,23 +6759,26 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         }))
     }
 
-    /// Real JWT issuance (was a hardcoded `"new-token-123"`). Reaching this
-    /// handler at all already proves the caller presented a valid bearer
-    /// token (`auth_middleware` gates every route but `/health`) — no
-    /// separate credential to check here, just mint a fresh short-lived
-    /// token signed with the same API key that got them past the gate.
+    /// Real JWT issuance (was a hardcoded `"new-token-123"`, then a
+    /// hardcoded `"ghostlink-client"` subject once real signing landed).
+    /// Reaching this handler at all already proves the caller presented a
+    /// valid bearer token — `auth_middleware` resolved it to the
+    /// `AuthContext` extracted below before this handler ever runs — so the
+    /// issued JWT's subject is the caller's real key id, not a shared
+    /// placeholder every client's tokens would be indistinguishable under.
     async fn handle_gui_jwt_refresh(
         State(state): State<Arc<Mutex<BackendState>>>,
         ConnectInfo(addr): ConnectInfo<SocketAddr>,
+        Extension(ctx): Extension<auth::AuthContext>,
     ) -> Json<serde_json::Value> {
-        match auth::issue_jwt("ghostlink-client") {
+        match auth::issue_jwt(&ctx.key_id) {
             Ok(token) => {
                 record_audit_event(
                     &mut lock_state(&state),
                     "jwt_refresh",
                     "SUCCESS",
                     addr.ip().to_string(),
-                    None,
+                    Some(format!("key='{}'", ctx.name)),
                 );
                 Json(serde_json::json!({ "status": "ok", "token": token }))
             }
@@ -6621,8 +6853,127 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
     ) -> Json<serde_json::Value> {
         let backend = lock_state(&state);
         // Most-recent-first — a log feed reads top-to-bottom as newest-first.
-        let entries: Vec<&AuditLogEntry> = backend.audit_log.iter().rev().collect();
+        let entries: Vec<&audit_log::AuditLogEntry> = backend.audit_log.iter().rev().collect();
         Json(serde_json::json!({ "entries": entries }))
+    }
+
+    /// Exports the **full** durable audit trail (`audit_log::read_all_durable`),
+    /// not just the capped, in-memory, most-recent-500 view
+    /// `handle_gui_audit_log` serves — this is the SIEM-integration path
+    /// `docs/ROADMAP.md`'s Enterprise Trust Track names. `Admin`-gated in
+    /// `required_role` (a bulk historical export is a materially different
+    /// exposure than the existing capped live tail, which stays
+    /// `Viewer`-readable). `?format=json` (default) returns the same
+    /// `{"entries": [...]}` shape as the live endpoint; `?format=cef`
+    /// returns newline-separated CEF lines as `text/plain`.
+    async fn handle_security_audit_log_export(
+        Query(params): Query<HashMap<String, String>>,
+    ) -> axum::response::Response {
+        let entries = audit_log::read_all_durable();
+        match params.get("format").map(String::as_str) {
+            Some("cef") => (
+                StatusCode::OK,
+                [(
+                    axum::http::header::CONTENT_TYPE,
+                    "text/plain; charset=utf-8",
+                )],
+                audit_log::export_cef(&entries),
+            )
+                .into_response(),
+            _ => Json(serde_json::json!({ "entries": entries })).into_response(),
+        }
+    }
+
+    /// Lists every key in the RBAC store — `Admin`-gated by
+    /// `required_role`, since even a hash-free preview of who holds access
+    /// is sensitive. Never includes `key_hash` or a raw key value.
+    async fn handle_security_keys_list(
+        State(state): State<Arc<Mutex<BackendState>>>,
+    ) -> Json<serde_json::Value> {
+        let backend = lock_state(&state);
+        let entries: Vec<serde_json::Value> = backend
+            .api_keys
+            .iter()
+            .map(key_record_public_json)
+            .collect();
+        Json(serde_json::json!({ "keys": entries }))
+    }
+
+    /// Creates a new API key with the given name/role and returns its raw
+    /// value exactly once — the same "shown once, never recoverable again"
+    /// convention `auth::load_or_create_api_key`'s first-run banner already
+    /// uses, since only the key's hash is ever persisted.
+    async fn handle_security_keys_create(
+        State(state): State<Arc<Mutex<BackendState>>>,
+        ConnectInfo(addr): ConnectInfo<SocketAddr>,
+        Json(req): Json<CreateApiKeyRequest>,
+    ) -> (StatusCode, Json<serde_json::Value>) {
+        let (record, raw) = auth::create_key(req.name.clone(), req.role);
+        let backend = &mut *lock_state(&state);
+        backend.api_keys.push(record.clone());
+        save_api_keys(&backend.api_keys);
+        record_audit_event(
+            backend,
+            "security.key.created",
+            "SUCCESS",
+            addr.ip().to_string(),
+            Some(format!(
+                "name='{}' role={:?} id={}",
+                record.name, record.role, record.id
+            )),
+        );
+        (
+            StatusCode::CREATED,
+            Json(serde_json::json!({
+                "id": record.id,
+                "name": record.name,
+                "role": record.role,
+                "key": raw,
+                "note": "this raw key is shown once and cannot be retrieved again — store it now"
+            })),
+        )
+    }
+
+    /// Revokes a key by id. Refuses (400) to remove the last remaining
+    /// `Admin` key — see `would_remove_last_admin` — since that would
+    /// permanently lock every caller out of key management with no
+    /// recovery path short of deleting `api_keys.json` and re-bootstrapping
+    /// from `api_key.txt`.
+    async fn handle_security_keys_delete(
+        State(state): State<Arc<Mutex<BackendState>>>,
+        ConnectInfo(addr): ConnectInfo<SocketAddr>,
+        Path(id): Path<String>,
+    ) -> (StatusCode, Json<serde_json::Value>) {
+        let backend = &mut *lock_state(&state);
+        match delete_key_from_store(&mut backend.api_keys, &id) {
+            Ok(removed) => {
+                save_api_keys(&backend.api_keys);
+                record_audit_event(
+                    backend,
+                    "security.key.revoked",
+                    "SUCCESS",
+                    addr.ip().to_string(),
+                    Some(format!("name='{}' id={}", removed.name, removed.id)),
+                );
+                (
+                    StatusCode::OK,
+                    Json(serde_json::json!({ "status": "ok", "id": removed.id })),
+                )
+            }
+            Err((status, message)) => {
+                record_audit_event(
+                    backend,
+                    "security.key.revoke_failed",
+                    "FAILED",
+                    addr.ip().to_string(),
+                    Some(format!("id={id}: {message}")),
+                );
+                (
+                    status,
+                    Json(serde_json::json!({ "error": { "message": message } })),
+                )
+            }
+        }
     }
 
     async fn handle_gui_runtime_select(
@@ -7211,6 +7562,14 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         (kept, truncated)
     }
 
+    // `inference_generate` span covers the whole chat turn (including any
+    // tool-calling round trips, not just the raw generate call) — this
+    // handler has multiple `.generate()` call sites across its
+    // native/Ollama/vLLM/tool-loop branches, so a function-level
+    // `#[instrument]` is the safer, still-accurate placement rather than
+    // wrapping each call site individually. `skip_all` since several of the
+    // captured backend clients/registries aren't `Debug`.
+    #[tracing::instrument(name = "inference_generate", skip_all)]
     async fn handle_gui_chat(
         State(state): State<Arc<Mutex<BackendState>>>,
         Json(req): Json<GuiChatRequest>,
@@ -8226,6 +8585,20 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                                 .collect();
                         }
                     }
+                    "rpc_shared_secret" => {
+                        if let Some(s) = value.as_str() {
+                            // Same next-restart caveat as rpc_allowed_peers:
+                            // the auth-port listener (if any) is only stood
+                            // up once, at startup, in `rpc_cluster::
+                            // ensure_contributing`. The *coordinator* side
+                            // (admit_via_secret at model-load time) does
+                            // read this live from `backend.settings`, so a
+                            // coordinator-side change takes effect on the
+                            // next distributed model load without a restart
+                            // — only the receiving/contributing side needs one.
+                            current.rpc_shared_secret = s.to_string();
+                        }
+                    }
                     "ngl_auto" => {
                         if let Some(v) = value.as_bool() {
                             current.ngl_auto = v;
@@ -8463,6 +8836,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             host,
             settings.rpc_port,
             &settings.rpc_allowed_peers,
+            &settings.rpc_shared_secret,
             &rt_handle,
         );
 
@@ -8480,6 +8854,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         let contribute_host = host.to_string();
         let contribute_port = settings.rpc_port;
         let contribute_allowed_peers = settings.rpc_allowed_peers.clone();
+        let contribute_shared_secret = settings.rpc_shared_secret.clone();
         let contribute_rt_handle = rt_handle.clone();
         thread::spawn(move || loop {
             thread::sleep(Duration::from_secs(30));
@@ -8487,6 +8862,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                 &contribute_host,
                 contribute_port,
                 &contribute_allowed_peers,
+                &contribute_shared_secret,
                 &contribute_rt_handle,
             );
         });
@@ -8629,12 +9005,14 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
     // choice below and `BackendState.enable_tls_active` (read by
     // `/api/security/pqc/state`) share one source of truth.
     let use_tls = settings.enable_tls || !tls::is_loopback_host(host);
-    // Eagerly generate/load (and, on first run, print) the API key here —
-    // `active_api_key()` is otherwise lazy-initialized on first use, which
-    // would mean the one-time "here's your key" banner never prints at
-    // all unless some request happens to trigger it first, leaving a
-    // fresh install with no way to discover the key it needs.
-    auth::active_api_key();
+    // Eagerly load (and, on first run, print) the API key store here —
+    // `load_api_keys()` is otherwise only reached from `BackendState`
+    // construction below, which would mean the one-time "here's your key"
+    // banner (fired the first time `auth::active_api_key()` runs, inside
+    // the bootstrap-migration path) never prints at all unless something
+    // triggers it first, leaving a fresh install with no way to discover
+    // the key it needs.
+    let api_keys = load_api_keys();
     let inference_backend = InferenceEngine::parse(&settings.inference_backend);
     let native_engine_client = native_engine::NativeEngineClient::new();
     let ollama_client = ollama::OllamaClient::new(ollama_url);
@@ -8718,6 +9096,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         plugin_registry: backend_plugin::BackendPluginRegistry::from_env(),
         enable_tls_active: use_tls,
         audit_log: std::collections::VecDeque::new(),
+        api_keys,
         models_scan_cache: ApiResponseCache::new(),
     }));
 
@@ -8881,6 +9260,18 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             .route("/api/security/pqc/enable", post(handle_gui_pqc_enable))
             .route("/api/security/pqc/state", get(handle_gui_pqc_state))
             .route("/api/security/audit-log", get(handle_gui_audit_log))
+            .route(
+                "/api/security/audit-log/export",
+                get(handle_security_audit_log_export),
+            )
+            .route(
+                "/api/security/keys",
+                get(handle_security_keys_list).post(handle_security_keys_create),
+            )
+            .route(
+                "/api/security/keys/:id",
+                delete(handle_security_keys_delete),
+            )
             .route("/api/inference/chat", post(handle_gui_chat))
             .route(
                 "/api/inference/chat/tool-confirm",
@@ -8940,7 +9331,14 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             .layer(CorsLayer::permissive())
             .layer(tower_governor::GovernorLayer {
                 config: governor_conf,
-            });
+            })
+            // Outermost — the automatic root span (method/URI/status/latency)
+            // this creates per request should cover everything below it,
+            // including rate-limiting and CORS. Exported as a real OTel
+            // trace when otel::init_tracing() registered the export layer
+            // (see otel.rs); otherwise it's just a normal tracing event, no
+            // behavior change from before this existed.
+            .layer(TraceLayer::new_for_http());
 
         // addr already parsed above; `use_tls` computed earlier alongside
         // `BackendState.enable_tls_active`.
@@ -11000,6 +11398,7 @@ fn run_gui_preflight_checks() -> Result<()> {
     Ok(())
 }
 
+mod audit_log;
 mod auth;
 mod backend_api;
 mod backend_config;
@@ -11010,6 +11409,7 @@ mod inference_engine;
 mod mcp;
 mod native_engine;
 mod ollama;
+mod otel;
 mod rpc_cluster;
 mod runtime;
 mod runtime_switcher;
@@ -11271,6 +11671,7 @@ mod tests {
             enable_tls_active: false,
             plugin_registry: backend_plugin::BackendPluginRegistry::from_env(),
             audit_log: std::collections::VecDeque::new(),
+            api_keys: vec![auth::create_key("test-admin".to_string(), auth::Role::Admin).0],
             models_scan_cache: ApiResponseCache::new(),
         }))
     }
@@ -11286,40 +11687,8 @@ mod tests {
         std::env::remove_var("GHOSTLINK_NODE_ID");
     }
 
-    fn audit_entry(event: &str) -> AuditLogEntry {
-        AuditLogEntry {
-            event: event.to_string(),
-            status: "SUCCESS".to_string(),
-            ip: "127.0.0.1".to_string(),
-            time: chrono::Utc::now().to_rfc3339(),
-            detail: None,
-        }
-    }
-
-    #[test]
-    fn push_audit_entry_appends_in_order() {
-        let mut log = std::collections::VecDeque::new();
-        push_audit_entry(&mut log, audit_entry("first"));
-        push_audit_entry(&mut log, audit_entry("second"));
-        assert_eq!(log.len(), 2);
-        assert_eq!(log[0].event, "first");
-        assert_eq!(log[1].event, "second");
-    }
-
-    #[test]
-    fn push_audit_entry_trims_oldest_once_over_cap() {
-        let mut log = std::collections::VecDeque::new();
-        for i in 0..(AUDIT_LOG_CAP + 10) {
-            push_audit_entry(&mut log, audit_entry(&format!("event-{i}")));
-        }
-        assert_eq!(log.len(), AUDIT_LOG_CAP, "must never grow past the cap");
-        // The oldest 10 were pushed out; the front is now event-10.
-        assert_eq!(log.front().unwrap().event, "event-10");
-        assert_eq!(
-            log.back().unwrap().event,
-            format!("event-{}", AUDIT_LOG_CAP + 9)
-        );
-    }
+    // `push_audit_entry`/`AUDIT_LOG_CAP` tests moved to `audit_log.rs`
+    // alongside the durable-trail/CEF-export code they now live next to.
 
     #[test]
     fn test_parse_usize_arg() {
@@ -11382,6 +11751,144 @@ mod tests {
             2,
             "clearing the cache (as the download/delete handlers do) must force a rescan"
         );
+    }
+
+    #[test]
+    fn required_role_gates_key_management_and_pqc_enable_to_admin_only() {
+        use axum::http::Method;
+        assert_eq!(
+            required_role(&Method::GET, "/api/security/keys"),
+            auth::Role::Admin
+        );
+        assert_eq!(
+            required_role(&Method::POST, "/api/security/keys"),
+            auth::Role::Admin
+        );
+        assert_eq!(
+            required_role(&Method::DELETE, "/api/security/keys/key_abc"),
+            auth::Role::Admin
+        );
+        assert_eq!(
+            required_role(&Method::POST, "/api/security/pqc/enable"),
+            auth::Role::Admin
+        );
+    }
+
+    #[test]
+    fn required_role_allows_jwt_refresh_below_the_get_only_viewer_default() {
+        use axum::http::Method;
+        assert_eq!(
+            required_role(&Method::POST, "/api/security/jwt/refresh"),
+            auth::Role::Viewer
+        );
+    }
+
+    #[test]
+    fn required_role_defaults_reads_to_viewer_and_mutations_to_operator() {
+        use axum::http::Method;
+        assert_eq!(
+            required_role(&Method::GET, "/api/models"),
+            auth::Role::Viewer
+        );
+        assert_eq!(
+            required_role(&Method::HEAD, "/api/security/audit-log"),
+            auth::Role::Viewer
+        );
+        assert_eq!(
+            required_role(&Method::GET, "/api/security/pqc/state"),
+            auth::Role::Viewer,
+            "reading PQC state is a GET, distinct from POST .../pqc/enable which is Admin-only"
+        );
+        assert_eq!(
+            required_role(&Method::POST, "/api/models/load"),
+            auth::Role::Operator
+        );
+        assert_eq!(
+            required_role(&Method::DELETE, "/api/models/foo"),
+            auth::Role::Operator
+        );
+        assert_eq!(
+            required_role(&Method::PUT, "/api/settings"),
+            auth::Role::Operator
+        );
+    }
+
+    #[test]
+    fn delete_key_from_store_refuses_to_remove_the_last_admin() {
+        let (admin, _raw) = auth::create_key("only-admin".to_string(), auth::Role::Admin);
+        let mut keys = vec![admin.clone()];
+
+        let err = delete_key_from_store(&mut keys, &admin.id).expect_err("must refuse");
+        assert_eq!(err.0, axum::http::StatusCode::BAD_REQUEST);
+        assert_eq!(keys.len(), 1, "the last admin key must remain in the store");
+    }
+
+    #[test]
+    fn delete_key_from_store_allows_removing_a_non_last_admin_or_any_non_admin() {
+        let (admin_a, _) = auth::create_key("admin-a".to_string(), auth::Role::Admin);
+        let (admin_b, _) = auth::create_key("admin-b".to_string(), auth::Role::Admin);
+        let (viewer, _) = auth::create_key("viewer".to_string(), auth::Role::Viewer);
+        let mut keys = vec![admin_a.clone(), admin_b.clone(), viewer.clone()];
+
+        let removed = delete_key_from_store(&mut keys, &viewer.id)
+            .expect("removing a non-admin should succeed");
+        assert_eq!(removed.id, viewer.id);
+        assert_eq!(keys.len(), 2);
+
+        let removed = delete_key_from_store(&mut keys, &admin_a.id)
+            .expect("removing one of two admins should succeed");
+        assert_eq!(removed.id, admin_a.id);
+        assert_eq!(keys.len(), 1);
+        assert_eq!(keys[0].id, admin_b.id);
+    }
+
+    #[test]
+    fn delete_key_from_store_returns_not_found_for_an_unknown_id() {
+        let mut keys: Vec<auth::ApiKeyRecord> = vec![];
+        let err =
+            delete_key_from_store(&mut keys, "key_does_not_exist").expect_err("must not find it");
+        assert_eq!(err.0, axum::http::StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn load_api_keys_migrates_a_pre_rbac_deployment_to_a_single_bootstrap_admin() {
+        // Only `GHOSTLINK_API_KEYS_PATH` is set here, deliberately —
+        // `GHOSTLINK_API_KEY_PATH` (the legacy single-key file) is also
+        // mutated by `auth.rs`'s own tests under a separate, module-private
+        // lock, so touching it here would race across modules. `auth::
+        // active_api_key()`'s value is cached process-wide in a `OnceLock`
+        // by the time any test reaches it anyway (see auth.rs's own test
+        // comments on this) — this test only asserts the structural
+        // properties `load_api_keys` guarantees regardless of which raw
+        // key value ends up hashed into the bootstrap record: exactly one
+        // record, the fixed bootstrap id/role, persisted, idempotent reload.
+        let _guard = env_lock().lock().expect("env lock poisoned");
+        let api_keys_path = std::env::temp_dir().join(format!(
+            "ghostlink-test-rbac-migrate-{}.json",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&api_keys_path);
+        std::env::set_var("GHOSTLINK_API_KEYS_PATH", &api_keys_path);
+
+        let keys = load_api_keys();
+        assert_eq!(keys.len(), 1);
+        assert_eq!(keys[0].id, auth::BOOTSTRAP_KEY_ID);
+        assert_eq!(keys[0].role, auth::Role::Admin);
+        assert!(
+            api_keys_path.exists(),
+            "the migrated store must be persisted"
+        );
+
+        let reloaded = load_api_keys();
+        assert_eq!(
+            reloaded.len(),
+            1,
+            "a second load must reuse the persisted store, not synthesize a second bootstrap key"
+        );
+        assert_eq!(reloaded[0].id, keys[0].id);
+
+        std::env::remove_var("GHOSTLINK_API_KEYS_PATH");
+        let _ = std::fs::remove_file(&api_keys_path);
     }
 
     #[tokio::test]

@@ -1,0 +1,131 @@
+{
+  "title": "Ghostlink",
+  "uid": "ghostlink-overview",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "timezone": "browser",
+  "refresh": "10s",
+  "time": { "from": "now-1h", "to": "now" },
+  "tags": ["ghostlink"],
+  "panels": [
+    {
+      "id": 1,
+      "title": "Uptime",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "ghostlink-prometheus" },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "textMode": "value" },
+      "targets": [
+        { "expr": "ghostlink_uptime_seconds", "refId": "A" }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "Active Cluster Nodes",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "ghostlink-prometheus" },
+      "fieldConfig": { "defaults": { "unit": "none" }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "textMode": "value" },
+      "targets": [
+        { "expr": "ghostlink_cluster_active_nodes", "refId": "A" }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Cluster Total VRAM",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "ghostlink-prometheus" },
+      "fieldConfig": { "defaults": { "unit": "decgbytes" }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "textMode": "value" },
+      "targets": [
+        { "expr": "ghostlink_cluster_total_vram_gb", "refId": "A" }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Inference Backend",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "ghostlink-prometheus" },
+      "fieldConfig": { "defaults": { "unit": "none" }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "textMode": "name" },
+      "targets": [
+        { "expr": "ghostlink_build_info", "legendFormat": "{{inference_backend}}", "refId": "A" }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "Inference Throughput (tokens/sec)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 4 },
+      "datasource": { "type": "prometheus", "uid": "ghostlink-prometheus" },
+      "fieldConfig": { "defaults": { "unit": "tps" }, "overrides": [] },
+      "targets": [
+        {
+          "expr": "ghostlink_inference_throughput_tokens_per_second",
+          "legendFormat": "tokens/sec",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "title": "Inference Latency (p50 / p95)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 4 },
+      "datasource": { "type": "prometheus", "uid": "ghostlink-prometheus" },
+      "fieldConfig": { "defaults": { "unit": "ms" }, "overrides": [] },
+      "targets": [
+        { "expr": "ghostlink_inference_latency_p50_milliseconds", "legendFormat": "p50", "refId": "A" },
+        { "expr": "ghostlink_inference_latency_p95_milliseconds", "legendFormat": "p95", "refId": "B" }
+      ]
+    },
+    {
+      "id": 7,
+      "title": "Host CPU / Memory / GPU Utilization",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 12 },
+      "datasource": { "type": "prometheus", "uid": "ghostlink-prometheus" },
+      "fieldConfig": {
+        "defaults": { "unit": "percent", "min": 0, "max": 100 },
+        "overrides": []
+      },
+      "targets": [
+        { "expr": "ghostlink_cpu_utilization_percent", "legendFormat": "CPU", "refId": "A" },
+        { "expr": "ghostlink_memory_utilization_percent", "legendFormat": "Memory", "refId": "B" },
+        { "expr": "ghostlink_gpu_utilization_percent", "legendFormat": "GPU", "refId": "C" }
+      ]
+    },
+    {
+      "id": 8,
+      "title": "Host Memory (Used / Total)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 12 },
+      "datasource": { "type": "prometheus", "uid": "ghostlink-prometheus" },
+      "fieldConfig": { "defaults": { "unit": "decgbytes" }, "overrides": [] },
+      "targets": [
+        { "expr": "ghostlink_host_used_memory_gb", "legendFormat": "Used", "refId": "A" },
+        { "expr": "ghostlink_host_total_memory_gb", "legendFormat": "Total", "refId": "B" }
+      ]
+    },
+    {
+      "id": 9,
+      "title": "Inference Samples Rate",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 20 },
+      "datasource": { "type": "prometheus", "uid": "ghostlink-prometheus" },
+      "fieldConfig": { "defaults": { "unit": "ops" }, "overrides": [] },
+      "targets": [
+        {
+          "expr": "rate(ghostlink_inference_samples_total[5m])",
+          "legendFormat": "samples/sec",
+          "refId": "A"
+        }
+      ]
+    }
+  ]
+}

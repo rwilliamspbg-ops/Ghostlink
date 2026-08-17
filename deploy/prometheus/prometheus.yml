@@ -1,0 +1,33 @@
+# Prometheus scrape config for the `monitoring` docker-compose profile.
+#
+# ghostlink-api's /metrics is behind the same RBAC bearer-token auth as
+# every other route except /health (crates/ghost-link/src/main.rs's
+# auth_middleware) — a plain scrape without credentials gets a 401, not
+# metrics. `authorization.credentials_file` reads the token from the
+# `ghostlink-api-key` named volume this container shares (read-only) with
+# ghostlink-api and control-plane, the same file both of those already use
+# to find the live API key — see docker-compose.yml's GHOSTLINK_API_KEY_PATH
+# comments for why a shared volume, not a hardcoded value, is required here
+# (each service is its own container with its own filesystem, and the key
+# is generated fresh on first boot).
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: ghostlink-api
+    metrics_path: /metrics
+    # ghostlink-api runs `serve 0.0.0.0 8003` (docker-compose.yml) — binding
+    # a non-loopback host unconditionally forces HTTPS regardless of the
+    # enable_tls setting (tls::is_loopback_host("0.0.0.0") is false by
+    # design, see its own test), with a self-signed cert (tls.rs). There's
+    # no CA to validate that cert against in this deployment, hence
+    # insecure_skip_verify — the same trust model the container's own
+    # localhost-bound tooling already assumes.
+    scheme: https
+    tls_config:
+      insecure_skip_verify: true
+    authorization:
+      credentials_file: /shared/api_key.txt
+    static_configs:
+      - targets: ["ghostlink-api:8003"]

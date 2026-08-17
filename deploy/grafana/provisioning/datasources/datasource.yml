@@ -1,0 +1,16 @@
+# Auto-provisions the Prometheus datasource on Grafana startup — no manual
+# "Add data source" click needed for `docker compose up --profile monitoring`
+# to produce a working dashboard immediately.
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    # Fixed uid so the checked-in dashboard JSON (deploy/grafana/dashboards/
+    # ghostlink.json) can reference this datasource reliably instead of
+    # depending on whatever uid Grafana would otherwise auto-generate.
+    uid: ghostlink-prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false

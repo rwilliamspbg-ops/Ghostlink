@@ -41,7 +41,7 @@ toml = "0.8"
 axum = { version = "0.7", features = ["macros"] }
 futures = "0.3"
 tokio = { version = "1", features = ["full"] }
-tower-http = { version = "0.5", features = ["cors"] }
+tower-http = { version = "0.5", features = ["cors", "trace"] }
 tower_governor = { version = "0.4.3", features = ["axum"] }
 
 # Object-safe async trait for the custom inference backend plugin system
@@ -76,3 +76,17 @@ rustls = { version = "0.23.42", features = ["prefer-post-quantum"] }
 axum-server = { version = "0.8.0", features = ["tls-rustls"] }
 jsonwebtoken = { version = "10.3.0", features = ["aws_lc_rs"] }
 rcgen = "0.14.7"
+
+# API key hashing for the RBAC key store (already a workspace dependency via ghostlink-core)
+sha2 = "0.10"
+# HMAC-SHA256 for the RPC peer auth handshake (rpc_cluster::admit_via_secret)
+hmac = "0.12"
+# Optional OpenTelemetry tracing export (otel.rs) — the blocking reqwest
+# client (not the async one) is deliberate: spans are exported via the SDK's
+# synchronous SimpleSpanProcessor, called from main() before any tokio
+# runtime exists (main() dispatches several non-serve subcommands too), so
+# the underlying HTTP client must not depend on an ambient async reactor.
+opentelemetry = "0.32.0"
+opentelemetry_sdk = "0.32.1"
+tracing-opentelemetry = "0.33.0"
+opentelemetry-otlp = { version = "0.32.0", features = ["http-proto", "reqwest-blocking-client"] }

@@ -59,7 +59,11 @@ services:
         condition: service_healthy
     command: serve 0.0.0.0 8003
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8003/health"]
+      # -k: binding 0.0.0.0 forces ghost-link's TLS-on-non-loopback rule
+      # (crates/ghost-link/src/tls.rs's is_loopback_host / main.rs's
+      # use_tls), so this serves a self-signed HTTPS cert, not plain HTTP —
+      # same reasoning as docker-compose.rpc-fabric.yml's healthcheck.
+      test: ["CMD", "curl", "-fk", "https://localhost:8003/health"]
       interval: 10s
       timeout: 5s
       retries: 3
@@ -78,7 +82,13 @@ services:
       - "8000:8000"
     environment:
       PORT: "8000"
-      GHOSTLINK_BACKEND_URL: http://ghostlink-api:8003
+      # https:// (not http://): ghostlink-api binds 0.0.0.0, which forces
+      # its self-signed-TLS listener on (see the matching comment on its
+      # healthcheck above) — proxy.go's NewChatProxy already skips cert
+      # verification for an https:// backend URL specifically to handle
+      # this, so plain http:// here would make every proxied request fail,
+      # not just the healthcheck.
+      GHOSTLINK_BACKEND_URL: https://ghostlink-api:8003
       # See the matching comment on ghostlink-api's GHOSTLINK_API_KEY_PATH
       # above — without this, control-plane's edge auth check silently
       # no-ops (empty key = skip), which also means requests that should
@@ -118,6 +128,49 @@ services:
     depends_on:
       control-plane:
         condition: service_healthy
+    restart: unless-stopped
+
+  # ─── Monitoring (opt-in: `docker compose up --profile monitoring`) ───
+  # Prometheus scrapes ghostlink-api's existing /metrics; Grafana comes up
+  # pre-wired to it (datasource + dashboard auto-provisioned from
+  # deploy/grafana/provisioning) — no manual setup click needed. Neither
+  # service starts on a plain `docker compose up`.
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: ghostlink-prometheus
+    profiles: ["monitoring"]
+    volumes:
+      - ./deploy/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      # Read-only access to the same API key ghostlink-api/control-plane
+      # already share (see ghostlink-api's GHOSTLINK_API_KEY_PATH comment
+      # above) — /metrics needs a bearer token like every other route
+      # except /health, and prometheus.yml's authorization.credentials_file
+      # reads it from here.
+      - ghostlink-api-key:/shared:ro
+    ports:
+      - "9090:9090"
+    networks:
+      - ghostlink-network
+    depends_on:
+      ghostlink-api:
+        condition: service_healthy
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: ghostlink-grafana
+    profiles: ["monitoring"]
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+    volumes:
+      - ./deploy/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./deploy/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "3001:3000"
+    networks:
+      - ghostlink-network
+    depends_on:
+      - prometheus
     restart: unless-stopped
 
 networks:
