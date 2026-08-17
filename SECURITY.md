@@ -6,9 +6,9 @@ Ghostlink actively receives security patches and updates for the following versi
 
 | Version | Supported | Notes |
 | :--- | :--- | :--- |
-| **1.16.x** | :white_check_mark: | Active release lineage (PQC/hybrid TLS, TCP circuit breakers, gateway security). |
-| **1.15.x** | :warning: | Critical security patches only. |
-| **< 1.15** | :x: | Unsupported. Please upgrade to `v1.16.x`. |
+| **2.0.x** | :white_check_mark: | Active release lineage (RBAC, durable audit trail, RPC peer auth, PQC/hybrid TLS, TCP circuit breakers, gateway security). |
+| **1.17.x** | :warning: | Critical security patches only. |
+| **< 1.17** | :x: | Unsupported. Please upgrade to `v2.0.x`. |
 
 ---
 
@@ -38,7 +38,7 @@ We take the security and privacy of Ghostlink seriously. If you discover a poten
 
 * **Acknowledgment:** You will receive an initial response within **24–48 hours** acknowledging receipt of your report.
 * **Assessment:** We will assess the severity and impact within **5 business days** and provide an estimated fix timeline.
-* **Resolution & Patching:** Once a fix is verified, a patch release (e.g., `v1.16.x`) will be published, along with appropriate credit to the reporter (unless anonymity is requested).
+* **Resolution & Patching:** Once a fix is verified, a patch release (e.g., `v2.0.x`) will be published, along with appropriate credit to the reporter (unless anonymity is requested).
 
 ---
 

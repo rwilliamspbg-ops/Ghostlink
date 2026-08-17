@@ -1,107 +1,85 @@
-# Ghostlink State — July 30, 2026 (Session 7)
+# Agent Instructions
 
-## Last Commit
-`HEAD` — "feat(gui): Editor tab with copilot features (Explain/Fix/Refactor, multi-file refactor, ghost-text autocomplete, repo-aware RAG context)"
+Repo-wide guidance for AI coding agents (and human contributors) working in
+Ghostlink. This file is about how to work in this codebase — for what the
+project is and how to run it, see [README.md](README.md); for the full
+contributor workflow, see [CONTRIBUTING.md](CONTRIBUTING.md).
 
-## What Was Done (Session 7 — July 30)
+## Layout
 
-### Phase 1: Editor Tab Core (`ghostlink_gui_modern/src/components/EditorTab.tsx`)
-- New Monaco-based Editor tab (registered as GUI tab 8) backed by three new
-  backend routes in `crates/ghost-link/src/main.rs`:
-  `GET /api/workspace/tree`, `GET`/`PUT /api/workspace/file` — confined to a
-  canonicalized `GHOSTLINK_WORKSPACE_ROOT` with a path-traversal guard
-  (verified against real `../` escape attempts on read, tree, and write).
-- Monaco self-hosted locally (no CDN) via `vite-plugin-monaco-editor-esm` +
-  `monacoSetup.ts` — consistent with the rest of the app's local-first
-  stance.
-- Fixed a real Monaco+flex layout bug found during verification: Monaco's
-  own `automaticLayout` locked onto a bogus 5×5px size in this nested-flex
-  pane and never self-corrected; fixed with an explicit `.layout()` call on
-  mount plus a `ResizeObserver` on a container we control.
+- `crates/ghost-link` — CLI + OpenAI-compatible API server (Rust).
+- `crates/ghostlink-core` — shared runtime primitives: planning, routing,
+  transport, health monitoring, system profiling. `ghost-link` depends on it.
+- `crates/mcp-calculator`, `crates/mcp-rag`, `crates/mcp-vision` — local
+  stdio MCP servers used by the chat tool-calling loop. Internal
+  (`publish = false`), not published to crates.io.
+- `crates/ghostlink-gui` — an earlier Tauri/Svelte desktop shell. **Not the
+  active GUI** — superseded by `ghostlink_gui_modern/` and not wired into
+  the launchers, workspace, or release pipeline. Don't build new features
+  here without checking with a maintainer first.
+- `ghostlink_gui_modern/` — the active GUI (React + Vite + TypeScript). Every
+  launcher (`launch.sh`, `launch.bat`) builds and serves this one.
+- `control-plane/` — Go gateway in front of the Rust API: CORS, rate
+  limiting, request logging, streaming-safe proxying. The GUI talks to this,
+  not directly to `ghost-link`'s API port.
+- `sdks/python`, `sdks/js` — client SDKs mirroring each other's shape.
+- `docs/` — user-facing reference docs (architecture, API, deployment,
+  benchmarks, etc.) plus `docs/archive/` for superseded status documents.
 
-### Phase 2: Copilot Features
-- **Explain / Fix / Refactor** — scoped to selection or whole file;
-  Fix/Refactor propose changes via a side-by-side `DiffEditor` with explicit
-  Accept/Reject (nothing writes until accepted).
-- **Multi-file refactor** — tree checkboxes select files, one batched
-  prompt (`### FILE: <path>` sections), sequential per-file diff review
-  queue (Accept/Reject/Skip).
-- **Ghost-text autocomplete** (opt-in toggle) — Monaco's native
-  inline-completions provider, debounced against the existing chat
-  endpoint. MVP: no FIM model support, no suffix awareness.
-- **Repo-aware chat context**: `POST /api/workspace/index` feeds the
-  workspace into the `rag` MCP server's `index_document` tool directly
-  (not via an LLM tool-calling loop). Triggered once per page load from the
-  Editor tab; `"skipped"` (not an error) when `rag`/Ollama isn't reachable.
+## Before opening a PR or considering work done
 
-### Phase 3: RAG / MCP Fixes
-- **`rag` MCP server enabled by default** (`mcp_servers.example.toml`) —
-  needs `ollama pull nomic-embed-text` to do anything.
-- **Fixed unbounded duplicate growth in `mcp-rag`**: `index_document` only
-  ever appended chunks, never removed a document's prior ones — every
-  re-index (which happens every page load) grew `rag_index.json` forever.
-  Now replaces by doc-id prefix before inserting. Verified live: indexed a
-  directory (10 chunks), re-indexed, still exactly 10.
-- **Hardened the "is rag usable" check**: `rag`'s own MCP handshake never
-  touches Ollama, so it reports "connected" even with Ollama down. Added a
-  direct `OllamaClient::health()` probe before the indexing loop so a
-  native-only machine with no Ollama still gets the clean `"skipped"`
-  response instead of a wall of per-file failures.
-
-### Phase 4: Real Security Audit Log
-- `/api/security/audit-log` was a hardcoded stub (always empty). Now
-  records failed auth, JWT refresh, PQC enable, and tool-call approve/deny
-  in-memory (capped at 500, most-recent-first). Required adding
-  `ConnectInfo<SocketAddr>` + `State` extraction to `auth_middleware` (via
-  `middleware::from_fn_with_state`) to log the client IP on auth failures.
-  Verified live through the Security tab.
-
-### Phase 5: Tests & Docs
-- `EditorTab.test.tsx` — 10 tests (tree load/expand, open/save,
-  Explain/Fix/Refactor, diff accept/reject, multi-file refactor,
-  autocomplete toggle, error handling).
-- `mcp-rag`: 2 new unit tests for the dedup-by-doc-id logic.
-- `ghost-link`: 2 new unit tests for the audit-log cap/ordering logic.
-- `README.md`, `CHANGELOG.md` (`[1.16.0]`), `docs/API_REFERENCE.md`,
-  `docs/openapi.yaml` updated for the new endpoints and the no-longer-a-stub
-  audit log.
-
-## Build Verification
-- `cargo fmt --all --check` — **OK**
-- `cargo clippy --workspace --all-targets -- -D warnings` — **OK**
-- `cargo test --workspace` — **all passed** (150 in `ghost-link`, 12 in
-  `mcp-rag`, plus `ghostlink-core` integration suites — 0 failed)
-- `npx tsc --noEmit` (ghostlink_gui_modern) — **OK**
-- `npx vitest run` — **128/128 passed**
-- Manual: verified the Editor tab, audit log, and workspace-index endpoint
-  live against the built release binary through the actual GUI (not just
-  curl).
-
-## Known Issues / Follow-ups
-1. Ghost-text autocomplete and multi-file refactor are explicitly MVP-scoped
-   (see CHANGELOG) — not exercised against a live completion-capable model
-   this session (no model was loaded in the test environment).
-2. Audit log is in-memory only — resets on restart. A persistent
-   append-only trail is a bigger follow-up, not done here.
-3. Everything from Session 6's "Known Issues" list still applies (worker
-   networking is local-only, no discovery-token enforcement, etc.) — not
-   touched this session.
-
-## To Restart
-```powershell
-cd C:\Users\rwill\Ghostlink
-.\launch.bat
-```
-
-For Linux:
 ```bash
-cd ~/Ghostlink
-./launch.sh
+cargo fmt --all --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
 ```
 
-**Ports:** GUI → API `:8003` only. Inference is `:8080` (llama-server) or `:11434` (ollama).
-Pointing the GUI at `:8000`/`:8080` caused **405** on chat/models — fixed in unified launchers.
+If you changed the GUI (`ghostlink_gui_modern/`):
 
-## Models on Disk
-- `models/stories15M-q4_0.gguf` (~19 MB)
-- `models/tinyllama-1.1b-chat-v1.0.Q2_K.gguf` (~483 MB)
+```bash
+npx tsc --noEmit
+npx eslint .
+npx vitest run
+```
+
+If you changed transport, ring buffer, or pipeline code, also run
+`cargo bench --package ghostlink-core` and report before/after numbers — this
+is performance-sensitive code with documented microbenchmark baselines (see
+[docs/BENCHMARKS.md](docs/BENCHMARKS.md)).
+
+If you changed hardware detection or system profiling, run
+`cargo run -p ghost-link -- probe my-node --full` and check for regressions.
+
+Full pre-push checklist, release rubric, and PR expectations live in
+[CONTRIBUTING.md](CONTRIBUTING.md) — read it before larger changes.
+
+## Conventions
+
+- **Don't fabricate numbers.** This repo had a real incident with fabricated
+  placeholder benchmark data checked in as if it were measured. Every number
+  in `docs/BENCHMARKS.md` and the CHANGELOG is expected to be a real,
+  reproducible measurement with hardware/method noted — never invent one.
+- **Update the CHANGELOG for behavior changes.** Follow the existing
+  entries' style: bold one-line summary, then specific file/function names
+  and the *why*, not just the *what*.
+- **Archive, don't delete, superseded status docs.** If a doc genuinely
+  reflects a snapshot in time (a session log, a phase-completion report)
+  rather than the current state of the project, move it to
+  `docs/archive/legacy-root-docs/` and add it to
+  [docs/archive/INDEX.md](docs/archive/INDEX.md), per
+  [CONTRIBUTING.md](CONTRIBUTING.md#documentation-expectations). Don't leave
+  it in the repo root or in `docs/` proper where it reads as current.
+- **Ports**: the GUI talks to the control-plane gateway on `:8000`. The
+  Rust API itself listens on `:8003` (internal — the GUI does not call it
+  directly). Inference backends are `:8080` (native llama-server) or
+  `:11434` (Ollama). Pointing the GUI at the wrong port is the most common
+  local-dev failure mode (usually a 405).
+
+## Security-sensitive areas
+
+Auth (`crates/ghost-link/src/auth.rs`), RBAC/scoped API keys, the audit
+trail, and RPC peer authentication are security-critical paths — see
+[docs/SECURITY_MODEL.md](docs/SECURITY_MODEL.md) for the current threat
+model before changing anything here, and update that doc if the security
+posture changes. Report vulnerabilities per [SECURITY.md](SECURITY.md)
+rather than opening a public issue.

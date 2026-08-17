@@ -1,6 +1,16 @@
-# ghostlink-gui (Ghostlink Studio)
+# ghostlink-gui (Ghostlink Studio) — superseded, not actively maintained
 
-This directory contains the Ghostlink Studio desktop application.
+> **This Tauri + Svelte desktop shell is not the GUI Ghostlink ships today.**
+> It predates and is not wired into the current launchers (`launch.sh` /
+> `launch.bat`), the root Cargo workspace, or the release pipeline. The
+> active, maintained GUI is [`ghostlink_gui_modern/`](../../ghostlink_gui_modern)
+> (React + Vite), which every launcher builds and every recent CHANGELOG
+> entry documents. This crate is kept for reference and possible future
+> revival, but treat it as archived: don't expect it to build against the
+> current backend without changes, and don't add new features here without
+> first checking with a maintainer.
+
+This directory contains an earlier prototype of a Ghostlink Studio desktop application.
 
 ## Structure
 

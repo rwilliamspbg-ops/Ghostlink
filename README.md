@@ -11,7 +11,7 @@ Route workloads across CPU, GPU, and NPU resources with explicit scheduling, har
 [![MSRV](https://github.com/rwilliamspbg-ops/Ghostlink/actions/workflows/msrv.yml/badge.svg)](https://github.com/rwilliamspbg-ops/Ghostlink/actions/workflows/msrv.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Docs](https://img.shields.io/badge/Docs-GitHub%20Pages-0ea5e9)](https://rwilliamspbg-ops.github.io/Ghostlink/)
-[![Version](https://img.shields.io/badge/version-1.17.0-blueviolet)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-2.0.0-blueviolet)](CHANGELOG.md)
 [![Rust](https://img.shields.io/badge/Rust-2021-orange?logo=rust)](Cargo.toml)
 [![Platforms](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey)](#quick-start)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
@@ -117,7 +117,7 @@ ghost-link doctor --strict         # sanity-check your setup
 ghost-link serve 127.0.0.1 8003    # start the OpenAI-compatible API server
 ```
 
-Both scripts accept `VERSION=v1.17.0` (env var) to pin a specific release
+Both scripts accept `VERSION=v2.0.0` (env var) to pin a specific release
 instead of latest, and print PATH guidance if the install directory isn't
 already on it. Source for both lives at
 [`scripts/install.sh`](scripts/install.sh) and
