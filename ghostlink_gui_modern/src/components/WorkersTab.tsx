@@ -30,6 +30,15 @@ export const WorkersTab: React.FC<{ api: any }> = ({ api }) => {
   const [addPort, setAddPort] = useState('8003');
   const [addError, setAddError] = useState('');
 
+  useEffect(() => {
+    if (!showAddForm) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setShowAddForm(false);
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [showAddForm]);
+
   const topologyLayout = useMemo(() => {
     if (!topology?.nodes?.length) return [];
     const centerX = 170;
@@ -203,7 +212,6 @@ export const WorkersTab: React.FC<{ api: any }> = ({ api }) => {
             handleAddWorker();
           }}
           className="px-6 py-4 border-b border-slate-800 bg-slate-900/30"
-          onKeyDown={(e) => { if (e.key === 'Escape') setShowAddForm(false); }}
         >
           <div className="flex items-end gap-3 max-w-lg">
             <div className="flex-1">

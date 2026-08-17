@@ -1,5 +1,9 @@
 # Palette's Journal
 
+## 2026-08-16 - [Command Palette Keyboard Navigation Auto-Scrolling]
+**Learning:** Scrollable option listboxes in modal overlays (such as the global Command Palette) leave keyboard users navigating blind if the highlighted option moves outside the visible container bounds. Adding a scroll effect linked to the active highlight index (`element.scrollIntoView({ block: 'nearest' })`) ensures the selected option always remains visible as users navigate using arrow keys.
+**Action:** Always attach auto-scroll behavior (`scrollIntoView({ block: 'nearest' })`) to keyboard-navigated listbox overlays so active options stay in view.
+
 ## 2026-08-15 - [Status Views Reduced Motion & Screen Reader Live Announcements]
 **Learning:** Shared status components (such as `LoadingState` and `ErrorPanel`) rendered across dashboard tabs can disrupt screen reader users and users with vestibular motion sensitivities if live regions and CSS animations are unconstrained. Adding `aria-busy="true"` on loading status containers and `aria-live="assertive"` on error alerts guarantees timely screen reader announcements. Using Tailwind's `motion-safe:animate-spin` ensures spinner animations automatically pause when users enable `prefers-reduced-motion` in their OS settings.
 **Action:** Always complement status indicators with `aria-busy` / `aria-live` attributes and scope spinning or pulse animations with `motion-safe:` variants.
