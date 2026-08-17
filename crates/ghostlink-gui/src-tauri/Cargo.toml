@@ -4,6 +4,9 @@ version = "1.0.0"
 edition = "2021"
 license = "MIT"
 description = "Ghostlink Studio desktop shell"
+# Superseded by ghostlink_gui_modern/ (React/Vite) — see this crate's README.
+# Not part of the release pipeline; do not publish to crates.io.
+publish = false
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }

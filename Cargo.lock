@@ -1014,7 +1014,7 @@ dependencies = [
 
 [[package]]
 name = "ghost-link"
-version = "1.17.0"
+version = "2.0.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1053,7 +1053,7 @@ dependencies = [
 
 [[package]]
 name = "ghostlink-core"
-version = "1.17.0"
+version = "2.0.0"
 dependencies = [
  "anyhow",
  "arc-swap",

@@ -12,6 +12,8 @@ Some archived files intentionally contain superseded status statements and shoul
 - [docs/archive/legacy-root-docs/PHASE_1_COMPLETE.md](legacy-root-docs/PHASE_1_COMPLETE.md)
 - [docs/archive/legacy-root-docs/PHASE_2_API_COMPLETE.md](legacy-root-docs/PHASE_2_API_COMPLETE.md)
 - [docs/archive/legacy-root-docs/SETUP_GPU.md](legacy-root-docs/SETUP_GPU.md)
+- [docs/archive/legacy-root-docs/DEVELOPMENT_GUIDELINES.md](legacy-root-docs/DEVELOPMENT_GUIDELINES.md): described a GUI test setup (`test_gui_framework.py`, `run_gui_tests.py`) that doesn't exist in this repo; superseded by [../../TESTING.md](../../TESTING.md) and [../../CONTRIBUTING.md](../../CONTRIBUTING.md), which reflect how the project is actually tested.
+- [docs/archive/legacy-root-docs/SESSION_NOTES_2026-07-30.md](legacy-root-docs/SESSION_NOTES_2026-07-30.md): a dated development-session log, previously checked in as the root `AGENTS.md` by mistake. Replaced with real, durable agent instructions.
 - [FINAL_IMPROVEMENTS_SUMMARY.md](FINAL_IMPROVEMENTS_SUMMARY.md)
 - [GHOSTLINK_COMPLETE_STATUS.md](GHOSTLINK_COMPLETE_STATUS.md)
 - [IMPLEMENTATION_SUMMARY.md](IMPLEMENTATION_SUMMARY.md)

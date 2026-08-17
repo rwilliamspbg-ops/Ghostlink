@@ -1,6 +1,6 @@
 [package]
 name = "ghost-link"
-version = "1.17.0"
+version = "2.0.0"
 edition = "2021"
 authors = ["Ryan K Williams"]
 description = "CLI and API runtime for Ghostlink, a distributed inference fabric for routing and scheduling custom LLM workloads across heterogeneous hardware."
@@ -13,7 +13,7 @@ keywords = ["networking", "zero-copy", "async", "distributed", "llm"]
 categories = ["asynchronous", "network-programming", "command-line-utilities"]
 
 # Minimum Supported Rust Version (MSRV)
-  rust-version = "1.85.0"
+rust-version = "1.85.0"
 
 [features]
 default = []
@@ -21,7 +21,7 @@ cuda = []
 rocm = ["ghostlink-core/rocm"]
 
 [dependencies]
-ghostlink-core = { path = "../ghostlink-core", version = "1.17.0" }
+ghostlink-core = { path = "../ghostlink-core", version = "2.0.0" }
 
 # Local date/time for the assistant system prompt
 chrono = "0.4"
