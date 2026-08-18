@@ -1,5 +1,9 @@
 # Palette's Journal
 
+## 2026-08-18 - [Command Palette Modal Focus Trapping & Cyclic Tab Navigation]
+**Learning:** Combobox search inputs inside modal overlays (like the global Command Palette) can inadvertently release keyboard focus to invisible background DOM elements when users press `Tab`. Intercepting `Tab` / `Shift+Tab` keydown events on the search input to cycle option highlights modulo the filtered length keeps keyboard focus firmly contained within the modal dialogue while providing intuitive cyclic option navigation.
+**Action:** Always intercept `Tab` and `Shift+Tab` on modal combobox search inputs to cycle option highlights safely and trap focus within `role="dialog"` overlays.
+
 ## 2026-08-16 - [Command Palette Keyboard Navigation Auto-Scrolling]
 **Learning:** Scrollable option listboxes in modal overlays (such as the global Command Palette) leave keyboard users navigating blind if the highlighted option moves outside the visible container bounds. Adding a scroll effect linked to the active highlight index (`element.scrollIntoView({ block: 'nearest' })`) ensures the selected option always remains visible as users navigate using arrow keys.
 **Action:** Always attach auto-scroll behavior (`scrollIntoView({ block: 'nearest' })`) to keyboard-navigated listbox overlays so active options stay in view.
