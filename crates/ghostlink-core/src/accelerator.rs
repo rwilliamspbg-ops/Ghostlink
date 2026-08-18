@@ -88,12 +88,7 @@ unsafe fn scale_scalar(input: &[f32], output: *mut f32, scale: f32) {
     }
 }
 
-unsafe fn parallel_scale_scalar(
-    input: &[f32],
-    output: *mut f32,
-    scale: f32,
-    worker_count: usize,
-) {
+unsafe fn parallel_scale_scalar(input: &[f32], output: *mut f32, scale: f32, worker_count: usize) {
     let worker_count = worker_count.max(1);
     // Thread fan-out can dominate runtime for moderate tensor sizes.
     // Keep GPU fallback scalar in-process unless there is enough work.
