@@ -51,6 +51,7 @@ export const CommandPalette: React.FC = () => {
   const [query, setQuery] = useState('');
   const [highlight, setHighlight] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
+  const listRef = useRef<HTMLUListElement>(null);
   const triggerRef = useRef<HTMLElement | null>(null);
   const shouldReduceMotion = useReducedMotion();
 
@@ -88,6 +89,12 @@ export const CommandPalette: React.FC = () => {
   useEffect(() => {
     setHighlight(0);
   }, [query, open]);
+
+  useEffect(() => {
+    if (!open || !filtered[highlight]) return;
+    const activeEl = listRef.current?.children[highlight] as HTMLElement | undefined;
+    activeEl?.scrollIntoView?.({ block: 'nearest' });
+  }, [highlight, open, filtered]);
 
   // Global keyboard shortcuts & custom trigger events — the only place any of these are wired up.
   useEffect(() => {
@@ -201,7 +208,7 @@ export const CommandPalette: React.FC = () => {
         <div className="sr-only" role="status" aria-live="polite">
           {filtered.length === 0 ? 'No matching commands' : `${filtered.length} command${filtered.length === 1 ? '' : 's'} found`}
         </div>
-        <ul id="command-palette-list" role="listbox" aria-label="Commands" className="max-h-80 overflow-y-auto p-2">
+        <ul ref={listRef} id="command-palette-list" role="listbox" aria-label="Commands" className="max-h-80 overflow-y-auto p-2">
           {filtered.length === 0 ? (
             <li className="px-3 py-6 text-center text-sm text-slate-500">No matching commands</li>
           ) : (
