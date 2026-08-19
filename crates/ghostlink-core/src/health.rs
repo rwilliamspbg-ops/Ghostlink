@@ -190,7 +190,11 @@ impl NetworkHealthMonitor {
                 .unwrap_or_else(|poison| poison.into_inner());
             nodes_snapshot
                 .iter()
-                .filter_map(|node| probe_targets.get(&node.id).map(|addr| (node.id.clone(), *addr)))
+                .filter_map(|node| {
+                    probe_targets
+                        .get(&node.id)
+                        .map(|addr| (node.id.clone(), *addr))
+                })
                 .collect()
         };
 
@@ -230,16 +234,14 @@ impl NetworkHealthMonitor {
                     1.0
                 };
 
-                let status = if tcp_probe_ok == Some(false)
-                    || timeout
-                    || m.status == NodeStatus::Failed
-                {
-                    HealthStatus::Failed
-                } else if m.latency_samples == 0 && !m.delivery_ratio_initialized {
-                    HealthStatus::Unknown
-                } else {
-                    self.get_health_status(latency_us, delivery_ratio)
-                };
+                let status =
+                    if tcp_probe_ok == Some(false) || timeout || m.status == NodeStatus::Failed {
+                        HealthStatus::Failed
+                    } else if m.latency_samples == 0 && !m.delivery_ratio_initialized {
+                        HealthStatus::Unknown
+                    } else {
+                        self.get_health_status(latency_us, delivery_ratio)
+                    };
 
                 let measured_latency_us = if tcp_probe_ok == Some(false) {
                     cfg.timeout.as_secs_f32() * 1_000_000.0
@@ -326,7 +328,10 @@ impl NetworkHealthMonitor {
             .recent_checks
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
-        checks.values().flat_map(|checks| checks.iter().cloned()).collect()
+        checks
+            .values()
+            .flat_map(|checks| checks.iter().cloned())
+            .collect()
     }
 
     /// Get the number of nodes whose latest health sample is healthy.
