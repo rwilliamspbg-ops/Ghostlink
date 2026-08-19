@@ -4,6 +4,12 @@
 //! profile with backend-specific chunk sizing and parallel slice execution.
 
 use crate::host::{AccelerationMode, RuntimeProfile};
+use std::mem::{ManuallyDrop, MaybeUninit};
+
+#[derive(Copy, Clone)]
+struct SendPtr(*mut f32);
+unsafe impl Send for SendPtr {}
+unsafe impl Sync for SendPtr {}
 
 /// Concrete execution backend derived from the runtime profile.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -48,28 +54,41 @@ impl ExecutionBackend {
             return Vec::new();
         }
 
-        let mut output = vec![0.0f32; input.len()];
-        match self.mode {
-            AccelerationMode::Gpu => {
-                parallel_scale_scalar(input, &mut output, scale, self.worker_count)
-            }
-            AccelerationMode::Avx512 => scale_x86_512(input, &mut output, scale),
-            AccelerationMode::Avx2 => scale_x86_256(input, &mut output, scale),
-            AccelerationMode::Neon => scale_neon(input, &mut output, scale),
-            AccelerationMode::Generic => scale_scalar(input, &mut output, scale),
+        // Allocate an uninitialized buffer of MaybeUninit<f32> to avoid zero-filling memset overhead.
+        // SAFETY: MaybeUninit<f32> allows uninitialized memory, so calling set_len on Vec<MaybeUninit<f32>> is sound.
+        let mut output: Vec<MaybeUninit<f32>> = Vec::with_capacity(input.len());
+        unsafe {
+            output.set_len(input.len());
         }
 
-        output
+        let out_ptr = output.as_mut_ptr() as *mut f32;
+
+        unsafe {
+            match self.mode {
+                AccelerationMode::Gpu => {
+                    parallel_scale_scalar(input, out_ptr, scale, self.worker_count)
+                }
+                AccelerationMode::Avx512 => scale_x86_512(input, out_ptr, scale),
+                AccelerationMode::Avx2 => scale_x86_256(input, out_ptr, scale),
+                AccelerationMode::Neon => scale_neon(input, out_ptr, scale),
+                AccelerationMode::Generic => scale_scalar(input, out_ptr, scale),
+            }
+        }
+
+        // SAFETY: Every element in 0..input.len() has been fully initialized by the backend scaling function above.
+        // Using ManuallyDrop + Vec::from_raw_parts avoids transmute between repr(Rust) Vec types.
+        let mut md = ManuallyDrop::new(output);
+        unsafe { Vec::from_raw_parts(md.as_mut_ptr() as *mut f32, md.len(), md.capacity()) }
     }
 }
 
-fn scale_scalar(input: &[f32], output: &mut [f32], scale: f32) {
-    for (dst, src) in output.iter_mut().zip(input.iter()) {
-        *dst = *src * scale;
+unsafe fn scale_scalar(input: &[f32], output: *mut f32, scale: f32) {
+    for (i, &src) in input.iter().enumerate() {
+        output.add(i).write(src * scale);
     }
 }
 
-fn parallel_scale_scalar(input: &[f32], output: &mut [f32], scale: f32, worker_count: usize) {
+unsafe fn parallel_scale_scalar(input: &[f32], output: *mut f32, scale: f32, worker_count: usize) {
     let worker_count = worker_count.max(1);
     // Thread fan-out can dominate runtime for moderate tensor sizes.
     // Keep GPU fallback scalar in-process unless there is enough work.
@@ -81,50 +100,54 @@ fn parallel_scale_scalar(input: &[f32], output: &mut [f32], scale: f32, worker_c
 
     let chunk_size = input.len().div_ceil(worker_count).max(1);
     std::thread::scope(|scope| {
-        for (in_chunk, out_chunk) in input.chunks(chunk_size).zip(output.chunks_mut(chunk_size)) {
-            scope.spawn(move || scale_scalar(in_chunk, out_chunk, scale));
+        for (i, in_chunk) in input.chunks(chunk_size).enumerate() {
+            let out_ptr = SendPtr(output.add(i * chunk_size));
+            scope.spawn(move || {
+                let p = out_ptr;
+                scale_scalar(in_chunk, p.0, scale);
+            });
         }
     });
 }
 
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-fn scale_x86_256(input: &[f32], output: &mut [f32], scale: f32) {
+unsafe fn scale_x86_256(input: &[f32], output: *mut f32, scale: f32) {
     if std::is_x86_feature_detected!("avx2") {
-        unsafe { scale_x86_256_impl(input, output, scale) }
+        scale_x86_256_impl(input, output, scale)
     } else {
         scale_scalar(input, output, scale)
     }
 }
 
 #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
-fn scale_x86_256(input: &[f32], output: &mut [f32], scale: f32) {
+unsafe fn scale_x86_256(input: &[f32], output: *mut f32, scale: f32) {
     scale_scalar(input, output, scale)
 }
 
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-fn scale_x86_512(input: &[f32], output: &mut [f32], scale: f32) {
+unsafe fn scale_x86_512(input: &[f32], output: *mut f32, scale: f32) {
     // Keep AVX-512 mode API-compatible on stable Rust by falling back to AVX2/scalar.
     scale_x86_256(input, output, scale)
 }
 
 #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
-fn scale_x86_512(input: &[f32], output: &mut [f32], scale: f32) {
+unsafe fn scale_x86_512(input: &[f32], output: *mut f32, scale: f32) {
     scale_scalar(input, output, scale)
 }
 
 #[cfg(target_arch = "aarch64")]
-fn scale_neon(input: &[f32], output: &mut [f32], scale: f32) {
-    unsafe { scale_neon_impl(input, output, scale) }
+unsafe fn scale_neon(input: &[f32], output: *mut f32, scale: f32) {
+    scale_neon_impl(input, output, scale)
 }
 
 #[cfg(not(target_arch = "aarch64"))]
-fn scale_neon(input: &[f32], output: &mut [f32], scale: f32) {
+unsafe fn scale_neon(input: &[f32], output: *mut f32, scale: f32) {
     scale_scalar(input, output, scale)
 }
 
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
-unsafe fn scale_x86_256_impl(input: &[f32], output: &mut [f32], scale: f32) {
+unsafe fn scale_x86_256_impl(input: &[f32], output: *mut f32, scale: f32) {
     use std::arch::x86_64::{_mm256_loadu_ps, _mm256_mul_ps, _mm256_set1_ps, _mm256_storeu_ps};
 
     let scale_vec = _mm256_set1_ps(scale);
@@ -143,10 +166,10 @@ unsafe fn scale_x86_256_impl(input: &[f32], output: &mut [f32], scale: f32) {
         let output_vec2 = _mm256_mul_ps(input_vec2, scale_vec);
         let output_vec3 = _mm256_mul_ps(input_vec3, scale_vec);
 
-        _mm256_storeu_ps(output.as_mut_ptr().add(index), output_vec0);
-        _mm256_storeu_ps(output.as_mut_ptr().add(index + 8), output_vec1);
-        _mm256_storeu_ps(output.as_mut_ptr().add(index + 16), output_vec2);
-        _mm256_storeu_ps(output.as_mut_ptr().add(index + 24), output_vec3);
+        _mm256_storeu_ps(output.add(index), output_vec0);
+        _mm256_storeu_ps(output.add(index + 8), output_vec1);
+        _mm256_storeu_ps(output.add(index + 16), output_vec2);
+        _mm256_storeu_ps(output.add(index + 24), output_vec3);
 
         index += 32;
     }
@@ -154,15 +177,15 @@ unsafe fn scale_x86_256_impl(input: &[f32], output: &mut [f32], scale: f32) {
     while index + 8 <= input.len() {
         let input_vec = _mm256_loadu_ps(input.as_ptr().add(index));
         let output_vec = _mm256_mul_ps(input_vec, scale_vec);
-        _mm256_storeu_ps(output.as_mut_ptr().add(index), output_vec);
+        _mm256_storeu_ps(output.add(index), output_vec);
         index += 8;
     }
-    scale_scalar(&input[index..], &mut output[index..], scale);
+    scale_scalar(&input[index..], output.add(index), scale);
 }
 
 #[cfg(target_arch = "x86")]
 #[target_feature(enable = "avx2")]
-unsafe fn scale_x86_256_impl(input: &[f32], output: &mut [f32], scale: f32) {
+unsafe fn scale_x86_256_impl(input: &[f32], output: *mut f32, scale: f32) {
     use std::arch::x86::{_mm256_loadu_ps, _mm256_mul_ps, _mm256_set1_ps, _mm256_storeu_ps};
 
     let scale_vec = _mm256_set1_ps(scale);
@@ -181,10 +204,10 @@ unsafe fn scale_x86_256_impl(input: &[f32], output: &mut [f32], scale: f32) {
         let output_vec2 = _mm256_mul_ps(input_vec2, scale_vec);
         let output_vec3 = _mm256_mul_ps(input_vec3, scale_vec);
 
-        _mm256_storeu_ps(output.as_mut_ptr().add(index), output_vec0);
-        _mm256_storeu_ps(output.as_mut_ptr().add(index + 8), output_vec1);
-        _mm256_storeu_ps(output.as_mut_ptr().add(index + 16), output_vec2);
-        _mm256_storeu_ps(output.as_mut_ptr().add(index + 24), output_vec3);
+        _mm256_storeu_ps(output.add(index), output_vec0);
+        _mm256_storeu_ps(output.add(index + 8), output_vec1);
+        _mm256_storeu_ps(output.add(index + 16), output_vec2);
+        _mm256_storeu_ps(output.add(index + 24), output_vec3);
 
         index += 32;
     }
@@ -192,14 +215,14 @@ unsafe fn scale_x86_256_impl(input: &[f32], output: &mut [f32], scale: f32) {
     while index + 8 <= input.len() {
         let input_vec = _mm256_loadu_ps(input.as_ptr().add(index));
         let output_vec = _mm256_mul_ps(input_vec, scale_vec);
-        _mm256_storeu_ps(output.as_mut_ptr().add(index), output_vec);
+        _mm256_storeu_ps(output.add(index), output_vec);
         index += 8;
     }
-    scale_scalar(&input[index..], &mut output[index..], scale);
+    scale_scalar(&input[index..], output.add(index), scale);
 }
 
 #[cfg(target_arch = "aarch64")]
-unsafe fn scale_neon_impl(input: &[f32], output: &mut [f32], scale: f32) {
+unsafe fn scale_neon_impl(input: &[f32], output: *mut f32, scale: f32) {
     use std::arch::aarch64::{vdupq_n_f32, vld1q_f32, vmulq_f32, vst1q_f32};
 
     let scale_vec = vdupq_n_f32(scale);
@@ -218,10 +241,10 @@ unsafe fn scale_neon_impl(input: &[f32], output: &mut [f32], scale: f32) {
         let output_vec2 = vmulq_f32(input_vec2, scale_vec);
         let output_vec3 = vmulq_f32(input_vec3, scale_vec);
 
-        vst1q_f32(output.as_mut_ptr().add(index), output_vec0);
-        vst1q_f32(output.as_mut_ptr().add(index + 4), output_vec1);
-        vst1q_f32(output.as_mut_ptr().add(index + 8), output_vec2);
-        vst1q_f32(output.as_mut_ptr().add(index + 12), output_vec3);
+        vst1q_f32(output.add(index), output_vec0);
+        vst1q_f32(output.add(index + 4), output_vec1);
+        vst1q_f32(output.add(index + 8), output_vec2);
+        vst1q_f32(output.add(index + 12), output_vec3);
 
         index += 16;
     }
@@ -229,10 +252,10 @@ unsafe fn scale_neon_impl(input: &[f32], output: &mut [f32], scale: f32) {
     while index + 4 <= input.len() {
         let input_vec = vld1q_f32(input.as_ptr().add(index));
         let output_vec = vmulq_f32(input_vec, scale_vec);
-        vst1q_f32(output.as_mut_ptr().add(index), output_vec);
+        vst1q_f32(output.add(index), output_vec);
         index += 4;
     }
-    scale_scalar(&input[index..], &mut output[index..], scale);
+    scale_scalar(&input[index..], output.add(index), scale);
 }
 
 #[cfg(test)]
