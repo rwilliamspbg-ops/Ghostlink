@@ -32,4 +32,28 @@ describe('CommandPalette', () => {
 
     expect(scrollIntoViewMock).toHaveBeenCalled();
   });
+
+  it('cycles through commands with Tab and Shift+Tab key navigation', () => {
+    render(<CommandPalette />);
+
+    act(() => {
+      window.dispatchEvent(new CustomEvent('open-command-palette'));
+    });
+
+    const searchInput = screen.getByRole('combobox', { name: 'Search commands' });
+    const options = screen.getAllByRole('option');
+    expect(options[0]).toHaveAttribute('aria-selected', 'true');
+
+    // Tab moves highlight to next option
+    fireEvent.keyDown(searchInput, { key: 'Tab' });
+    expect(options[1]).toHaveAttribute('aria-selected', 'true');
+
+    // Shift+Tab cycles back to previous option
+    fireEvent.keyDown(searchInput, { key: 'Tab', shiftKey: true });
+    expect(options[0]).toHaveAttribute('aria-selected', 'true');
+
+    // Shift+Tab at first option wraps around to last option
+    fireEvent.keyDown(searchInput, { key: 'Tab', shiftKey: true });
+    expect(options[options.length - 1]).toHaveAttribute('aria-selected', 'true');
+  });
 });
