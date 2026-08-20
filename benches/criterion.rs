@@ -4,6 +4,7 @@ use criterion::{criterion_group, criterion_main, BatchSize, BenchmarkId, Criteri
 use ghostlink_core::{
     accelerator::ExecutionBackend,
     cluster::ClusterState,
+    health::{HealthConfig, NetworkHealthMonitor},
     host::{
         detect_runtime_profile, detect_runtime_profile_with_mode, AccelerationMode, ProbeMode,
         RuntimeProfile,
@@ -248,12 +249,35 @@ fn bench_autotune(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_health(c: &mut Criterion) {
+    let cluster = Arc::new(ClusterState::new());
+    for i in 0..10 {
+        cluster.register(NodeResources::new(
+            format!("node-{i}"),
+            24.0,
+            64.0,
+            "8.9",
+            None,
+        ));
+    }
+    let monitor = NetworkHealthMonitor::new(cluster, HealthConfig::default());
+
+    let mut group = c.benchmark_group("health");
+    group.bench_function("check_all_10_nodes", |b| {
+        b.iter(|| {
+            monitor.check_all();
+        });
+    });
+    group.finish();
+}
+
 fn criterion_benches(c: &mut Criterion) {
     bench_ring(c);
     bench_protocol(c);
     bench_planning(c);
     bench_cluster(c);
     bench_autotune(c);
+    bench_health(c);
 }
 
 criterion_group!(benches, criterion_benches);

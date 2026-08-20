@@ -7,7 +7,7 @@
 //! - Fault detection and recovery
 //! - Dynamic reconfiguration on hardware changes via `SystemProfileWatcher`.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::net::{SocketAddr, TcpStream};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -127,7 +127,7 @@ pub struct NetworkHealthMonitor {
     /// Last check timestamp
     last_check: Arc<Mutex<Option<Instant>>>,
     /// Recent check results per node
-    recent_checks: Arc<Mutex<HashMap<String, Vec<HealthCheckResult>>>>,
+    recent_checks: Arc<Mutex<HashMap<String, VecDeque<HealthCheckResult>>>>,
     /// Optional per-node TCP probe targets for active liveness checks.
     tcp_probe_targets: Arc<Mutex<HashMap<String, SocketAddr>>>,
 }
@@ -176,54 +176,85 @@ impl NetworkHealthMonitor {
             .is_some()
     }
 
-    fn run_active_tcp_probe(&self, node_id: &str) -> Option<bool> {
-        let cfg = self.config();
-        let target = self
-            .tcp_probe_targets
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner())
-            .get(node_id)
-            .copied();
-
-        target.map(|addr| TcpStream::connect_timeout(&addr, cfg.timeout).is_ok())
-    }
-
     /// Run health check on all nodes
     pub fn check_all(&self) {
         let cfg = self.config();
         let now = Instant::now();
+        let nodes_snapshot = self.cluster.nodes_snapshot();
 
-        for node in self.cluster.nodes_snapshot().iter() {
-            let timeout = self.cluster.check_heartbeat_timeout(&node.id);
-            let tcp_probe_ok = self.run_active_tcp_probe(&node.id);
-            let result = if let Some(metrics) = self.cluster.get_metrics(&node.id) {
-                let latency_us = if metrics.latency_samples > 0 {
-                    metrics.avg_latency_us
+        // Phase 1: Collect probe target addresses under a brief lock read
+        let targets: Vec<(String, SocketAddr)> = {
+            let probe_targets = self
+                .tcp_probe_targets
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner());
+            nodes_snapshot
+                .iter()
+                .filter_map(|node| {
+                    probe_targets
+                        .get(&node.id)
+                        .map(|addr| (node.id.clone(), *addr))
+                })
+                .collect()
+        };
+
+        // Phase 2: Execute active TCP probes OUTSIDE of any state locks
+        let mut probe_results = HashMap::with_capacity(targets.len());
+        for (node_id, addr) in targets {
+            let ok = TcpStream::connect_timeout(&addr, cfg.timeout).is_ok();
+            probe_results.insert(node_id, ok);
+        }
+
+        // Phase 3: Acquire cluster metrics and recent_checks locks ONCE to update state
+        let mut metrics_guard = self
+            .cluster
+            .metrics
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+
+        let mut checks = self
+            .recent_checks
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+
+        for node in nodes_snapshot.iter() {
+            let tcp_probe_ok = probe_results.get(&node.id).copied();
+
+            let result = if let Some(m) = metrics_guard.get_mut(&node.id) {
+                let timeout = now.duration_since(m.last_heartbeat) >= m.heartbeat_timeout;
+                let latency_us = if m.latency_samples > 0 {
+                    m.avg_latency_us
                 } else {
                     0.0
                 };
 
-                let delivery_ratio = if metrics.delivery_ratio_initialized {
-                    metrics.delivery_ratio
+                let delivery_ratio = if m.delivery_ratio_initialized {
+                    m.delivery_ratio
                 } else {
                     1.0
                 };
 
-                let status = if tcp_probe_ok == Some(false)
-                    || timeout
-                    || metrics.status == NodeStatus::Failed
-                {
-                    HealthStatus::Failed
-                } else if metrics.latency_samples == 0 && !metrics.delivery_ratio_initialized {
-                    HealthStatus::Unknown
-                } else {
-                    self.get_health_status(latency_us, delivery_ratio)
-                };
+                let status =
+                    if tcp_probe_ok == Some(false) || timeout || m.status == NodeStatus::Failed {
+                        HealthStatus::Failed
+                    } else if m.latency_samples == 0 && !m.delivery_ratio_initialized {
+                        HealthStatus::Unknown
+                    } else {
+                        self.get_health_status(latency_us, delivery_ratio)
+                    };
 
                 let measured_latency_us = if tcp_probe_ok == Some(false) {
                     cfg.timeout.as_secs_f32() * 1_000_000.0
                 } else {
                     latency_us
+                };
+
+                // Keep cluster node status aligned with health checks directly in place
+                m.status = match status {
+                    HealthStatus::Healthy => NodeStatus::Active,
+                    HealthStatus::Degraded => NodeStatus::Degraded,
+                    HealthStatus::Failed => NodeStatus::Failed,
+                    HealthStatus::Unknown => m.status,
                 };
 
                 HealthCheckResult {
@@ -243,28 +274,11 @@ impl NetworkHealthMonitor {
                 }
             };
 
-            // Keep cluster node status aligned with health checks.
-            self.cluster.get_metrics_mut(&node.id, |m| {
-                m.status = match result.status {
-                    HealthStatus::Healthy => NodeStatus::Active,
-                    HealthStatus::Degraded => NodeStatus::Degraded,
-                    HealthStatus::Failed => NodeStatus::Failed,
-                    HealthStatus::Unknown => m.status,
-                };
-            });
-
-            // Store recent check results (keep last 10)
-            let mut checks = self
-                .recent_checks
-                .lock()
-                .unwrap_or_else(|poison| poison.into_inner());
-            if let Some(node_checks) = checks.get_mut(&node.id) {
-                node_checks.push(result);
-                if node_checks.len() > 10 {
-                    node_checks.remove(0);
-                }
-            } else {
-                checks.insert(node.id.clone(), vec![result]);
+            // Store recent check results in O(1) ring buffer (keep last 10)
+            let node_checks = checks.entry(node.id.clone()).or_default();
+            node_checks.push_back(result);
+            if node_checks.len() > 10 {
+                node_checks.pop_front();
             }
         }
 
@@ -304,7 +318,7 @@ impl NetworkHealthMonitor {
             .unwrap_or_else(|poison| poison.into_inner());
         checks
             .get(node_id)
-            .and_then(|checks| checks.last())
+            .and_then(|checks| checks.back())
             .cloned()
     }
 
@@ -314,7 +328,10 @@ impl NetworkHealthMonitor {
             .recent_checks
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
-        checks.values().flat_map(|checks| checks.clone()).collect()
+        checks
+            .values()
+            .flat_map(|checks| checks.iter().cloned())
+            .collect()
     }
 
     /// Get the number of nodes whose latest health sample is healthy.
@@ -327,7 +344,7 @@ impl NetworkHealthMonitor {
             .values()
             .filter(|node_checks| {
                 node_checks
-                    .last()
+                    .back()
                     .map(|c| c.status == HealthStatus::Healthy)
                     .unwrap_or(false)
             })
@@ -377,7 +394,7 @@ impl NetworkHealthMonitor {
             .values()
             .filter(|node_checks| {
                 node_checks
-                    .last()
+                    .back()
                     .map(|c| c.status == HealthStatus::Healthy)
                     .unwrap_or(false)
             })
@@ -387,7 +404,7 @@ impl NetworkHealthMonitor {
             .values()
             .filter(|node_checks| {
                 node_checks
-                    .last()
+                    .back()
                     .map(|c| c.status == HealthStatus::Degraded)
                     .unwrap_or(false)
             })
@@ -397,7 +414,7 @@ impl NetworkHealthMonitor {
             .values()
             .filter(|node_checks| {
                 node_checks
-                    .last()
+                    .back()
                     .map(|c| c.status == HealthStatus::Failed)
                     .unwrap_or(false)
             })
@@ -674,7 +691,7 @@ mod tests {
                 .unwrap()
                 .entry("node-a".to_string())
                 .or_default()
-                .push(result);
+                .push_back(result);
         }
 
         assert!(monitor.needs_quantization_fallback("node-a"));
