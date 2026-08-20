@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { RefreshCw, XCircle, Clock, Database, Zap } from 'lucide-react';
+import { RefreshCw, XCircle, Clock, Database, Zap, MessageSquare } from 'lucide-react';
 import { useAppStore } from '../store';
 import { EmptyState, ErrorPanel } from './StatusViews';
 
@@ -18,7 +18,7 @@ function sessionStatusClasses(status: string): string {
 }
 
 export const SessionsTab: React.FC<{ api: any }> = ({ api }) => {
-  const { sessions, setSessions, addToast } = useAppStore();
+  const { sessions, setSessions, addToast, setActiveTab } = useAppStore();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
@@ -71,6 +71,11 @@ export const SessionsTab: React.FC<{ api: any }> = ({ api }) => {
               icon={Clock}
               title="No active inference sessions"
               description="Start a chat to create a new session."
+              action={{
+                label: 'Start New Chat',
+                icon: MessageSquare,
+                onClick: () => setActiveTab(0),
+              }}
             />
           ) : (
             <div className="grid grid-cols-1 gap-4">

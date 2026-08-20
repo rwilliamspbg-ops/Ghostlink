@@ -3,28 +3,57 @@ import { Loader, type LucideIcon } from 'lucide-react';
 
 type IconType = LucideIcon;
 
+export interface EmptyStateAction {
+  label: string;
+  onClick: () => void;
+  icon?: IconType;
+}
+
 interface EmptyStateProps {
   icon: IconType;
   title: string;
   description?: React.ReactNode;
   /** 'card' draws the dashed bordered card seen on Sessions/Workers; 'plain' is bare centered text (Models/MCP). */
   variant?: 'card' | 'plain';
+  action?: EmptyStateAction;
+  children?: React.ReactNode;
   className?: string;
 }
 
 // Single shared shape for "nothing here yet" across tabs — previously every
 // tab hand-rolled a slightly different version of the same empty state.
-export const EmptyState: React.FC<EmptyStateProps> = ({ icon: Icon, title, description, variant = 'plain', className = '' }) => (
-  <div
-    className={`flex flex-col items-center justify-center text-center py-16 text-slate-500 ${
-      variant === 'card' ? 'bg-slate-900/30 border border-slate-800 border-dashed rounded-3xl' : ''
-    } ${className}`}
-  >
-    <Icon size={48} className="mb-4 opacity-30 text-slate-700" aria-hidden="true" />
-    <p className="text-base font-medium text-slate-400">{title}</p>
-    {description && <p className="text-sm text-slate-500 mt-1 max-w-sm">{description}</p>}
-  </div>
-);
+export const EmptyState: React.FC<EmptyStateProps> = ({
+  icon: Icon,
+  title,
+  description,
+  variant = 'plain',
+  action,
+  children,
+  className = '',
+}) => {
+  const ActionIcon = action?.icon;
+  return (
+    <div
+      className={`flex flex-col items-center justify-center text-center py-16 text-slate-500 ${
+        variant === 'card' ? 'bg-slate-900/30 border border-slate-800 border-dashed rounded-3xl' : ''
+      } ${className}`}
+    >
+      <Icon size={48} className="mb-4 opacity-30 text-slate-700" aria-hidden="true" />
+      <p className="text-base font-medium text-slate-400">{title}</p>
+      {description && <p className="text-sm text-slate-500 mt-1 max-w-sm">{description}</p>}
+      {action && (
+        <button
+          onClick={action.onClick}
+          className="mt-4 inline-flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold rounded-xl transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
+        >
+          {ActionIcon && <ActionIcon size={14} aria-hidden="true" />}
+          {action.label}
+        </button>
+      )}
+      {children}
+    </div>
+  );
+};
 
 interface LoadingStateProps {
   label?: string;

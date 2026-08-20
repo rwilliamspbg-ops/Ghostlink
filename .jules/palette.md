@@ -1,5 +1,9 @@
 # Palette's Journal
 
+## 2026-08-19 - [Actionable Empty States with Call-To-Action Controls]
+**Learning:** Empty dashboard views (such as Sessions with no active inference runs or Workers with no connected cluster nodes) can leave users stranded if they only display static text instructions. Supporting an optional `action` prop in shared `EmptyState` components provides inline, keyboard-accessible call-to-action buttons (with high-contrast focus rings and contextual icons) that directly guide users to resolution (e.g. switching tabs or opening creation forms).
+**Action:** Always complement empty state messages with actionable CTA buttons when a primary user action (like starting a session or adding a node) can resolve the empty state.
+
 ## 2026-08-18 - [Command Palette Modal Focus Trapping & Cyclic Tab Navigation]
 **Learning:** Combobox search inputs inside modal overlays (like the global Command Palette) can inadvertently release keyboard focus to invisible background DOM elements when users press `Tab`. Intercepting `Tab` / `Shift+Tab` keydown events on the search input to cycle option highlights modulo the filtered length keeps keyboard focus firmly contained within the modal dialogue while providing intuitive cyclic option navigation.
 **Action:** Always intercept `Tab` and `Shift+Tab` on modal combobox search inputs to cycle option highlights safely and trap focus within `role="dialog"` overlays.

@@ -370,6 +370,11 @@ export const WorkersTab: React.FC<{ api: any }> = ({ api }) => {
                 icon={Server}
                 title="No workers connected"
                 description="Add a worker by host/port, or discover peers on the local network."
+                action={{
+                  label: 'Add Worker',
+                  icon: Plus,
+                  onClick: () => setShowAddForm(true),
+                }}
               />
             ) : (
               <div className="grid grid-cols-1 gap-4">
