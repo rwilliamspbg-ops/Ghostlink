@@ -1086,7 +1086,7 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                           <div className="flex items-center gap-1">
                             <button
                               onClick={() => handleLoadSession(s.id)}
-                              className="p-1.5 hover:bg-slate-700 rounded-lg text-slate-400 hover:text-white transition"
+                              className="p-1.5 hover:bg-slate-700 rounded-lg text-slate-400 hover:text-white transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
                               title="Load"
                               aria-label={`Load session ${s.name || s.id}`}
                             >
@@ -1094,7 +1094,7 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                             </button>
                             <button
                               onClick={() => handleDeleteSession(s.id)}
-                              className="p-1.5 hover:bg-slate-700 rounded-lg text-slate-400 hover:text-red-400 transition"
+                              className="p-1.5 hover:bg-slate-700 rounded-lg text-slate-400 hover:text-red-400 transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
                               title="Delete"
                               aria-label={`Delete session ${s.name || s.id}`}
                             >
