@@ -60,6 +60,13 @@ export default defineConfig({
       '/api': {
         target: proxyTarget,
         changeOrigin: true,
+        // ghost-link's HTTPS listener (settings.json "enable_tls") uses a
+        // self-signed loopback cert with no CA chain Node's default TLS
+        // verification would trust — matches the same InsecureSkipVerify
+        // rationale in control-plane/pkg/proxy/proxy.go. Only relevant when
+        // proxyTarget is https (control-plane is always http), and only ever
+        // talks over loopback, so this isn't a real MITM exposure.
+        secure: false,
         rewrite: (path) => path,
         configure: (proxy) => {
           proxy.on('proxyReq', (proxyReq) => {
@@ -75,6 +82,7 @@ export default defineConfig({
       '/health': {
         target: proxyTarget,
         changeOrigin: true,
+        secure: false,
         configure: (proxy) => {
           proxy.on('proxyReq', (proxyReq) => {
             proxyReq.setTimeout(10000);
@@ -84,6 +92,7 @@ export default defineConfig({
       '/v1': {
         target: proxyTarget,
         changeOrigin: true,
+        secure: false,
         configure: (proxy) => {
           proxy.on('proxyReq', (proxyReq) => {
             proxyReq.setTimeout(300000);
