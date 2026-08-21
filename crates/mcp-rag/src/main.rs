@@ -117,7 +117,7 @@ fn chunk_text(text: &str, max_chars: usize) -> Vec<String> {
     chunks
 }
 
-/// Helper to calculate Euclidean norm using loop-unrolled chunk processing via `chunks_exact(8)`.
+/// Helper to calculate Euclidean norm using loop-unrolled chunk processing via `chunks(8)`.
 /// This eliminates intermediate bounds checks and allows the compiler to leverage SIMD vectorization,
 /// and breaks loop carry dependency chains by accumulating into multiple independent registers.
 fn euclidean_norm(v: &[f32]) -> f32 {
@@ -134,8 +134,7 @@ fn euclidean_norm(v: &[f32]) -> f32 {
     let mut sum6 = 0.0;
     let mut sum7 = 0.0;
 
-    let chunks = v.chunks_exact(8);
-    let remainder = chunks.remainder();
+    let (chunks, remainder) = v.as_chunks::<8>();
 
     for c in chunks {
         sum0 += c[0] * c[0];
@@ -176,12 +175,10 @@ fn cosine_similarity_precomputed(a: &[f32], b: &[f32], norm_a: f32, norm_b: f32)
     let mut dot6 = 0.0;
     let mut dot7 = 0.0;
 
-    let chunks_a = a.chunks_exact(8);
-    let chunks_b = b.chunks_exact(8);
-    let remainder_a = chunks_a.remainder();
-    let remainder_b = chunks_b.remainder();
+    let (chunks_a, remainder_a) = a.as_chunks::<8>();
+    let (chunks_b, remainder_b) = b.as_chunks::<8>();
 
-    for (ca, cb) in chunks_a.zip(chunks_b) {
+    for (ca, cb) in chunks_a.iter().zip(chunks_b) {
         dot0 += ca[0] * cb[0];
         dot1 += ca[1] * cb[1];
         dot2 += ca[2] * cb[2];

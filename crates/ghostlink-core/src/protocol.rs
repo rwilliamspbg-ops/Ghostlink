@@ -51,30 +51,26 @@ impl FrameHeader {
     /// Encode header directly into a pre-allocated buffer (zero-copy)
     #[inline]
     pub fn encode_into(&self, buf: &mut [u8; Self::HEADER_SIZE]) {
-        let et_bytes = self.ether_type.to_le_bytes();
-        buf[0] = et_bytes[0];
-        buf[1] = et_bytes[1];
+        buf[0..2].copy_from_slice(&self.ether_type.to_le_bytes());
         buf[2] = self.kind;
         buf[3] = self.version;
-        let crc_bytes = self.crc.to_le_bytes();
-        buf[4] = crc_bytes[0];
-        buf[5] = crc_bytes[1];
-        buf[6] = crc_bytes[2];
-        buf[7] = crc_bytes[3];
+        buf[4..8].copy_from_slice(&self.crc.to_le_bytes());
     }
 
     /// Decode header from bytes (zero-copy, no allocation)
     #[inline]
     pub fn decode(buf: &[u8]) -> Option<Self> {
-        if buf.len() < Self::HEADER_SIZE {
-            return None;
-        }
-        // Optimize: Use try_into on slices to let the compiler emit unaligned single-instruction loads
-        // instead of compiling down to individual byte loads and array constructions.
-        let ether_type = u16::from_le_bytes(buf[0..2].try_into().ok()?);
-        let kind = buf[2];
-        let version = buf[3];
-        let crc = u32::from_le_bytes(buf[4..8].try_into().ok()?);
+        // Optimize: Extract fixed 8-byte slice in a single bounds check to allow unaligned single-instruction loads.
+        let header_bytes: &[u8; 8] = buf.get(..Self::HEADER_SIZE)?.try_into().ok()?;
+        let ether_type = u16::from_le_bytes([header_bytes[0], header_bytes[1]]);
+        let kind = header_bytes[2];
+        let version = header_bytes[3];
+        let crc = u32::from_le_bytes([
+            header_bytes[4],
+            header_bytes[5],
+            header_bytes[6],
+            header_bytes[7],
+        ]);
         Some(Self {
             ether_type,
             kind,
@@ -258,6 +254,9 @@ impl NodeResources {
             return Err("payload length exceeds max_size");
         }
 
+        // Optimize: Pre-reserve exact capacity to avoid multiple capacity reallocations and checks during serialization.
+        buffer.reserve(payload_len);
+
         buffer.push(id_bytes.len() as u8);
         buffer.extend_from_slice(id_bytes);
         buffer.extend_from_slice(&self.vram_gb.to_le_bytes());
@@ -340,18 +339,10 @@ impl NodeResources {
         if vram_end > len {
             return Err("payload truncated".into());
         }
-        // Optimize: Use slice try_into for f32 decoding to trigger unaligned single-instruction loads
-        // instead of manual indexing of individual bytes.
-        let vram_gb = f32::from_le_bytes(
-            payload[cursor..cursor + 4]
-                .try_into()
-                .map_err(|_| "vram parsing failed".to_string())?,
-        );
-        let system_memory_gb = f32::from_le_bytes(
-            payload[cursor + 4..cursor + 8]
-                .try_into()
-                .map_err(|_| "system memory parsing failed".to_string())?,
-        );
+        // Optimize: Direct slice conversion for primitive float fields without redundant bounds checks or error mapping.
+        let vram_gb = f32::from_le_bytes(payload[cursor..cursor + 4].try_into().unwrap());
+        let system_memory_gb =
+            f32::from_le_bytes(payload[cursor + 4..cursor + 8].try_into().unwrap());
         cursor = vram_end;
 
         if cursor >= len {
