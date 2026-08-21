@@ -74,6 +74,7 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
   const [hfLoading, setHfLoading] = useState(false);
   const [ollamaModels, setOllamaModels] = useState<any[]>([]);
   const [showModelfile, setShowModelfile] = useState<string | null>(null);
+  const [modelfileCopied, setModelfileCopied] = useState(false);
   const [recommendedModels, setRecommendedModels] = useState<any[]>([]);
   const [recommendedLoading, setRecommendedLoading] = useState(false);
   const [detectedRuntime, setDetectedRuntime] = useState<string>('cpu');
@@ -489,10 +490,15 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
     }
   };
 
-  const copyModelfile = () => {
+  const copyModelfile = async () => {
     if (showModelfile) {
-      navigator.clipboard.writeText(showModelfile);
-      setMessage('Modelfile copied to clipboard');
+      try {
+        await navigator.clipboard.writeText(showModelfile);
+        setModelfileCopied(true);
+        setTimeout(() => setModelfileCopied(false), 2000);
+      } catch {
+        setMessage('Failed to copy Modelfile');
+      }
     }
   };
 
@@ -941,10 +947,23 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
               </pre>
             </div>
             <div className="flex justify-end gap-2 p-4 border-t border-slate-800">
-              <button onClick={copyModelfile} className="px-4 py-2 bg-blue-600 text-white rounded-lg font-medium hover:bg-blue-700 focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none">
-                Copy to Clipboard
+              <button
+                onClick={copyModelfile}
+                title="Copy Modelfile contents to clipboard"
+                aria-label="Copy Modelfile contents to clipboard"
+                className="inline-flex items-center gap-1.5 px-4 py-2 bg-blue-600 text-white rounded-lg font-medium hover:bg-blue-700 focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none transition"
+              >
+                {modelfileCopied ? (
+                  <>
+                    <Check size={16} className="text-green-300" aria-hidden="true" /> Copied!
+                  </>
+                ) : (
+                  <>
+                    <Copy size={16} aria-hidden="true" /> Copy to Clipboard
+                  </>
+                )}
               </button>
-              <button onClick={() => setShowModelfile(null)} className="px-4 py-2 bg-slate-800 text-white rounded-lg font-medium hover:bg-slate-700 focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none">
+              <button onClick={() => setShowModelfile(null)} className="px-4 py-2 bg-slate-800 text-white rounded-lg font-medium hover:bg-slate-700 focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none transition">
                 Close
               </button>
             </div>
