@@ -1,6 +1,6 @@
-import { render, screen } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
-import { AlertCircle, Inbox } from 'lucide-react';
+import { render, screen, fireEvent } from '@testing-library/react';
+import { describe, expect, it, vi } from 'vitest';
+import { AlertCircle, Inbox, Plus } from 'lucide-react';
 import { EmptyState, ErrorPanel, LoadingState } from './StatusViews';
 
 describe('StatusViews', () => {
@@ -27,5 +27,22 @@ describe('StatusViews', () => {
     render(<EmptyState icon={Inbox} title="No items found" description="Try refining your filter." />);
     expect(screen.getByText('No items found')).toBeInTheDocument();
     expect(screen.getByText('Try refining your filter.')).toBeInTheDocument();
+  });
+
+  it('renders EmptyState with action button and handles click', () => {
+    const handleClick = vi.fn();
+    render(
+      <EmptyState
+        icon={Inbox}
+        title="No workers"
+        description="Connect a node."
+        action={{ label: 'Add Worker', onClick: handleClick, icon: Plus }}
+      />
+    );
+    const buttonEl = screen.getByRole('button', { name: 'Add Worker' });
+    expect(buttonEl).toBeInTheDocument();
+    expect(buttonEl).toHaveClass('focus-visible:ring-2');
+    fireEvent.click(buttonEl);
+    expect(handleClick).toHaveBeenCalledTimes(1);
   });
 });
