@@ -121,9 +121,14 @@ wait_for_http() {
     local override_var="${5:-}"
     local watch_pid="${6:-}"
     local watch_log="${7:-}"
+    local bearer_token="${8:-}"
     local start
     start=$(date +%s)
     local body
+    local curl_auth_args=()
+    if [ -n "$bearer_token" ]; then
+        curl_auth_args=(-H "Authorization: Bearer $bearer_token")
+    fi
 
     while true; do
         if [ -n "$watch_pid" ] && ! kill -0 "$watch_pid" 2>/dev/null; then
@@ -135,12 +140,12 @@ wait_for_http() {
             return 1
         fi
         if [ -n "$body_marker" ]; then
-            body=$(curl -skf "$url" 2>/dev/null || true)
+            body=$(curl -skf "${curl_auth_args[@]}" "$url" 2>/dev/null || true)
             if [ -n "$body" ] && echo "$body" | grep -qF "$body_marker"; then
                 printf "\r${CLEAR_LINE}  ${GREEN}✓${NC} ${WHITE}%s${NC} ${GREEN}ready${NC} at ${CYAN}%s${NC}\n" "$label" "$url"
                 return 0
             fi
-        elif curl -skf "$url" >/dev/null 2>&1; then
+        elif curl -skf "${curl_auth_args[@]}" "$url" >/dev/null 2>&1; then
             printf "\r${CLEAR_LINE}  ${GREEN}✓${NC} ${WHITE}%s${NC} ${GREEN}ready${NC} at ${CYAN}%s${NC}\n" "$label" "$url"
             return 0
         fi
@@ -198,6 +203,26 @@ type_text() {
     echo
 }
 
+# Print $1 centered within a field of $2 columns (default: the banner box's
+# own width, so callers don't have to keep re-deriving it by hand).
+center_text() {
+    local text="$1"
+    local width="${2:-95}"
+    local pad=$(( (width - ${#text}) / 2 ))
+    [ "$pad" -lt 0 ] && pad=0
+    printf "%*s%s\n" "$pad" "" "$text"
+}
+
+# Real package version (crates/ghost-link/Cargo.toml), not a hand-maintained
+# copy that drifts from the actual build — this is what show_success's
+# banner and the API's own /health response should both agree with.
+ghostlink_version() {
+    local ver
+    ver=$(grep -m1 '^version[[:space:]]*=' "$PROJECT_ROOT/crates/ghost-link/Cargo.toml" 2>/dev/null \
+        | sed -E 's/version[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/')
+    echo "${ver:-dev}"
+}
+
 # Cinematic banner with fade-in
 show_banner() {
     clear
@@ -222,6 +247,9 @@ show_banner() {
     ╚════════════════════════════════════════════════════════════════════════════════════════╝
 EOF
     echo -e "${NC}"
+    echo -e "${WHITE}$(center_text "ZERO-CONFIG LAN INFERENCE FABRIC · DISTRIBUTED GPU/CPU INFERENCE")${NC}"
+    echo -e "${DIM}$(center_text "A Sovereign Mohawk Proto LLC Project  ·  ghost-link v$(ghostlink_version)")${NC}"
+    echo ""
 }
 
 # System info panel
@@ -821,6 +849,49 @@ ensure_api_bin() {
     return 1
 }
 
+# Resolve the compiled control-plane gateway binary (absolute path).
+resolve_control_plane_bin() {
+    local candidate
+    for candidate in \
+        "${GHOSTLINK_CONTROL_PLANE_BIN:-}" \
+        "$PROJECT_ROOT/bin/control-plane" \
+        "$PROJECT_ROOT/control-plane/control-plane"
+    do
+        if [ -n "$candidate" ] && is_runnable_native_bin "$candidate" && [ -x "$candidate" ]; then
+            echo "$candidate"
+            return 0
+        fi
+    done
+    return 1
+}
+
+# Build the Go control-plane gateway (control-plane/) if no binary is present
+# yet. This gateway is an optional add-on in front of ghost-link — the GUI's
+# own dev-server proxy is pinned straight at ghost-link below regardless (see
+# "Always pin GUI -> ghost-link API"), so a missing Go toolchain or a failed
+# build here is only a warning from the caller, never a reason to abort the
+# whole launch.
+ensure_control_plane_bin() {
+    local bin
+    if bin=$(resolve_control_plane_bin); then
+        echo "$bin"
+        return 0
+    fi
+    if ! command -v go >/dev/null 2>&1; then
+        return 1
+    fi
+    mkdir -p "$PROJECT_ROOT/bin"
+    (
+        cd "$PROJECT_ROOT/control-plane" || exit 1
+        go build -o "$PROJECT_ROOT/bin/control-plane" .
+    ) >/tmp/ghostlink_control_plane_build.log 2>&1
+    if bin=$(resolve_control_plane_bin); then
+        echo "$bin"
+        return 0
+    fi
+    return 1
+}
+
 # Pick best available GGUF model (prefer production models used on Windows, fall back to tiny)
 resolve_model_file() {
     local candidate
@@ -926,6 +997,7 @@ start_services() {
     local API_SCHEME
     API_SCHEME=$(get_api_scheme)
     local GUI_PORT="${GUI_PORT:-5173}"
+    local CONTROL_PLANE_PORT="${GHOSTLINK_CONTROL_PLANE_PORT:-8000}"
     local LLAMA_PORT="${GHOSTLINK_LLAMA_SERVER_PORT:-8080}"
     # native (default, matches Windows launch-ollama.bat) or ollama
     local INFERENCE_BACKEND="${GHOSTLINK_INFERENCE_BACKEND:-native}"
@@ -942,6 +1014,7 @@ start_services() {
     # a different user, session, or repo that just happens to share the binary name.
     free_port "$BACKEND_PORT"
     free_port "$GUI_PORT"
+    free_port "$CONTROL_PLANE_PORT"
     if [ "$INFERENCE_BACKEND" = "native" ]; then
         free_port "$LLAMA_PORT"
     fi
@@ -1317,17 +1390,15 @@ start_services() {
         echo -e "  ${DIM}Tip: ensure port ${BACKEND_PORT} is free and ghost-link is a Linux binary under WSL.${NC}"
         return 1
     fi
-    if ! wait_for_http "${API_SCHEME}://${BACKEND_HOST}:${BACKEND_PORT}/api/health" "API /api/health" 30 "inference_backend" "GHOSTLINK_API_PORT" "$API_PID" "/tmp/ghostlink_api.log"; then
-        echo -e "  ${RED}✗${NC} /api/health failed — wrong process on :${BACKEND_PORT} or outdated binary"
-        echo -e "  ${DIM}Check: curl -ik ${API_SCHEME}://${BACKEND_HOST}:${BACKEND_PORT}/api/health${NC}"
-        return 1
-    fi
 
     # Every route but /health now requires a real bearer token (see auth.rs) —
-    # load the key ghost-link just persisted (cwd was $PROJECT_ROOT when it
-    # started, so that's where it wrote api_key.txt, unless overridden) so
-    # the checks below authenticate instead of always getting a 401 that
-    # looks like a broken server.
+    # /api/health checked right below is one of them, so the key ghost-link
+    # just persisted (cwd was $PROJECT_ROOT when it started, so that's where
+    # it wrote api_key.txt, unless overridden) has to be loaded *before* that
+    # check, not after — otherwise every attempt 401s, curl's -f silently
+    # swallows it as "not ready yet", and this always times out even though
+    # the server answered fine, mistakenly looking like a wrong/outdated
+    # process on the port.
     local API_KEY_PATH="${GHOSTLINK_API_KEY_PATH:-$PROJECT_ROOT/api_key.txt}"
     local API_KEY=""
     if [ -f "$API_KEY_PATH" ]; then
@@ -1336,6 +1407,12 @@ start_services() {
     local AUTH_HEADER=()
     if [ -n "$API_KEY" ]; then
         AUTH_HEADER=(-H "Authorization: Bearer $API_KEY")
+    fi
+
+    if ! wait_for_http "${API_SCHEME}://${BACKEND_HOST}:${BACKEND_PORT}/api/health" "API /api/health" 30 "inference_backend" "GHOSTLINK_API_PORT" "$API_PID" "/tmp/ghostlink_api.log" "$API_KEY"; then
+        echo -e "  ${RED}✗${NC} /api/health failed — wrong process on :${BACKEND_PORT} or outdated binary"
+        echo -e "  ${DIM}Check: curl -ik ${AUTH_HEADER[@]+"${AUTH_HEADER[@]}"} ${API_SCHEME}://${BACKEND_HOST}:${BACKEND_PORT}/api/health${NC}"
+        return 1
     fi
 
     # Verify critical GUI routes (GET). 405 here means wrong server (e.g. POST-only proxy).
@@ -1360,7 +1437,7 @@ start_services() {
                 echo -e "  ${RED}✗${NC} API failed after cargo fallback — see /tmp/ghostlink_api.log"
                 return 1
             fi
-            if ! wait_for_http "${API_SCHEME}://${BACKEND_HOST}:${BACKEND_PORT}/api/health" "API /api/health (cargo fallback)" 30 "inference_backend" "GHOSTLINK_API_PORT" "$API_PID" "/tmp/ghostlink_api.log"; then
+            if ! wait_for_http "${API_SCHEME}://${BACKEND_HOST}:${BACKEND_PORT}/api/health" "API /api/health (cargo fallback)" 30 "inference_backend" "GHOSTLINK_API_PORT" "$API_PID" "/tmp/ghostlink_api.log" "$API_KEY"; then
                 echo -e "  ${RED}✗${NC} /api/health failed after cargo fallback"
                 return 1
             fi
@@ -1407,7 +1484,38 @@ start_services() {
     echo -e "  ${GREEN}✓${NC} API routes verified (health, settings, models, chat POST)"
     echo ""
 
-    # 3. React Frontend — always targets ghost-link API base above
+    # 3. Control-Plane Gateway (optional) — a Go reverse proxy in front of
+    # ghost-link (control-plane/) that adds rate limiting and can serve a
+    # built GUI dist standalone. The dev GUI below talks straight to
+    # ghost-link either way (see "Always pin GUI -> ghost-link API"), so this
+    # is best-effort: no Go toolchain, or a build/start failure, just skips it
+    # with a warning rather than aborting the launch.
+    echo -e "  ${WHITE}▶${NC} ${BOLD}Control-Plane Gateway${NC} ${DIM}(port ${CONTROL_PLANE_PORT})${NC}"
+    local CONTROL_PLANE_BIN=""
+    if CONTROL_PLANE_BIN=$(ensure_control_plane_bin); then
+        (
+            cd "$PROJECT_ROOT"
+            PORT="$CONTROL_PLANE_PORT" \
+              GHOSTLINK_BACKEND_URL="${API_SCHEME}://${BACKEND_HOST}:${BACKEND_PORT}" \
+              "$CONTROL_PLANE_BIN"
+        ) >/tmp/ghostlink_control_plane.log 2>&1 &
+        CONTROL_PLANE_PID=$!
+
+        if wait_for_http "http://127.0.0.1:${CONTROL_PLANE_PORT}/health" "Control-Plane Gateway" 30 "" "" "$CONTROL_PLANE_PID" "/tmp/ghostlink_control_plane.log"; then
+            :
+        else
+            echo -e "  ${YELLOW}⚠${NC} Control-plane gateway didn't come up — continuing without it (GUI talks to ghost-link directly)"
+            kill "$CONTROL_PLANE_PID" 2>/dev/null || true
+            wait "$CONTROL_PLANE_PID" 2>/dev/null || true
+            unset CONTROL_PLANE_PID
+        fi
+    else
+        echo -e "  ${YELLOW}⚠${NC} Skipping control-plane gateway (Go toolchain not found, or build failed — see /tmp/ghostlink_control_plane_build.log)"
+        echo -e "  ${DIM}Optional: install Go (https://go.dev/dl/) to enable it.${NC}"
+    fi
+    echo ""
+
+    # 4. React Frontend — always targets ghost-link API base above
     echo -e "  ${WHITE}▶${NC} ${BOLD}React Frontend (Vite)${NC} ${DIM}(port ${GUI_PORT})${NC}"
     progress_bar 0 3
     echo " ${DIM}Checking dependencies...${NC}"
@@ -1493,14 +1601,33 @@ EOF
 
     progress_bar 2 3
     echo " ${DIM}Starting Vite dev server...${NC}"
-    # Always pin GUI → ghost-link API (:8003). Never :8080/:11434.
-    export VITE_GHOSTLINK_API_BASE="${API_SCHEME}://${BACKEND_HOST}:${BACKEND_PORT}"
-    export VITE_PROXY_TARGET="${API_SCHEME}://${BACKEND_HOST}:${BACKEND_PORT}"
+
+    # Prefer routing the GUI through the control-plane gateway over pinning
+    # it straight at ghost-link (:8003). This matters whenever enable_tls is
+    # on (API_SCHEME=https): the browser tab fetches this URL directly from
+    # page JS (api.ts's axios baseURL — Vite's own dev-server proxy below is
+    # never actually hit), and a real browser has no equivalent of curl -k
+    # or the gateway's own InsecureSkipVerify — it cannot be told from
+    # application code to trust ghost-link's self-signed loopback cert, so
+    # every request just fails with ERR_CERT_AUTHORITY_INVALID (empty
+    # models list, "no active model", nothing loads, with no error surfaced
+    # anywhere but the browser devtools network tab). The gateway already
+    # talks to ghost-link over TLS itself (skipping verification
+    # server-side, where that's actually safe — see control-plane's own
+    # proxy.go) and exposes plain HTTP to the browser, sidestepping the
+    # problem entirely. Only falls back to the direct ghost-link URL (the
+    # previous, TLS-unsafe behavior) if the gateway didn't start.
+    local GUI_API_TARGET="${API_SCHEME}://${BACKEND_HOST}:${BACKEND_PORT}"
+    if [ -n "${CONTROL_PLANE_PID:-}" ]; then
+        GUI_API_TARGET="http://127.0.0.1:${CONTROL_PLANE_PORT}"
+    fi
+    export VITE_GHOSTLINK_API_BASE="$GUI_API_TARGET"
+    export VITE_PROXY_TARGET="$GUI_API_TARGET"
     # Clear any stale override that pointed at wrong ports
     unset VITE_GHOSTLINK_BACKEND_URL 2>/dev/null || true
     PATH="$(dirname "$NODE_BIN"):$PATH" \
-      VITE_GHOSTLINK_API_BASE="${API_SCHEME}://${BACKEND_HOST}:${BACKEND_PORT}" \
-      VITE_PROXY_TARGET="${API_SCHEME}://${BACKEND_HOST}:${BACKEND_PORT}" \
+      VITE_GHOSTLINK_API_BASE="$GUI_API_TARGET" \
+      VITE_PROXY_TARGET="$GUI_API_TARGET" \
       "$NPM_BIN" run dev -- --host 127.0.0.1 --port "$GUI_PORT" >/tmp/ghostlink_frontend.log 2>&1 &
     GUI_PID=$!
     cd "$PROJECT_ROOT" || true
@@ -1529,6 +1656,10 @@ show_success() {
     echo -e "${GREEN}│${NC}                                                                                 ${GREEN}│${NC}"
     echo -e "${GREEN}│${NC}   ${CYAN}Ghostlink Studio is now running!${NC}                                              ${GREEN}│${NC}"
     echo -e "${GREEN}│${NC}                                                                                 ${GREEN}│${NC}"
+    local credit_line="Sovereign Mohawk Proto LLC  ·  Zero-Config LAN Inference Fabric  ·  v$(ghostlink_version)"
+    local credit_pad=$(( 81 - 3 - ${#credit_line} ))
+    [ "$credit_pad" -lt 0 ] && credit_pad=0
+    printf "${GREEN}│${NC}   ${DIM}%s${NC}%*s${GREEN}│${NC}\n" "$credit_line" "$credit_pad" ""
     echo -e "${GREEN}└────────────────────────────────────────────────────────────────────────────────────┘${NC}"
     echo ""
     
@@ -1542,6 +1673,9 @@ show_success() {
     echo -e "${BLUE}┌─ Service Endpoints ──────────────────────────────────────────────────────────────┐${NC}"
     echo -e "${BLUE}│${NC}  ${WHITE}▶${NC} ${BOLD}Web Interface${NC}      → ${CYAN}http://127.0.0.1:${gui_port}${NC}"
     echo -e "${BLUE}│${NC}  ${WHITE}▶${NC} ${BOLD}API Server${NC}         → ${CYAN}${api_scheme}://127.0.0.1:${api_port}${NC}"
+    if [ -n "${CONTROL_PLANE_PID:-}" ]; then
+        echo -e "${BLUE}│${NC}  ${WHITE}▶${NC} ${BOLD}Control-Plane${NC}      → ${CYAN}http://127.0.0.1:${GHOSTLINK_CONTROL_PLANE_PORT:-8000}${NC} ${DIM}(optional gateway)${NC}"
+    fi
     if [ "$inference" = "ollama" ]; then
         echo -e "${BLUE}│${NC}  ${WHITE}▶${NC} ${BOLD}Ollama${NC}             → ${CYAN}http://127.0.0.1:11434${NC}"
     else
@@ -1582,11 +1716,13 @@ cleanup() {
     echo -e "\n${YELLOW}Shutting down services...${NC}"
     [ -n "${GUI_PID:-}" ] && kill $GUI_PID 2>/dev/null && wait $GUI_PID 2>/dev/null || true
     [ -n "${API_PID:-}" ] && kill $API_PID 2>/dev/null && wait $API_PID 2>/dev/null || true
+    [ -n "${CONTROL_PLANE_PID:-}" ] && kill $CONTROL_PLANE_PID 2>/dev/null && wait $CONTROL_PLANE_PID 2>/dev/null || true
     [ -n "${LLAMA_PID:-}" ] && kill $LLAMA_PID 2>/dev/null && wait $LLAMA_PID 2>/dev/null || true
     # Port-scoped cleanup only (see start_services) — never a blind system-wide pkill.
     free_port "${GHOSTLINK_API_PORT:-8003}" 2>/dev/null || true
     free_port "${GHOSTLINK_LLAMA_SERVER_PORT:-8080}" 2>/dev/null || true
     free_port "${GUI_PORT:-5173}" 2>/dev/null || true
+    free_port "${GHOSTLINK_CONTROL_PLANE_PORT:-8000}" 2>/dev/null || true
     echo -e "${GREEN}✓${NC} All services stopped."
     echo -e "${SHOW_CURSOR}"
     tput cnorm 2>/dev/null

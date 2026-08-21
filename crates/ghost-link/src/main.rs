@@ -5964,7 +5964,43 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         State(state): State<Arc<Mutex<BackendState>>>,
     ) -> Json<serde_json::Value> {
         let backend = lock_state(&state);
-        Json(serde_json::json!({ "workers": backend.workers }))
+        let mut workers = backend.workers.clone();
+
+        // Manually-added workers (`/api/workers/add`) and auto-discovered
+        // peers (`/api/workers/discover`, plus the periodic UDP broadcast in
+        // `serve`) live in two separate stores — `backend.workers` vs
+        // `backend.cluster` — so discovered peers never reached this list
+        // even after a successful discovery round. Merge cluster nodes in,
+        // excluding ourselves and anything already present by id.
+        let known_ids: std::collections::HashSet<String> =
+            workers.iter().map(|w| w.id.clone()).collect();
+        for node in backend.cluster.nodes() {
+            if node.id == backend.local_node_id || known_ids.contains(&node.id) {
+                continue;
+            }
+            let metrics = backend.cluster.get_metrics(&node.id);
+            let host = metrics
+                .as_ref()
+                .and_then(|m| m.ip_address)
+                .map(|addr| addr.ip().to_string())
+                .unwrap_or_else(|| node.id.clone());
+            workers.push(WorkerRecord {
+                id: node.id.clone(),
+                host,
+                // Discovery only tells us the peer's IP (from the UDP reply
+                // address); the OpenAI-API port isn't part of the discovery
+                // frame (`rpc_port` is the separate ggml-rpc contribution
+                // port, not this one), so assume the same default port
+                // ghost-link listens on everywhere else in this UI.
+                port: 8003,
+                status: "Discovered".to_string(),
+                model: "unknown".to_string(),
+                threads: 4,
+                load: 0,
+            });
+        }
+
+        Json(serde_json::json!({ "workers": workers }))
     }
 
     async fn handle_gui_cluster_topology(
