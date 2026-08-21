@@ -4,6 +4,21 @@ All notable changes to Ghostlink Studio are documented here.
 
 ---
 
+## [Unreleased]
+
+### Fixed
+
+- **GUI showed no active model/empty models list whenever `enable_tls` is on** (`launch.sh`, `ghostlink_gui_modern/vite.config.ts`): the GUI's `axios` client (`api.ts`) builds absolute request URLs from `VITE_GHOSTLINK_API_BASE`, which `launch.sh` pinned straight at `ghost-link`'s own `https://…:8003` — so every request left the page as a real cross-origin HTTPS fetch. A browser tab has no equivalent of `curl -k` or a server-side proxy's `InsecureSkipVerify`; it cannot be told from application code to trust `ghost-link`'s self-signed loopback cert, so every one of those requests failed outright with `ERR_CERT_AUTHORITY_INVALID` — with nothing surfaced anywhere but the browser devtools network tab. `launch.sh` now routes the GUI through the control-plane gateway (see below) instead, which already talks to `ghost-link` over TLS server-side (skipping verification there, where that's actually safe) and exposes plain HTTP to the browser. Falls back to the old direct-to-`ghost-link` URL only if the gateway didn't start. Vite's own dev-server proxy blocks (`/api`, `/health`, `/v1`) also gained `secure: false`, since server-side proxying to the same self-signed cert was failing the same way.
+- **`launch.sh`'s own `/api/health` readiness check always timed out, misreporting a healthy server as "wrong process on port"**: every route but the exact path `/health` requires a bearer token (`auth_middleware`), including `/api/health` — but the script only loaded the persisted API key *after* that specific check already ran, so it 401'd on every attempt for the full 30s timeout (`curl -f` swallows the 401 body, making it indistinguishable from "not up yet"). Reordered to load the key first and thread it through `wait_for_http` (now takes an optional bearer-token argument).
+- **`GET /api/workers` never reflected auto-discovered peers** (`crates/ghost-link/src/main.rs`): manually-added workers (`POST /api/workers/add`) and peers found via UDP broadcast discovery (`POST /api/workers/discover`, plus the periodic background broadcast `serve` already ran) lived in two disconnected stores — a plain `Vec<WorkerRecord>` vs. the `ClusterState` topology graph. A successful discovery round updated the topology view but the Workers panel's own list never changed. `GET /api/workers` now merges in cluster-registered peers (deduped by id, self excluded, tagged `status: "Discovered"`) so the list reflects real network state instead of only ever showing what was typed into the "Add Worker" form.
+
+### Added
+
+- **Control-plane gateway wired into `launch.sh`**: the Go reverse-proxy gateway (`control-plane/`) previously had no launch-time integration at all — nothing built or started it. `launch.sh` now resolves/builds it if missing (`go build`, skipped with a warning if no Go toolchain is present — this is additive, not a hard requirement), starts and health-checks it alongside `ghost-link` and Vite, and stops it on cleanup. Reachable at `GHOSTLINK_CONTROL_PLANE_PORT` (default `8000`).
+- **`launch.sh` splash/success banners** now credit Sovereign Mohawk Proto LLC and carry a live version number read from `crates/ghost-link/Cargo.toml` (`ghostlink_version()`), instead of no version indicator at all.
+
+---
+
 ## [2.0.0] - 2026-08-17 (RBAC & scoped API keys, RPC peer authentication, durable audit trail, Grafana/Prometheus + OpenTelemetry, GUI accessibility, MCP server editor, chat attachments, model-performance GUI controls)
 
 First General Availability release. The jump from 1.17.0 to 2.0.0 isn't a
