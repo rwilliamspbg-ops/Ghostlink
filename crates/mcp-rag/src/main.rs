@@ -120,6 +120,7 @@ fn chunk_text(text: &str, max_chars: usize) -> Vec<String> {
 /// Helper to calculate Euclidean norm using loop-unrolled chunk processing via `chunks_exact(8)`.
 /// This eliminates intermediate bounds checks and allows the compiler to leverage SIMD vectorization,
 /// and breaks loop carry dependency chains by accumulating into multiple independent registers.
+#[allow(clippy::chunks_exact_to_as_chunks)]
 fn euclidean_norm(v: &[f32]) -> f32 {
     if v.is_empty() {
         return 0.0;
@@ -159,6 +160,7 @@ fn euclidean_norm(v: &[f32]) -> f32 {
 
 /// Helper to calculate cosine similarity using precomputed norms for both embeddings.
 /// This reduces the computation to a single-pass dot product loop with absolutely no sqrt or sum of squares.
+#[allow(clippy::chunks_exact_to_as_chunks)]
 fn cosine_similarity_precomputed(a: &[f32], b: &[f32], norm_a: f32, norm_b: f32) -> f32 {
     if a.len() != b.len() || a.is_empty() || norm_a == 0.0 || norm_b == 0.0 {
         return 0.0;
