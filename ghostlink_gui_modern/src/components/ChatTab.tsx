@@ -961,8 +961,9 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                         <span className="max-w-[120px] truncate">vs {compareModel.split('/').pop()}</span>
                         <button
                             onClick={() => setCompareModel(null)}
-                            className="p-0.5 rounded hover:bg-purple-500/20 hover:text-white transition"
+                            className="p-0.5 rounded hover:bg-purple-500/20 hover:text-white transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
                             aria-label="Exit compare mode"
+                            title="Exit compare mode"
                         >
                             <X size={12} aria-hidden="true" />
                         </button>
@@ -1422,7 +1423,7 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                   <div key={t.name} className="flex items-center gap-1.5 px-2 py-1 rounded-full bg-purple-500/10 border border-purple-500/20 text-[10px] text-purple-400 font-medium">
                       <Wand2 size={10} aria-hidden="true" />
                       {t.name}
-                      <button onClick={() => toggleTool(t.name)} className="hover:text-white" aria-label={`Disable ${t.name} tool`}><X size={10} aria-hidden="true" /></button>
+                      <button onClick={() => toggleTool(t.name)} className="hover:text-white rounded focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none transition" aria-label={`Disable ${t.name} tool`} title={`Disable ${t.name} tool`}><X size={10} aria-hidden="true" /></button>
                   </div>
               ))}
           </div>
@@ -1440,7 +1441,7 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                   <FileText size={10} aria-hidden="true" />
                   {a.name}
                   <span className="text-blue-400/60">{(a.size / 1024).toFixed(0)}KB</span>
-                  <button onClick={() => removeAttachment(a.id)} className="hover:text-white" aria-label={`Remove attachment ${a.name}`}>
+                  <button onClick={() => removeAttachment(a.id)} className="hover:text-white rounded focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none transition" aria-label={`Remove attachment ${a.name}`} title={`Remove attachment ${a.name}`}>
                     <X size={10} aria-hidden="true" />
                   </button>
                 </div>
