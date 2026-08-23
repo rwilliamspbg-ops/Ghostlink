@@ -291,6 +291,11 @@ pub fn chunk_assignments_for_workers(
 /// Assign layers sequentially across nodes, directly producing chunked assignments
 /// sized for worker-level parallelism. Avoids creating intermediate full-size
 /// `LayerAssignment` objects and their associated allocation/clone overhead.
+///
+/// OPTIMIZATION: Computes chunked layer assignments directly in a single pass over
+/// the input layer slice, bypassing intermediate `PlacementPlan`/`LayerAssignment` allocations,
+/// post-allocation chunking loops (`chunk_assignments_for_workers`), and redundant meta-calculations.
+/// Preserves exact `LayerSpec.index` range boundaries (matching `assign_layers_sequentially`).
 fn assign_layers_chunked(
     nodes: &[NodeResources],
     layers: &[LayerSpec],
@@ -316,10 +321,12 @@ fn assign_layers_chunked(
         // Move to next node if current node is out of capacity
         while layer.vram_gb > remaining_vram {
             if i > chunk_start {
+                let start_layer = layers[chunk_start].index;
+                let end_layer = layers[i - 1].index + 1;
                 assignments.push(LayerAssignment::new(
                     nodes[node_idx].id.clone(),
-                    chunk_start,
-                    i,
+                    start_layer,
+                    end_layer,
                     chunk_vram,
                 ));
             }
@@ -341,10 +348,12 @@ fn assign_layers_chunked(
         // Flush chunk if it reached the maximum chunk size
         let chunk_len = i + 1 - chunk_start;
         if chunk_len >= chunk_size {
+            let start_layer = layers[chunk_start].index;
+            let end_layer = layers[i].index + 1;
             assignments.push(LayerAssignment::new(
                 nodes[node_idx].id.clone(),
-                chunk_start,
-                i + 1,
+                start_layer,
+                end_layer,
                 chunk_vram,
             ));
             chunk_start = i + 1;
@@ -357,10 +366,12 @@ fn assign_layers_chunked(
     // otherwise leave `chunk_vram == 0.0` and be silently dropped from the
     // plan even though `chunk_start..layers.len()` is non-empty.
     if chunk_start < layers.len() {
+        let start_layer = layers[chunk_start].index;
+        let end_layer = layers[layers.len() - 1].index + 1;
         assignments.push(LayerAssignment::new(
             nodes[node_idx].id.clone(),
-            chunk_start,
-            layers.len(),
+            start_layer,
+            end_layer,
             chunk_vram,
         ));
     }
