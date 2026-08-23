@@ -68,4 +68,22 @@ describe('SecurityTab', () => {
 
     expect(await screen.findByText(/HTTPS \+ PQC-hybrid active/i)).toBeInTheDocument();
   });
+
+  it('copies the access token to clipboard when copy button is clicked', async () => {
+    const api = createMockApi();
+    const writeTextMock = vi.fn().mockResolvedValue(undefined);
+    Object.assign(navigator, { clipboard: { writeText: writeTextMock } });
+
+    render(<SecurityTab api={api} />);
+
+    // Refresh token first to have a valid token
+    fireEvent.click(screen.getByRole('button', { name: /refresh token/i }));
+    await screen.findByRole('button', { name: /copy access token/i });
+
+    const copyBtn = screen.getByRole('button', { name: /copy access token/i });
+    fireEvent.click(copyBtn);
+
+    expect(writeTextMock).toHaveBeenCalledWith('a.b.c');
+    expect(await screen.findByRole('button', { name: /copied token/i })).toBeInTheDocument();
+  });
 });

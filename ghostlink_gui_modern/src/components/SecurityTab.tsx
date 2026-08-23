@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Shield, Key, RefreshCw, AlertTriangle, Eye, EyeOff, CheckCircle2 } from 'lucide-react';
+import { Shield, Key, RefreshCw, AlertTriangle, Eye, EyeOff, CheckCircle2, Copy, Check } from 'lucide-react';
 import { useAppStore } from '../store';
 
 interface AuditEntry {
@@ -25,6 +25,18 @@ export const SecurityTab: React.FC<{ api: any }> = ({ api }) => {
   const [apiKeySaved, setApiKeySaved] = useState(false);
   const [showApiKey, setShowApiKey] = useState(false);
   const [pqcRestartRequired, setPqcRestartRequired] = useState(false);
+  const [tokenCopied, setTokenCopied] = useState(false);
+
+  const handleCopyToken = async () => {
+    if (!token) return;
+    try {
+      await navigator.clipboard.writeText(token);
+      setTokenCopied(true);
+      setTimeout(() => setTokenCopied(false), 2000);
+    } catch {
+      addToast({ type: 'error', message: 'Failed to copy access token to clipboard' });
+    }
+  };
 
   useEffect(() => {
     setApiKeyInput(api.getApiKey?.() ?? '');
@@ -154,14 +166,29 @@ export const SecurityTab: React.FC<{ api: any }> = ({ api }) => {
               <div className="bg-slate-950 border border-slate-800 rounded-2xl p-4 relative group">
                 <div className="flex items-center justify-between mb-2">
                   <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Active Session Token</span>
-                  <button
-                    onClick={() => setShowShowToken(!showToken)}
-                    className="text-slate-500 hover:text-white transition rounded-lg focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
-                    aria-label={showToken ? 'Hide token' : 'Show token'}
-                    aria-pressed={showToken}
-                  >
-                    {showToken ? <EyeOff size={14} aria-hidden="true" /> : <Eye size={14} aria-hidden="true" />}
-                  </button>
+                  <div className="flex items-center gap-1.5">
+                    {token && (
+                      <button
+                        onClick={handleCopyToken}
+                        className={`p-1 transition rounded-lg focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none ${
+                          tokenCopied ? 'text-green-400 hover:text-green-300' : 'text-slate-500 hover:text-white'
+                        }`}
+                        aria-label={tokenCopied ? 'Copied token' : 'Copy access token'}
+                        title={tokenCopied ? 'Copied!' : 'Copy access token'}
+                      >
+                        {tokenCopied ? <Check size={14} aria-hidden="true" /> : <Copy size={14} aria-hidden="true" />}
+                      </button>
+                    )}
+                    <button
+                      onClick={() => setShowShowToken(!showToken)}
+                      className="p-1 text-slate-500 hover:text-white transition rounded-lg focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
+                      aria-label={showToken ? 'Hide token' : 'Show token'}
+                      aria-pressed={showToken}
+                      title={showToken ? 'Hide token' : 'Show token'}
+                    >
+                      {showToken ? <EyeOff size={14} aria-hidden="true" /> : <Eye size={14} aria-hidden="true" />}
+                    </button>
+                  </div>
                 </div>
                 <div className="font-mono text-xs break-all text-slate-400 pr-8">
                   {showToken
