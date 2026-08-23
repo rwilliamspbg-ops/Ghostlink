@@ -2120,7 +2120,9 @@ fn cached_models_scan(
 }
 
 fn build_cluster_topology_json(cluster: &ClusterState) -> serde_json::Value {
-    let nodes = cluster.nodes();
+    // Optimization: Borrow shared Arc<Vec<NodeResources>> via nodes_snapshot()
+    // instead of nodes(), avoiding deep cloning of NodeResources and heap allocation.
+    let nodes = cluster.nodes_snapshot();
     let topology_nodes = nodes
         .iter()
         .map(|node| {
@@ -9432,16 +9434,19 @@ fn build_device_map_from_cluster(
     };
 
     let mut map = HashMap::new();
-    for node in cluster.nodes() {
+    // Optimization: Borrow shared Arc<Vec<NodeResources>> via nodes_snapshot()
+    // instead of calling nodes(), eliminating redundant deep cloning of NodeResources.
+    let nodes = cluster.nodes_snapshot();
+    for node in nodes.iter() {
         if node.id == local_profile.node_resources.id {
-            map.insert(node.id, local_device);
+            map.insert(node.id.clone(), local_device);
         } else {
             let device = if node.vram_gb > 0.0 {
                 DeviceKind::Gpu
             } else {
                 DeviceKind::Cpu
             };
-            map.insert(node.id, device);
+            map.insert(node.id.clone(), device);
         }
     }
     map
