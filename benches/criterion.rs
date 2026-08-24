@@ -159,13 +159,7 @@ fn bench_cluster(c: &mut Criterion) {
     let snapshot_cluster = ClusterState::new();
     for i in 0..10 {
         let id = format!("node-{i}");
-        snapshot_cluster.register(NodeResources::new(
-            id.clone(),
-            24.0,
-            64.0,
-            "8.9",
-            None,
-        ));
+        snapshot_cluster.register(NodeResources::new(id.clone(), 24.0, 64.0, "8.9", None));
         snapshot_cluster.get_metrics_mut(&id, |m| {
             m.record_latency(1.0);
             m.record_throughput(10.0);
