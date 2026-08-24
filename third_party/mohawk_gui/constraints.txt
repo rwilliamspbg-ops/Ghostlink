@@ -14,4 +14,4 @@ pytest==9.1.1
 python-dotenv==1.0.1
 requests==2.34.2
 safety==3.2.9
-uvicorn==0.52.3
+uvicorn==0.52.4
