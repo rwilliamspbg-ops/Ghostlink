@@ -2121,74 +2121,74 @@ fn cached_models_scan(
 
 fn build_cluster_topology_json(cluster: &ClusterState) -> serde_json::Value {
     // Optimization: Borrow shared Arc<Vec<NodeResources>> via nodes_snapshot()
-    // instead of nodes(), avoiding deep cloning of NodeResources and heap allocation.
+    // instead of nodes(), and inspect metrics under a single Mutex lock with
+    // with_metrics() to eliminate per-node Mutex lock acquisition and NodeMetrics clones.
     let nodes = cluster.nodes_snapshot();
-    let topology_nodes = nodes
-        .iter()
-        .map(|node| {
-            let metrics = cluster.get_metrics(&node.id);
-            let status = metrics
-                .as_ref()
-                .map(|m| format!("{:?}", m.status))
-                .unwrap_or_else(|| "Unknown".to_string());
-            let latency_us = metrics.as_ref().map(|m| m.avg_latency_us).unwrap_or(0.0);
-            let throughput_gbps = metrics.as_ref().map(|m| m.throughput_gbps).unwrap_or(0.0);
-            let latency_history_us = metrics
-                .as_ref()
-                .map(|m| m.latency_history_us.iter().copied().collect::<Vec<_>>())
-                .unwrap_or_default();
-            let throughput_history_gbps = metrics
-                .as_ref()
-                .map(|m| {
-                    m.throughput_history_gbps
-                        .iter()
-                        .copied()
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_default();
-            let ip_address = metrics
-                .as_ref()
-                .and_then(|m| m.ip_address)
-                .map(|addr| addr.ip().to_string());
-            let streaming_layers = metrics
-                .as_ref()
-                .and_then(|m| m.streaming_layers)
-                .map(|(start, end)| serde_json::json!({ "start": start, "end": end }));
-
-            serde_json::json!({
-                "id": node.id,
-                "label": node.gpu_name.clone().unwrap_or_else(|| node.id.clone()),
-                "compute_capability": node.compute_capability,
-                "vram_gb": node.vram_gb,
-                "system_memory_gb": node.system_memory_gb,
-                "status": status,
-                "latency_us": latency_us,
-                "throughput_gbps": throughput_gbps,
-                "latency_history_us": latency_history_us,
-                "throughput_history_gbps": throughput_history_gbps,
-                "ip_address": ip_address,
-                "streaming_layers": streaming_layers,
-            })
-        })
-        .collect::<Vec<_>>();
-
-    let edges = if let Some(root) = nodes.first() {
-        nodes
+    let (topology_nodes, edges) = cluster.with_metrics(|metrics_map| {
+        let topology_nodes = nodes
             .iter()
-            .skip(1)
             .map(|node| {
-                let metrics = cluster.get_metrics(&node.id);
+                let metrics = metrics_map.get(&node.id);
+                let status = metrics
+                    .map(|m| format!("{:?}", m.status))
+                    .unwrap_or_else(|| "Unknown".to_string());
+                let latency_us = metrics.map(|m| m.avg_latency_us).unwrap_or(0.0);
+                let throughput_gbps = metrics.map(|m| m.throughput_gbps).unwrap_or(0.0);
+                let latency_history_us = metrics
+                    .map(|m| m.latency_history_us.iter().copied().collect::<Vec<_>>())
+                    .unwrap_or_default();
+                let throughput_history_gbps = metrics
+                    .map(|m| {
+                        m.throughput_history_gbps
+                            .iter()
+                            .copied()
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                let ip_address = metrics
+                    .and_then(|m| m.ip_address)
+                    .map(|addr| addr.ip().to_string());
+                let streaming_layers = metrics
+                    .and_then(|m| m.streaming_layers)
+                    .map(|(start, end)| serde_json::json!({ "start": start, "end": end }));
+
                 serde_json::json!({
-                    "from": root.id,
-                    "to": node.id,
-                    "latency_us": metrics.as_ref().map(|m| m.avg_latency_us).unwrap_or(0.0),
-                    "throughput_gbps": metrics.as_ref().map(|m| m.throughput_gbps).unwrap_or(0.0),
+                    "id": node.id,
+                    "label": node.gpu_name.clone().unwrap_or_else(|| node.id.clone()),
+                    "compute_capability": node.compute_capability,
+                    "vram_gb": node.vram_gb,
+                    "system_memory_gb": node.system_memory_gb,
+                    "status": status,
+                    "latency_us": latency_us,
+                    "throughput_gbps": throughput_gbps,
+                    "latency_history_us": latency_history_us,
+                    "throughput_history_gbps": throughput_history_gbps,
+                    "ip_address": ip_address,
+                    "streaming_layers": streaming_layers,
                 })
             })
-            .collect::<Vec<_>>()
-    } else {
-        Vec::new()
-    };
+            .collect::<Vec<_>>();
+
+        let edges = if let Some(root) = nodes.first() {
+            nodes
+                .iter()
+                .skip(1)
+                .map(|node| {
+                    let metrics = metrics_map.get(&node.id);
+                    serde_json::json!({
+                        "from": root.id,
+                        "to": node.id,
+                        "latency_us": metrics.map(|m| m.avg_latency_us).unwrap_or(0.0),
+                        "throughput_gbps": metrics.map(|m| m.throughput_gbps).unwrap_or(0.0),
+                    })
+                })
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
+
+        (topology_nodes, edges)
+    });
 
     serde_json::json!({
         "summary": {
@@ -5976,31 +5976,33 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         // excluding ourselves and anything already present by id.
         let known_ids: std::collections::HashSet<String> =
             workers.iter().map(|w| w.id.clone()).collect();
-        for node in backend.cluster.nodes() {
-            if node.id == backend.local_node_id || known_ids.contains(&node.id) {
-                continue;
+        let nodes = backend.cluster.nodes_snapshot();
+        backend.cluster.with_metrics(|metrics_map| {
+            for node in nodes.iter() {
+                if node.id == backend.local_node_id || known_ids.contains(&node.id) {
+                    continue;
+                }
+                let metrics = metrics_map.get(&node.id);
+                let host = metrics
+                    .and_then(|m| m.ip_address)
+                    .map(|addr| addr.ip().to_string())
+                    .unwrap_or_else(|| node.id.clone());
+                workers.push(WorkerRecord {
+                    id: node.id.clone(),
+                    host,
+                    // Discovery only tells us the peer's IP (from the UDP reply
+                    // address); the OpenAI-API port isn't part of the discovery
+                    // frame (`rpc_port` is the separate ggml-rpc contribution
+                    // port, not this one), so assume the same default port
+                    // ghost-link listens on everywhere else in this UI.
+                    port: 8003,
+                    status: "Discovered".to_string(),
+                    model: "unknown".to_string(),
+                    threads: 4,
+                    load: 0,
+                });
             }
-            let metrics = backend.cluster.get_metrics(&node.id);
-            let host = metrics
-                .as_ref()
-                .and_then(|m| m.ip_address)
-                .map(|addr| addr.ip().to_string())
-                .unwrap_or_else(|| node.id.clone());
-            workers.push(WorkerRecord {
-                id: node.id.clone(),
-                host,
-                // Discovery only tells us the peer's IP (from the UDP reply
-                // address); the OpenAI-API port isn't part of the discovery
-                // frame (`rpc_port` is the separate ggml-rpc contribution
-                // port, not this one), so assume the same default port
-                // ghost-link listens on everywhere else in this UI.
-                port: 8003,
-                status: "Discovered".to_string(),
-                model: "unknown".to_string(),
-                threads: 4,
-                load: 0,
-            });
-        }
+        });
 
         Json(serde_json::json!({ "workers": workers }))
     }
@@ -6134,8 +6136,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         let (inf, node_count, cluster_vram, uptime_s, backend_name) = {
             let backend = lock_state(&state);
             let cluster = Arc::clone(&backend.cluster);
-            let nodes = cluster.nodes();
-            let node_count = nodes.len();
+            let node_count = cluster.node_count();
             let cluster_vram = cluster.total_vram_gb();
             let inf = backend.inference_metrics.snapshot();
             let uptime_s = backend.started_at.elapsed().as_secs_f32();
@@ -6189,7 +6190,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         let (inf, node_count, backend_name) = {
             let backend = lock_state(&state);
             let cluster = Arc::clone(&backend.cluster);
-            let node_count = cluster.nodes().len();
+            let node_count = cluster.node_count();
             let inf = backend.inference_metrics.snapshot();
             let backend_name = backend.inference_backend.as_str().to_string();
             (inf, node_count, backend_name)

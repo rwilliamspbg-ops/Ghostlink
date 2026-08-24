@@ -830,83 +830,85 @@ pub fn discover_rpc_peers(
     local_rpc_build_id: Option<&str>,
 ) -> Vec<RpcPeer> {
     let nodes = cluster.nodes_snapshot();
-    let mut peers: Vec<RpcPeer> = nodes
-        .iter()
-        .filter(|node| node.id != local_node_id)
-        .filter_map(|node| {
-            let rpc_port = node.rpc_port?;
-            let metrics = cluster.get_metrics(&node.id)?;
-            if metrics.status != NodeStatus::Active {
-                return None;
-            }
+    cluster.with_metrics(|metrics_map| {
+        let mut peers: Vec<RpcPeer> = nodes
+            .iter()
+            .filter(|node| node.id != local_node_id)
+            .filter_map(|node| {
+                let rpc_port = node.rpc_port?;
+                let metrics = metrics_map.get(&node.id)?;
+                if metrics.status != NodeStatus::Active {
+                    return None;
+                }
 
-            // Real-time health gate: a peer that's technically `Active` (its
-            // heartbeat hasn't timed out) can still be struggling badly
-            // enough that routing layers to it hurts overall throughput more
-            // than excluding it would. `delivery_ratio` defaults to 1.0 for
-            // a peer with no samples yet, so this never penalizes a
-            // freshly-joined node before it has real data.
-            //
-            // Deliberately NOT also gating on `metrics.avg_latency_us` here:
-            // that field is named as microseconds but is populated with
-            // millisecond-scale values elsewhere in this codebase (e.g.
-            // `record_latency(120.0)`/`record_latency(180.0)` in main.rs),
-            // and `planning::RebalanceTrigger`'s existing `> 15.0` threshold
-            // for it was written for the synthetic pipeline path, not
-            // measured against this real RPC heartbeat path. Copying an
-            // ambiguously-scaled cutoff here risks silently excluding every
-            // real peer (or none) depending on which unit actually applies
-            // — worse than not gating on it at all.
-            if metrics.delivery_ratio < RPC_PEER_MIN_DELIVERY_RATIO {
-                tracing::warn!(
-                    "rpc_cluster: excluding peer '{}' \u{2014} delivery_ratio {:.3} is below the \
-                     {RPC_PEER_MIN_DELIVERY_RATIO} health floor for distributed inference.",
-                    node.id,
-                    metrics.delivery_ratio,
-                );
-                return None;
-            }
-
-            match (local_rpc_build_id, node.rpc_build_id.as_deref()) {
-                (Some(local), Some(peer)) if local != peer => {
+                // Real-time health gate: a peer that's technically `Active` (its
+                // heartbeat hasn't timed out) can still be struggling badly
+                // enough that routing layers to it hurts overall throughput more
+                // than excluding it would. `delivery_ratio` defaults to 1.0 for
+                // a peer with no samples yet, so this never penalizes a
+                // freshly-joined node before it has real data.
+                //
+                // Deliberately NOT also gating on `metrics.avg_latency_us` here:
+                // that field is named as microseconds but is populated with
+                // millisecond-scale values elsewhere in this codebase (e.g.
+                // `record_latency(120.0)`/`record_latency(180.0)` in main.rs),
+                // and `planning::RebalanceTrigger`'s existing `> 15.0` threshold
+                // for it was written for the synthetic pipeline path, not
+                // measured against this real RPC heartbeat path. Copying an
+                // ambiguously-scaled cutoff here risks silently excluding every
+                // real peer (or none) depending on which unit actually applies
+                // — worse than not gating on it at all.
+                if metrics.delivery_ratio < RPC_PEER_MIN_DELIVERY_RATIO {
                     tracing::warn!(
-                        "rpc_cluster: excluding peer '{}' ({peer_addr:?}) \u{2014} llama.cpp \
-                         build mismatch (local: '{local}', peer: '{peer}'). Distributed \
-                         inference is skipping this peer because version-mismatched ggml-rpc \
-                         peers have been confirmed to silently corrupt output for larger models \
-                         while reporting healthy status throughout. Rebuild both nodes at the \
-                         same llama.cpp commit to re-enable this peer.",
+                        "rpc_cluster: excluding peer '{}' \u{2014} delivery_ratio {:.3} is below the \
+                         {RPC_PEER_MIN_DELIVERY_RATIO} health floor for distributed inference.",
                         node.id,
-                        peer_addr = metrics.ip_address,
+                        metrics.delivery_ratio,
                     );
                     return None;
                 }
-                (Some(local), Some(peer)) => {
-                    debug_assert_eq!(local, peer);
-                }
-                _ => {
-                    tracing::warn!(
-                        "rpc_cluster: peer '{}' did not report a verifiable llama.cpp build \
-                         fingerprint (predates version-compatibility checking, or couldn't \
-                         determine its own build id) \u{2014} cannot verify it matches this \
-                         node's build; proceeding anyway.",
-                        node.id
-                    );
-                }
-            }
 
-            let mut addr = metrics.ip_address?;
-            addr.set_port(rpc_port);
-            Some(RpcPeer {
-                node_id: node.id.clone(),
-                addr,
-                vram_gb: node.vram_gb,
-                system_memory_gb: metrics.system_memory_gb,
+                match (local_rpc_build_id, node.rpc_build_id.as_deref()) {
+                    (Some(local), Some(peer)) if local != peer => {
+                        tracing::warn!(
+                            "rpc_cluster: excluding peer '{}' ({peer_addr:?}) \u{2014} llama.cpp \
+                             build mismatch (local: '{local}', peer: '{peer}'). Distributed \
+                             inference is skipping this peer because version-mismatched ggml-rpc \
+                             peers have been confirmed to silently corrupt output for larger models \
+                             while reporting healthy status throughout. Rebuild both nodes at the \
+                             same llama.cpp commit to re-enable this peer.",
+                            node.id,
+                            peer_addr = metrics.ip_address,
+                        );
+                        return None;
+                    }
+                    (Some(local), Some(peer)) => {
+                        debug_assert_eq!(local, peer);
+                    }
+                    _ => {
+                        tracing::warn!(
+                            "rpc_cluster: peer '{}' did not report a verifiable llama.cpp build \
+                             fingerprint (predates version-compatibility checking, or couldn't \
+                             determine its own build id) \u{2014} cannot verify it matches this \
+                             node's build; proceeding anyway.",
+                            node.id
+                        );
+                    }
+                }
+
+                let mut addr = metrics.ip_address?;
+                addr.set_port(rpc_port);
+                Some(RpcPeer {
+                    node_id: node.id.clone(),
+                    addr,
+                    vram_gb: node.vram_gb,
+                    system_memory_gb: metrics.system_memory_gb,
+                })
             })
-        })
-        .collect();
-    peers.sort_by(|a, b| a.node_id.cmp(&b.node_id));
-    peers
+            .collect();
+        peers.sort_by(|a, b| a.node_id.cmp(&b.node_id));
+        peers
+    })
 }
 
 /// Computes a `--tensor-split` ratio: the local device first, then each

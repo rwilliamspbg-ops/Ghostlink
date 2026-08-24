@@ -110,3 +110,7 @@
 ## 2026-07-02 - [Cluster Health Lock & Clone Overhead Elimination]
 **Learning:** In cluster health calculations, calling multiple helper methods on `ClusterState` (e.g., `active_nodes`, `nodes_snapshot`, `get_metrics`) leads to acquiring the internal metrics mutex multiple times per call and performing numerous expensive deep clones of `NodeMetrics`. Exposing crate-private (`pub(crate)`) access to the underlying metrics map allows acquiring the mutex exactly once and performing a single linear iteration. This bypasses all allocation, cloning, and redundant lock acquisition overhead completely.
 **Action:** Consolidate multiple metrics lookup sweeps into a single-lock, zero-clone traversal. Expose inner collections internally (using `pub(crate)`) when complex multi-metric queries can be performed in a single lock acquisition rather than invoking multiple smaller methods.
+
+## 2026-07-25 - [Single-Pass Closure Mutex Inspection for Cluster Metrics]
+**Learning:** Calling `get_metrics` repeatedly inside loops for $N$ cluster nodes acquires a `Mutex` lock $N$ times and deep-clones `NodeMetrics` (including heap-allocated history vectors like `latency_history_us`). Exposing a `with_metrics<F, R>(&self, f: F) -> R` closure helper on `ClusterState` allows reading metrics for all nodes in a single lock acquisition without any memory allocations or struct cloning.
+**Action:** Use `with_metrics` closure inspection when processing or serializing metrics across multiple cluster nodes instead of calling `get_metrics` per node in a loop.
