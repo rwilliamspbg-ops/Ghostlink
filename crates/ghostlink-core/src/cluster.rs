@@ -408,6 +408,18 @@ impl ClusterState {
         self.nodes_snapshot.load_full()
     }
 
+    /// Execute a closure with a read lock on the metrics map, avoiding clones and multiple acquisitions.
+    pub fn with_metrics<F, R>(&self, f: F) -> R
+    where
+        F: FnOnce(&HashMap<String, NodeMetrics>) -> R,
+    {
+        let metrics = self
+            .metrics
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        f(&metrics)
+    }
+
     /// Get metrics for a specific node
     pub fn get_metrics(&self, node_id: &str) -> Option<NodeMetrics> {
         let metrics = self
@@ -648,6 +660,21 @@ mod tests {
         metrics.record_delivery_ratio(0.90);
         // EMA: 0.98 * 0.9 + 0.90 * 0.1 = 0.882 + 0.09 = 0.972
         assert!((metrics.delivery_ratio - 0.972).abs() < 1e-6);
+    }
+
+    #[test]
+    fn with_metrics_allows_single_pass_inspection() {
+        let cluster = ClusterState::new();
+        cluster.register(NodeResources::new("node-a", 24.0, 64.0, "8.9", None));
+        cluster.register(NodeResources::new("node-b", 12.0, 32.0, "8.6", None));
+
+        let total_nodes = cluster.with_metrics(|metrics_map| {
+            assert!(metrics_map.contains_key("node-a"));
+            assert!(metrics_map.contains_key("node-b"));
+            metrics_map.len()
+        });
+
+        assert_eq!(total_nodes, 2);
     }
 
     #[test]

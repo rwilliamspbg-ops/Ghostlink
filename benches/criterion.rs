@@ -158,13 +158,12 @@ fn bench_cluster(c: &mut Criterion) {
     let cluster = ClusterState::new();
     let snapshot_cluster = ClusterState::new();
     for i in 0..10 {
-        snapshot_cluster.register(NodeResources::new(
-            format!("node-{i}"),
-            24.0,
-            64.0,
-            "8.9",
-            None,
-        ));
+        let id = format!("node-{i}");
+        snapshot_cluster.register(NodeResources::new(id.clone(), 24.0, 64.0, "8.9", None));
+        snapshot_cluster.get_metrics_mut(&id, |m| {
+            m.record_latency(1.0);
+            m.record_throughput(10.0);
+        });
     }
 
     let mut group = c.benchmark_group("cluster");
@@ -186,6 +185,15 @@ fn bench_cluster(c: &mut Criterion) {
             black_box(ghostlink_core::planning::calculate_cluster_health(
                 black_box(&snapshot_cluster),
             ))
+        });
+    });
+    group.bench_function("with_metrics_10_nodes", |b| {
+        b.iter(|| {
+            snapshot_cluster.with_metrics(|metrics_map| {
+                for i in 0..10 {
+                    black_box(metrics_map.get(&format!("node-{i}")));
+                }
+            })
         });
     });
     group.finish();
