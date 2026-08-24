@@ -770,6 +770,20 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                         key={m.id}
                         onClick={() => handlePullModel(m.id)}
                         disabled={isInstalled || isPending || loading}
+                        title={
+                          isInstalled
+                            ? `${m.name} is already installed`
+                            : isPending
+                            ? `Pulling ${m.name}...`
+                            : `Pull ${m.name} (${m.id}) from Ollama`
+                        }
+                        aria-label={
+                          isInstalled
+                            ? `${m.name} is already installed`
+                            : isPending
+                            ? `Pulling ${m.name}`
+                            : `Pull ${m.name}`
+                        }
                         className={`flex flex-col items-center p-3 rounded-xl text-left transition ${
                           isInstalled
                             ? 'bg-green-900/30 border border-green-700 cursor-default'
@@ -847,6 +861,20 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                       <button
                         onClick={() => handlePullModel(model.name)}
                         disabled={pendingActions[model.name] === 'downloading' || loading || !canManageRemoteCatalog}
+                        title={
+                          !canManageRemoteCatalog
+                            ? 'Pulling models is disabled because the remote server manages model inventory'
+                            : pendingActions[model.name] === 'downloading'
+                            ? `Pulling ${model.name}...`
+                            : `Pull ${model.name}`
+                        }
+                        aria-label={
+                          !canManageRemoteCatalog
+                            ? `Pulling ${model.name} disabled: server managed`
+                            : pendingActions[model.name] === 'downloading'
+                            ? `Pulling ${model.name}`
+                            : `Pull ${model.name}`
+                        }
                         className="inline-flex items-center gap-2 px-4 py-2 bg-slate-800 hover:bg-blue-600 text-white rounded-xl text-xs font-bold transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none group-hover:shadow-lg group-hover:shadow-blue-500/20"
                       >
                         {pendingActions[model.name] === 'downloading' ? (
@@ -901,6 +929,20 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                     </div>
                     <button
                       onClick={() => handleDownloadHFModel(m.id)}
+                      title={
+                        !canDownloadLocalModels
+                          ? 'Downloading models is disabled because the remote server manages model inventory'
+                          : pendingActions[m.id] === 'downloading'
+                          ? `Downloading ${m.name}...`
+                          : `Download ${m.name}`
+                      }
+                      aria-label={
+                        !canDownloadLocalModels
+                          ? `Downloading ${m.name} disabled: server managed`
+                          : pendingActions[m.id] === 'downloading'
+                          ? `Downloading ${m.name}`
+                          : `Download ${m.name}`
+                      }
                       className="inline-flex items-center gap-2 px-4 py-2 bg-slate-800 hover:bg-blue-600 text-white rounded-xl text-xs font-bold transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none group-hover:shadow-lg group-hover:shadow-blue-500/20"
                       disabled={pendingActions[m.id] === 'downloading' || loading || !canDownloadLocalModels}
                     >
