@@ -23,6 +23,23 @@ describe('StatusViews', () => {
     expect(screen.getByText('Network timeout occurred.')).toBeInTheDocument();
   });
 
+  it('renders ErrorPanel with retry button and triggers onRetry on click', () => {
+    const handleRetry = vi.fn();
+    render(
+      <ErrorPanel
+        icon={AlertCircle}
+        title="Connection Error"
+        message="Backend unavailable."
+        onRetry={handleRetry}
+      />
+    );
+    const retryBtn = screen.getByRole('button', { name: 'Try Again' });
+    expect(retryBtn).toBeInTheDocument();
+    expect(retryBtn).toHaveClass('focus-visible:ring-2');
+    fireEvent.click(retryBtn);
+    expect(handleRetry).toHaveBeenCalledTimes(1);
+  });
+
   it('renders EmptyState with title and description', () => {
     render(<EmptyState icon={Inbox} title="No items found" description="Try refining your filter." />);
     expect(screen.getByText('No items found')).toBeInTheDocument();
