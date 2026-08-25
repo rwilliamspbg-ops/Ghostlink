@@ -64,7 +64,7 @@ export const SessionsTab: React.FC<{ api: any }> = ({ api }) => {
       <div className="flex-1 overflow-y-auto p-6" tabIndex={0} role="region" aria-label="Sessions">
         <div className="max-w-5xl mx-auto">
           {error ? (
-            <ErrorPanel icon={XCircle} title="Connection Error" message={error} />
+            <ErrorPanel icon={XCircle} title="Connection Error" message={error} onRetry={refreshSessions} />
           ) : sessions.length === 0 ? (
             <EmptyState
               variant="card"
