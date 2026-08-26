@@ -17,7 +17,10 @@ vi.mock('./api', () => ({
 }));
 
 describe('App', () => {
+  let mockSetApiBase: ReturnType<typeof vi.fn>;
+
   beforeEach(() => {
+    mockSetApiBase = vi.fn();
     useAppStore.setState({
       apiBase: 'http://localhost:8003',
       backendOnline: false,
@@ -29,7 +32,7 @@ describe('App', () => {
       workers: [],
       selectedModel: null,
       activeTab: 0,
-      setApiBase: vi.fn(),
+      setApiBase: mockSetApiBase,
       setBackendOnline: vi.fn(),
       setCurrentModel: vi.fn(),
       setUptime: vi.fn(),
@@ -40,6 +43,11 @@ describe('App', () => {
       setSelectedModel: vi.fn(),
       setActiveTab: vi.fn(),
     });
+  });
+
+  it('initializes API base on app load', () => {
+    render(<App />);
+    expect(mockSetApiBase).toHaveBeenCalledWith('http://127.0.0.1:8000');
   });
 
   it('renders the app with sidebar', () => {
