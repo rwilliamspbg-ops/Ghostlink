@@ -161,6 +161,11 @@ impl LayerKvCache {
             ));
         }
 
+        // Pre-compute slice range bounds once upfront to reduce arithmetic
+        // calculations inside the lock-holding section.
+        let start = token_idx * width;
+        let end = start + width;
+
         let mut state = self
             .state
             .write()
@@ -169,9 +174,8 @@ impl LayerKvCache {
             return Err("cache not initialized — call initialize() first".to_string());
         }
 
-        let start = token_idx * width;
-        state.keys[start..start + width].copy_from_slice(keys);
-        state.values[start..start + width].copy_from_slice(values);
+        state.keys[start..end].copy_from_slice(keys);
+        state.values[start..end].copy_from_slice(values);
         state.current_len = state.current_len.max(token_idx + 1);
         Ok(())
     }
@@ -211,11 +215,16 @@ impl LayerKvCache {
         }
 
         let mut max_token_idx = 0;
-        for (token_idx, keys, values) in entries {
+        // Direct reference destructuring and upfront slice range calculation
+        // avoid redundant arithmetic and pointer dereferences in the hot loop.
+        for &(token_idx, keys, values) in entries {
             let start = token_idx * width;
-            state.keys[start..start + width].copy_from_slice(keys);
-            state.values[start..start + width].copy_from_slice(values);
-            max_token_idx = max_token_idx.max(*token_idx);
+            let end = start + width;
+            state.keys[start..end].copy_from_slice(keys);
+            state.values[start..end].copy_from_slice(values);
+            if token_idx > max_token_idx {
+                max_token_idx = token_idx;
+            }
         }
 
         state.current_len = state.current_len.max(max_token_idx + 1);
