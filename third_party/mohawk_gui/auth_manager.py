@@ -45,7 +45,10 @@ class AuthManager:
                 )
             self.secret_key_path = os.path.join(default_dir, "jwt_private.pem")
         self.key_size = key_size
+        self._private_key = None
+        self._public_key = None
         self._generate_key_if_needed()
+        self._load_keys()
         self.token_expiry_hours = 24
         self.refresh_window_hours = 1
         
@@ -88,6 +91,26 @@ class AuthManager:
                         format=serialization.PublicFormat.SubjectPublicKeyInfo
                     )
                 )
+
+    def _load_keys(self):
+        """Load and cache private and public key objects in memory."""
+        if os.path.exists(self.secret_key_path):
+            with open(self.secret_key_path, 'rb') as f:
+                self._private_key = serialization.load_pem_private_key(
+                    f.read(),
+                    password=None,
+                    backend=default_backend()
+                )
+
+            pub_key_path = self.secret_key_path.replace('.pem', '_pub.pem')
+            if os.path.exists(pub_key_path):
+                with open(pub_key_path, 'rb') as f:
+                    self._public_key = serialization.load_pem_public_key(
+                        f.read(),
+                        backend=default_backend()
+                    )
+            elif self._private_key is not None:
+                self._public_key = self._private_key.public_key()
     
     async def generate_session_token(self, user_id: str, roles: list = None) -> str:
         """
@@ -105,6 +128,12 @@ class AuthManager:
         """
         if not self.secret_key_path:
             raise ValueError("Secret key path not configured")
+
+        if self._private_key is None:
+            self._load_keys()
+
+        if self._private_key is None:
+            raise ValueError(f"Unable to load private key from {self.secret_key_path}")
         
         payload = {
             "user_id": user_id,
@@ -114,14 +143,7 @@ class AuthManager:
             "jti": hashlib.sha256(f"{user_id}{datetime.now()}".encode()).hexdigest()[:16]
         }
         
-        with open(self.secret_key_path, 'rb') as f:
-            private_key = serialization.load_pem_private_key(
-                f.read(),
-                password=None,
-                backend=default_backend()
-            )
-        
-        token = jwt.encode(payload, private_key, algorithm="RS256")
+        token = jwt.encode(payload, self._private_key, algorithm="RS256")
         return token
     
     async def verify_token(self, token: str) -> Dict[str, Any]:
@@ -140,15 +162,15 @@ class AuthManager:
         """
         if not self.secret_key_path:
             raise ValueError("Secret key path not configured")
+
+        if self._public_key is None:
+            self._load_keys()
+
+        if self._public_key is None:
+            raise ValueError("Unable to load public key for verification")
         
         try:
-            with open(self.secret_key_path.replace('.pem', '_pub.pem'), 'rb') as f:
-                public_key = serialization.load_pem_public_key(
-                    f.read(),
-                    backend=default_backend()
-                )
-            
-            payload = jwt.decode(token, public_key, algorithms=["RS256"])
+            payload = jwt.decode(token, self._public_key, algorithms=["RS256"])
             return {
                 "valid": True,
                 "user_id": payload["user_id"],
