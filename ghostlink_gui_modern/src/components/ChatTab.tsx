@@ -1323,7 +1323,12 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
 
                         {msg.role === 'assistant' && (
                             <div className="flex items-center gap-1 mt-1 opacity-0 group-hover:opacity-100 transition-opacity focus-within:opacity-100">
-                                <button onClick={() => handleCopy(msg.content, msg.id)} className="p-1.5 rounded-lg hover:bg-slate-900 text-slate-500 hover:text-slate-300 transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none" title="Copy" aria-label="Copy response">
+                                <button
+                                  onClick={() => handleCopy(msg.content, msg.id)}
+                                  className="p-1.5 rounded-lg hover:bg-slate-900 text-slate-500 hover:text-slate-300 transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
+                                  title={copiedId === msg.id ? 'Copied!' : 'Copy response'}
+                                  aria-label={copiedId === msg.id ? 'Copied response to clipboard' : 'Copy response'}
+                                >
                                   {copiedId === msg.id ? <Check size={14} className="text-green-400" aria-hidden="true" /> : <Copy size={14} aria-hidden="true" />}
                                 </button>
                                 <button className="p-1.5 rounded-lg hover:bg-slate-900 text-slate-500 hover:text-slate-300 transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none" title="Good response" aria-label="Good response">
