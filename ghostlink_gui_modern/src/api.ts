@@ -56,15 +56,10 @@ export interface CircuitBreakerState {
   lastFailureTime: number;
 }
 
-// The backend has no way to hand this to the GUI automatically — it's
-// printed once in the server's own startup console output (never returned
-// by any API response, on purpose) — so the user pastes it in manually
-// once (see SecurityTab) and it's remembered here across reloads.
-const API_KEY_STORAGE_KEY = 'ghostlink-api-key';
-
 export class GhostlinkAPI {
   private http: AxiosInstance;
   private requestTimeout = [5000, 120000] as const;
+  private apiKey = '';
   // Tool-calling turns (initial send and tool-confirm resume) can run several
   // full generate() rounds plus a real MCP tool call each, on top of however
   // long the model itself takes - confirmed live at just over 2 minutes with
@@ -98,29 +93,15 @@ export class GhostlinkAPI {
 
   /** Reads the persisted API key/token, if the user has entered one. */
   getApiKey(): string {
-    try {
-      return localStorage.getItem(API_KEY_STORAGE_KEY) ?? '';
-    } catch {
-      return '';
-    }
+    return this.apiKey;
   }
 
-  /** Persists the API key (or JWT) used to authenticate every request from
+  /** Sets the API key (or JWT) used to authenticate every request from
    * here on — every call already in flight keeps its old header, but the
    * interceptor reads fresh on each new request, so this takes effect
    * immediately. Pass an empty string to clear it. */
   setApiKey(key: string): void {
-    try {
-      if (key) {
-        localStorage.setItem(API_KEY_STORAGE_KEY, key);
-      } else {
-        localStorage.removeItem(API_KEY_STORAGE_KEY);
-      }
-    } catch {
-      // localStorage unavailable (private browsing, etc.) — the key just
-      // won't survive a reload; not fatal, every other request this
-      // session still works via the in-memory read above failing closed.
-    }
+    this.apiKey = key;
   }
 
   private isNotFound(error: any): boolean {

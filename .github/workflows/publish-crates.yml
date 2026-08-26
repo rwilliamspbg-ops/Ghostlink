@@ -6,6 +6,9 @@ name: Publish Crates
       - 'v*'
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   publish-crates:
     name: Publish to crates.io

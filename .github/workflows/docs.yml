@@ -22,6 +22,9 @@ on:
       - 'scripts/verify_hf_models.py'
       - '.github/workflows/docs.yml'
 
+permissions:
+  contents: read
+
 jobs:
   docs-consistency:
     name: Docs Consistency

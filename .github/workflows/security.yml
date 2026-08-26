@@ -24,6 +24,9 @@ on:
       - 'scripts/**'
       - '.github/workflows/security.yml'
 
+permissions:
+  contents: read
+
 jobs:
   secret-scan:
     name: Secret Scan

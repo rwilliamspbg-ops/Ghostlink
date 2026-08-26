@@ -8,7 +8,7 @@ import requests
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import sys
 import os
-from urllib.parse import urlparse
+import re
 
 OLLAMA_URL = os.getenv('GHOSTLINK_OLLAMA_URL', "http://127.0.0.1:11434").strip().rstrip('/')
 BACKEND_URL = os.getenv('GHOSTLINK_BACKEND_URL', "http://127.0.0.1:8003").strip().rstrip('/')
@@ -16,6 +16,18 @@ BIND_HOST = os.getenv('GHOSTLINK_PROXY_HOST', '127.0.0.1').strip() or '127.0.0.1
 MODEL = "neural-chat"
 CHAT_BACKEND = "backend"
 REQUEST_TIMEOUT_SECONDS = 180
+HEADER_NAME_RE = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$")
+
+
+def _sanitize_header_name(name: str):
+    candidate = str(name).strip()
+    if HEADER_NAME_RE.fullmatch(candidate):
+        return candidate
+    return None
+
+
+def _sanitize_header_value(value: str) -> str:
+    return str(value).replace('\r', '').replace('\n', '')
 
 class GatewayHandler(BaseHTTPRequestHandler):
     def send_cors_headers(self):
@@ -53,7 +65,9 @@ class GatewayHandler(BaseHTTPRequestHandler):
             self.send_cors_headers()
             for k, v in resp.headers.items():
                 if k.lower() not in ['content-encoding', 'transfer-encoding', 'content-length']:
-                    self.send_header(k, v)
+                    safe_name = _sanitize_header_name(k)
+                    if safe_name is not None:
+                        self.send_header(safe_name, _sanitize_header_value(v))
 
             # For simplicity in this proxy, we'll read the whole response
             # In a real production proxy we'd stream it
