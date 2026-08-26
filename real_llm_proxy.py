@@ -8,7 +8,7 @@ import requests
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import sys
 import os
-from urllib.parse import urlparse
+import re
 
 OLLAMA_URL = os.getenv('GHOSTLINK_OLLAMA_URL', "http://127.0.0.1:11434").strip().rstrip('/')
 BACKEND_URL = os.getenv('GHOSTLINK_BACKEND_URL', "http://127.0.0.1:8003").strip().rstrip('/')
@@ -16,6 +16,34 @@ BIND_HOST = os.getenv('GHOSTLINK_PROXY_HOST', '127.0.0.1').strip() or '127.0.0.1
 MODEL = "neural-chat"
 CHAT_BACKEND = "backend"
 REQUEST_TIMEOUT_SECONDS = 180
+HEADER_NAME_RE = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$")
+ALLOWED_RESPONSE_HEADERS = {
+    'cache-control': 'Cache-Control',
+    'content-type': 'Content-Type',
+    'etag': 'ETag',
+    'expires': 'Expires',
+    'last-modified': 'Last-Modified',
+    'pragma': 'Pragma',
+    'vary': 'Vary',
+    'www-authenticate': 'WWW-Authenticate',
+    'location': 'Location',
+}
+
+
+def _sanitize_header_name(name: str) -> str | None:
+    candidate = str(name).strip()
+    if HEADER_NAME_RE.fullmatch(candidate):
+        return candidate
+    return None
+
+
+def _sanitize_header_value(value: str) -> str:
+    candidate = str(value).replace('\r', '').replace('\n', '')
+    return ''.join(
+        ch
+        for ch in candidate
+        if ch == '\t' or 0x20 <= ord(ch) <= 0x7E
+    ).strip()
 
 class GatewayHandler(BaseHTTPRequestHandler):
     def send_cors_headers(self):
@@ -52,8 +80,9 @@ class GatewayHandler(BaseHTTPRequestHandler):
             self.send_response(resp.status_code)
             self.send_cors_headers()
             for k, v in resp.headers.items():
-                if k.lower() not in ['content-encoding', 'transfer-encoding', 'content-length']:
-                    self.send_header(k, v)
+                header_key = k.lower()
+                if header_key in ALLOWED_RESPONSE_HEADERS:
+                    self.send_header(ALLOWED_RESPONSE_HEADERS[header_key], _sanitize_header_value(v))
 
             # For simplicity in this proxy, we'll read the whole response
             # In a real production proxy we'd stream it

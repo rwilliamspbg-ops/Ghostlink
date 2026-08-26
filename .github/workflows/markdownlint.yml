@@ -20,6 +20,9 @@ name: Markdown Lint
       - '.markdownlint.json'
       - '.github/workflows/markdownlint.yml'
 
+permissions:
+  contents: read
+
 jobs:
   markdownlint:
     runs-on: ubuntu-latest

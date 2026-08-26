@@ -233,7 +233,13 @@ export class GhostlinkClient {
   private readonly fetchImpl: typeof fetch;
 
   constructor(baseUrl: string, options: GhostlinkClientOptions = {}) {
-    this.baseUrl = baseUrl.replace(/\/+$/, "");
+    // Intentionally avoid a trailing-slash regex here to sidestep potential
+    // catastrophic-backtracking regex findings in security scanners.
+    let normalizedBaseUrl = baseUrl;
+    while (normalizedBaseUrl.endsWith("/")) {
+      normalizedBaseUrl = normalizedBaseUrl.slice(0, -1);
+    }
+    this.baseUrl = normalizedBaseUrl;
     this.apiKey = options.apiKey;
     this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     this.fetchImpl = options.fetchImpl ?? fetch;
