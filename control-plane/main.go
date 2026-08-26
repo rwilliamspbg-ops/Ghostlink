@@ -53,19 +53,66 @@ func requireControlPlaneAuth(w http.ResponseWriter, r *http.Request, expectedTok
 	return true
 }
 
-// corsMiddleware mirrors ghost-link's tower_http::cors::CorsLayer::permissive()
-// — the GUI calls this gateway's absolute URL cross-origin (a different port
-// than the Vite dev server), exactly like it already does to ghost-link
-// directly today, so the same permissive stance is needed here too.
+func getAllowedOrigins() []string {
+	raw := os.Getenv("GHOSTLINK_ALLOWED_ORIGINS")
+	if raw == "" {
+		return []string{"*"}
+	}
+	parts := strings.Split(raw, ",")
+	var origins []string
+	for _, p := range parts {
+		if trimmed := strings.TrimSpace(p); trimmed != "" {
+			origins = append(origins, trimmed)
+		}
+	}
+	if len(origins) == 0 {
+		return []string{"*"}
+	}
+	return origins
+}
+
 func corsMiddleware(next http.Handler) http.Handler {
+	allowedOrigins := getAllowedOrigins()
+
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "*")
+		origin := r.Header.Get("Origin")
+
+		var allowOrigin string
+		allowAll := false
+
+		for _, o := range allowedOrigins {
+			if o == "*" {
+				allowAll = true
+				break
+			}
+			if origin != "" && strings.EqualFold(o, origin) {
+				allowOrigin = origin
+				break
+			}
+		}
+
+		if allowAll {
+			allowOrigin = "*"
+		}
+
+		if allowOrigin != "" {
+			w.Header().Set("Access-Control-Allow-Origin", allowOrigin)
+			if allowOrigin != "*" {
+				w.Header().Add("Vary", "Origin")
+			}
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Headers", "*")
+		}
+
 		if r.Method == http.MethodOptions {
+			if allowOrigin == "" && origin != "" {
+				http.Error(w, "CORS origin not allowed", http.StatusForbidden)
+				return
+			}
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
+
 		next.ServeHTTP(w, r)
 	})
 }
