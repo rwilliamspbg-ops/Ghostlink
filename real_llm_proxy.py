@@ -17,6 +17,17 @@ MODEL = "neural-chat"
 CHAT_BACKEND = "backend"
 REQUEST_TIMEOUT_SECONDS = 180
 HEADER_NAME_RE = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$")
+ALLOWED_RESPONSE_HEADERS = {
+    'cache-control': 'Cache-Control',
+    'content-type': 'Content-Type',
+    'etag': 'ETag',
+    'expires': 'Expires',
+    'last-modified': 'Last-Modified',
+    'pragma': 'Pragma',
+    'vary': 'Vary',
+    'www-authenticate': 'WWW-Authenticate',
+    'location': 'Location',
+}
 
 
 def _sanitize_header_name(name: str) -> str | None:
@@ -68,10 +79,9 @@ class GatewayHandler(BaseHTTPRequestHandler):
             self.send_response(resp.status_code)
             self.send_cors_headers()
             for k, v in resp.headers.items():
-                if k.lower() not in ['content-encoding', 'transfer-encoding', 'content-length']:
-                    safe_name = _sanitize_header_name(k)
-                    if safe_name is not None:
-                        self.send_header(safe_name, _sanitize_header_value(v))
+                header_key = k.lower()
+                if header_key in ALLOWED_RESPONSE_HEADERS:
+                    self.send_header(ALLOWED_RESPONSE_HEADERS[header_key], _sanitize_header_value(v))
 
             # For simplicity in this proxy, we'll read the whole response
             # In a real production proxy we'd stream it
