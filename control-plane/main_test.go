@@ -78,6 +78,8 @@ func TestWorkersProxiesToBackend(t *testing.T) {
 }
 
 func TestCORSHeaders(t *testing.T) {
+	os.Unsetenv("GHOSTLINK_ALLOWED_ORIGINS")
+
 	handler := buildHandler("http://127.0.0.1:19999", 1000, time.Second, "", "")
 
 	req := httptest.NewRequest("OPTIONS", "/api/models", nil)
@@ -89,6 +91,56 @@ func TestCORSHeaders(t *testing.T) {
 	}
 	if got := w.Header().Get("Access-Control-Allow-Origin"); got != "*" {
 		t.Errorf("expected permissive CORS origin, got %q", got)
+	}
+}
+
+func TestCORSAllowedOriginsConfig(t *testing.T) {
+	if err := os.Setenv("GHOSTLINK_ALLOWED_ORIGINS", "http://localhost:5173, http://localhost:3000"); err != nil {
+		t.Fatalf("set env: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.Unsetenv("GHOSTLINK_ALLOWED_ORIGINS")
+	})
+
+	handler := buildHandler("http://127.0.0.1:19999", 1000, time.Second, "", "")
+
+	// 1. Allowed origin OPTIONS request
+	req1 := httptest.NewRequest("OPTIONS", "/api/models", nil)
+	req1.Header.Set("Origin", "http://localhost:5173")
+	w1 := httptest.NewRecorder()
+	handler.ServeHTTP(w1, req1)
+
+	if w1.Code != http.StatusNoContent {
+		t.Fatalf("expected 204 for allowed origin preflight, got %d", w1.Code)
+	}
+	if got := w1.Header().Get("Access-Control-Allow-Origin"); got != "http://localhost:5173" {
+		t.Errorf("expected Access-Control-Allow-Origin=http://localhost:5173, got %q", got)
+	}
+	if got := w1.Header().Get("Vary"); got != "Origin" {
+		t.Errorf("expected Vary header=Origin, got %q", got)
+	}
+
+	// 2. Disallowed origin OPTIONS request
+	req2 := httptest.NewRequest("OPTIONS", "/api/models", nil)
+	req2.Header.Set("Origin", "http://malicious-site.com")
+	w2 := httptest.NewRecorder()
+	handler.ServeHTTP(w2, req2)
+
+	if w2.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 Forbidden for disallowed origin preflight, got %d", w2.Code)
+	}
+	if got := w2.Header().Get("Access-Control-Allow-Origin"); got != "" {
+		t.Errorf("expected empty Access-Control-Allow-Origin for disallowed origin, got %q", got)
+	}
+
+	// 3. Disallowed origin GET request
+	req3 := httptest.NewRequest("GET", "/health", nil)
+	req3.Header.Set("Origin", "http://malicious-site.com")
+	w3 := httptest.NewRecorder()
+	handler.ServeHTTP(w3, req3)
+
+	if got := w3.Header().Get("Access-Control-Allow-Origin"); got != "" {
+		t.Errorf("expected empty Access-Control-Allow-Origin for disallowed GET origin, got %q", got)
 	}
 }
 
