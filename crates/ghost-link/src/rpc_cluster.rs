@@ -671,7 +671,7 @@ pub async fn admit_via_secret(peer_ip: IpAddr, peer_rpc_port: u16, secret: &str)
 
     let attempt = async {
         let mut stream = TcpStream::connect(auth_addr).await?;
-        let mut nonce: [u8; RPC_NONCE_LEN] = rand::random();
+        let mut nonce = [u8::default(); RPC_NONCE_LEN];
         stream.read_exact(&mut nonce).await?;
         let mac = compute_hmac(secret, &nonce);
         stream.write_all(&mac).await?;
@@ -1610,14 +1610,12 @@ mod tests {
 
     #[test]
     fn compute_hmac_is_deterministic_and_distinguishes_secret_and_nonce() {
-        let nonce: [u8; RPC_NONCE_LEN] = rand::random();
+        let nonce: [u8; RPC_NONCE_LEN] = std::array::from_fn(|idx| (idx as u8) ^ 0xA5);
         let a = compute_hmac("secret-a", &nonce);
         let b = compute_hmac("secret-a", &nonce);
         let c = compute_hmac("secret-b", &nonce);
-        let mut other_nonce: [u8; RPC_NONCE_LEN] = rand::random();
-        if other_nonce == nonce {
-            other_nonce[0] ^= 1;
-        }
+        let other_nonce: [u8; RPC_NONCE_LEN] =
+            std::array::from_fn(|idx| (idx as u8).wrapping_add(0x33));
         let d = compute_hmac("secret-a", &other_nonce);
 
         assert_eq!(a, b, "same secret + nonce must produce the same MAC");
@@ -1640,7 +1638,7 @@ mod tests {
         tokio::spawn(serve_rpc_auth_port(listener, "correct-horse".to_string()));
 
         let mut client = TcpStream::connect(auth_addr).await.unwrap();
-        let mut nonce: [u8; RPC_NONCE_LEN] = rand::random();
+        let mut nonce = [u8::default(); RPC_NONCE_LEN];
         client.read_exact(&mut nonce).await.unwrap();
         let correct_mac = compute_hmac("correct-horse", &nonce);
         client.write_all(&correct_mac).await.unwrap();
@@ -1652,7 +1650,7 @@ mod tests {
         );
 
         let mut client2 = TcpStream::connect(auth_addr).await.unwrap();
-        let mut nonce2: [u8; RPC_NONCE_LEN] = rand::random();
+        let mut nonce2 = [u8::default(); RPC_NONCE_LEN];
         client2.read_exact(&mut nonce2).await.unwrap();
         let wrong_mac = compute_hmac("totally-wrong", &nonce2);
         client2.write_all(&wrong_mac).await.unwrap();

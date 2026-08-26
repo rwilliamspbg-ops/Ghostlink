@@ -59,6 +59,8 @@ export interface CircuitBreakerState {
 export class GhostlinkAPI {
   private http: AxiosInstance;
   private requestTimeout = [5000, 120000] as const;
+  // Keep credentials in memory only (not localStorage/sessionStorage) to avoid
+  // clear-text persistence in browser storage.
   private apiKey = '';
   // Tool-calling turns (initial send and tool-confirm resume) can run several
   // full generate() rounds plus a real MCP tool call each, on top of however
@@ -91,12 +93,12 @@ export class GhostlinkAPI {
     });
   }
 
-  /** Reads the persisted API key/token, if the user has entered one. */
+  /** Reads the API key/token currently set for this app session. */
   getApiKey(): string {
     return this.apiKey;
   }
 
-  /** Sets the API key (or JWT) used to authenticate every request from
+  /** Sets the in-memory API key (or JWT) used to authenticate every request from
    * here on — every call already in flight keeps its old header, but the
    * interceptor reads fresh on each new request, so this takes effect
    * immediately. Pass an empty string to clear it. */

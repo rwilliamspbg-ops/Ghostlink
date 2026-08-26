@@ -19,7 +19,7 @@ REQUEST_TIMEOUT_SECONDS = 180
 HEADER_NAME_RE = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$")
 
 
-def _sanitize_header_name(name: str):
+def _sanitize_header_name(name: str) -> str | None:
     candidate = str(name).strip()
     if HEADER_NAME_RE.fullmatch(candidate):
         return candidate
@@ -27,7 +27,11 @@ def _sanitize_header_name(name: str):
 
 
 def _sanitize_header_value(value: str) -> str:
-    return str(value).replace('\r', '').replace('\n', '')
+    return ''.join(
+        ch
+        for ch in str(value)
+        if ch == '\t' or 0x20 <= ord(ch) <= 0x7E or 0xA0 <= ord(ch) <= 0xFF
+    )
 
 class GatewayHandler(BaseHTTPRequestHandler):
     def send_cors_headers(self):
