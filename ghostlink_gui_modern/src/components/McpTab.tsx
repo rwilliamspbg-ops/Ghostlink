@@ -69,6 +69,7 @@ export const McpTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
   const [saving, setSaving] = useState(false);
   const editorCloseRef = useRef<HTMLButtonElement>(null);
   const editorTriggerRef = useRef<HTMLElement | null>(null);
+  const dialogRef = useRef<HTMLDivElement>(null);
 
   const refresh = async () => {
     setLoading(true);
@@ -151,7 +152,30 @@ export const McpTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
   useEffect(() => {
     if (editorTarget === null) return;
     const handleKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') closeEditor();
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        closeEditor();
+        return;
+      }
+      if (e.key === 'Tab') {
+        const dialog = dialogRef.current;
+        if (!dialog) return;
+        const focusables = Array.from(
+          dialog.querySelectorAll<HTMLElement>(
+            'a[href], button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])'
+          )
+        );
+        if (focusables.length === 0) return;
+        const first = focusables[0];
+        const last = focusables[focusables.length - 1];
+        if (e.shiftKey && document.activeElement === first) {
+          e.preventDefault();
+          last.focus();
+        } else if (!e.shiftKey && document.activeElement === last) {
+          e.preventDefault();
+          first.focus();
+        }
+      }
     };
     document.addEventListener('keydown', handleKey);
     editorCloseRef.current?.focus();
@@ -253,6 +277,11 @@ export const McpTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
               icon={Plug}
               title="No MCP servers configured"
               description="Click Add Server above, or hand-edit mcp_servers.toml and refresh."
+              action={{
+                label: 'Add Server',
+                onClick: (e) => openCreateEditor(e.currentTarget as HTMLElement),
+                icon: Plus,
+              }}
             />
           )}
 
@@ -360,6 +389,7 @@ export const McpTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" onClick={closeEditor}>
           {/* eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-noninteractive-element-interactions -- onClick here only stops the backdrop's close-on-click from firing when clicking inside the dialog, it's not a control */}
           <div
+            ref={dialogRef}
             role="dialog"
             aria-modal="true"
             aria-labelledby="mcp-editor-title"
