@@ -125,8 +125,8 @@ export const McpTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
     setDeleting(null);
   };
 
-  const openCreateEditor = (trigger: HTMLElement) => {
-    editorTriggerRef.current = trigger;
+  const openCreateEditor = (trigger?: HTMLElement | null) => {
+    editorTriggerRef.current = trigger || null;
     setForm(EMPTY_FORM);
     setEnvText('');
     setArgsText('');
@@ -279,7 +279,7 @@ export const McpTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
               description="Click Add Server above, or hand-edit mcp_servers.toml and refresh."
               action={{
                 label: 'Add Server',
-                onClick: (e) => openCreateEditor(e.currentTarget as HTMLElement),
+                onClick: () => openCreateEditor(),
                 icon: Plus,
               }}
             />
