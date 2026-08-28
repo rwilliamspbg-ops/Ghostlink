@@ -455,8 +455,10 @@ pub struct DiscoveryFrame {
 
 impl DiscoveryFrame {
     /// Encode discovery frame to bytes.
-    /// Delegates directly to `encode_into` with a single allocation, eliminating
-    /// hand-duplicated payload serialization and avoiding double-copying from stack buffers.
+    ///
+    /// OPTIMIZATION: Delegates directly to `encode_into` with a single pre-allocated `Vec`,
+    /// eliminating hand-duplicated payload serialization, avoiding stack allocation of 264 bytes,
+    /// and preventing double-copy overhead on discovery frame encoding.
     #[inline]
     pub fn encode(&self) -> Vec<u8> {
         let mut buf = Vec::with_capacity(MAX_FRAME_SIZE);
