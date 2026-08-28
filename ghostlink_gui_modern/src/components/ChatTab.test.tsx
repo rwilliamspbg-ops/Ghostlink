@@ -139,6 +139,29 @@ describe('ChatTab', () => {
     expect(screen.getByText('vLLM')).toBeInTheDocument();
   });
 
+  it('allows rating assistant responses with thumbs up / thumbs down', () => {
+    useAppStore.setState({
+      chatMessages: [
+        { role: 'assistant', content: 'Test response', id: 'msg-1', timestamp: '12:00 PM' }
+      ]
+    });
+    const api = createMockApi();
+    render(<ChatTab api={api} />);
+
+    const thumbsUp = screen.getByLabelText('Rate as good response');
+    const thumbsDown = screen.getByLabelText('Rate as poor response');
+
+    expect(thumbsUp).toHaveAttribute('aria-pressed', 'false');
+    expect(thumbsDown).toHaveAttribute('aria-pressed', 'false');
+
+    fireEvent.click(thumbsUp);
+    expect(screen.getByLabelText('Rated as good response')).toHaveAttribute('aria-pressed', 'true');
+
+    fireEvent.click(thumbsDown);
+    expect(screen.getByLabelText('Rated as poor response')).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByLabelText('Rate as good response')).toHaveAttribute('aria-pressed', 'false');
+  });
+
   describe('voice input', () => {
     afterEach(() => {
       vi.unstubAllGlobals();
