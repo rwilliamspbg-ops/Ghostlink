@@ -1301,7 +1301,8 @@ fn print_flow(opts: FlowOptions) -> Result<()> {
         })
         .collect();
 
-    let nodes = cluster.nodes();
+    // Optimization: Use zero-copy nodes_snapshot() instead of cloning nodes vector
+    let nodes = cluster.nodes_snapshot();
     let assignments = assign_layers_with_runtime_profile(&nodes, &layers, &local_profile)
         .map_err(|e| anyhow::anyhow!(e))?;
 
@@ -4300,7 +4301,8 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             }));
         }
 
-        let nodes = cluster.nodes();
+        // Optimization: Use zero-copy nodes_snapshot() instead of cloning nodes vector
+        let nodes = cluster.nodes_snapshot();
         let total_vram = cluster.total_vram_gb();
         let layer_count = (total_vram * 2.0).clamp(8.0, 60.0) as usize;
         let layers: Vec<LayerSpec> = (0..layer_count)
@@ -11941,7 +11943,7 @@ mod tests {
             let backend = state.lock().unwrap();
             (
                 backend.inference_metrics.snapshot(),
-                backend.cluster.nodes().len(),
+                backend.cluster.node_count(),
                 backend.inference_backend.as_str().to_string(),
             )
         };
