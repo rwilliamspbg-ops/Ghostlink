@@ -130,10 +130,7 @@ fn key_preview(raw: &str) -> String {
 }
 
 /// Loads the persisted API key, generating and persisting a new one on
-/// first run (and printing it once, the same "show the first-run secret
-/// exactly once" convention tools like Jupyter use — there's no other way
-/// for the operator to learn it, since it's never returned by any API
-/// response). Reused across restarts once the file exists.
+/// first run. Reused across restarts once the file exists.
 fn load_or_create_api_key() -> String {
     let path = api_key_path();
     if let Ok(existing) = std::fs::read_to_string(&path) {
@@ -152,12 +149,12 @@ fn load_or_create_api_key() -> String {
     }
     println!("=======================================================================");
     println!(
-        "Generated a new Ghostlink API key (saved to {}):",
+        "Generated a new Ghostlink API key and saved it to {}.",
         path.display()
     );
-    println!("  {key}");
-    println!("Send it as `Authorization: Bearer {key}` on every API request, or");
-    println!("exchange it for a short-lived token via POST /api/security/jwt/refresh.");
+    println!("Read the key from that file before using it.");
+    println!("Send it as a bearer token on every API request, or exchange it for");
+    println!("a short-lived token via POST /api/security/jwt/refresh.");
     println!("This key is now the 'bootstrap' Admin entry in your key store — see");
     println!("GET /api/security/keys to create additional, more narrowly-scoped keys.");
     println!("=======================================================================");
