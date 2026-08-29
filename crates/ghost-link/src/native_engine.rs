@@ -67,6 +67,8 @@ impl NativeEngineClient {
     pub fn new() -> Self {
         Self {
             http: reqwest::Client::builder()
+                .pool_max_idle_per_host(10)
+                .tcp_keepalive(std::time::Duration::from_secs(15))
                 .build()
                 .unwrap_or_else(|_| reqwest::Client::new()),
         }
@@ -1580,29 +1582,21 @@ impl NativeEngineClient {
                     if payload == "[DONE]" {
                         return;
                     }
-                    let data: serde_json::Value = match serde_json::from_str(payload) {
+                    let data: LlamaStreamChunk = match serde_json::from_str(payload) {
                         Ok(v) => v,
                         Err(_) => continue,
                     };
-                    let delta = data
-                        .get("choices")
-                        .and_then(|c| c.get(0))
-                        .and_then(|c| c.get("delta"))
-                        .and_then(|d| d.get("content"))
-                        .and_then(|v| v.as_str());
-                    if let Some(text) = delta {
-                        if !text.is_empty() && tx.send(Ok(text.to_string())).await.is_err() {
-                            return; // receiver dropped, stop reading
+                    if let Some(choice) = data.choices.first() {
+                        if let Some(delta) = &choice.delta {
+                            if let Some(text) = &delta.content {
+                                if !text.is_empty() && tx.send(Ok(text.clone())).await.is_err() {
+                                    return; // receiver dropped, stop reading
+                                }
+                            }
                         }
-                    }
-                    let finished = data
-                        .get("choices")
-                        .and_then(|c| c.get(0))
-                        .and_then(|c| c.get("finish_reason"))
-                        .map(|v| !v.is_null())
-                        .unwrap_or(false);
-                    if finished {
-                        return;
+                        if choice.finish_reason.as_ref().is_some_and(|r| !r.is_null()) {
+                            return;
+                        }
                     }
                 }
             }
@@ -1610,6 +1604,26 @@ impl NativeEngineClient {
 
         Ok(Box::pin(tokio_stream::wrappers::ReceiverStream::new(rx)))
     }
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct LlamaStreamChunk {
+    #[serde(default)]
+    choices: Vec<LlamaStreamChoice>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct LlamaStreamChoice {
+    #[serde(default)]
+    delta: Option<LlamaStreamDelta>,
+    #[serde(default)]
+    finish_reason: Option<serde_json::Value>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct LlamaStreamDelta {
+    #[serde(default)]
+    content: Option<String>,
 }
 
 fn generation_from_llama_json(parsed: &serde_json::Value) -> Option<NativeGeneration> {
