@@ -231,13 +231,10 @@ impl LoadBalancer {
             }
 
             if end_idx > start_idx {
-                let size_gb: f32 = sorted_layers[start_idx..end_idx]
-                    .iter()
-                    .map(|l| l.vram_gb)
-                    .sum();
                 let start_layer = sorted_layers[start_idx].index;
                 let end_layer = sorted_layers[end_idx - 1].index + 1;
-                let slice = TensorSlice::new((start_layer, end_layer), size_gb);
+                // Optimize: Reuse `used_vram` directly instead of re-iterating over sorted_layers[start_idx..end_idx] to re-sum vram_gb.
+                let slice = TensorSlice::new((start_layer, end_layer), used_vram);
                 distributions.push((node.id.clone(), vec![slice]));
                 current_layer_idx = end_idx;
             }
