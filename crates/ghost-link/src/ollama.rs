@@ -176,10 +176,12 @@ pub type OllamaStream =
 
 impl OllamaClient {
     pub fn new(base_url: String) -> Self {
-        Self {
-            base_url,
-            client: Client::new(),
-        }
+        let client = Client::builder()
+            .pool_max_idle_per_host(10)
+            .tcp_keepalive(std::time::Duration::from_secs(15))
+            .build()
+            .unwrap_or_else(|_| Client::new());
+        Self { base_url, client }
     }
 
     fn matches_model_name(candidate: &str, requested: &str) -> bool {
