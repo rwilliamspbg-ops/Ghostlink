@@ -162,6 +162,42 @@ describe('ChatTab', () => {
     expect(screen.getByLabelText('Rate as good response')).toHaveAttribute('aria-pressed', 'false');
   });
 
+  it('updates copy button aria-label and title when response is copied in markdown code block or compare mode', () => {
+    useAppStore.setState({
+      chatMessages: [
+        {
+          role: 'assistant',
+          content: '```js\nconsole.log("hello");\n```',
+          id: 'msg-code',
+          timestamp: '12:00 PM',
+        },
+        {
+          role: 'assistant',
+          content: 'Compare reply A',
+          id: 'cmp-1-a',
+          timestamp: '12:01 PM',
+          compareGroupId: 'cmp-1',
+        },
+        {
+          role: 'assistant',
+          content: 'Compare reply B',
+          id: 'cmp-1-b',
+          timestamp: '12:01 PM',
+          compareGroupId: 'cmp-1',
+        },
+      ],
+    });
+    const api = createMockApi();
+    render(<ChatTab api={api} />);
+
+    const codeCopyBtn = screen.getByLabelText('Copy code');
+    expect(codeCopyBtn).toHaveAttribute('title', 'Copy code');
+
+    const compareCopyBtns = screen.getAllByLabelText('Copy response');
+    expect(compareCopyBtns.length).toBeGreaterThan(0);
+    expect(compareCopyBtns[0]).toHaveAttribute('title', 'Copy response');
+  });
+
   describe('voice input', () => {
     afterEach(() => {
       vi.unstubAllGlobals();
