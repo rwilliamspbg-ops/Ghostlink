@@ -7936,11 +7936,9 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                         let request_id_str = format!("req-{}", uuid::Uuid::new_v4());
                         let sse_stream = stream.map(move |item| {
                             let text_chunk = item.unwrap_or_else(|e| format!(" [stream error: {e}]"));
-                            let chunk_json = serde_json::json!({
-                                "token": text_chunk,
-                                "request_id": request_id_str,
-                            });
-                            Ok::<Event, Infallible>(Event::default().data(chunk_json.to_string()))
+                            let escaped_token = serde_json::to_string(&text_chunk).unwrap_or_else(|_| "\"\"".to_string());
+                            let data_str = format!(r#"{{"token":{},"request_id":"{}"}}"#, escaped_token, request_id_str);
+                            Ok::<Event, Infallible>(Event::default().data(data_str))
                         });
 
                         request_tracker.decrement().await;
