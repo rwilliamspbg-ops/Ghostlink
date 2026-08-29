@@ -260,6 +260,7 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
   } = useAppStore();
   const [input, setInput] = useState('');
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [messageRatings, setMessageRatings] = useState<Record<string, 'up' | 'down'>>({});
   const [isRecording, setIsRecording] = useState(false);
   const recognitionRef = useRef<any>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -841,6 +842,20 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
     } catch { /* noop */ }
   };
 
+  const handleRating = (id: string, type: 'up' | 'down') => {
+    setMessageRatings((prev) => {
+      const current = prev[id];
+      if (current === type) {
+        const next = { ...prev };
+        delete next[id];
+        addToast({ type: 'info', message: 'Rating removed' });
+        return next;
+      }
+      addToast({ type: 'success', message: type === 'up' ? 'Feedback recorded: Good response' : 'Feedback recorded: Poor response' });
+      return { ...prev, [id]: type };
+    });
+  };
+
   const handleRegenerate = () => {
     const lastUser = [...messages].reverse().find(m => m.role === 'user');
     if (lastUser) {
@@ -1331,10 +1346,30 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                                 >
                                   {copiedId === msg.id ? <Check size={14} className="text-green-400" aria-hidden="true" /> : <Copy size={14} aria-hidden="true" />}
                                 </button>
-                                <button className="p-1.5 rounded-lg hover:bg-slate-900 text-slate-500 hover:text-slate-300 transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none" title="Good response" aria-label="Good response">
+                                <button
+                                  onClick={() => handleRating(msg.id, 'up')}
+                                  aria-pressed={messageRatings[msg.id] === 'up'}
+                                  className={`p-1.5 rounded-lg transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none ${
+                                    messageRatings[msg.id] === 'up'
+                                      ? 'text-green-400 bg-green-500/10 hover:bg-green-500/20'
+                                      : 'text-slate-500 hover:text-slate-300 hover:bg-slate-900'
+                                  }`}
+                                  title={messageRatings[msg.id] === 'up' ? 'Rated as good response' : 'Good response'}
+                                  aria-label={messageRatings[msg.id] === 'up' ? 'Rated as good response' : 'Rate as good response'}
+                                >
                                     <ThumbsUp size={14} aria-hidden="true" />
                                 </button>
-                                <button className="p-1.5 rounded-lg hover:bg-slate-900 text-slate-500 hover:text-slate-300 transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none" title="Bad response" aria-label="Bad response">
+                                <button
+                                  onClick={() => handleRating(msg.id, 'down')}
+                                  aria-pressed={messageRatings[msg.id] === 'down'}
+                                  className={`p-1.5 rounded-lg transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none ${
+                                    messageRatings[msg.id] === 'down'
+                                      ? 'text-red-400 bg-red-500/10 hover:bg-red-500/20'
+                                      : 'text-slate-500 hover:text-slate-300 hover:bg-slate-900'
+                                  }`}
+                                  title={messageRatings[msg.id] === 'down' ? 'Rated as poor response' : 'Poor response'}
+                                  aria-label={messageRatings[msg.id] === 'down' ? 'Rated as poor response' : 'Rate as poor response'}
+                                >
                                     <ThumbsDown size={14} aria-hidden="true" />
                                 </button>
                                 <button onClick={handleRegenerate} className="p-1.5 rounded-lg hover:bg-slate-900 text-slate-500 hover:text-slate-300 transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none" title="Regenerate" aria-label="Regenerate response">
