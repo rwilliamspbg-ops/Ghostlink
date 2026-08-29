@@ -7913,6 +7913,49 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                     }
                 }
             }
+            InferenceEngine::Native if req.stream.unwrap_or(false) => {
+                let stream_res = native_engine_client
+                    .generate_chat_stream(
+                        &current_model,
+                        &req.message,
+                        exec_tokens,
+                        temp,
+                        top_p,
+                        top_k,
+                        penalty,
+                        &history_turns,
+                        None,
+                        true,
+                        req.response_format.clone(),
+                    )
+                    .await;
+
+                match stream_res {
+                    Ok(stream) => {
+                        use futures::StreamExt;
+                        let request_id_str = format!("req-{}", uuid::Uuid::new_v4());
+                        let sse_stream = stream.map(move |item| {
+                            let text_chunk = item.unwrap_or_else(|e| format!(" [stream error: {e}]"));
+                            let chunk_json = serde_json::json!({
+                                "token": text_chunk,
+                                "request_id": request_id_str,
+                            });
+                            Ok::<Event, Infallible>(Event::default().data(chunk_json.to_string()))
+                        });
+
+                        request_tracker.decrement().await;
+                        return Sse::new(sse_stream).into_response();
+                    }
+                    Err(err) => (
+                        format!(
+                            "Ghostlink native fabric backend streaming error on model '{}': {}",
+                            current_model, err
+                        ),
+                        false,
+                        InferenceEngine::Native.as_str(),
+                    ),
+                }
+            }
             InferenceEngine::Native => {
                 match native_engine_client
                     .generate(
@@ -7925,14 +7968,6 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                         penalty,
                         &settings.native_engine,
                         &history_turns,
-                        // "any idle slot" (llama-server's own default), not a
-                        // pinned slot number - safe with the default
-                        // parallel_slots=1 (there's only ever one slot to
-                        // land on anyway) and no worse than before if the
-                        // user's raised it. cache_prompt: true only helps
-                        // when consecutive calls land on the same slot with
-                        // a matching prefix; harmless (just a fresh eval, as
-                        // before) when they don't.
                         None,
                         true,
                         req.response_format.clone(),

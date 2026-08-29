@@ -1301,9 +1301,9 @@ impl NativeEngineClient {
             "cache_prompt": cache_prompt
         });
 
-        if let Some(response_format) = response_format {
+        if let Some(ref response_format) = response_format {
             if let Some(obj) = chat_payload.as_object_mut() {
-                obj.insert("response_format".to_string(), response_format);
+                obj.insert("response_format".to_string(), response_format.clone());
                 // Grammar-constrained decoding forces the final token stream
                 // into schema shape regardless, but hybrid-reasoning models
                 // (e.g. Qwen3.5) otherwise spend the entire max_tokens budget
@@ -1435,8 +1435,10 @@ impl NativeEngineClient {
         top_p: f32,
         top_k: usize,
         repeat_penalty: f32,
+        history: &[(String, String)],
         id_slot: Option<i64>,
         cache_prompt: bool,
+        response_format: Option<serde_json::Value>,
     ) -> Result<NativeChatStream, String> {
         use futures::StreamExt;
 
@@ -1461,12 +1463,17 @@ impl NativeEngineClient {
             .clamp(5, 300);
         let system_prompt = Self::default_system_prompt();
         let chat_url = format!("{base_url}/v1/chat/completions");
-        let chat_payload = serde_json::json!({
+
+        let mut chat_messages =
+            vec![serde_json::json!({"role": "system", "content": system_prompt})];
+        for (role, content) in history {
+            chat_messages.push(serde_json::json!({"role": role, "content": content}));
+        }
+        chat_messages.push(serde_json::json!({"role": "user", "content": cleaned_prompt}));
+
+        let mut chat_payload = serde_json::json!({
             "model": model,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": cleaned_prompt}
-            ],
+            "messages": chat_messages,
             "max_tokens": max_tokens,
             "temperature": temperature.clamp(0.0, 2.0),
             "top_p": top_p.clamp(0.0, 1.0),
@@ -1476,6 +1483,16 @@ impl NativeEngineClient {
             "id_slot": id_slot.unwrap_or(-1),
             "cache_prompt": cache_prompt
         });
+
+        if let Some(ref response_format) = response_format {
+            if let Some(obj) = chat_payload.as_object_mut() {
+                obj.insert("response_format".to_string(), response_format.clone());
+                obj.insert(
+                    "chat_template_kwargs".to_string(),
+                    serde_json::json!({ "enable_thinking": false }),
+                );
+            }
+        }
 
         let client = self.http.clone();
         let connect_timeout = Duration::from_secs(connect_timeout_secs);
@@ -1509,10 +1526,10 @@ impl NativeEngineClient {
                     top_p,
                     top_k,
                     repeat_penalty,
-                    &[],
+                    history,
                     id_slot,
                     cache_prompt,
-                    None,
+                    response_format,
                 )
                 .await?;
             let single = futures::stream::once(async move { Ok(gen.text) });
@@ -1867,8 +1884,10 @@ mod tests {
                     0.9,
                     40,
                     1.1,
+                    &[],
                     None,
                     false,
+                    None,
                 )
                 .await
                 .expect("stream should start");

@@ -67,10 +67,15 @@ pub struct VllmChatResult {
 
 impl VllmClient {
     pub fn new(base_url: String, api_key: Option<String>) -> Self {
+        let client = Client::builder()
+            .pool_max_idle_per_host(10)
+            .tcp_keepalive(std::time::Duration::from_secs(15))
+            .build()
+            .unwrap_or_else(|_| Client::new());
         Self {
             base_url: normalize_base_url(&base_url),
             api_key: api_key.filter(|key| !key.trim().is_empty()),
-            client: Client::new(),
+            client,
         }
     }
 
