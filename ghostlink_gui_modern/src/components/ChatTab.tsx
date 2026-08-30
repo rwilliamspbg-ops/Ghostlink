@@ -1347,7 +1347,8 @@ const ThreadSidebarItem: React.FC<ThreadItemProps> = ({
           type="text"
           value={renameInput}
           onChange={(e) => setRenameInput(e.target.value)}
-          className="w-full bg-slate-950 border border-slate-800 rounded px-2 py-1 text-xs text-slate-200 focus:outline-none"
+          aria-label={`Rename thread ${thread.title}`}
+          className="w-full bg-slate-950 border border-slate-800 rounded px-2 py-1 text-xs text-slate-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
           // eslint-disable-next-line jsx-a11y/no-autofocus
           autoFocus
           onKeyDown={(e) => {
@@ -1355,56 +1356,63 @@ const ThreadSidebarItem: React.FC<ThreadItemProps> = ({
             if (e.key === "Escape") onCancelRename();
           }}
         />
-        <button onClick={onSaveRename} className="p-1 text-green-400 hover:text-green-300">
-          <Check size={14} />
+        <button
+          type="button"
+          onClick={onSaveRename}
+          className="p-1 text-green-400 hover:text-green-300 rounded focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
+          title="Save title"
+          aria-label="Save thread title"
+        >
+          <Check size={14} aria-hidden="true" />
         </button>
       </div>
     );
   }
 
   return (
-    // eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-static-element-interactions
     <div
-      className={`group flex items-center justify-between px-2.5 py-1.5 rounded-xl text-xs transition cursor-pointer ${
-
-        isActive ? "bg-blue-600/10 text-blue-400 font-semibold" : "text-slate-400 hover:bg-slate-900 hover:text-slate-200"
+      className={`group flex items-center justify-between px-2.5 py-1.5 rounded-xl text-xs transition ${
+        isActive ? "bg-blue-600/10" : "hover:bg-slate-900"
       }`}
-      onClick={onSelect}
     >
-      <div className="flex items-center gap-2 min-w-0">
-        <MessageSquare size={13} className="flex-shrink-0" />
+      <button
+        type="button"
+        onClick={onSelect}
+        aria-label={`Select thread ${thread.title}`}
+        className={`flex items-center gap-2 min-w-0 flex-1 text-left rounded-lg transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none ${
+          isActive ? "text-blue-400 font-semibold" : "text-slate-400 hover:text-slate-200"
+        }`}
+      >
+        <MessageSquare size={13} className="flex-shrink-0" aria-hidden="true" />
         <span className="truncate">{thread.title}</span>
-      </div>
-      <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition">
+      </button>
+      <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition">
         <button
-          onClick={(e) => {
-            e.stopPropagation();
-            onTogglePin();
-          }}
-          className="p-1 hover:text-white rounded"
+          type="button"
+          onClick={onTogglePin}
+          className="p-1 text-slate-400 hover:text-white rounded focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
           title={thread.pinned ? "Unpin thread" : "Pin thread"}
+          aria-label={thread.pinned ? `Unpin thread ${thread.title}` : `Pin thread ${thread.title}`}
         >
-          {thread.pinned ? <PinOff size={12} /> : <Pin size={12} />}
+          {thread.pinned ? <PinOff size={12} aria-hidden="true" /> : <Pin size={12} aria-hidden="true" />}
         </button>
         <button
-          onClick={(e) => {
-            e.stopPropagation();
-            onStartRename();
-          }}
-          className="p-1 hover:text-white rounded"
+          type="button"
+          onClick={onStartRename}
+          className="p-1 text-slate-400 hover:text-white rounded focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
           title="Rename thread"
+          aria-label={`Rename thread ${thread.title}`}
         >
-          <Pencil size={12} />
+          <Pencil size={12} aria-hidden="true" />
         </button>
         <button
-          onClick={(e) => {
-            e.stopPropagation();
-            onDelete();
-          }}
-          className="p-1 hover:text-red-400 rounded"
+          type="button"
+          onClick={onDelete}
+          className="p-1 text-slate-400 hover:text-red-400 rounded focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
           title="Delete thread"
+          aria-label={`Delete thread ${thread.title}`}
         >
-          <Trash2 size={12} />
+          <Trash2 size={12} aria-hidden="true" />
         </button>
       </div>
     </div>
