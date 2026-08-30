@@ -1,5 +1,9 @@
 # Palette's Journal
 
+## 2026-08-20 - [Chat Sidebar Thread Navigation Accessibility & Focus States]
+**Learning:** Non-semantic click containers (such as non-interactive `div` wrappers used for saved thread items in sidebars) completely lock out keyboard navigators, as default Tab traversal skips them entirely. Refactoring item rows to use semantic `<button>` elements for thread selection—complemented by high-contrast `focus-visible:` focus outlines, explicit `aria-label`s, and `group-focus-within:opacity-100` on secondary action triggers (Pin, Rename, Delete)—guarantees keyboard users can focus and interact with every chat thread and action trigger seamlessly.
+**Action:** Always implement listbox and tree item triggers using semantic `<button>` elements with `focus-visible:` focus rings, explicit ARIA labels, and `group-focus-within` visibility for inline action triggers.
+
 ## 2026-08-19 - [Actionable Empty States with Call-To-Action Controls]
 **Learning:** Empty dashboard views (such as Sessions with no active inference runs or Workers with no connected cluster nodes) can leave users stranded if they only display static text instructions. Supporting an optional `action` prop in shared `EmptyState` components provides inline, keyboard-accessible call-to-action buttons (with high-contrast focus rings and contextual icons) that directly guide users to resolution (e.g. switching tabs or opening creation forms).
 **Action:** Always complement empty state messages with actionable CTA buttons when a primary user action (like starting a session or adding a node) can resolve the empty state.

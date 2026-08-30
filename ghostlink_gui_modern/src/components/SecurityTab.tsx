@@ -263,6 +263,7 @@ export const SecurityTab: React.FC<{ api: any }> = ({ api }) => {
                   onClick={async () => { const result = await api.getAuditLog(); if (result.entries) setAuditLog(result.entries); }}
                   className="p-2 hover:bg-slate-800 rounded-lg transition text-slate-500 hover:text-white focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
                   aria-label="Refresh audit log"
+                  title="Refresh audit log"
                 >
                   <RefreshCw size={14} aria-hidden="true" />
                 </button>

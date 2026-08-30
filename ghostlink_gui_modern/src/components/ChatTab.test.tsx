@@ -338,5 +338,28 @@ describe('ChatTab', () => {
 
       expect(presetSelect).toHaveValue("concise");
     });
+
+    it("renders keyboard-accessible thread item buttons in sidebar", () => {
+      useAppStore.setState({
+        threads: [
+          { id: "thread-1", title: "Project Architecture", messages: [], createdAt: Date.now(), updatedAt: Date.now() },
+        ],
+        activeThreadId: "thread-1",
+      });
+      const api = createMockApi();
+      render(<ChatTab api={api} />);
+
+      const selectBtn = screen.getByRole("button", { name: "Select thread Project Architecture" });
+      expect(selectBtn).toBeInTheDocument();
+
+      const pinBtn = screen.getByRole("button", { name: "Pin thread Project Architecture" });
+      expect(pinBtn).toBeInTheDocument();
+
+      const renameBtn = screen.getByRole("button", { name: "Rename thread Project Architecture" });
+      expect(renameBtn).toBeInTheDocument();
+
+      const deleteBtn = screen.getByRole("button", { name: "Delete thread Project Architecture" });
+      expect(deleteBtn).toBeInTheDocument();
+    });
   });
 });
