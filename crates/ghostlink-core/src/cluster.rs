@@ -339,7 +339,9 @@ impl ClusterState {
             existing_metrics.vram_gb = vram_gb;
             existing_metrics.total_vram_gb = vram_gb;
             existing_metrics.system_memory_gb = system_memory_gb;
-            existing_metrics.compute_capability.clone_from(&node.compute_capability);
+            existing_metrics
+                .compute_capability
+                .clone_from(&node.compute_capability);
             existing_metrics.gpu_name.clone_from(&node.gpu_name);
             existing_metrics.heartbeat_timeout = Duration::from_secs(5);
             if addr.is_some() {
