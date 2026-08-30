@@ -21,6 +21,12 @@ All notable changes to Ghostlink Studio are documented here.
 
 ### Added
 
+- **First-run health and recovery panel in Ghostlink Studio** (`ghostlink_gui_modern/src/components/HealthPanel.tsx`, `ghostlink_gui_modern/src/api.ts`, `ghostlink_gui_modern/src/store.ts`): Replaced generic "Connection Error" with typed health probes and actionable recovery paths across control-plane gateway (:8000), internal ghost-link API (:8003), authentication state (HTTP 401), inference backend, and loaded model status. Includes inline API key input field for 401 recovery, direct CTA buttons ("Go to Models Tab", "Switch API Base"), and Command Palette integration.
+
+### Fixed
+
+- **Port alignment & default API base URL in Studio GUI** (`ghostlink_gui_modern/src/config.ts`, `docs/TROUBLESHOOTING.md`, `docs/QUICKSTART.md`, `README.md`, `launch.sh`): Set default GUI API base URL to control-plane gateway `http://127.0.0.1:8000` (Go proxy) instead of internal ghost-link `:8003` directly, preventing 405/CORS errors and broken first-run connections. Updated launchers to print `Open Studio at http://127.0.0.1:5173` upon green health verification.
+
 - **Control-plane gateway wired into `launch.sh`**: the Go reverse-proxy gateway (`control-plane/`) previously had no launch-time integration at all — nothing built or started it. `launch.sh` now resolves/builds it if missing (`go build`, skipped with a warning if no Go toolchain is present — this is additive, not a hard requirement), starts and health-checks it alongside `ghost-link` and Vite, and stops it on cleanup. Reachable at `GHOSTLINK_CONTROL_PLANE_PORT` (default `8000`).
 - **`launch.sh` splash/success banners** now credit Sovereign Mohawk Proto LLC and carry a live version number read from `crates/ghost-link/Cargo.toml` (`ghostlink_version()`), instead of no version indicator at all.
 
@@ -43,6 +49,12 @@ for the updated threat model and [SECURITY.md](SECURITY.md) for the
 supported-version table.
 
 ### Added
+
+- **First-run health and recovery panel in Ghostlink Studio** (`ghostlink_gui_modern/src/components/HealthPanel.tsx`, `ghostlink_gui_modern/src/api.ts`, `ghostlink_gui_modern/src/store.ts`): Replaced generic "Connection Error" with typed health probes and actionable recovery paths across control-plane gateway (:8000), internal ghost-link API (:8003), authentication state (HTTP 401), inference backend, and loaded model status. Includes inline API key input field for 401 recovery, direct CTA buttons ("Go to Models Tab", "Switch API Base"), and Command Palette integration.
+
+### Fixed
+
+- **Port alignment & default API base URL in Studio GUI** (`ghostlink_gui_modern/src/config.ts`, `docs/TROUBLESHOOTING.md`, `docs/QUICKSTART.md`, `README.md`, `launch.sh`): Set default GUI API base URL to control-plane gateway `http://127.0.0.1:8000` (Go proxy) instead of internal ghost-link `:8003` directly, preventing 405/CORS errors and broken first-run connections. Updated launchers to print `Open Studio at http://127.0.0.1:5173` upon green health verification.
 
 - **RBAC with scoped, revocable API keys** (`crates/ghost-link/src/auth.rs`): the single shared bearer token is replaced by a persisted, hashed multi-key store (`api_keys.json`, `ApiKeyRecord` — SHA-256 hash + last-4 preview only, the raw value is never stored). Each key carries a `Role` (`Admin`/`Operator`/`Viewer`); `required_role()` gates every route — GET defaults to `Viewer`, mutating verbs (POST/PUT/DELETE) default to `Operator`, and key management (`GET`/`POST /api/security/keys`, `DELETE /api/security/keys/:id`) plus `/api/security/pqc/enable` are `Admin`-only. `delete_key_from_store` refuses to remove the last remaining Admin key, preventing accidental self-lockout. JWTs now sign with a dedicated `jwt_signing_secret` (persisted to `jwt_secret.txt`, `GHOSTLINK_JWT_SECRET_PATH` override) instead of the raw API key value, and a JWT is only honored while its subject key id is still present in the store — revoking a key immediately invalidates any outstanding JWT for it rather than waiting out its 1-hour lifetime. **Compatibility:** an existing `api_key.txt` migrates automatically on first run into the store as the sole `bootstrap` Admin key — no manual step, and that key's effective access is unchanged. One side effect: JWTs issued by a pre-upgrade server sign with the old (API-key-derived) secret and stop validating once the process restarts on this version — low impact given the 1-hour lifetime, but worth knowing if something caches tokens long-lived (see Troubleshooting below).
 - **`rpc_shared_secret` handshake for RPC peer authentication** (`crates/ghost-link/src/rpc_cluster.rs`): closes a gap the existing `rpc_allowed_peers` IP allowlist (1.17.0) couldn't — an allowlisted range doesn't stop a device already inside it, or one able to spoof a source address. Since upstream llama.cpp's `--rpc` client starts sending raw `ggml-rpc` binary protocol the instant it connects (no slot for a custom handshake inside that stream), auth instead happens on a dedicated auth port before the real RPC connection is permitted: the coordinator sends a random nonce, the peer returns `HMAC-SHA256(rpc_shared_secret, nonce)`, and a match grants a time-limited admission for that source IP, which the allowlist proxy now requires in addition to plain IP membership whenever a secret is configured. A fresh nonce per handshake defeats replay. **Off by default** — `rpc_shared_secret` is empty/unset out of the box, and an empty allowlist remains byte-for-byte the old direct-bind behavior; distributing the secret across a cluster's nodes is a manual, opt-in step. Does **not** encrypt the RPC byte stream itself — an honest remaining gap, not something this closes.
@@ -111,6 +123,12 @@ supported-version table.
 
 ### Added
 
+- **First-run health and recovery panel in Ghostlink Studio** (`ghostlink_gui_modern/src/components/HealthPanel.tsx`, `ghostlink_gui_modern/src/api.ts`, `ghostlink_gui_modern/src/store.ts`): Replaced generic "Connection Error" with typed health probes and actionable recovery paths across control-plane gateway (:8000), internal ghost-link API (:8003), authentication state (HTTP 401), inference backend, and loaded model status. Includes inline API key input field for 401 recovery, direct CTA buttons ("Go to Models Tab", "Switch API Base"), and Command Palette integration.
+
+### Fixed
+
+- **Port alignment & default API base URL in Studio GUI** (`ghostlink_gui_modern/src/config.ts`, `docs/TROUBLESHOOTING.md`, `docs/QUICKSTART.md`, `README.md`, `launch.sh`): Set default GUI API base URL to control-plane gateway `http://127.0.0.1:8000` (Go proxy) instead of internal ghost-link `:8003` directly, preventing 405/CORS errors and broken first-run connections. Updated launchers to print `Open Studio at http://127.0.0.1:5173` upon green health verification.
+
 - **Real E2E CI gate for distributed inference** (`.github/workflows/distributed-e2e.yml`, `Dockerfile.rpc-fabric`, `docker-compose.rpc-fabric.yml`, `scripts/rpc_fabric_assert.py`): a two-container Docker fabric proving Ghostlink's `ggml-rpc`-backed distributed inference actually executes across containers (`real_inference: true`, live RPC connection log evidence), not just that peer discovery found a node count.
 - **Real multi-node benchmark harness** (`docker-compose.rpc-fabric-benchmark.yml`, `scripts/rpc_fabric_benchmark.py`), plus extensive real findings from testing on genuinely separate physical hardware documented in `docs/BENCHMARKS.md`: real single-node-vs-distributed throughput comparisons, and — the actual proof this project's roadmap has been chasing — a real 30B-class model that cannot load on one machine alone (`ErrorOutOfDeviceMemory`) loading and serving correctly once split across two real machines.
 - **RPC contributor IP allowlist** (`rpc_allowed_peers` setting, `crates/ghost-link/src/rpc_cluster.rs`): `ggml-rpc-server` has no authentication of its own (an upstream llama.cpp limitation); Ghostlink now optionally fronts it with a Ghostlink-controlled TCP proxy that only forwards connections from allowlisted IPs/CIDR ranges. Empty allowlist (the default) is byte-for-byte the old direct-bind behavior — zero overhead, zero change, for anyone not using the feature.
@@ -160,6 +178,12 @@ This patch is cut from the commit immediately after the CI fix landed on `main`,
 
 ### Added
 
+- **First-run health and recovery panel in Ghostlink Studio** (`ghostlink_gui_modern/src/components/HealthPanel.tsx`, `ghostlink_gui_modern/src/api.ts`, `ghostlink_gui_modern/src/store.ts`): Replaced generic "Connection Error" with typed health probes and actionable recovery paths across control-plane gateway (:8000), internal ghost-link API (:8003), authentication state (HTTP 401), inference backend, and loaded model status. Includes inline API key input field for 401 recovery, direct CTA buttons ("Go to Models Tab", "Switch API Base"), and Command Palette integration.
+
+### Fixed
+
+- **Port alignment & default API base URL in Studio GUI** (`ghostlink_gui_modern/src/config.ts`, `docs/TROUBLESHOOTING.md`, `docs/QUICKSTART.md`, `README.md`, `launch.sh`): Set default GUI API base URL to control-plane gateway `http://127.0.0.1:8000` (Go proxy) instead of internal ghost-link `:8003` directly, preventing 405/CORS errors and broken first-run connections. Updated launchers to print `Open Studio at http://127.0.0.1:5173` upon green health verification.
+
 - `circuit_breaker` module in [crates/ghostlink-core/src/circuit_breaker.rs](crates/ghostlink-core/src/circuit_breaker.rs): a 3-state (Closed/Open/Half-Open) circuit breaker with jittered exponential backoff. Wired into the TCP transport bridge's reconnect loop ([crates/ghostlink-core/src/runtime.rs](crates/ghostlink-core/src/runtime.rs) `spawn_tcp_bridge`) via a new per-node breaker registry on `ClusterState` (`circuit_breaker_for`) — failure history now persists *across* pipeline executions targeting the same remote node, so a chronically-unreachable node fails fast on later calls instead of repeating the full connect/backoff sequence every time. Opt-in per call site (`Option<CircuitBreaker>`); the loopback benchmarking path passes `None` and is unaffected.
 - `api_response_cache` module in [crates/ghostlink-core/src/api_response_cache.rs](crates/ghostlink-core/src/api_response_cache.rs): a TTL + ETag response cache. Wired into `GET /api/models`, which previously ran a real `fs::read_dir`/`fs::metadata` disk scan on every request — now cached for 5s and explicitly invalidated the moment a download completes or a model is deleted.
 - `LayerKvCache::write_kv_batch` in [crates/ghostlink-core/src/kv_cache.rs](crates/ghostlink-core/src/kv_cache.rs): writes multiple tokens' KV entries under a single write-lock acquisition, validating every entry upfront so a bad entry fails the whole batch atomically. Available as a primitive; like the rest of `kv_cache.rs`, it has no current caller in `runtime.rs` (Ghostlink delegates model execution to an external inference engine).
@@ -182,6 +206,12 @@ This patch is cut from the commit immediately after the CI fix landed on `main`,
 ## [1.3.2] - 2026-08-02 (vLLM Integration & Release Packaging Readiness)
 
 ### Added
+
+- **First-run health and recovery panel in Ghostlink Studio** (`ghostlink_gui_modern/src/components/HealthPanel.tsx`, `ghostlink_gui_modern/src/api.ts`, `ghostlink_gui_modern/src/store.ts`): Replaced generic "Connection Error" with typed health probes and actionable recovery paths across control-plane gateway (:8000), internal ghost-link API (:8003), authentication state (HTTP 401), inference backend, and loaded model status. Includes inline API key input field for 401 recovery, direct CTA buttons ("Go to Models Tab", "Switch API Base"), and Command Palette integration.
+
+### Fixed
+
+- **Port alignment & default API base URL in Studio GUI** (`ghostlink_gui_modern/src/config.ts`, `docs/TROUBLESHOOTING.md`, `docs/QUICKSTART.md`, `README.md`, `launch.sh`): Set default GUI API base URL to control-plane gateway `http://127.0.0.1:8000` (Go proxy) instead of internal ghost-link `:8003` directly, preventing 405/CORS errors and broken first-run connections. Updated launchers to print `Open Studio at http://127.0.0.1:5173` upon green health verification.
 
 - New inference engine abstraction in [crates/ghost-link/src/inference_engine.rs](crates/ghost-link/src/inference_engine.rs) with capability descriptors for `ollama`, `native`, and `vllm`.
 - New vLLM client in [crates/ghost-link/src/vllm.rs](crates/ghost-link/src/vllm.rs) for:
