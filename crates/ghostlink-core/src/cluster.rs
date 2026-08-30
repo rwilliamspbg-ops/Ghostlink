@@ -307,39 +307,40 @@ impl ClusterState {
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
 
-        let id = node.id.clone();
-        let gpu_name = node.gpu_name.clone();
+        // Optimization: Operate on references/moves and avoid redundant cloning of NodeResources fields.
+        // Also avoid marking nodes_snapshot_dirty when updating a node with unchanged resources.
         let vram_gb = node.vram_gb;
         let system_memory_gb = node.system_memory_gb;
-        let compute_capability = node.compute_capability.clone();
-        let rpc_port = node.rpc_port;
         let mut vram_delta = vram_gb;
         let mut system_memory_delta = system_memory_gb;
+        let mut resources_changed = true;
 
-        if let Some(existing) = nodes.get_mut(&id) {
+        if let Some(existing) = nodes.get_mut(&node.id) {
             vram_delta = vram_gb - existing.vram_gb;
             system_memory_delta = system_memory_gb - existing.system_memory_gb;
-            existing.vram_gb = vram_gb;
-            existing.system_memory_gb = system_memory_gb;
-            existing.compute_capability = compute_capability.clone();
-            existing.gpu_name = gpu_name.clone();
-            // Keeps a node's advertised RPC-contribution port in sync across
-            // re-registrations (e.g. the operator toggles compute
-            // contribution on/off and the next discovery broadcast/mDNS
-            // resolve should reflect that) — previously only set on first
-            // registration, so it could go stale for the life of the process.
-            existing.rpc_port = rpc_port;
+
+            // Check if node resource fields actually changed to avoid snapshot invalidation churn
+            if existing.vram_gb == node.vram_gb
+                && existing.system_memory_gb == node.system_memory_gb
+                && existing.compute_capability == node.compute_capability
+                && existing.gpu_name == node.gpu_name
+                && existing.rpc_port == node.rpc_port
+                && existing.rpc_build_id == node.rpc_build_id
+            {
+                resources_changed = false;
+            } else {
+                *existing = node.clone();
+            }
         } else {
-            nodes.insert(id.clone(), node);
+            nodes.insert(node.id.clone(), node.clone());
         }
 
-        if let Some(existing_metrics) = metrics.get_mut(&id) {
-            existing_metrics.name = id.clone();
+        if let Some(existing_metrics) = metrics.get_mut(&node.id) {
             existing_metrics.vram_gb = vram_gb;
             existing_metrics.total_vram_gb = vram_gb;
             existing_metrics.system_memory_gb = system_memory_gb;
-            existing_metrics.compute_capability = compute_capability;
-            existing_metrics.gpu_name = gpu_name;
+            existing_metrics.compute_capability.clone_from(&node.compute_capability);
+            existing_metrics.gpu_name.clone_from(&node.gpu_name);
             existing_metrics.heartbeat_timeout = Duration::from_secs(5);
             if addr.is_some() {
                 existing_metrics.ip_address = addr;
@@ -348,16 +349,18 @@ impl ClusterState {
             let mut node_metrics = NodeMetrics::new(
                 vram_gb,
                 system_memory_gb,
-                compute_capability,
+                node.compute_capability.clone(),
                 Duration::from_secs(5),
             );
-            node_metrics.name = id.clone();
-            node_metrics.gpu_name = gpu_name;
+            node_metrics.name = node.id.clone();
+            node_metrics.gpu_name = node.gpu_name.clone();
             node_metrics.ip_address = addr;
-            metrics.insert(id, node_metrics);
+            metrics.insert(node.id.clone(), node_metrics);
         }
 
-        self.nodes_snapshot_dirty.store(true, Ordering::Release);
+        if resources_changed {
+            self.nodes_snapshot_dirty.store(true, Ordering::Release);
+        }
 
         let current_total_vram = f64::from_bits(self.total_vram_cache.load(Ordering::Acquire));
         self.total_vram_cache.store(
