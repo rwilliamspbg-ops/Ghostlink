@@ -6,6 +6,15 @@ All notable changes to Ghostlink Studio are documented here.
 
 ## [Unreleased]
 
+### Phase 2: Ghostlink Studio Model Management (GGUF, Fit Badges, Quant Picker & Cancellation)
+
+- **Hugging Face GGUF Repo & File Inspection Endpoint** (`crates/ghost-link/src/main.rs`, `docs/API_REFERENCE.md`): Added `GET /api/models/huggingface/repo` (`handle_gui_models_hf_repo_details`) to fetch GGUF sibling files, quants, and exact byte sizes for Hub repositories. Updated HF search to filter out non-chat/encoder models while exposing `hidden_non_chat_count`.
+- **Download Cancellation & Range Resume** (`crates/ghost-link/src/main.rs`, `ghostlink_gui_modern/src/api.ts`): Added `POST /api/models/download/cancel` (`handle_gui_model_download_cancel`) with active cancellation tokens checked during chunk streaming, cleaning up incomplete artifacts. Surfaced HTTP Range resume support on retries.
+- **Hardware Fit Badge Calculator** (`ghostlink_gui_modern/src/utils/fitBadge.ts`): Implemented deterministic Memory & VRAM fit badge classification (*Fits this machine*, *Tight on this machine*, *Needs cluster*, *Likely too big for this machine*, *Will not load*, *Unknown*) derived from probed runtime RAM/VRAM and aggregate cluster worker capacity with detailed tooltip math breakdowns.
+- **Multi-Quant Selection & Recommendation Engine** (`ghostlink_gui_modern/src/components/ModelsTab.tsx`): Multi-quant Hub repositories now expose a quant picker with automated recommendation (preferring default Q4_K_M or best local fit, followed by cluster fit) targeting individual GGUFs while preserving native filenames.
+- **Load UX, Inline Tuning & OOM Suggestions** (`ghostlink_gui_modern/src/components/ModelsTab.tsx`): Added one-click Load CTA, inline native performance tuning controls (GPU offload `-ngl`, context `-c`, threads `-t`, flash attention) persisted per model in `localStorage`, clean Ollama/vLLM backend handling, and OOM error recovery with smaller quant suggestions.
+- **Command Palette Action Shortcuts** (`ghostlink_gui_modern/src/components/CommandPalette.tsx`): Wired Download models, Load model, and Unload model command palette actions.
+
 ### Performance
 
 - **Low-allocation SSE chat streaming & NativeEngineClient connection pooling** (`crates/ghost-link/src/native_engine.rs`, `crates/ghost-link/src/main.rs`): Replaced generic `serde_json::Value` dynamic map deserialization on incoming SSE token chunks with strongly typed `LlamaStreamChunk` structs in `generate_chat_stream`, eliminating per-token heap map allocations. Added `pool_max_idle_per_host(10)` and `tcp_keepalive(15s)` to `NativeEngineClient::new` to minimize TCP handshake overhead on native streaming completion requests, and streamlined outgoing SSE formatting in `main.rs` by avoiding temporary JSON map allocations per token.

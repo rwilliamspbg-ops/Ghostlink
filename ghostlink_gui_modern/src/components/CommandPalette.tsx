@@ -70,6 +70,27 @@ export const CommandPalette: React.FC = () => {
           }
         },
       },
+      {
+        id: 'download-models',
+        label: 'Download models',
+        hint: 'Search and download models from Hugging Face Hub',
+        icon: Database,
+        action: () => setActiveTab(1),
+      },
+      {
+        id: 'load-model',
+        label: 'Load model',
+        hint: 'View local models and load into memory',
+        icon: Database,
+        action: () => setActiveTab(1),
+      },
+      {
+        id: 'unload-model',
+        label: 'Unload model',
+        hint: 'Unload active model from memory',
+        icon: Database,
+        action: () => setActiveTab(1),
+      },
       ...NAV_TABS.map((tab) => ({
         id: `goto-${tab.id}`,
         label: `Go to ${tab.label}`,
