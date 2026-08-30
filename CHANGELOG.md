@@ -6,6 +6,18 @@ All notable changes to Ghostlink Studio are documented here.
 
 ## [Unreleased]
 
+### Phase 3: Ghostlink Studio Chat Enhancements (Multi-turn, Stoppable Streaming, Thread Sidebar, Presets & Hardware Attribution)
+
+- **Backend Multi-Turn Prompt Reconstruction for `/v1/chat/completions`** (`crates/ghost-link/src/main.rs`, `docs/API_REFERENCE.md`, `docs/openapi.yaml`): Reconstructed prompts from the full `req.messages` array in sequence role order (`system: ...`, `user: ...`, `assistant: ...`) rather than dropping earlier turns. Added a Rust unit test verifying multi-turn prompt concatenation and updated documentation.
+- **Thread Management Sidebar & Persistence** (`ghostlink_gui_modern/src/store.ts`, `ghostlink_gui_modern/src/components/ChatTab.tsx`): Built a collapsible thread list sidebar with live search, New Chat shortcut (`Ctrl+Shift+O` / `⌘ShiftO`), inline thread title renaming, deletion with confirmation modal, and pinning. Thread state is persisted locally and synchronized with `SessionsTab` to prevent state drift.
+- **Stoppable Token Streaming & Session Cancellation** (`ghostlink_gui_modern/src/api.ts`, `ghostlink_gui_modern/src/components/ChatTab.tsx`): Token-by-token rendering with a Stop control button and `Escape` keyboard hotkey that aborts the client fetch stream, issues `POST /api/sessions/{id}/cancel` to the backend, and preserves generated tokens up to that point for immediate regeneration.
+- **In-place Turn Editing & Assistant Regeneration** (`ghostlink_gui_modern/src/components/ChatTab.tsx`): Added inline user message editing with history truncation from that point, and an assistant "Regenerate" control to re-trigger generation on any prior assistant response.
+- **Mid-Thread Model Switch Dividers** (`ghostlink_gui_modern/src/components/ChatTab.tsx`): Switching models mid-thread retains complete conversation history while inserting visual divider messages (`Switched model to <model>`) into the transcript.
+- **Per-Thread Knobs & System Prompt Presets** (`ghostlink_gui_modern/src/store.ts`, `ghostlink_gui_modern/src/components/ChatTab.tsx`): Added built-in system prompt presets (*Default Co-pilot*, *Concise*, *Code Expert*, plus user-created custom presets) and per-thread knobs (model, temperature, max tokens, top-p, repeat penalty) isolated from global application Settings.
+- **Context Meter, Real-time tok/s & Hardware Attribution** (`ghostlink_gui_modern/src/components/ChatTab.tsx`): Added a header context meter (`Estimated: X / Y tokens`), live stream `tok/s` calculation, single-node (`Local`) or multi-node cluster hardware attribution, and engine capability status badges.
+- **Prompt Template Library & Slash Command** (`ghostlink_gui_modern/src/store.ts`, `ghostlink_gui_modern/src/components/ChatTab.tsx`): Added a local prompt template library accessible via composer button or `/` slash command shortcut to insert pre-made prompt templates directly into the composer.
+
+
 ### Phase 2: Ghostlink Studio Model Management (GGUF, Fit Badges, Quant Picker & Cancellation)
 
 - **Hugging Face GGUF Repo & File Inspection Endpoint** (`crates/ghost-link/src/main.rs`, `docs/API_REFERENCE.md`): Added `GET /api/models/huggingface/repo` (`handle_gui_models_hf_repo_details`) to fetch GGUF sibling files, quants, and exact byte sizes for Hub repositories. Updated HF search to filter out non-chat/encoder models while exposing `hidden_non_chat_count`.

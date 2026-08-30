@@ -326,6 +326,7 @@ export class GhostlinkAPI {
       system_prompt: string;
       mcp?: object;
       stream?: boolean;
+      signal?: AbortSignal;
     },
     onToken?: (token: string) => void
   ) {
@@ -344,6 +345,7 @@ export class GhostlinkAPI {
             ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
           },
           body: JSON.stringify(payload),
+          signal: payload.signal,
         });
 
         if (!response.ok) {

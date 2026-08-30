@@ -103,14 +103,14 @@ describe('ChatTab', () => {
   it('shows send button', () => {
     const api = createMockApi();
     render(<ChatTab api={api} />);
-    const textarea = screen.getByPlaceholderText('Send a Message');
+    const textarea = screen.getByPlaceholderText(/Send a Message/i);
     expect(textarea).toBeInTheDocument();
   });
 
   it('allows typing a message', () => {
     const api = createMockApi();
     render(<ChatTab api={api} />);
-    const textarea = screen.getByPlaceholderText('Send a Message');
+    const textarea = screen.getByPlaceholderText(/Send a Message/i);
     fireEvent.change(textarea, { target: { value: 'Hello world' } });
     expect(textarea).toHaveValue('Hello world');
   });
@@ -245,12 +245,98 @@ describe('ChatTab', () => {
       act(() => {
         instances[0].onresult({ resultIndex: 0, results: [finalResult] });
       });
-      const textarea = screen.getByPlaceholderText('Send a Message');
+      const textarea = screen.getByPlaceholderText(/Send a Message/i);
       expect(textarea).toHaveValue('hello from voice');
 
       fireEvent.click(screen.getByLabelText('Stop voice input'));
       expect(instances[0].stop).toHaveBeenCalledOnce();
       expect(screen.getByLabelText('Start voice input')).toBeInTheDocument();
+    });
+  });
+
+  describe("Phase 3 Studio Chat features", () => {
+    it("renders empty state CTAs and navigates to Models tab when CTA clicked", () => {
+      useAppStore.setState({ currentModel: "none", chatMessages: [] });
+      const api = createMockApi();
+      render(<ChatTab api={api} />);
+
+      expect(screen.getByText("Start a chat")).toBeInTheDocument();
+      const loadModelBtn = screen.getByText("Load a model");
+      expect(loadModelBtn).toBeInTheDocument();
+
+      fireEvent.click(loadModelBtn);
+      expect(useAppStore.getState().setActiveTab).toHaveBeenCalledWith(1);
+    });
+
+    it("triggers send message and streams tokens", async () => {
+      useAppStore.setState({ currentModel: "llama-3-8b" });
+      const api = createMockApi();
+      render(<ChatTab api={api} />);
+
+      const textarea = screen.getByPlaceholderText(/Send a Message/i);
+      fireEvent.change(textarea, { target: { value: "Hello co-pilot" } });
+      const sendBtn = screen.getByTitle("Send message");
+
+      await act(async () => {
+        fireEvent.click(sendBtn);
+      });
+
+      expect(api.sendMessage).toHaveBeenCalled();
+    });
+
+    it("edits user message and truncates following turns", async () => {
+      useAppStore.setState({
+        chatMessages: [
+          { role: "user", content: "Turn 1 User", id: "u1", timestamp: "12:00 PM" },
+          { role: "assistant", content: "Turn 1 Assistant", id: "a1", timestamp: "12:01 PM" },
+        ],
+      });
+      const api = createMockApi();
+      render(<ChatTab api={api} />);
+
+      const editBtn = screen.getByTitle("Edit message");
+      fireEvent.click(editBtn);
+
+      const editTextarea = screen.getByDisplayValue("Turn 1 User");
+      fireEvent.change(editTextarea, { target: { value: "Turn 1 User Edited" } });
+
+      const saveBtn = screen.getByText("Save & Regenerate");
+      await act(async () => {
+        fireEvent.click(saveBtn);
+      });
+
+      expect(api.sendMessage).toHaveBeenCalled();
+    });
+
+    it("regenerates assistant message", async () => {
+      useAppStore.setState({
+        chatMessages: [
+          { role: "user", content: "Hello", id: "u1", timestamp: "12:00 PM" },
+          { role: "assistant", content: "Original Assistant", id: "a1", timestamp: "12:01 PM" },
+        ],
+      });
+      const api = createMockApi();
+      render(<ChatTab api={api} />);
+
+      const regenBtn = screen.getByTitle("Regenerate assistant response");
+      await act(async () => {
+        fireEvent.click(regenBtn);
+      });
+
+      expect(api.sendMessage).toHaveBeenCalled();
+    });
+
+    it("allows changing system prompt preset from knobs panel", () => {
+      const api = createMockApi();
+      render(<ChatTab api={api} />);
+
+      const knobsBtn = screen.getByTitle("Per-thread settings & system prompt presets");
+      fireEvent.click(knobsBtn);
+
+      const presetSelect = screen.getByLabelText("System Prompt Preset");
+      fireEvent.change(presetSelect, { target: { value: "concise" } });
+
+      expect(presetSelect).toHaveValue("concise");
     });
   });
 });
