@@ -1,4 +1,4 @@
-import { create } from 'zustand';
+import { create } from "zustand";
 
 export interface Model {
   name: string;
@@ -67,13 +67,6 @@ export interface Settings {
   discovery_auth_token: string;
   tcp_auth_token: string;
   xdp_interface: string;
-  // Model-load performance tuning. `*_auto: true` (the default for every
-  // pre-existing settings.json) means "don't override — defer to the
-  // backend's own VRAM-tier/large-model-safety-cap logic, or whatever a
-  // launch script already configured." Only the value fields flip an
-  // `_auto` flag off when a user explicitly edits them in the GUI — see
-  // `apply_native_engine_tuning_env` in main.rs for why this never forces
-  // an already-configured value back to "unset."
   ngl: number;
   ngl_auto: boolean;
   ctx_size: number;
@@ -82,7 +75,7 @@ export interface Settings {
   threads_auto: boolean;
   batch_size: number | null;
   ubatch_size: number | null;
-  kv_cache_type: 'f16' | 'q8_0' | 'q4_0' | null;
+  kv_cache_type: "f16" | "q8_0" | "q4_0" | null;
   flash_attention: boolean;
   mlock: boolean | null;
   no_mmap: boolean | null;
@@ -125,8 +118,8 @@ export interface WorkspaceEntry {
 }
 
 export type McpTransport =
-  | { transport: 'stdio'; command: string; args: string[]; env: Record<string, string> }
-  | { transport: 'http'; url: string; headers: Record<string, string> };
+  | { transport: "stdio"; command: string; args: string[]; env: Record<string, string> }
+  | { transport: "http"; url: string; headers: Record<string, string> };
 
 export interface McpServer {
   name: string;
@@ -139,16 +132,13 @@ export interface McpServer {
   timeout_secs: number;
 }
 
-// Payload shape for create/update — mirrors the backend's internally-tagged
-// McpServerConfig JSON (transport as a literal "stdio"/"http" discriminator
-// with that transport's fields flattened alongside the rest).
 export interface McpServerInput {
   name: string;
   slot: string;
   enabled: boolean;
   requires_confirmation: boolean;
   timeout_secs: number;
-  transport: 'stdio' | 'http';
+  transport: "stdio" | "http";
   command?: string;
   args?: string[];
   env?: Record<string, string>;
@@ -171,18 +161,73 @@ export interface PendingToolCall {
 }
 
 export interface ChatMessage {
-  role: 'user' | 'assistant';
+  role: "user" | "assistant";
   content: string;
   id: string;
   timestamp: string;
   model?: string;
   toolCalls?: ToolCallTrace[];
   pendingToolCall?: PendingToolCall;
-  /** Set on both assistant replies from a single Compare Mode turn so the UI can render them side-by-side. */
   compareGroupId?: string;
-  /** Server dropped some earlier history to fit conversation_token_limit before generating this reply — renders a divider above it so the gap is visible instead of looking like the model forgot on its own. */
   truncatedBefore?: boolean;
+  isDivider?: boolean;
 }
+
+export interface SystemPromptPreset {
+  id: string;
+  name: string;
+  prompt: string;
+  isBuiltIn?: boolean;
+}
+
+export interface PromptTemplate {
+  id: string;
+  title: string;
+  content: string;
+}
+
+export interface Thread {
+  id: string;
+  title: string;
+  createdAt: number;
+  updatedAt: number;
+  messages: ChatMessage[];
+  model?: string;
+  temperature?: number;
+  maxTokens?: number;
+  top_p?: number;
+  penalty?: number;
+  systemPrompt?: string;
+  pinned?: boolean;
+}
+
+export const BUILTIN_PRESETS: SystemPromptPreset[] = [
+  {
+    id: "default",
+    name: "Default Co-pilot",
+    prompt: "You are a production-grade, kernel-bypass-aware system orchestration co-pilot.",
+    isBuiltIn: true,
+  },
+  {
+    id: "concise",
+    name: "Concise",
+    prompt: "You are a concise, direct assistant. Answer in as few words as necessary without filler or fluff.",
+    isBuiltIn: true,
+  },
+  {
+    id: "code",
+    name: "Code Expert",
+    prompt: "You are an expert software engineer. Write clean, idiomatic, self-documenting code with concise explanations.",
+    isBuiltIn: true,
+  },
+];
+
+export const BUILTIN_USER_PROMPTS: PromptTemplate[] = [
+  { id: "explain-code", title: "Explain Code", content: "Please explain how this code works step by step:" },
+  { id: "refactor-func", title: "Refactor Function", content: "Refactor this function to improve performance, readability, and type safety:" },
+  { id: "write-tests", title: "Write Unit Tests", content: "Write comprehensive unit tests for the following code:" },
+  { id: "summarize", title: "Summarize Text", content: "Summarize the key points of the following content in concise bullet points:" },
+];
 
 export interface DownloadProgressEntry {
   progress: number;
@@ -192,13 +237,13 @@ export interface DownloadProgressEntry {
 
 export interface Toast {
   id: string;
-  type: 'success' | 'error' | 'info';
+  type: "success" | "error" | "info";
   message: string;
 }
 
 type Updater<T> = T | ((prev: T) => T);
 function resolveUpdater<T>(updater: Updater<T>, prev: T): T {
-  return typeof updater === 'function' ? (updater as (prev: T) => T)(prev) : updater;
+  return typeof updater === "function" ? (updater as (prev: T) => T)(prev) : updater;
 }
 
 interface AppState {
@@ -208,10 +253,6 @@ interface AppState {
   uptime: number;
   models: Model[];
   metrics: Metric | null;
-  // Bounded trailing history of metrics samples, appended alongside setMetrics
-  // (App.tsx polls every 3s) — powers the Metrics tab's sparklines so trends
-  // are visible instead of just a current-value snapshot. Capped so it never
-  // grows unbounded across a long session.
   metricsHistory: MetricSample[];
   sessions: Session[];
   workers: Worker[];
@@ -222,13 +263,12 @@ interface AppState {
   activeTab: number;
   mcpServers: McpServer[];
 
-  // Chat and model-download state live here (rather than component-local
-  // useState) because the app only renders the active tab — switching tabs
-  // unmounts ChatTab/ModelsTab. A streaming chat reply or a download's
-  // progress poll loop is a plain async closure that keeps running
-  // regardless of unmount, but its setState calls become no-ops against a
-  // torn-down component. Storing the data here means it keeps updating in
-  // the background and the tab picks up right where it left off on remount.
+  // Thread, preset, and prompt state
+  threads: Thread[];
+  activeThreadId: string | null;
+  presets: SystemPromptPreset[];
+  userPrompts: PromptTemplate[];
+
   chatMessages: ChatMessage[];
   chatLoading: boolean;
   chatStreamingId: string | null;
@@ -236,10 +276,6 @@ interface AppState {
   pendingModelActions: Record<string, string>;
   downloadProgress: Record<string, DownloadProgressEntry>;
 
-  // Editor tab state — lifted here for the same reason as chatMessages
-  // above: switching tabs unmounts EditorTab, and an in-progress unsaved
-  // edit (or a diff the user hasn't accepted/rejected yet) would otherwise
-  // be silently lost instead of just picking back up on remount.
   editorOpenPath: string | null;
   editorContent: string;
   editorOriginalContent: string;
@@ -250,13 +286,8 @@ interface AppState {
   setEditorPendingDiff: (diff: { proposed: string } | null) => void;
   closeEditorFile: () => void;
 
-  // App-wide transient notifications (rendered by <Toaster/> in App.tsx).
-  // Distinct from the persistent inline error/empty-state banners each tab
-  // already has for context-tied validation/connection errors — this is for
-  // one-off action feedback ("Saved", "Deleted", a background failure) that
-  // should fade on its own rather than occupy permanent screen space.
   toasts: Toast[];
-  addToast: (toast: Omit<Toast, 'id'>) => string;
+  addToast: (toast: Omit<Toast, "id">) => string;
   removeToast: (id: string) => void;
 
   setApiBase: (base: string) => void;
@@ -273,6 +304,18 @@ interface AppState {
   setSelectedModel: (model: string | null) => void;
   setActiveTab: (tab: number) => void;
   setMcpServers: (servers: McpServer[]) => void;
+
+  createThread: (initialMessages?: ChatMessage[], modelOverride?: string) => Thread;
+  selectThread: (id: string) => void;
+  updateActiveThread: (updater: (thread: Thread) => Thread) => void;
+  renameThread: (id: string, title: string) => void;
+  deleteThread: (id: string) => void;
+  togglePinThread: (id: string) => void;
+  addPreset: (preset: Omit<SystemPromptPreset, "id">) => void;
+  deletePreset: (id: string) => void;
+  addUserPrompt: (prompt: Omit<PromptTemplate, "id">) => void;
+  deleteUserPrompt: (id: string) => void;
+
   setChatMessages: (updater: Updater<ChatMessage[]>) => void;
   setChatLoading: (loading: boolean) => void;
   setChatStreamingId: (id: string | null) => void;
@@ -281,20 +324,102 @@ interface AppState {
   setDownloadProgress: (updater: Updater<Record<string, DownloadProgressEntry>>) => void;
 }
 
-const CHAT_STORAGE_KEY = 'ghostlink-chat-messages';
-function loadStoredChatMessages(): ChatMessage[] {
+const THREADS_STORAGE_KEY = "ghostlink-threads-v2";
+const PRESETS_STORAGE_KEY = "ghostlink-presets-v1";
+const PROMPTS_STORAGE_KEY = "ghostlink-prompts-v1";
+const CHAT_STORAGE_KEY = "ghostlink-chat-messages";
+
+function loadStoredThreads(): { threads: Thread[]; activeThreadId: string | null } {
+  try {
+    const raw = localStorage.getItem(THREADS_STORAGE_KEY);
+    if (raw) {
+      const parsed: Thread[] = JSON.parse(raw);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        return { threads: parsed, activeThreadId: parsed[0].id };
+      }
+    }
+  } catch {
+    /* fallback */
+  }
+
+  let legacyMsgs: ChatMessage[] = [];
   try {
     const raw = localStorage.getItem(CHAT_STORAGE_KEY);
-    return raw ? JSON.parse(raw) : [];
+    if (raw) legacyMsgs = JSON.parse(raw);
   } catch {
-    return [];
+    /* fallback */
+  }
+
+  const defaultThread: Thread = {
+    id: `thread_${Date.now()}`,
+    title: legacyMsgs.length > 0 ? (legacyMsgs[0].content.slice(0, 30) || "Previous Chat") : "New Chat",
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+    messages: legacyMsgs,
+  };
+
+  return { threads: [defaultThread], activeThreadId: defaultThread.id };
+}
+
+function loadStoredPresets(): SystemPromptPreset[] {
+  try {
+    const raw = localStorage.getItem(PRESETS_STORAGE_KEY);
+    if (raw) {
+      const custom: SystemPromptPreset[] = JSON.parse(raw);
+      return [...BUILTIN_PRESETS, ...custom];
+    }
+  } catch {
+    /* fallback */
+  }
+  return BUILTIN_PRESETS;
+}
+
+function loadStoredPrompts(): PromptTemplate[] {
+  try {
+    const raw = localStorage.getItem(PROMPTS_STORAGE_KEY);
+    if (raw) {
+      const custom: PromptTemplate[] = JSON.parse(raw);
+      return [...BUILTIN_USER_PROMPTS, ...custom];
+    }
+  } catch {
+    /* fallback */
+  }
+  return BUILTIN_USER_PROMPTS;
+}
+
+function saveThreadsToStorage(threads: Thread[]) {
+  try {
+    localStorage.setItem(THREADS_STORAGE_KEY, JSON.stringify(threads.slice(0, 50)));
+  } catch {
+    /* quota */
   }
 }
 
+function savePresetsToStorage(presets: SystemPromptPreset[]) {
+  try {
+    const custom = presets.filter((p) => !p.isBuiltIn);
+    localStorage.setItem(PRESETS_STORAGE_KEY, JSON.stringify(custom));
+  } catch {
+    /* quota */
+  }
+}
+
+function savePromptsToStorage(prompts: PromptTemplate[]) {
+  try {
+    const custom = prompts.filter((p) => !BUILTIN_USER_PROMPTS.some((b) => b.id === p.id));
+    localStorage.setItem(PROMPTS_STORAGE_KEY, JSON.stringify(custom));
+  } catch {
+    /* quota */
+  }
+}
+
+const initialThreadData = loadStoredThreads();
+const initialActiveThread = initialThreadData.threads.find((t) => t.id === initialThreadData.activeThreadId);
+
 export const useAppStore = create<AppState>((set) => ({
-  apiBase: '',
+  apiBase: "",
   backendOnline: false,
-  currentModel: 'none',
+  currentModel: "none",
   uptime: 0,
   models: [],
   metrics: null,
@@ -302,12 +427,18 @@ export const useAppStore = create<AppState>((set) => ({
   sessions: [],
   workers: [],
   backends: [],
-  currentBackend: 'cpu',
+  currentBackend: "cpu",
   backendStatus: null,
   selectedModel: null,
   activeTab: 0,
   mcpServers: [],
-  chatMessages: loadStoredChatMessages(),
+
+  threads: initialThreadData.threads,
+  activeThreadId: initialThreadData.activeThreadId,
+  presets: loadStoredPresets(),
+  userPrompts: loadStoredPrompts(),
+
+  chatMessages: initialActiveThread ? initialActiveThread.messages : [],
   chatLoading: false,
   chatStreamingId: null,
   chatError: null,
@@ -315,8 +446,8 @@ export const useAppStore = create<AppState>((set) => ({
   downloadProgress: {},
   toasts: [],
   editorOpenPath: null,
-  editorContent: '',
-  editorOriginalContent: '',
+  editorContent: "",
+  editorOriginalContent: "",
   editorPendingDiff: null,
 
   setApiBase: (base) => set({ apiBase: base }),
@@ -327,8 +458,6 @@ export const useAppStore = create<AppState>((set) => ({
   setMetrics: (metrics) =>
     set((state) => ({
       metrics,
-      // ~6 minutes of history at the 3s poll interval App.tsx uses — enough
-      // for a meaningful trend chart without growing unbounded.
       metricsHistory: [...state.metricsHistory, { ...metrics, t: Date.now() }].slice(-120),
     })),
   setSessions: (sessions) => set({ sessions }),
@@ -339,16 +468,174 @@ export const useAppStore = create<AppState>((set) => ({
   setSelectedModel: (model) => set({ selectedModel: model }),
   setActiveTab: (tab) => set({ activeTab: tab }),
   setMcpServers: (servers) => set({ mcpServers: servers }),
+
+  createThread: (initialMessages = [], modelOverride) => {
+    const newThread: Thread = {
+      id: `thread_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      title: "New Chat",
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      messages: initialMessages,
+      model: modelOverride,
+    };
+    set((state) => {
+      const threads = [newThread, ...state.threads];
+      saveThreadsToStorage(threads);
+      return {
+        threads,
+        activeThreadId: newThread.id,
+        chatMessages: newThread.messages,
+      };
+    });
+    return newThread;
+  },
+
+  selectThread: (id) =>
+    set((state) => {
+      const thread = state.threads.find((t) => t.id === id);
+      if (!thread) return state;
+      return {
+        activeThreadId: id,
+        chatMessages: thread.messages,
+      };
+    }),
+
+  updateActiveThread: (updater) =>
+    set((state) => {
+      if (!state.activeThreadId) return state;
+      const threads = state.threads.map((t) => {
+        if (t.id === state.activeThreadId) {
+          const updated = updater(t);
+          return { ...updated, updatedAt: Date.now() };
+        }
+        return t;
+      });
+      const activeThread = threads.find((t) => t.id === state.activeThreadId);
+      saveThreadsToStorage(threads);
+      return {
+        threads,
+        chatMessages: activeThread ? activeThread.messages : state.chatMessages,
+      };
+    }),
+
+  renameThread: (id, title) =>
+    set((state) => {
+      const threads = state.threads.map((t) => (t.id === id ? { ...t, title, updatedAt: Date.now() } : t));
+      saveThreadsToStorage(threads);
+      return { threads };
+    }),
+
+  deleteThread: (id) =>
+    set((state) => {
+      const threads = state.threads.filter((t) => t.id !== id);
+      const activeThreadId =
+        state.activeThreadId === id ? (threads.length > 0 ? threads[0].id : null) : state.activeThreadId;
+      const activeThread = threads.find((t) => t.id === activeThreadId);
+      saveThreadsToStorage(threads);
+      return {
+        threads,
+        activeThreadId,
+        chatMessages: activeThread ? activeThread.messages : [],
+      };
+    }),
+
+  togglePinThread: (id) =>
+    set((state) => {
+      const threads = state.threads.map((t) => (t.id === id ? { ...t, pinned: !t.pinned } : t));
+      saveThreadsToStorage(threads);
+      return { threads };
+    }),
+
+  addPreset: (preset) =>
+    set((state) => {
+      const newPreset: SystemPromptPreset = {
+        ...preset,
+        id: `preset_${Date.now()}`,
+        isBuiltIn: false,
+      };
+      const presets = [...state.presets, newPreset];
+      savePresetsToStorage(presets);
+      return { presets };
+    }),
+
+  deletePreset: (id) =>
+    set((state) => {
+      const presets = state.presets.filter((p) => p.id !== id || p.isBuiltIn);
+      savePresetsToStorage(presets);
+      return { presets };
+    }),
+
+  addUserPrompt: (prompt) =>
+    set((state) => {
+      const newPrompt: PromptTemplate = {
+        ...prompt,
+        id: `prompt_${Date.now()}`,
+      };
+      const userPrompts = [...state.userPrompts, newPrompt];
+      savePromptsToStorage(userPrompts);
+      return { userPrompts };
+    }),
+
+  deleteUserPrompt: (id) =>
+    set((state) => {
+      const userPrompts = state.userPrompts.filter((p) => p.id !== id);
+      savePromptsToStorage(userPrompts);
+      return { userPrompts };
+    }),
+
   setChatMessages: (updater) =>
     set((state) => {
-      const chatMessages = resolveUpdater(updater, state.chatMessages);
+      const currentMsgs = state.chatMessages;
+      const newMsgs = resolveUpdater(updater, currentMsgs);
+
+      let activeThreadId = state.activeThreadId;
+      let threads = state.threads;
+
+      if (!activeThreadId || threads.length === 0) {
+        const newThread: Thread = {
+          id: `thread_${Date.now()}`,
+          title: newMsgs.length > 0 ? (newMsgs[0].content.slice(0, 30) || "New Chat") : "New Chat",
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+          messages: newMsgs,
+        };
+        threads = [newThread, ...threads];
+        activeThreadId = newThread.id;
+      } else {
+        threads = threads.map((t) => {
+          if (t.id === activeThreadId) {
+            let title = t.title;
+            if ((title === "New Chat" || title.startsWith("Session ")) && newMsgs.length > 0) {
+              const firstUser = newMsgs.find((m) => m.role === "user");
+              if (firstUser && firstUser.content) {
+                title = firstUser.content.slice(0, 32).trim() || title;
+              }
+            }
+            return {
+              ...t,
+              title,
+              messages: newMsgs,
+              updatedAt: Date.now(),
+            };
+          }
+          return t;
+        });
+      }
+
+      saveThreadsToStorage(threads);
       try {
-        localStorage.setItem(CHAT_STORAGE_KEY, JSON.stringify(chatMessages.slice(-200)));
+        localStorage.setItem(CHAT_STORAGE_KEY, JSON.stringify(newMsgs.slice(-200)));
       } catch {
         /* quota */
       }
-      return { chatMessages };
+
+      return {
+        threads,
+        activeThreadId,
+        chatMessages: newMsgs,
+      };
     }),
+
   setChatLoading: (loading) => set({ chatLoading: loading }),
   setChatStreamingId: (id) => set({ chatStreamingId: id }),
   setChatError: (error) => set({ chatError: error }),
@@ -362,11 +649,12 @@ export const useAppStore = create<AppState>((set) => ({
   setEditorSaved: () => set((state) => ({ editorOriginalContent: state.editorContent })),
   setEditorPendingDiff: (diff) => set({ editorPendingDiff: diff }),
   closeEditorFile: () =>
-    set({ editorOpenPath: null, editorContent: '', editorOriginalContent: '', editorPendingDiff: null }),
+    set({ editorOpenPath: null, editorContent: "", editorOriginalContent: "", editorPendingDiff: null }),
   addToast: (toast) => {
-    const id = typeof crypto !== 'undefined' && crypto.randomUUID
-      ? crypto.randomUUID()
-      : `toast-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const id =
+      typeof crypto !== "undefined" && crypto.randomUUID
+        ? crypto.randomUUID()
+        : `toast-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     set((state) => ({ toasts: [...state.toasts, { ...toast, id }] }));
     return id;
   },

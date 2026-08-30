@@ -68,6 +68,6 @@ describe('App', () => {
 
   it('shows New Chat button', () => {
     render(<App />);
-    expect(screen.getByText('New Chat')).toBeInTheDocument();
+    expect(screen.getAllByText('New Chat')[0]).toBeInTheDocument();
   });
 });

@@ -89,4 +89,42 @@ describe('AppStore', () => {
     useAppStore.getState().setBackendOnline(true);
     expect(useAppStore.getState().backendOnline).toBe(true);
   });
+
+  it("supports thread CRUD operations", () => {
+    const store = useAppStore.getState();
+    const t1 = store.createThread([{ role: "user", content: "Hi", id: "m1", timestamp: "12:00" }], "model-a");
+    expect(useAppStore.getState().threads.length).toBeGreaterThan(0);
+    expect(useAppStore.getState().activeThreadId).toBe(t1.id);
+
+    useAppStore.getState().renameThread(t1.id, "Renamed Thread");
+    expect(useAppStore.getState().threads.find((t) => t.id === t1.id)?.title).toBe("Renamed Thread");
+
+    useAppStore.getState().togglePinThread(t1.id);
+    expect(useAppStore.getState().threads.find((t) => t.id === t1.id)?.pinned).toBe(true);
+
+    useAppStore.getState().deleteThread(t1.id);
+    expect(useAppStore.getState().threads.find((t) => t.id === t1.id)).toBeUndefined();
+  });
+
+  it("keeps message history when updating active thread model", () => {
+    const store = useAppStore.getState();
+    const t1 = store.createThread([{ role: "user", content: "Turn 1", id: "m1", timestamp: "12:00" }], "model-a");
+    store.selectThread(t1.id);
+
+    useAppStore.getState().updateActiveThread((t) => ({ ...t, model: "model-b" }));
+    const active = useAppStore.getState().threads.find((t) => t.id === t1.id);
+    expect(active?.model).toBe("model-b");
+    expect(active?.messages).toHaveLength(1);
+  });
+
+  it("isolates thread knobs from global settings", () => {
+    const store = useAppStore.getState();
+    const t1 = store.createThread([], "model-a");
+    store.selectThread(t1.id);
+
+    useAppStore.getState().updateActiveThread((t) => ({ ...t, temperature: 0.2, maxTokens: 512 }));
+    const active = useAppStore.getState().threads.find((t) => t.id === t1.id);
+    expect(active?.temperature).toBe(0.2);
+    expect(active?.maxTokens).toBe(512);
+  });
 });
