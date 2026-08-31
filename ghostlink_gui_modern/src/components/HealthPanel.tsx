@@ -95,7 +95,8 @@ export const HealthPanel: React.FC<HealthPanelProps> = ({ api, onNavigateToTab }
     e.preventDefault();
     if (!inputApiKey.trim()) return;
     api.setApiKey(inputApiKey.trim());
-    addToast({ type: 'success', message: 'API key updated for this session. Re-testing health...' });
+    setInputApiKey('');
+    addToast({ type: 'success', message: 'API key updated. Re-testing health...' });
     runProbes();
   };
 
