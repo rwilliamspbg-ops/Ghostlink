@@ -223,11 +223,15 @@ export const HealthPanel: React.FC<HealthPanelProps> = ({ api, onNavigateToTab }
               placeholder="Paste Bearer API key..."
               value={inputApiKey}
               onChange={(e) => setInputApiKey(e.target.value)}
-              className="flex-1 px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-xs text-slate-200 font-mono focus:outline-none focus:border-amber-500"
+              aria-label="Recovery API key input"
+              title="Enter Bearer API key for HTTP 401 recovery"
+              className="flex-1 px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-xs text-slate-200 font-mono focus:outline-none focus:border-amber-500 focus-visible:ring-2 focus-visible:ring-amber-500"
             />
             <button
               type="submit"
-              className="px-4 py-2 bg-amber-600 hover:bg-amber-500 text-white rounded-lg text-xs font-bold transition focus-visible:ring-2 focus-visible:ring-amber-500"
+              aria-label="Apply recovery API key"
+              title="Apply recovery API key"
+              className="px-4 py-2 bg-amber-600 hover:bg-amber-500 text-white rounded-lg text-xs font-bold transition focus-visible:ring-2 focus-visible:ring-amber-500 focus-visible:outline-none"
             >
               Apply Key
             </button>

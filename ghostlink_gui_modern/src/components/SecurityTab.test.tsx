@@ -86,4 +86,22 @@ describe('SecurityTab', () => {
     expect(writeTextMock).toHaveBeenCalledWith('a.b.c');
     expect(await screen.findByRole('button', { name: /copied token/i })).toBeInTheDocument();
   });
+
+  it('renders recovery API key form with proper ARIA labels when health check returns 401', async () => {
+    const api = createMockApi({
+      getHealth: vi.fn().mockResolvedValue({ success: false, error: '401' }),
+      getModels: vi.fn().mockResolvedValue({ error: '401' }),
+      getInferenceEngines: vi.fn().mockRejectedValue({ response: { status: 401 } }),
+    });
+
+    render(<SecurityTab api={api} />);
+
+    const recoveryInput = await screen.findByLabelText(/recovery api key input/i);
+    const applyButton = screen.getByRole('button', { name: /apply recovery api key/i });
+
+    expect(recoveryInput).toBeInTheDocument();
+    expect(recoveryInput).toHaveAttribute('title', 'Enter Bearer API key for HTTP 401 recovery');
+    expect(applyButton).toBeInTheDocument();
+    expect(applyButton).toHaveAttribute('title', 'Apply recovery API key');
+  });
 });
