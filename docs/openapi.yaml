@@ -87,6 +87,34 @@ paths:
       responses:
         "200":
           description: List of available models
+  /api/models/huggingface/repo:
+    get:
+      summary: Inspect Hugging Face Hub repository GGUF files and quants
+      parameters:
+        - in: query
+          name: repo
+          required: true
+          schema:
+            type: string
+          description: HF repository ID (e.g. owner/name)
+      responses:
+        "200":
+          description: List of GGUF siblings with quants and byte sizes
+  /api/models/download/cancel:
+    post:
+      summary: Cancel an active model download
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                model_id:
+                  type: string
+      responses:
+        "200":
+          description: Download cancellation status
           content:
             application/json:
               schema:

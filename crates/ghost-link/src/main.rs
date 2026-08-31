@@ -1610,6 +1610,7 @@ struct BackendState {
     /// download, updated live from the background download task and read by
     /// `/api/models/download/progress` for the GUI's polling loop.
     download_progress: HashMap<String, DownloadProgressInfo>,
+    download_cancel_tokens: HashMap<String, Arc<std::sync::atomic::AtomicBool>>,
     /// Guards the model-switch race between `/api/models/load` and every
     /// chat request. `load_model_into_slot` kills the old llama-server and
     /// spawns/warms up a new one — real wall-clock time during which the
@@ -2301,20 +2302,34 @@ fn build_cluster_topology_json(
                 parts.join(", ")
             );
 
+            let warning = if settings.ngl == 0 {
+                Some("Clustering is enabled but GPU offload (-ngl) is 0; layer offloading across RPC peers will be inactive.".to_string())
+            } else {
+                None
+            };
+
             serde_json::json!({
                 "distributed_active": true,
                 "has_plan": true,
                 "model_name": current_model,
                 "summary_text": summary_text,
+                "warning": warning,
                 "tensor_splits": node_splits,
                 "rpc_hosts": rpc_hosts,
             })
         } else {
+            let warning = if settings.distributed_inference && settings.ngl == 0 {
+                Some("Clustering is enabled but GPU offload (-ngl) is 0; layer offloading across RPC peers will be inactive.".to_string())
+            } else {
+                None
+            };
+
             serde_json::json!({
                 "distributed_active": false,
                 "has_plan": true,
                 "model_name": current_model,
                 "summary_text": format!("Single-machine inference on local node for {}.", current_model),
+                "warning": warning,
                 "tensor_splits": [{
                     "node_id": local_node_id,
                     "label": local_node_id,
@@ -5009,6 +5024,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
     async fn download_hf_model(
         model_id: &str,
         models_dir: &std::path::Path,
+        cancel_token: Arc<std::sync::atomic::AtomicBool>,
         mut on_progress: impl FnMut(u64, u64) + Send,
     ) -> Result<String, String> {
         let client = reqwest::Client::builder()
@@ -5101,25 +5117,32 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         let mut first_dest_path: Option<std::path::PathBuf> = None;
         let mut last_report = std::time::Instant::now();
         for (idx, (filename, dest_path)) in files.iter().enumerate() {
+            if cancel_token.load(std::sync::atomic::Ordering::Relaxed) {
+                return Err("Download cancelled".to_string());
+            }
+
             let expected_len = expected_sizes[idx];
             let existing_len = tokio::fs::metadata(dest_path)
                 .await
                 .map(|m| m.len())
                 .unwrap_or(0);
-            // A file only counts as already-downloaded if its size matches what
-            // HuggingFace reports. Previously any existing file — including one
-            // truncated by a dropped connection — was treated as complete and
-            // silently never retried.
+
             let already_complete =
-                dest_path.exists() && (expected_len == 0 || existing_len == expected_len);
+                dest_path.exists() && (expected_len > 0 && existing_len == expected_len);
 
             if !already_complete {
                 let file_url = format!(
                     "https://huggingface.co/{}/resolve/main/{}",
                     model_id, filename
                 );
-                let resp = client
-                    .get(&file_url)
+
+                let is_resume = existing_len > 0 && existing_len < expected_len;
+                let mut req = client.get(&file_url);
+                if is_resume {
+                    req = req.header("Range", format!("bytes={}-", existing_len));
+                }
+
+                let resp = req
                     .send()
                     .await
                     .map_err(|e| format!("Download error: {}", e))?;
@@ -5128,19 +5151,39 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                     return Err(format!("Failed to download file (HTTP {})", resp.status()));
                 }
 
+                let is_partial = resp.status() == reqwest::StatusCode::PARTIAL_CONTENT;
+
                 if let Some(parent) = dest_path.parent() {
                     fs::create_dir_all(parent).map_err(|e| format!("Dir error: {}", e))?;
                 }
-                let mut file = tokio::fs::File::create(dest_path)
-                    .await
-                    .map_err(|e| format!("File error: {}", e))?;
+
+                let (mut file, mut file_bytes) = if is_resume && is_partial {
+                    let f = tokio::fs::OpenOptions::new()
+                        .append(true)
+                        .write(true)
+                        .open(dest_path)
+                        .await
+                        .map_err(|e| format!("File open append error: {}", e))?;
+                    (f, existing_len)
+                } else {
+                    let f = tokio::fs::File::create(dest_path)
+                        .await
+                        .map_err(|e| format!("File error: {}", e))?;
+                    (f, 0u64)
+                };
+
                 let mut stream = resp;
-                let mut file_bytes: u64 = 0;
                 while let Some(chunk) = stream
                     .chunk()
                     .await
                     .map_err(|e| format!("Stream error: {}", e))?
                 {
+                    if cancel_token.load(std::sync::atomic::Ordering::Relaxed) {
+                        drop(file);
+                        let _ = tokio::fs::remove_file(dest_path).await;
+                        return Err("Download cancelled".to_string());
+                    }
+
                     file.write_all(&chunk)
                         .await
                         .map_err(|e| format!("Write error: {}", e))?;
@@ -5153,10 +5196,11 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                 file.flush().await.ok();
                 drop(file);
 
-                // The connection can be dropped mid-transfer (client timeout,
-                // network blip) without `chunk()` ever returning an `Err` — the
-                // stream just ends early. Compare against the size HuggingFace
-                // actually advertised instead of trusting an early EOF.
+                if cancel_token.load(std::sync::atomic::Ordering::Relaxed) {
+                    let _ = tokio::fs::remove_file(dest_path).await;
+                    return Err("Download cancelled".to_string());
+                }
+
                 if expected_len > 0 && file_bytes != expected_len {
                     let _ = tokio::fs::remove_file(dest_path).await;
                     return Err(format!(
@@ -5720,13 +5764,20 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         // that used to abort (and silently truncate) any download that took
         // longer than the client's timeout window. The GUI now polls
         // /api/models/download/progress for real byte-level progress instead.
+        let cancel_token = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        {
+            let mut backend = lock_state(&state);
+            backend.download_cancel_tokens.insert(model_id.clone(), cancel_token.clone());
+        }
+
         let spawn_state = Arc::clone(&state);
         let spawn_model_id = model_id.clone();
+        let spawn_cancel_token = cancel_token.clone();
         tokio::spawn(async move {
             let progress_state = Arc::clone(&spawn_state);
             let progress_model_id = spawn_model_id.clone();
             let result =
-                download_hf_model(&spawn_model_id, &models_path, move |downloaded, total| {
+                download_hf_model(&spawn_model_id, &models_path, spawn_cancel_token, move |downloaded, total| {
                     let mut backend = lock_state(&progress_state);
                     if let Some(p) = backend.download_progress.get_mut(&progress_model_id) {
                         p.bytes_downloaded = downloaded;
@@ -5804,6 +5855,36 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             "status": "started",
             "message": format!("Downloading {}", model_id),
         }))
+    }
+
+    async fn handle_gui_model_download_cancel(
+        State(state): State<Arc<Mutex<BackendState>>>,
+        Json(req): Json<serde_json::Value>,
+    ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+        let model_id = req
+            .get("model_id")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .ok_or_else(|| bad_request_json("model_id parameter is required".to_string()))?;
+
+        let mut backend = lock_state(&state);
+        if let Some(token) = backend.download_cancel_tokens.get(&model_id) {
+            token.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+
+        if let Some(p) = backend.download_progress.get_mut(&model_id) {
+            p.status = "cancelled".to_string();
+            p.error = Some("Download cancelled by user".to_string());
+        }
+
+        if let Some(m) = backend.models.iter_mut().find(|m| m.name == model_id) {
+            m.status = "Not downloaded".to_string();
+        }
+
+        Ok(Json(serde_json::json!({
+            "status": "success",
+            "message": format!("Download cancellation requested for {}", model_id)
+        })))
     }
 
     async fn handle_gui_model_download_progress(
@@ -6051,7 +6132,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
     ) -> Json<serde_json::Value> {
         let query = params.get("q").cloned().unwrap_or_default();
         if query.trim().is_empty() {
-            return Json(serde_json::json!({ "models": [] }));
+            return Json(serde_json::json!({ "models": [], "hidden_non_chat_count": 0 }));
         }
 
         let client = reqwest::Client::builder()
@@ -6068,7 +6149,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                 ("task", "text-generation"),
                 ("sort", "downloads"),
                 ("direction", "-1"),
-                ("limit", "20"),
+                ("limit", "30"),
             ])
             .send()
             .await;
@@ -6076,35 +6157,141 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         match resp {
             Ok(r) if r.status().is_success() => {
                 if let Ok(data) = r.json::<serde_json::Value>().await {
-                    let models = data
-                        .as_array()
-                        .map(|arr| {
-                            arr.iter()
-                                .map(|m| {
-                                    let id =
-                                        m.get("modelId").and_then(|v| v.as_str()).unwrap_or("");
-                                    let name = id.rsplit('/').next().unwrap_or(id);
-                                    let downloads =
-                                        m.get("downloads").and_then(|v| v.as_u64()).unwrap_or(0);
-                                    let likes =
-                                        m.get("likes").and_then(|v| v.as_u64()).unwrap_or(0);
-                                    serde_json::json!({
-                                        "id": id,
-                                        "name": name,
-                                        "downloads": downloads,
-                                        "likes": likes,
-                                    })
-                                })
-                                .collect::<Vec<_>>()
-                        })
-                        .unwrap_or_default();
-                    return Json(serde_json::json!({ "models": models }));
+                    let mut models = Vec::new();
+                    let mut hidden_non_chat_count = 0;
+
+                    if let Some(arr) = data.as_array() {
+                        for m in arr {
+                            let id = m.get("modelId").and_then(|v| v.as_str()).unwrap_or("");
+                            let id_lower = id.to_lowercase();
+
+                            let is_non_chat = id_lower.contains("bert")
+                                || id_lower.contains("embedding")
+                                || id_lower.contains("sentence-transformers")
+                                || id_lower.contains("reranker")
+                                || id_lower.contains("clip")
+                                || id_lower.contains("whisper")
+                                || id_lower.contains("wav2vec");
+
+                            if is_non_chat {
+                                hidden_non_chat_count += 1;
+                                continue;
+                            }
+
+                            let name = id.rsplit('/').next().unwrap_or(id);
+                            let downloads =
+                                m.get("downloads").and_then(|v| v.as_u64()).unwrap_or(0);
+                            let likes =
+                                m.get("likes").and_then(|v| v.as_u64()).unwrap_or(0);
+
+                            models.push(serde_json::json!({
+                                "id": id,
+                                "name": name,
+                                "downloads": downloads,
+                                "likes": likes,
+                            }));
+                        }
+                    }
+
+                    return Json(serde_json::json!({
+                        "models": models,
+                        "hidden_non_chat_count": hidden_non_chat_count
+                    }));
                 }
             }
             _ => {}
         }
 
-        Json(serde_json::json!({ "models": [] }))
+        Json(serde_json::json!({ "models": [], "hidden_non_chat_count": 0 }))
+    }
+
+    async fn handle_gui_models_hf_repo_details(
+        State(_state): State<Arc<Mutex<BackendState>>>,
+        Query(params): Query<HashMap<String, String>>,
+    ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+        let repo = params
+            .get("repo")
+            .or_else(|| params.get("q"))
+            .cloned()
+            .unwrap_or_default();
+        if repo.trim().is_empty() {
+            return Err(bad_request_json("repo parameter is required".to_string()));
+        }
+
+        let client = reqwest::Client::builder()
+            .user_agent("ghostlink/1.0")
+            .timeout(Duration::from_secs(15))
+            .build()
+            .map_err(|e| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({ "error": format!("HTTP client error: {}", e) })),
+                )
+            })?;
+
+        let api_url = format!("https://huggingface.co/api/models/{}", repo);
+        let resp = client.get(&api_url).send().await.map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": format!("HF API request failed: {}", e) })),
+            )
+        })?;
+
+        if !resp.status().is_success() {
+            return Err((
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({ "error": format!("HF repo '{}' not found", repo) })),
+            ));
+        }
+
+        let data: serde_json::Value = resp.json().await.map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": format!("Failed to parse HF JSON: {}", e) })),
+            )
+        })?;
+
+        let siblings = data
+            .get("siblings")
+            .and_then(|s| s.as_array())
+            .cloned()
+            .unwrap_or_default();
+
+        let mut gguf_files = Vec::new();
+        for sib in &siblings {
+            if let Some(rfilename) = sib.get("rfilename").and_then(|f| f.as_str()) {
+                if rfilename.ends_with(".gguf") {
+                    let mut size_bytes = sib
+                        .get("lfs")
+                        .and_then(|lfs| lfs.get("size"))
+                        .and_then(|s| s.as_u64())
+                        .unwrap_or(0);
+
+                    if size_bytes == 0 {
+                        let file_url =
+                            format!("https://huggingface.co/{}/resolve/main/{}", repo, rfilename);
+                        if let Ok(head_resp) = client.head(&file_url).send().await {
+                            if let Some(len) = head_resp.content_length() {
+                                size_bytes = len;
+                            }
+                        }
+                    }
+
+                    let quant = detect_quantization(rfilename);
+
+                    gguf_files.push(serde_json::json!({
+                        "filename": rfilename,
+                        "quant": quant,
+                        "size_bytes": size_bytes
+                    }));
+                }
+            }
+        }
+
+        Ok(Json(serde_json::json!({
+            "repo": repo,
+            "files": gguf_files,
+        })))
     }
 
     async fn handle_gui_workers(
@@ -9319,6 +9506,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         mcp_registry: Arc::clone(&mcp_registry),
         pending_tool_calls: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
         download_progress: HashMap::new(),
+        download_cancel_tokens: HashMap::new(),
         model_lifecycle_lock: Arc::new(tokio::sync::RwLock::new(())),
         plugin_registry: backend_plugin::BackendPluginRegistry::from_env(),
         enable_tls_active: use_tls,
@@ -9424,6 +9612,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             )
             .route("/api/models/load", post(handle_gui_model_load))
             .route("/api/models/download", post(handle_gui_model_download))
+            .route("/api/models/download/cancel", post(handle_gui_model_download_cancel))
             .route("/api/models/delete", post(handle_gui_model_delete))
             .route("/api/models/partial", get(handle_gui_models_partial))
             .route(
@@ -9433,6 +9622,10 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             .route(
                 "/api/models/search/huggingface",
                 get(handle_gui_models_search_hf),
+            )
+            .route(
+                "/api/models/huggingface/repo",
+                get(handle_gui_models_hf_repo_details),
             )
             .route(
                 "/api/models/:model_name",
@@ -11897,6 +12090,7 @@ mod tests {
             ))),
             pending_tool_calls: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             download_progress: HashMap::new(),
+        download_cancel_tokens: HashMap::new(),
             model_lifecycle_lock: Arc::new(tokio::sync::RwLock::new(())),
             enable_tls_active: false,
             plugin_registry: backend_plugin::BackendPluginRegistry::from_env(),

@@ -49,6 +49,7 @@ export interface ClusterTopologyPlacementPlan {
   has_plan: boolean;
   model_name?: string | null;
   summary_text: string;
+  warning?: string | null;
   tensor_splits: TensorSplitDetail[];
   rpc_hosts: string[];
 }
@@ -218,6 +219,15 @@ export class GhostlinkAPI {
     }
   }
 
+  async cancelDownload(modelId: string) {
+    try {
+      const response = await this.http.post('/api/models/download/cancel', { model_id: modelId });
+      return { success: true, message: response.data?.message };
+    } catch (error: any) {
+      return { success: false, error: error.response?.data?.error || error.message };
+    }
+  }
+
   async getDownloadProgress(
     modelId: string
   ): Promise<{ progress: number; status: string; bytesDownloaded?: number; totalBytes?: number; error?: string }> {
@@ -311,9 +321,18 @@ export class GhostlinkAPI {
   async searchHuggingFace(query: string) {
     try {
       const response = await this.http.get('/api/models/search/huggingface', { params: { q: query } });
-      return { models: response.data.models || [] };
+      return { models: response.data.models || [], hidden_non_chat_count: response.data.hidden_non_chat_count || 0 };
     } catch (error: any) {
-      return { models: [], error: error.response?.data?.error || error.message };
+      return { models: [], hidden_non_chat_count: 0, error: error.response?.data?.error || error.message };
+    }
+  }
+
+  async getHfRepoDetails(repo: string) {
+    try {
+      const response = await this.http.get('/api/models/huggingface/repo', { params: { repo } });
+      return { repo: response.data.repo, files: response.data.files || [] };
+    } catch (error: any) {
+      return { repo, files: [], error: error.response?.data?.error || error.message };
     }
   }
 

@@ -337,6 +337,13 @@ export const WorkersTab: React.FC<{ api: any }> = ({ api }) => {
             {topology?.placement_plan?.summary_text || 'Load a model to see a split'}
           </p>
 
+          {topology?.placement_plan?.warning && (
+            <div className="p-3 bg-amber-500/10 border border-amber-500/20 rounded-xl flex items-center gap-2 text-xs text-amber-400 font-sans">
+              <AlertTriangle size={16} className="shrink-0" />
+              <span>{topology.placement_plan.warning}</span>
+            </div>
+          )}
+
           {topology?.placement_plan?.has_plan && topology.placement_plan.tensor_splits.length > 0 && (
             <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3 pt-2">
               {topology.placement_plan.tensor_splits.map((split, i) => (
