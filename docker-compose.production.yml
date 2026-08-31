@@ -58,14 +58,14 @@ services:
       dockerfile: Dockerfile
     container_name: ghostlink-frontend
     ports:
-      - "5173:3000"
+      - "5173:5173"
     environment:
       - GHOSTLINK_API_BASE=http://127.0.0.1:8003
     depends_on:
       ghostlink-backend:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:3000/"]
+      test: ["CMD", "curl", "-f", "http://localhost:5173/"]
       interval: 10s
       timeout: 5s
       retries: 5

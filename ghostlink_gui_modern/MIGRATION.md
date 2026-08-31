@@ -12,7 +12,7 @@ MIGRATION_GUIDE = """
 
 ### Old Tkinter GUI (Deprecated)
 ```bash
-python ghostlink_gui_tkinter.py --backend-url http://localhost:8003
+python ghostlink_gui_tkinter.py --backend-url http://127.0.0.1:8000
 ```
 
 ### New Modern Web GUI (Recommended)
@@ -20,7 +20,7 @@ python ghostlink_gui_tkinter.py --backend-url http://localhost:8003
 cd ghostlink_gui_modern
 npm install
 npm run dev
-# Open http://localhost:3000
+# Open http://127.0.0.1:5173
 ```
 
 ## What's New
@@ -141,14 +141,14 @@ npm run dev
 cd ghostlink_gui_modern
 npm install
 npm run dev
-# Access at http://localhost:3000
+# Access at http://127.0.0.1:5173
 ```
 
 ### Docker Development
 ```bash
 cd ghostlink_gui_modern
 docker build -t ghostlink-gui:dev .
-docker run -p 3000:3000 ghostlink-gui:dev
+docker run -p 5173:5173 ghostlink-gui:dev
 ```
 
 ### Docker Production
@@ -156,8 +156,8 @@ docker run -p 3000:3000 ghostlink-gui:dev
 cd ghostlink_gui_modern
 npm run build
 docker build -t ghostlink-gui:latest .
-docker run -p 3000:3000 \
-  -e GHOSTLINK_API_BASE=http://backend:8003 \
+docker run -p 5173:5173 \
+  -e GHOSTLINK_API_BASE=http://backend:8000 \
   ghostlink-gui:latest
 ```
 
@@ -165,8 +165,8 @@ docker run -p 3000:3000 \
 ```bash
 cd ghostlink_gui_modern
 docker-compose up
-# GUI: http://localhost:3000
-# Backend: http://localhost:8003
+# GUI: http://127.0.0.1:5173
+# Backend: http://127.0.0.1:8000
 ```
 
 ## Migration Checklist
@@ -205,7 +205,7 @@ GHOSTLINK_API_BASE=http://127.0.0.1:8003
 
 ### Vite Configuration
 Edit `vite.config.ts` to change:
-- Dev server port (default: 3000)
+- Dev server port (default: 5173)
 - Backend proxy URL
 - Build output directory
 

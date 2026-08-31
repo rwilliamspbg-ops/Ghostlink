@@ -56,4 +56,56 @@ describe('CommandPalette', () => {
     fireEvent.keyDown(searchInput, { key: 'Tab', shiftKey: true });
     expect(options[options.length - 1]).toHaveAttribute('aria-selected', 'true');
   });
+
+  it('contains Phase 1-5 primary action commands', () => {
+    render(<CommandPalette />);
+
+    act(() => {
+      window.dispatchEvent(new CustomEvent('open-command-palette'));
+    });
+
+    const expectedCommandIds = [
+      'retry-health',
+      'set-api-key',
+      'open-health',
+      'download-models',
+      'load-model',
+      'unload-model',
+      'new-chat',
+      'search-threads',
+      'prompt-presets',
+      'discover-peers',
+      'use-other-machines',
+      'enable-calculator',
+      'index-workspace',
+      'toggle-workspace-context',
+    ];
+
+    const options = screen.getAllByRole('option');
+    const optionIds = options.map((opt) => opt.id.replace('command-', ''));
+
+    for (const cmdId of expectedCommandIds) {
+      expect(optionIds).toContain(cmdId);
+    }
+  });
+
+  it('triggers custom events and tab navigation on command selection', () => {
+    const setActiveTabMock = vi.fn();
+    useAppStore.setState({ setActiveTab: setActiveTabMock });
+
+    render(<CommandPalette />);
+
+    act(() => {
+      window.dispatchEvent(new CustomEvent('open-command-palette'));
+    });
+
+    const discoverPeersOption = screen.getByText('Discover LAN peers');
+    const customEventSpy = vi.fn();
+    window.addEventListener('discover-lan-peers', customEventSpy);
+
+    fireEvent.click(discoverPeersOption);
+
+    expect(setActiveTabMock).toHaveBeenCalledWith(4);
+    expect(customEventSpy).toHaveBeenCalled();
+  });
 });

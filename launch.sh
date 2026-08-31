@@ -1410,7 +1410,15 @@ start_services() {
     fi
 
     if ! wait_for_http "${API_SCHEME}://${BACKEND_HOST}:${BACKEND_PORT}/api/health" "API /api/health" 30 "inference_backend" "GHOSTLINK_API_PORT" "$API_PID" "/tmp/ghostlink_api.log" "$API_KEY"; then
-        echo -e "  ${RED}✗${NC} /api/health failed — wrong process on :${BACKEND_PORT} or outdated binary"
+        local health_code
+        health_code=$(curl -sk "${AUTH_HEADER[@]}" -o /dev/null -w "%{http_code}" "${API_SCHEME}://${BACKEND_HOST}:${BACKEND_PORT}/api/health" || echo "000")
+        if [ "$health_code" = "401" ]; then
+            echo -e "  ${RED}✗${NC} /api/health returned 401 Unauthorized — verify API key in api_key.txt or Bearer token"
+        elif [ "$health_code" = "000" ]; then
+            echo -e "  ${RED}✗${NC} /api/health failed — API server down or connection refused on port :${BACKEND_PORT}"
+        else
+            echo -e "  ${RED}✗${NC} /api/health failed (HTTP ${health_code}) — gateway down, API down, or port in use"
+        fi
         echo -e "  ${DIM}Check: curl -ik ${AUTH_HEADER[@]+"${AUTH_HEADER[@]}"} ${API_SCHEME}://${BACKEND_HOST}:${BACKEND_PORT}/api/health${NC}"
         return 1
     fi
@@ -1654,7 +1662,7 @@ show_success() {
     echo -e "${GREEN}│${NC}   ${BOLD}${WHITE}██║     ██║  ██║██║  ██║███████╗   ██║   ╚██████╔╝███████║${NC}                        ${GREEN}│${NC}"
     echo -e "${GREEN}│${NC}   ${BOLD}${WHITE}╚═╝     ╚═╝  ╚═╝╚═╝  ╚═╝╚══════╝   ╚═╝    ╚═════╝ ╚══════╝${NC}                        ${GREEN}│${NC}"
     echo -e "${GREEN}│${NC}                                                                                 ${GREEN}│${NC}"
-    echo -e "${GREEN}│${NC}   ${CYAN}Ghostlink Studio is now running!${NC}                                              ${GREEN}│${NC}"
+    echo -e "${GREEN}│${NC}   ${BOLD}${CYAN}Open Studio at http://127.0.0.1:${gui_port}${NC}                                        ${GREEN}│${NC}"
     echo -e "${GREEN}│${NC}                                                                                 ${GREEN}│${NC}"
     local credit_line="Sovereign Mohawk Proto LLC  ·  Zero-Config LAN Inference Fabric  ·  v$(ghostlink_version)"
     local credit_pad=$(( 81 - 3 - ${#credit_line} ))

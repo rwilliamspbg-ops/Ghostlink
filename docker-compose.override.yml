@@ -28,4 +28,4 @@ services:
     # volumes:
     #   - ./ghostlink_gui_modern:/app
     #   - /app/node_modules
-    # command: npm run dev -- --host 127.0.0.1 --port 3000
+    # command: npm run dev -- --host 127.0.0.1 --port 5173
