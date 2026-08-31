@@ -27,6 +27,30 @@ export interface ClusterTopologyNode {
   throughput_history_gbps: number[];
   ip_address?: string | null;
   streaming_layers?: { start: number; end: number } | null;
+  rpc_port?: number | null;
+  contribute_compute?: boolean;
+  build_id_status?: string;
+  secret_status?: string;
+  allowlist_status?: string;
+  role?: string;
+  excluded_reason?: string | null;
+}
+
+export interface TensorSplitDetail {
+  node_id: string;
+  label: string;
+  weight: number;
+  percentage: number;
+  vram_gb: number;
+}
+
+export interface ClusterTopologyPlacementPlan {
+  distributed_active: boolean;
+  has_plan: boolean;
+  model_name?: string | null;
+  summary_text: string;
+  tensor_splits: TensorSplitDetail[];
+  rpc_hosts: string[];
 }
 
 export interface ClusterTopologyEdge {
@@ -45,6 +69,7 @@ export interface ClusterTopology {
   };
   nodes: ClusterTopologyNode[];
   edges: ClusterTopologyEdge[];
+  placement_plan?: ClusterTopologyPlacementPlan;
 }
 
 type CircuitState = 'closed' | 'open' | 'half-open';
