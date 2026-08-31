@@ -58,3 +58,11 @@ hour regardless).
 |---|---|
 | Backend API | Console window (or `/tmp/ghostlink_api.log` on Linux) |
 | Frontend | Browser dev console + Vite terminal |
+
+
+### Metrics tokens look wrong or display 0 tok/s
+
+- **Throughput Formula**: Ghostlink measures inference throughput as `throughput_tokens_per_sec = generated_tokens / generation_seconds` (where `generation_seconds = latency_ms / 1000.0`).
+- **Exponential Moving Average (EMA)**: The dashboard "Throughput" gauge displays an EMA across active inference turns (`0.65` prior EMA + `0.35` new sample).
+- **Zero-Token & Error Filtering**: Stream cancellations, failed requests, or 0-token generations are excluded from EMA calculations so they do not drag performance graphs down to zero.
+- **Unit Reconciliation**: Both `/api/metrics` and `ChatTab` live stream `tok/s` use standard tokens-per-second (`tok/s`). Fabric node throughput graphs remain on internal GB/s or k-token scales without affecting client GUI metrics.

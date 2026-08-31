@@ -109,6 +109,10 @@ impl Default for InferenceMetrics {
 }
 
 impl InferenceMetrics {
+    /// Throughput Formula: throughput_tokens_per_sec = generated_tokens / (generation_seconds)
+    /// where generation_seconds = latency_ms / 1000.0.
+    /// Real inference runs update the 0.65/0.35 EMA. Failed, cancelled, or 0-token turns
+    /// are recorded for latency tracking but excluded from throughput EMA so they do not drag it to zero.
     pub fn record(
         &mut self,
         latency_ms: f32,
@@ -120,6 +124,11 @@ impl InferenceMetrics {
         self.last_latency_ms = latency_ms;
         self.last_tokens = tokens;
         self.last_real = real;
+
+        // Ignore 0-token or non-real attempts for throughput EMA & latency samples
+        if tokens == 0 || !real {
+            return;
+        }
 
         if self.latency_ms.len() >= LATENCY_SAMPLES_CAP {
             self.latency_ms.pop_front();
@@ -137,7 +146,7 @@ impl InferenceMetrics {
             if self.tokens_per_sec_ema <= 0.0 {
                 self.tokens_per_sec_ema = tps;
             } else {
-                // EMA — recent chats weigh more
+                // EMA — recent chats weigh more (65% prior EMA, 35% new sample)
                 self.tokens_per_sec_ema = self.tokens_per_sec_ema * 0.65 + tps * 0.35;
             }
         }
@@ -573,5 +582,35 @@ mod tests {
         let history = metrics_history(2);
         assert_eq!(history.len(), 2);
         assert!(history[0].timestamp_ms <= history[1].timestamp_ms);
+        let history = metrics_history(2);
+        assert_eq!(history.len(), 2);
+        assert!(history[0].timestamp_ms <= history[1].timestamp_ms);
+    }
+
+    #[test]
+    fn test_inference_metrics_ema_calculation() {
+        let mut m = InferenceMetrics::default();
+        // First record: 100 tokens in 2000 ms -> 50 tok/s
+        m.record(2000.0, 100, None, true);
+        assert!((m.tokens_per_sec_ema - 50.0).abs() < 0.01);
+        assert_eq!(m.last_tokens, 100);
+
+        // Second record: 100 tokens in 1000 ms -> 100 tok/s
+        // EMA = 50.0 * 0.65 + 100.0 * 0.35 = 32.5 + 35.0 = 67.5
+        m.record(1000.0, 100, None, true);
+        assert!((m.tokens_per_sec_ema - 67.5).abs() < 0.01);
+        assert_eq!(m.last_tokens, 100);
+    }
+
+    #[test]
+    fn test_inference_metrics_zero_token_sample_excluded() {
+        let mut m = InferenceMetrics::default();
+        m.record(1000.0, 50, None, true); // 50 tok/s
+        let initial_ema = m.tokens_per_sec_ema;
+        assert!((initial_ema - 50.0).abs() < 0.01);
+
+        // 0-token or failed attempt should NOT degrade EMA to zero
+        m.record(500.0, 0, None, false);
+        assert_eq!(m.tokens_per_sec_ema, initial_ema);
     }
 }

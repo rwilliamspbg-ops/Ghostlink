@@ -1,3 +1,4 @@
+import { HealthPanel } from './HealthPanel';
 import React, { useState, useEffect } from 'react';
 import { Shield, Key, RefreshCw, AlertTriangle, Eye, EyeOff, CheckCircle2, Copy, Check } from 'lucide-react';
 import { useAppStore } from '../store';
@@ -109,6 +110,10 @@ export const SecurityTab: React.FC<{ api: any }> = ({ api }) => {
 
       <div className="flex-1 overflow-y-auto p-6" tabIndex={0} role="region" aria-label="Security">
         <div className="max-w-5xl mx-auto space-y-6">
+          <HealthPanel api={api} onNavigateToTab={(tabName) => {
+            if (tabName === "models") window.dispatchEvent(new CustomEvent("switch-tab", { detail: 1 }));
+            if (tabName === "settings") window.dispatchEvent(new CustomEvent("switch-tab", { detail: 6 }));
+          }} />
           {/* API Key Section */}
           <div className="bg-slate-900/50 border border-slate-800 rounded-3xl p-6 space-y-4">
             <div className="flex items-center gap-3">
