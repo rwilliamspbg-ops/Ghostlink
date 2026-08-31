@@ -21,6 +21,15 @@ taskkill /f /im ghost-link.exe && taskkill /f /im node.exe
 
 ## Distributed inference: a peer is discovered but never used
 
+In Ghostlink Phase 4+, check the **Cluster Topology / Workers** tab in the GUI. Every discovered peer card explicitly displays its role, build ID match status, secret handshake status, allowlist status, and an exact exclusion reason banner if it is not used in the placement plan.
+
+Common reasons and fixes:
+- **RPC build does not match coordinator:** The peer is running a different `llama.cpp` build commit. Rebuild both nodes at the same `llama.cpp` commit.
+- **rpc_shared_secret missing or handshake mismatch:** The peer has a different or missing shared secret. Ensure identical secrets are set in Workers > Advanced.
+- **peer IP not in coordinator rpc_allowed_peers:** The peer's IP address or CIDR range is blocked by the coordinator's allowlist. Add its IP to `rpc_allowed_peers`.
+- **contribute_compute off / no rpc_port advertised:** The peer has not enabled "Contribute local GPU/CPU compute" or advertised an `rpc_port`.
+- **unhealthy / stale heartbeat:** The peer's network connection or heartbeat has timed out.
+
 Check the peer's `rpc_build_id`. Since 1.17.0, the coordinator refuses to
 route inference through an RPC peer running a different `llama.cpp` build —
 a mismatch previously caused silent output corruption on larger models

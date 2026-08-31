@@ -6,6 +6,19 @@ All notable changes to Ghostlink Studio are documented here.
 
 ## [Unreleased]
 
+### Phase 4: Ghostlink Cluster Map & Human-Readable Placement Plan
+
+- **Cluster Map Topology & Peer Evaluation Endpoint** (`crates/ghost-link/src/rpc_cluster.rs`, `crates/ghost-link/src/main.rs`, `ghostlink_gui_modern/src/api.ts`):
+  Enhanced `/api/cluster/topology` and `/api/workers` payloads with detailed peer evaluations (`rpc_port`, `contribute_compute`, `build_id_status`, `secret_status`, `allowlist_status`, `role`, and `excluded_reason`). Discovered peers report exact non-silent exclusion reasons (`RPC build does not match coordinator`, `rpc_shared_secret missing or handshake mismatch`, `peer IP not in coordinator rpc_allowed_peers`, `contribute_compute off`, `unhealthy / stale heartbeat`).
+- **Human-Readable Placement Plan Banner** (`crates/ghost-link/src/main.rs`, `ghostlink_gui_modern/src/components/WorkersTab.tsx`):
+  Integrated dynamic placement plan evaluation returning plain English explanations (e.g. `Model llama3:30b with distributed on: split 0.60 on rig-a (12 GB), 0.40 on laptop-b (8 GB)`), node tensor split weights, and active `--rpc` target addresses.
+- **Named Master Control & Advanced Contributor Settings** (`ghostlink_gui_modern/src/components/WorkersTab.tsx`):
+  Replaced TOML configuration with a single human-worded named control (*"Use other machines when this model does not fit"* for `distributed_inference`) and an Advanced drawer for local compute contribution (`contribute_compute`), advertised `rpc_port`, write-only `rpc_shared_secret` set/clear, and `rpc_allowed_peers` IP allowlist.
+- **LAN Security Confirmation & Join Recipe** (`ghostlink_gui_modern/src/components/WorkersTab.tsx`):
+  Added a LAN-trust confirmation warning dialog when enabling compute contribution and a short step-by-step *"How to join"* recipe modal for empty cluster states.
+- **Chat Attribution Hook** (`ghostlink_gui_modern/src/components/ChatTab.tsx`):
+  Wired placement plan data into Chat header hardware attribution displaying `Split across rig-a, laptop-b` when distributed inference is active across multiple LAN nodes.
+
 ### Phase 3: Ghostlink Studio Chat Enhancements (Multi-turn, Stoppable Streaming, Thread Sidebar, Presets & Hardware Attribution)
 
 - **Backend Multi-Turn Prompt Reconstruction for `/v1/chat/completions`** (`crates/ghost-link/src/main.rs`, `docs/API_REFERENCE.md`, `docs/openapi.yaml`): Reconstructed prompts from the full `req.messages` array in sequence role order (`system: ...`, `user: ...`, `assistant: ...`) rather than dropping earlier turns. Added a Rust unit test verifying multi-turn prompt concatenation and updated documentation.

@@ -133,6 +133,7 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
   } = useAppStore();
 
   const activeThread = useMemo(() => threads.find((t) => t.id === activeThreadId), [threads, activeThreadId]);
+  const [placementPlan, setPlacementPlan] = useState<any>(null);
 
   const [input, setInput] = useState("");
   const [copiedId, setCopiedId] = useState<string | null>(null);
@@ -225,6 +226,16 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
       if (!result.error) setMcpServers(result.servers);
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [api]);
+
+  useEffect(() => {
+    if (api.getClusterTopology) {
+      api.getClusterTopology().then((res: any) => {
+        if (!res.error && res.topology?.placement_plan) {
+          setPlacementPlan(res.topology.placement_plan);
+        }
+      });
+    }
   }, [api]);
 
   useEffect(() => {
@@ -597,7 +608,13 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
   const awaitingFirstToken = loading && !!streamingMsg && streamingMsg.content === "";
 
   const activeNodesCount = metrics?.active_nodes ?? 1;
-  const hardwareAttribution = activeNodesCount > 1 ? `Split across cluster (${activeNodesCount} nodes)` : "Local";
+  const hardwareAttribution = useMemo(() => {
+    if (placementPlan?.distributed_active && placementPlan?.tensor_splits?.length > 1) {
+      const parts = placementPlan.tensor_splits.map((s: any) => s.label);
+      return `Split across ${parts.join(', ')}`;
+    }
+    return activeNodesCount > 1 ? `Split across cluster (${activeNodesCount} nodes)` : "Local";
+  }, [placementPlan, activeNodesCount]);
 
   return (
     <div className="flex h-full bg-slate-950 text-slate-100 overflow-hidden relative">

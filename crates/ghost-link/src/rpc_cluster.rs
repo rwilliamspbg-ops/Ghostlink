@@ -824,6 +824,116 @@ pub struct RpcPeer {
 /// ships additively: unknown-version peers are still used, with a lower-
 /// urgency warning that their safety can't be verified — matching today's
 /// actual (pre-this-field) behavior exactly.
+/// Detailed peer admission and exclusion status for the Phase 4 Cluster Map GUI.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct PeerEvaluation {
+    pub rpc_port: Option<u16>,
+    pub contribute_compute: bool,
+    pub build_id_status: String,
+    pub secret_status: String,
+    pub allowlist_status: String,
+    pub role: String,
+    pub excluded_reason: Option<String>,
+}
+
+/// Evaluates a peer's detailed status and exclusion reason relative to local coordinator settings.
+pub fn evaluate_peer(
+    node: &ghostlink_core::protocol::NodeResources,
+    metrics: Option<&ghostlink_core::cluster::NodeMetrics>,
+    local_rpc_build_id: Option<&str>,
+    local_secret_configured: bool,
+    allowlist: &[String],
+    is_local: bool,
+    is_used_in_rpc: bool,
+) -> PeerEvaluation {
+    if is_local {
+        return PeerEvaluation {
+            rpc_port: node.rpc_port,
+            contribute_compute: node.rpc_port.is_some(),
+            build_id_status: "match".to_string(),
+            secret_status: if local_secret_configured {
+                "match".to_string()
+            } else {
+                "n/a".to_string()
+            },
+            allowlist_status: "n/a".to_string(),
+            role: "coordinator".to_string(),
+            excluded_reason: None,
+        };
+    }
+
+    let rpc_port = node.rpc_port;
+    let contribute_compute = rpc_port.is_some();
+    let ip = metrics.and_then(|m| m.ip_address).map(|a| a.ip());
+
+    let build_id_status = match (local_rpc_build_id, node.rpc_build_id.as_deref()) {
+        (Some(local), Some(peer)) => {
+            if local == peer {
+                "match".to_string()
+            } else {
+                "mismatch".to_string()
+            }
+        }
+        _ => "unknown".to_string(),
+    };
+
+    let allowlist_status = if allowlist.is_empty() {
+        "n/a".to_string()
+    } else if let Some(ref peer_ip) = ip {
+        if ip_allowed(peer_ip, allowlist) {
+            "allowed".to_string()
+        } else {
+            "blocked".to_string()
+        }
+    } else {
+        "n/a".to_string()
+    };
+
+    let secret_status = if !local_secret_configured {
+        "n/a".to_string()
+    } else if let Some(ref peer_ip) = ip {
+        if is_admitted(peer_ip) {
+            "match".to_string()
+        } else {
+            "missing/mismatch".to_string()
+        }
+    } else {
+        "missing/mismatch".to_string()
+    };
+
+    let mut reason: Option<String> = None;
+
+    if !contribute_compute {
+        reason = Some("contribute_compute off / no rpc_port advertised".to_string());
+    } else if metrics.is_none_or(|m| m.status != NodeStatus::Active) {
+        reason = Some("unhealthy / stale heartbeat".to_string());
+    } else if metrics.is_some_and(|m| m.delivery_ratio < RPC_PEER_MIN_DELIVERY_RATIO) {
+        reason = Some("unhealthy / low packet delivery ratio".to_string());
+    } else if allowlist_status == "blocked" {
+        reason = Some("peer IP not in coordinator rpc_allowed_peers".to_string());
+    } else if secret_status == "missing/mismatch" {
+        reason = Some("rpc_shared_secret missing or handshake mismatch".to_string());
+    } else if build_id_status == "mismatch" {
+        reason = Some("RPC build does not match coordinator".to_string());
+    }
+
+    let role = if is_used_in_rpc {
+        "contributor".to_string()
+    } else {
+        "unused".to_string()
+    };
+
+    PeerEvaluation {
+        rpc_port,
+        contribute_compute,
+        build_id_status,
+        secret_status,
+        allowlist_status,
+        role,
+        excluded_reason: reason,
+    }
+}
+
 pub fn discover_rpc_peers(
     cluster: &ClusterState,
     local_node_id: &str,

@@ -2120,16 +2120,42 @@ fn cached_models_scan(
         .unwrap_or_default()
 }
 
-fn build_cluster_topology_json(cluster: &ClusterState) -> serde_json::Value {
-    // Optimization: Borrow shared Arc<Vec<NodeResources>> via nodes_snapshot()
-    // instead of nodes(), and inspect metrics under a single Mutex lock with
-    // with_metrics() to eliminate per-node Mutex lock acquisition and NodeMetrics clones.
+fn build_cluster_topology_json(
+    cluster: &ClusterState,
+    local_node_id: &str,
+    settings: &RuntimeSettings,
+    current_model: &str,
+) -> serde_json::Value {
     let nodes = cluster.nodes_snapshot();
+    let local_build_id = native_engine::NativeEngineClient::get_llama_build_id();
+    let local_secret_configured = !settings.rpc_shared_secret.is_empty();
+
+    let active_rpc_peers = if settings.distributed_inference {
+        rpc_cluster::discover_rpc_peers(cluster, local_node_id, local_build_id.as_deref())
+    } else {
+        Vec::new()
+    };
+    let active_peer_ids: std::collections::HashSet<String> =
+        active_rpc_peers.iter().map(|p| p.node_id.clone()).collect();
+
     let (topology_nodes, edges) = cluster.with_metrics(|metrics_map| {
         let topology_nodes = nodes
             .iter()
             .map(|node| {
+                let is_local = node.id == local_node_id;
                 let metrics = metrics_map.get(&node.id);
+                let is_used_in_rpc = active_peer_ids.contains(&node.id);
+
+                let eval = rpc_cluster::evaluate_peer(
+                    node,
+                    metrics,
+                    local_build_id.as_deref(),
+                    local_secret_configured,
+                    &settings.rpc_allowed_peers,
+                    is_local,
+                    is_used_in_rpc,
+                );
+
                 let status = metrics
                     .map(|m| format!("{:?}", m.status))
                     .unwrap_or_else(|| "Unknown".to_string());
@@ -2166,6 +2192,13 @@ fn build_cluster_topology_json(cluster: &ClusterState) -> serde_json::Value {
                     "throughput_history_gbps": throughput_history_gbps,
                     "ip_address": ip_address,
                     "streaming_layers": streaming_layers,
+                    "rpc_port": eval.rpc_port,
+                    "contribute_compute": eval.contribute_compute,
+                    "build_id_status": eval.build_id_status,
+                    "secret_status": eval.secret_status,
+                    "allowlist_status": eval.allowlist_status,
+                    "role": eval.role,
+                    "excluded_reason": eval.excluded_reason,
                 })
             })
             .collect::<Vec<_>>();
@@ -2191,6 +2224,109 @@ fn build_cluster_topology_json(cluster: &ClusterState) -> serde_json::Value {
         (topology_nodes, edges)
     });
 
+    let placement_plan = if current_model.is_empty() || current_model == "none" {
+        serde_json::json!({
+            "distributed_active": settings.distributed_inference,
+            "has_plan": false,
+            "model_name": null,
+            "summary_text": "Load a model to see a split",
+            "tensor_splits": [],
+            "rpc_hosts": [],
+        })
+    } else {
+        let local_metrics = cluster.get_metrics(local_node_id);
+        let local_vram = local_metrics.as_ref().map(|m| m.vram_gb).unwrap_or(0.0);
+        let local_ram = local_metrics
+            .as_ref()
+            .map(|m| m.system_memory_gb)
+            .unwrap_or(0.0);
+
+        if settings.distributed_inference && !active_rpc_peers.is_empty() {
+            let splits =
+                rpc_cluster::compute_tensor_split(local_vram, local_ram, &active_rpc_peers);
+            let total_weight: f32 = splits.iter().sum();
+            let mut node_splits = Vec::new();
+
+            // Local first
+            let local_share = if total_weight > 0.0 {
+                splits[0] / total_weight
+            } else {
+                1.0
+            };
+            node_splits.push(serde_json::json!({
+                "node_id": local_node_id,
+                "label": local_node_id,
+                "weight": splits[0],
+                "percentage": local_share,
+                "vram_gb": local_vram,
+            }));
+
+            // Peers
+            for (idx, peer) in active_rpc_peers.iter().enumerate() {
+                let p_weight = splits.get(idx + 1).copied().unwrap_or(0.1);
+                let p_share = if total_weight > 0.0 {
+                    p_weight / total_weight
+                } else {
+                    0.0
+                };
+                node_splits.push(serde_json::json!({
+                    "node_id": peer.node_id,
+                    "label": peer.node_id,
+                    "weight": p_weight,
+                    "percentage": p_share,
+                    "vram_gb": peer.vram_gb,
+                }));
+            }
+
+            let rpc_hosts = active_rpc_peers
+                .iter()
+                .map(|p| p.addr.to_string())
+                .collect::<Vec<_>>();
+
+            let parts: Vec<String> = node_splits
+                .iter()
+                .map(|ns| {
+                    format!(
+                        "{:.2} on {} ({:.0} GB)",
+                        ns["percentage"].as_f64().unwrap_or(0.0),
+                        ns["label"].as_str().unwrap_or(""),
+                        ns["vram_gb"].as_f64().unwrap_or(0.0)
+                    )
+                })
+                .collect();
+
+            let summary_text = format!(
+                "Model {} with distributed on: split {}.",
+                current_model,
+                parts.join(", ")
+            );
+
+            serde_json::json!({
+                "distributed_active": true,
+                "has_plan": true,
+                "model_name": current_model,
+                "summary_text": summary_text,
+                "tensor_splits": node_splits,
+                "rpc_hosts": rpc_hosts,
+            })
+        } else {
+            serde_json::json!({
+                "distributed_active": false,
+                "has_plan": true,
+                "model_name": current_model,
+                "summary_text": format!("Single-machine inference on local node for {}.", current_model),
+                "tensor_splits": [{
+                    "node_id": local_node_id,
+                    "label": local_node_id,
+                    "weight": 1.0,
+                    "percentage": 1.0,
+                    "vram_gb": local_vram,
+                }],
+                "rpc_hosts": [],
+            })
+        }
+    };
+
     serde_json::json!({
         "summary": {
             "node_count": nodes.len(),
@@ -2200,6 +2336,7 @@ fn build_cluster_topology_json(cluster: &ClusterState) -> serde_json::Value {
         },
         "nodes": topology_nodes,
         "edges": edges,
+        "placement_plan": placement_plan,
     })
 }
 
@@ -6012,12 +6149,22 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
     async fn handle_gui_cluster_topology(
         State(state): State<Arc<Mutex<BackendState>>>,
     ) -> Json<serde_json::Value> {
-        let cluster = {
+        let (cluster, local_node_id, settings, current_model) = {
             let backend = lock_state(&state);
-            Arc::clone(&backend.cluster)
+            (
+                Arc::clone(&backend.cluster),
+                backend.local_node_id.clone(),
+                backend.settings.clone(),
+                backend.current_model.clone(),
+            )
         };
 
-        Json(build_cluster_topology_json(&cluster))
+        Json(build_cluster_topology_json(
+            &cluster,
+            &local_node_id,
+            &settings,
+            &current_model,
+        ))
     }
 
     async fn handle_gui_workers_connect() -> Json<serde_json::Value> {
@@ -11780,7 +11927,12 @@ mod tests {
             let backend = state.lock().unwrap();
             Arc::clone(&backend.cluster)
         };
-        let json = build_cluster_topology_json(&cluster);
+        let json = build_cluster_topology_json(
+            &cluster,
+            "node-a",
+            &RuntimeSettings::default(),
+            "tinyllama",
+        );
 
         assert_eq!(json["summary"]["node_count"].as_u64(), Some(2));
         assert_eq!(json["summary"]["active_nodes"].as_u64(), Some(2));

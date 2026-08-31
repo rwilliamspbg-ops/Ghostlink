@@ -77,6 +77,11 @@ export interface Settings {
   ubatch_size: number | null;
   kv_cache_type: "f16" | "q8_0" | "q4_0" | null;
   flash_attention: boolean;
+  distributed_inference?: boolean;
+  contribute_compute?: boolean;
+  rpc_port?: number;
+  rpc_allowed_peers?: string[];
+  rpc_shared_secret?: string;
   mlock: boolean | null;
   no_mmap: boolean | null;
 }
@@ -89,6 +94,13 @@ export interface Worker {
   model: string;
   threads: number;
   load: number;
+  rpc_port?: number | null;
+  contribute_compute?: boolean;
+  build_id_status?: string;
+  secret_status?: string;
+  allowlist_status?: string;
+  role?: string;
+  excluded_reason?: string | null;
 }
 
 export interface BackendInfo {
