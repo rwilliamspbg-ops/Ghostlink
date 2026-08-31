@@ -6,6 +6,8 @@ All notable changes to Ghostlink Studio are documented here.
 
 ## [Unreleased]
 
+## [2.1.0] - 2026-08-18
+
 ### Phase 6: Polish and Consistency Pass (Single Source of Truth, Port Alignment & Command Palette)
 
 - **Launcher Output & Health Recovery**: Updated `launch.sh` and `launch-native.ps1` to print `Open Studio at http://127.0.0.1:5173`. Improved `/api/health` error diagnosis to distinguish 401 Unauthorized from process connectivity failures.

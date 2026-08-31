@@ -228,6 +228,14 @@ function App() {
     checkHealth();
     const healthInterval = setInterval(checkHealth, 30000);
 
+    const handleSwitchTab = (e: CustomEvent) => {
+      if (typeof e.detail === 'number') {
+        setActiveTab(e.detail);
+      }
+    };
+    window.addEventListener('switch-tab', handleSwitchTab as EventListener);
+
+
     // Poll metrics every 3s for responsive System Performance gauges
     const metricsInterval = setInterval(() => {
       fetchMetrics();
@@ -241,6 +249,7 @@ function App() {
 
     return () => {
       clearInterval(healthInterval);
+      window.removeEventListener('switch-tab', handleSwitchTab as EventListener);
       clearInterval(metricsInterval);
       clearInterval(workersInterval);
     };

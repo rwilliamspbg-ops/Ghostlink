@@ -4313,13 +4313,16 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         let prompt = req
             .messages
             .iter()
-            .rev()
-            .find_map(|msg| {
-                msg.get("content")
-                    .and_then(|content| content.as_str())
-                    .map(str::to_owned)
+            .map(|msg| {
+                let role = msg.get("role").and_then(|r| r.as_str()).unwrap_or("user");
+                let content = msg.get("content").and_then(|c| c.as_str()).unwrap_or("");
+                format!("{}: {}", role, content)
             })
-            .unwrap_or_default();
+            .collect::<Vec<_>>()
+            .join(
+                "
+",
+            );
 
         validate_prompt_text(&prompt).map_err(bad_request_json)?;
 
@@ -5410,6 +5413,9 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             let (peers, local_vram, local_system_memory, shared_secret) = {
                 let backend = lock_state(&state);
                 if backend.settings.distributed_inference {
+                    if backend.settings.ngl == 0 {
+                        tracing::warn!("distributed_inference is enabled but effective -ngl is 0 (CPU-only), offloading to GPU RPC peers will be limited or inactive");
+                    }
                     let local_build_id = native_engine::NativeEngineClient::get_llama_build_id();
                     let peers = rpc_cluster::discover_rpc_peers(
                         &backend.cluster,
