@@ -17,7 +17,6 @@ import {
 } from 'lucide-react';
 import { useAppStore, DownloadProgressEntry } from '../store';
 import { GhostlinkAPI } from '../api';
-import { computeFitBadge } from '../utils/fitBadge';
 import { useInferenceEngines } from '../hooks/useInferenceEngines';
 import { EmptyState, LoadingState } from './StatusViews';
 
@@ -73,8 +72,6 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
   const [message, setMessage] = useState<string | null>(null);
   const [hfResults, setHfResults] = useState<{ id: string; name: string; downloads: number; likes: number }[]>([]);
   const [hfLoading, setHfLoading] = useState(false);
-  const [hiddenNonChatCount, setHiddenNonChatCount] = useState<number>(0);
-  const [expandedHfRepos, setExpandedHfRepos] = useState<Record<string, { loading: boolean; files: Array<{ filename: string; quant: string; size_bytes: number }>; error?: string }>>({});
   const [ollamaModels, setOllamaModels] = useState<any[]>([]);
   const [showModelfile, setShowModelfile] = useState<string | null>(null);
   const [modelfileCopied, setModelfileCopied] = useState(false);
@@ -124,7 +121,6 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
     try {
       const result = await api.searchHuggingFace(query || 'llama');
       if (result.models) setHfResults(result.models);
-      setHiddenNonChatCount(result.hidden_non_chat_count || 0);
       if (result.error) addToast({ type: 'error', message: result.error });
     } catch {
       // silent
@@ -132,28 +128,6 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
       setHfLoading(false);
     }
   }, [api, addToast]);
-
-  const handleInspectRepo = useCallback(async (repoId: string) => {
-    if (expandedHfRepos[repoId]) {
-      setExpandedHfRepos((prev: Record<string, any>) => {
-        const next = { ...prev };
-        delete next[repoId];
-        return next;
-      });
-      return;
-    }
-
-    setExpandedHfRepos((prev: Record<string, any>) => ({
-      ...prev,
-      [repoId]: { loading: true, files: [] },
-    }));
-
-    const res = await api.getHfRepoDetails(repoId);
-    setExpandedHfRepos((prev: Record<string, any>) => ({
-      ...prev,
-      [repoId]: { loading: false, files: res.files || [], error: res.error },
-    }));
-  }, [api, expandedHfRepos]);
 
   useEffect(() => {
     if (activeTab === 'huggingface' && hfResults.length === 0) {
@@ -281,21 +255,6 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
     setLoading(false);
     refreshPartialDownloads();
   }, [api, currentEngine, refreshPartialDownloads, setCurrentModel, setModels]);
-
-  const handleCancelDownload = useCallback(async (modelId: string) => {
-    const res = await api.cancelDownload(modelId);
-    if (res.success) {
-      addToast({ type: 'info', message: `Download cancelled for ${modelId}` });
-      setPendingActions((prev: Record<string, any>) => {
-        const next = { ...prev };
-        delete next[modelId];
-        return next;
-      });
-      refreshModels();
-    } else {
-      addToast({ type: 'error', message: res.error || 'Failed to cancel download' });
-    }
-  }, [api, addToast, setPendingActions, refreshModels]);
 
   useEffect(() => {
     refreshModels();
@@ -941,11 +900,6 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                 <Layers size={20} className="text-blue-400" />
                 <h2 className="text-lg font-bold text-white">Hugging Face Models</h2>
               </div>
-              {hiddenNonChatCount > 0 && (
-                <div className="text-xs text-slate-400 font-mono">
-                  {hiddenNonChatCount} encoder/non-chat models hidden
-                </div>
-              )}
             </div>
             <div className="space-y-2">
               {hfLoading && filteredHfResults.length === 0 ? (
@@ -953,137 +907,58 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
               ) : filteredHfResults.length === 0 ? (
                 <EmptyState icon={Layers} title="No models found" />
               ) : (
-              filteredHfResults.map((m) => {
-                const isExpanded = !!expandedHfRepos[m.id];
-                const repoData = expandedHfRepos[m.id];
-                return (
-                  <div key={m.id} className="flex flex-col bg-slate-900/40 border border-slate-800 hover:border-slate-700/80 rounded-xl transition overflow-hidden">
-                    <div className="flex items-center justify-between px-4 py-3">
-                      <div className="flex items-center gap-3 min-w-0">
-                        <button
-                          onClick={() => handleInspectRepo(m.id)}
-                          className="flex items-center justify-center text-orange-500 bg-orange-500/10 hover:bg-orange-500/20 h-10 w-10 rounded-lg shrink-0 transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
-                          title={`Inspect quants for ${m.name}`}
-                          aria-label={`Inspect quants for ${m.name}`}
-                        >
-                          <ChevronRight size={14} className={`transition-transform duration-200 ${isExpanded ? 'rotate-90' : ''}`} />
-                        </button>
-                        <div className="min-w-0">
-                          <div className="font-bold text-slate-200 truncate">{m.name}</div>
-                          <div className="text-[10px] text-slate-500 font-mono truncate">{m.id}</div>
-                        </div>
-                      </div>
-                      <div className="flex items-center gap-3 shrink-0">
-                        <div className="text-xs text-slate-400 hidden sm:block">
-                          <span className="mr-3">
-                            <span aria-hidden="true">📥</span> <span className="sr-only">Downloads: </span>{(m.downloads / 1000).toFixed(0)}K
-                          </span>
-                          <span>
-                            <span aria-hidden="true">👍</span> <span className="sr-only">Likes: </span>{(m.likes / 1000).toFixed(1)}K
-                          </span>
-                        </div>
-                        <button
-                          onClick={() => handleInspectRepo(m.id)}
-                          className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg text-xs font-semibold transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
-                        >
-                          {isExpanded ? 'Hide Quants' : 'Inspect Quants'}
-                        </button>
-                        {pendingActions[m.id] === 'downloading' && (
-                          <button
-                            onClick={() => handleCancelDownload(m.id)}
-                            title={`Cancel download for ${m.name}`}
-                            aria-label={`Cancel download for ${m.name}`}
-                            className="px-3 py-1.5 bg-rose-500/20 hover:bg-rose-600 text-rose-300 hover:text-white border border-rose-500/30 rounded-lg text-xs font-bold transition focus-visible:ring-2 focus-visible:ring-rose-500 focus-visible:outline-none"
-                          >
-                            Cancel
-                          </button>
-                        )}
-                        <button
-                          onClick={() => handleDownloadHFModel(m.id)}
-                          title={
-                            !canDownloadLocalModels
-                              ? 'Downloading models is disabled because the remote server manages model inventory'
-                              : pendingActions[m.id] === 'downloading'
-                              ? `Downloading ${m.name}...`
-                              : `Download default Q4_K_M for ${m.name}`
-                          }
-                          aria-label={
-                            !canDownloadLocalModels
-                              ? `Downloading ${m.name} disabled: server managed`
-                              : pendingActions[m.id] === 'downloading'
-                              ? `Downloading ${m.name}`
-                              : `Download default for ${m.name}`
-                          }
-                          className="inline-flex items-center gap-2 px-4 py-2 bg-slate-800 hover:bg-blue-600 text-white rounded-xl text-xs font-bold transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none group-hover:shadow-lg group-hover:shadow-blue-500/20"
-                          disabled={pendingActions[m.id] === 'downloading' || loading || !canDownloadLocalModels}
-                        >
-                          {pendingActions[m.id] === 'downloading' ? (
-                            <>
-                              <Loader size={14} className="mr-2 animate-spin" />
-                              {progressLabel(downloadProgress[m.id])}
-                            </>
-                          ) : (
-                            <Download size={14} />
-                          )}
-                          {pendingActions[m.id] === 'downloading' ? '' : canDownloadLocalModels ? 'Download' : 'Server managed'}
-                        </button>
-                      </div>
+              filteredHfResults.map((m) => (
+                <div key={m.id} className="flex items-center justify-between px-4 py-3 hover:bg-slate-800/50 rounded-lg transition">
+                  <div className="flex items-center gap-3 min-w-0">
+                    <div className="flex items-center justify-center text-orange-500 bg-orange-500/10 h-10 w-10 rounded-lg shrink-0">
+                      <ChevronRight size={14} />
                     </div>
-
-                    {isExpanded && (
-                      <div className="px-4 py-3 bg-slate-950/60 border-t border-slate-800/80 space-y-2">
-                        <div className="text-xs font-semibold text-slate-300 mb-2 flex items-center justify-between">
-                          <span>Available Quantizations in {m.id}</span>
-                          {repoData?.files?.length ? (
-                            <span className="text-[10px] text-slate-500 font-mono">{repoData.files.length} GGUF files found</span>
-                          ) : null}
-                        </div>
-                        {repoData?.loading ? (
-                          <LoadingState label="Fetching repo GGUF quants..." />
-                        ) : repoData?.error ? (
-                          <div className="text-xs text-rose-400 py-1">{repoData.error}</div>
-                        ) : repoData?.files?.length === 0 ? (
-                          <div className="text-xs text-slate-400 py-1">No GGUF quantization files found in this repository.</div>
-                        ) : (
-                          <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-                            {repoData.files.map((file: { filename: string; quant: string; size_bytes: number }) => {
-                              const sizeGb = file.size_bytes ? file.size_bytes / (1024 * 1024 * 1024) : null;
-                              const fit = computeFitBadge(sizeGb, {
-                                vramGb: availableMemoryGb,
-                                ramGb: availableMemoryGb,
-                              });
-                              const fileDownloadKey = `${m.id}/${file.filename}`;
-                              const isFileDownloading = pendingActions[m.id] === 'downloading' || pendingActions[fileDownloadKey] === 'downloading';
-                              return (
-                                <div key={file.filename} className="flex items-center justify-between p-2.5 bg-slate-900 border border-slate-800 rounded-lg text-xs">
-                                  <div className="min-w-0 pr-2">
-                                    <div className="font-mono font-bold text-slate-200 truncate">{file.quant} <span className="text-slate-400 font-normal">({file.filename})</span></div>
-                                    <div className="flex items-center gap-2 mt-1">
-                                      <span className="text-[10px] text-slate-400 font-mono">{sizeGb ? `${sizeGb.toFixed(2)} GB` : 'Size unknown'}</span>
-                                      <span className={`px-1.5 py-0.5 rounded text-[10px] font-semibold border ${fit.badgeClass}`} title={fit.tooltipMath}>
-                                        {fit.label}
-                                      </span>
-                                    </div>
-                                  </div>
-                                  <button
-                                    onClick={() => handleDownloadHFModel(m.id)}
-                                    disabled={isFileDownloading || loading || !canDownloadLocalModels}
-                                    title={`Download ${file.quant} (${file.filename})`}
-                                    aria-label={`Download ${file.quant}`}
-                                    className="px-3 py-1.5 bg-blue-600/20 hover:bg-blue-600 text-blue-300 hover:text-white border border-blue-500/30 rounded-lg text-xs font-semibold transition shrink-0 focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
-                                  >
-                                    Download
-                                  </button>
-                                </div>
-                              );
-                            })}
-                          </div>
-                        )}
-                      </div>
-                    )}
+                    <div className="min-w-0">
+                      <div className="font-bold text-slate-200 truncate">{m.name}</div>
+                      <div className="text-[10px] text-slate-500 font-mono truncate">{m.id}</div>
+                    </div>
                   </div>
-                );
-              })
+                  <div className="flex items-center gap-4 shrink-0">
+                    <div className="text-xs text-slate-400">
+                      <span className="mr-3">
+                        <span aria-hidden="true">📥</span> <span className="sr-only">Downloads: </span>{(m.downloads / 1000).toFixed(0)}K
+                      </span>
+                      <span>
+                        <span aria-hidden="true">👍</span> <span className="sr-only">Likes: </span>{(m.likes / 1000).toFixed(1)}K
+                      </span>
+                    </div>
+                    <button
+                      onClick={() => handleDownloadHFModel(m.id)}
+                      title={
+                        !canDownloadLocalModels
+                          ? 'Downloading models is disabled because the remote server manages model inventory'
+                          : pendingActions[m.id] === 'downloading'
+                          ? `Downloading ${m.name}...`
+                          : `Download ${m.name}`
+                      }
+                      aria-label={
+                        !canDownloadLocalModels
+                          ? `Downloading ${m.name} disabled: server managed`
+                          : pendingActions[m.id] === 'downloading'
+                          ? `Downloading ${m.name}`
+                          : `Download ${m.name}`
+                      }
+                      className="inline-flex items-center gap-2 px-4 py-2 bg-slate-800 hover:bg-blue-600 text-white rounded-xl text-xs font-bold transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none group-hover:shadow-lg group-hover:shadow-blue-500/20"
+                      disabled={pendingActions[m.id] === 'downloading' || loading || !canDownloadLocalModels}
+                    >
+                      {pendingActions[m.id] === 'downloading' ? (
+                        <>
+                          <Loader size={14} className="mr-2" />
+                          {progressLabel(downloadProgress[m.id])}
+                        </>
+                      ) : (
+                        <Download size={14} />
+                      )}
+                      {pendingActions[m.id] === 'downloading' ? '' : canDownloadLocalModels ? 'Download' : 'Server managed'}
+                    </button>
+                  </div>
+                </div>
+              ))
               )}
             </div>
           </div>

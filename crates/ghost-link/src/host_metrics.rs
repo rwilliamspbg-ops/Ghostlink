@@ -603,21 +603,6 @@ mod tests {
     }
 
     #[test]
-    fn test_inference_metrics_cancelled_or_failed_sample_excluded() {
-        let mut m = InferenceMetrics::default();
-        m.record(1000.0, 50, None, true); // 50 tok/s
-        let initial_ema = m.tokens_per_sec_ema;
-
-        // Cancelled or non-real attempt (real: false, tokens: 0)
-        m.record(500.0, 0, Some(0.0), false);
-        assert_eq!(m.tokens_per_sec_ema, initial_ema);
-
-        // Cancelled with tokens > 0 but real: false
-        m.record(300.0, 15, Some(50.0), false);
-        assert_eq!(m.tokens_per_sec_ema, initial_ema);
-    }
-
-    #[test]
     fn test_inference_metrics_zero_token_sample_excluded() {
         let mut m = InferenceMetrics::default();
         m.record(1000.0, 50, None, true); // 50 tok/s

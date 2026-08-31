@@ -256,46 +256,6 @@ curl http://127.0.0.1:8000/v1/models -H "Authorization: Bearer $GHOSTLINK_API_KE
 }
 ```
 
-## `GET /api/models/huggingface/repo`
-
-Inspect GGUF quantization files and byte sizes for a Hugging Face Hub repository.
-
-```bash
-curl "http://127.0.0.1:8000/api/models/huggingface/repo?repo=lmstudio-community/Meta-Llama-3-8B-Instruct-GGUF" \
-  -H "Authorization: Bearer $GHOSTLINK_API_KEY"
-```
-
-```json
-{
-  "repo": "lmstudio-community/Meta-Llama-3-8B-Instruct-GGUF",
-  "files": [
-    {
-      "filename": "Meta-Llama-3-8B-Instruct-Q4_K_M.gguf",
-      "quant": "Q4_K_M",
-      "size_bytes": 4920721280
-    }
-  ]
-}
-```
-
-## `POST /api/models/download/cancel`
-
-Cancel an active background Hugging Face model download and remove incomplete partial files.
-
-```bash
-curl -X POST http://127.0.0.1:8000/api/models/download/cancel \
-  -H "Authorization: Bearer $GHOSTLINK_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"model_id": "lmstudio-community/Meta-Llama-3-8B-Instruct-GGUF"}'
-```
-
-```json
-{
-  "status": "success",
-  "message": "Download cancellation requested for lmstudio-community/Meta-Llama-3-8B-Instruct-GGUF"
-}
-```
-
 ## Client library compatibility
 
 Because these routes mirror OpenAI's request/response shapes, the official
