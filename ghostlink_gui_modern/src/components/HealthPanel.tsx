@@ -95,8 +95,7 @@ export const HealthPanel: React.FC<HealthPanelProps> = ({ api, onNavigateToTab }
     e.preventDefault();
     if (!inputApiKey.trim()) return;
     api.setApiKey(inputApiKey.trim());
-    localStorage.setItem('ghostlink_api_key', inputApiKey.trim());
-    addToast({ type: 'success', message: 'API key updated. Re-testing health...' });
+    addToast({ type: 'success', message: 'API key updated for this session. Re-testing health...' });
     runProbes();
   };
 
