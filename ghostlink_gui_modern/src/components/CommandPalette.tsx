@@ -1,5 +1,5 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
+import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
 import {
   Search,
   MessageSquare,
@@ -12,6 +12,7 @@ import {
   Plug,
   FileCode,
   CornerDownLeft,
+  Activity,
   type LucideIcon,
 } from 'lucide-react';
 import { useAppStore } from '../store';
@@ -37,7 +38,7 @@ export const NAV_TABS: NavTab[] = [
   { label: 'Settings', icon: Settings, id: 6 },
 ];
 
-interface Command {
+export interface Command {
   id: string;
   label: string;
   hint?: string;
@@ -57,19 +58,33 @@ export const CommandPalette: React.FC = () => {
 
   const commands = useMemo<Command[]>(
     () => [
+      // Phase 1: Health & Security
       {
-        id: 'new-chat',
-        label: 'New Chat',
-        hint: 'Clear the conversation and start fresh · Ctrl+Shift+O',
-        icon: MessageSquare,
+        id: 'retry-health',
+        label: 'Retry health check',
+        hint: 'Probe backend API health endpoint',
+        icon: Activity,
         action: () => {
-          const messages = useAppStore.getState().chatMessages;
-          if (messages.length === 0 || window.confirm('Are you sure you want to clear the current chat? This will permanently delete your active conversation.')) {
-            setChatMessages([]);
-            setActiveTab(0);
-          }
+          window.dispatchEvent(new CustomEvent('retry-health-check'));
+          setActiveTab(5);
         },
       },
+      {
+        id: 'set-api-key',
+        label: 'Set API Key',
+        hint: 'Configure Bearer token in Security tab',
+        icon: Shield,
+        action: () => setActiveTab(5),
+      },
+      {
+        id: 'open-health',
+        label: 'Open health status',
+        hint: 'View system health & security details',
+        icon: Shield,
+        action: () => setActiveTab(5),
+      },
+
+      // Phase 2: Models
       {
         id: 'download-models',
         label: 'Download models',
@@ -91,6 +106,95 @@ export const CommandPalette: React.FC = () => {
         icon: Database,
         action: () => setActiveTab(1),
       },
+
+      // Phase 3: Chat & Presets
+      {
+        id: 'new-chat',
+        label: 'New Chat',
+        hint: 'Clear the conversation and start fresh · Ctrl+Shift+O',
+        icon: MessageSquare,
+        action: () => {
+          const messages = useAppStore.getState().chatMessages;
+          if (
+            messages.length === 0 ||
+            window.confirm(
+              'Are you sure you want to clear the current chat? This will permanently delete your active conversation.'
+            )
+          ) {
+            setChatMessages([]);
+            setActiveTab(0);
+          }
+        },
+      },
+      {
+        id: 'search-threads',
+        label: 'Search threads',
+        hint: 'View saved chat threads in Chat tab',
+        icon: MessageSquare,
+        action: () => setActiveTab(0),
+      },
+      {
+        id: 'prompt-presets',
+        label: 'System prompt presets',
+        hint: 'Manage system prompt presets in Chat tab',
+        icon: MessageSquare,
+        action: () => setActiveTab(0),
+      },
+
+      // Phase 4: Cluster & Workers
+      {
+        id: 'discover-peers',
+        label: 'Discover LAN peers',
+        hint: 'Scan local network for available cluster workers',
+        icon: Network,
+        action: () => {
+          setActiveTab(4);
+          window.dispatchEvent(new CustomEvent('discover-lan-peers'));
+        },
+      },
+      {
+        id: 'use-other-machines',
+        label: 'Use other machines',
+        hint: 'Toggle offloading models to cluster workers',
+        icon: Network,
+        action: () => {
+          setActiveTab(4);
+          window.dispatchEvent(new CustomEvent('toggle-cluster-offload'));
+        },
+      },
+
+      // Phase 5: MCP & Workspace
+      {
+        id: 'enable-calculator',
+        label: 'Enable Calculator / MCP',
+        hint: 'Enable in-tree calculator MCP server',
+        icon: Plug,
+        action: () => {
+          setActiveTab(7);
+          window.dispatchEvent(new CustomEvent('enable-mcp-calculator'));
+        },
+      },
+      {
+        id: 'index-workspace',
+        label: 'Index workspace',
+        hint: 'Scan and index workspace files in Editor tab',
+        icon: FileCode,
+        action: () => {
+          setActiveTab(8);
+          window.dispatchEvent(new CustomEvent('index-workspace-files'));
+        },
+      },
+      {
+        id: 'toggle-workspace-context',
+        label: 'Toggle workspace context',
+        hint: 'Toggle RAG workspace context in Editor tab',
+        icon: FileCode,
+        action: () => {
+          setActiveTab(8);
+          window.dispatchEvent(new CustomEvent('toggle-workspace-context'));
+        },
+      },
+
       ...NAV_TABS.map((tab) => ({
         id: `goto-${tab.id}`,
         label: `Go to ${tab.label}`,
@@ -132,13 +236,16 @@ export const CommandPalette: React.FC = () => {
         setOpen((o) => (o ? false : o));
         return;
       }
-      // Ctrl/Cmd+N is reserved by most browsers for "new window" and can't
-      // reliably be intercepted — Ctrl/Cmd+Shift+O is the same convention
-      // ChatGPT uses for "new chat" and is actually interceptable.
+      // Ctrl/Cmd+Shift+O for "new chat"
       if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === 'o') {
         e.preventDefault();
         const messages = useAppStore.getState().chatMessages;
-        if (messages.length === 0 || window.confirm('Are you sure you want to clear the current chat? This will permanently delete your active conversation.')) {
+        if (
+          messages.length === 0 ||
+          window.confirm(
+            'Are you sure you want to clear the current chat? This will permanently delete your active conversation.'
+          )
+        ) {
           setChatMessages([]);
           setActiveTab(0);
         }
@@ -210,56 +317,66 @@ export const CommandPalette: React.FC = () => {
             onClick={(e) => e.stopPropagation()}
             className="w-full max-w-lg mx-4 bg-slate-900 border border-slate-800 rounded-2xl shadow-2xl overflow-hidden"
           >
-        <div className="flex items-center gap-3 px-4 py-3 border-b border-slate-800 focus-within:ring-2 focus-within:ring-inset focus-within:ring-blue-500">
-          <Search size={16} className="text-slate-500 shrink-0" aria-hidden="true" />
-          <input
-            ref={inputRef}
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            onKeyDown={handleInputKeyDown}
-            placeholder="Type a command or search..."
-            aria-label="Search commands"
-            role="combobox"
-            aria-expanded="true"
-            aria-controls="command-palette-list"
-            aria-activedescendant={filtered[highlight] ? `command-${filtered[highlight].id}` : undefined}
-            className="w-full bg-transparent border-none text-sm text-slate-100 placeholder-slate-500 focus:outline-none focus:ring-0"
-          />
-          <kbd className="text-[10px] text-slate-500 bg-slate-950 px-1.5 py-0.5 rounded border border-slate-700">Esc</kbd>
-        </div>
-        <div className="sr-only" role="status" aria-live="polite">
-          {filtered.length === 0 ? 'No matching commands' : `${filtered.length} command${filtered.length === 1 ? '' : 's'} found`}
-        </div>
-        <ul ref={listRef} id="command-palette-list" role="listbox" aria-label="Commands" className="max-h-80 overflow-y-auto p-2">
-          {filtered.length === 0 ? (
-            <li className="px-3 py-6 text-center text-sm text-slate-500">No matching commands</li>
-          ) : (
-            filtered.map((cmd, i) => {
-              const Icon = cmd.icon;
-              return (
-                // eslint-disable-next-line jsx-a11y/click-events-have-key-events -- combobox/listbox pattern: keyboard selection is handled by the input's onKeyDown via aria-activedescendant, this option never receives focus itself; onClick is the mouse/touch equivalent
-                <li
-                  key={cmd.id}
-                  id={`command-${cmd.id}`}
-                  role="option"
-                  aria-selected={i === highlight}
-                  onMouseEnter={() => setHighlight(i)}
-                  onClick={() => runCommand(cmd)}
-                  className={`flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm cursor-pointer transition ${
-                    i === highlight ? 'bg-blue-600/10 text-blue-400' : 'text-slate-300'
-                  }`}
-                >
-                  <Icon size={16} className={i === highlight ? 'text-blue-400' : 'text-slate-500'} />
-                  <div className="flex flex-col min-w-0">
-                    <span className="truncate">{cmd.label}</span>
-                    {cmd.hint && <span className="text-[10px] text-slate-500 truncate">{cmd.hint}</span>}
-                  </div>
-                  {i === highlight && <CornerDownLeft size={12} className="ml-auto text-slate-600 shrink-0" aria-hidden="true" />}
-                </li>
-              );
-            })
-          )}
-        </ul>
+            <div className="flex items-center gap-3 px-4 py-3 border-b border-slate-800 focus-within:ring-2 focus-within:ring-inset focus-within:ring-blue-500">
+              <Search size={16} className="text-slate-500 shrink-0" aria-hidden="true" />
+              <input
+                ref={inputRef}
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                onKeyDown={handleInputKeyDown}
+                placeholder="Type a command or search..."
+                aria-label="Search commands"
+                role="combobox"
+                aria-expanded="true"
+                aria-controls="command-palette-list"
+                aria-activedescendant={filtered[highlight] ? `command-${filtered[highlight].id}` : undefined}
+                className="w-full bg-transparent border-none text-sm text-slate-100 placeholder-slate-500 focus:outline-none focus:ring-0"
+              />
+              <kbd className="text-[10px] text-slate-500 bg-slate-950 px-1.5 py-0.5 rounded border border-slate-700">Esc</kbd>
+            </div>
+            <div className="sr-only" role="status" aria-live="polite">
+              {filtered.length === 0
+                ? 'No matching commands'
+                : `${filtered.length} command${filtered.length === 1 ? '' : 's'} found`}
+            </div>
+            <ul
+              ref={listRef}
+              id="command-palette-list"
+              role="listbox"
+              aria-label="Commands"
+              className="max-h-80 overflow-y-auto p-2"
+            >
+              {filtered.length === 0 ? (
+                <li className="px-3 py-6 text-center text-sm text-slate-500">No matching commands</li>
+              ) : (
+                filtered.map((cmd, i) => {
+                  const Icon = cmd.icon;
+                  return (
+                    // eslint-disable-next-line jsx-a11y/click-events-have-key-events -- combobox/listbox pattern
+                    <li
+                      key={cmd.id}
+                      id={`command-${cmd.id}`}
+                      role="option"
+                      aria-selected={i === highlight}
+                      onMouseEnter={() => setHighlight(i)}
+                      onClick={() => runCommand(cmd)}
+                      className={`flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm cursor-pointer transition ${
+                        i === highlight ? 'bg-blue-600/10 text-blue-400' : 'text-slate-300'
+                      }`}
+                    >
+                      <Icon size={16} className={i === highlight ? 'text-blue-400' : 'text-slate-500'} />
+                      <div className="flex flex-col min-w-0">
+                        <span className="truncate">{cmd.label}</span>
+                        {cmd.hint && <span className="text-[10px] text-slate-500 truncate">{cmd.hint}</span>}
+                      </div>
+                      {i === highlight && (
+                        <CornerDownLeft size={12} className="ml-auto text-slate-600 shrink-0" aria-hidden="true" />
+                      )}
+                    </li>
+                  );
+                })
+              )}
+            </ul>
           </motion.div>
         </motion.div>
       )}

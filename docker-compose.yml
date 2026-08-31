@@ -118,7 +118,7 @@ services:
       dockerfile: Dockerfile
     container_name: ghostlink-gui
     ports:
-      - "5173:3000"
+      - "5173:5173"
     environment:
       # The gateway, not ghostlink-api directly — see config.ts's
       # resolveApiBase. control-plane proxies everything through.
@@ -166,7 +166,7 @@ services:
       - ./deploy/grafana/provisioning:/etc/grafana/provisioning:ro
       - ./deploy/grafana/dashboards:/var/lib/grafana/dashboards:ro
     ports:
-      - "3001:3000"
+      - "3001:5173"
     networks:
       - ghostlink-network
     depends_on:

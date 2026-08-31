@@ -109,7 +109,7 @@ npm install --legacy-peer-deps
 ```bash
 npm run dev
 ```
-Open `http://localhost:3000`
+Open `http://127.0.0.1:5173`
 
 ### Build for Production
 ```bash
@@ -125,7 +125,7 @@ npm run preview
 
 Create a `.env.local` file to override defaults:
 ```
-VITE_API_BASE=http://your-backend:8003
+VITE_API_BASE=http://your-backend:8000
 ```
 
 ## Docker Deployment
@@ -137,8 +137,8 @@ docker build -t ghostlink-gui .
 
 ### Run
 ```bash
-docker run -p 3000:3000 \
-  -e GHOSTLINK_API_BASE=http://backend:8003 \
+docker run -p 5173:5173 \
+  -e GHOSTLINK_API_BASE=http://backend:8000 \
   ghostlink-gui
 ```
 
@@ -176,7 +176,7 @@ src/
 
 ## API Integration
 
-The GUI connects to backend at `http://127.0.0.1:8003` by default.
+The GUI connects to backend at `http://127.0.0.1:8000` by default.
 
 ### Proxied Endpoints
 - `/api/*` - Model, inference, worker APIs
@@ -206,7 +206,7 @@ The GUI connects to backend at `http://127.0.0.1:8003` by default.
 ## Troubleshooting
 
 ### GUI won't connect to backend
-1. Verify backend is running on `http://127.0.0.1:8003`
+1. Verify backend is running on `http://127.0.0.1:8000`
 2. Check proxy settings in `vite.config.ts`
 3. Ensure CORS headers are set on backend
 

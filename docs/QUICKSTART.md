@@ -9,7 +9,7 @@ launch-ollama.bat
 
 The script:
 1. Starts Ollama server on `http://127.0.0.1:11434`
-2. Builds and starts the Rust backend API on `http://127.0.0.1:8003`
+2. Builds and starts the Rust backend API on `http://127.0.0.1:8000 (gateway; :8003 internal)`
 3. Installs npm dependencies
 4. Starts Vite dev server on `http://127.0.0.1:5173`
 

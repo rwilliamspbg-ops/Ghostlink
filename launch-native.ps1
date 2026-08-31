@@ -457,7 +457,7 @@ if (-not (Wait-Http "http://${ApiHost}:${GuiPort}" "React Frontend" 60 $guiProc)
 Write-Ok "Frontend ready (PID $($guiProc.Id))"
 
 Write-Host ""
-Write-Host "Ghostlink Studio is running:" -ForegroundColor Green
+Write-Host "Open Studio at http://${ApiHost}:${GuiPort}" -ForegroundColor Green
 Write-Host "  Web Interface  -> http://${ApiHost}:${GuiPort}"
 Write-Host "  Control-plane  -> http://${ApiHost}:${ControlPlanePort}  (GUI talks to this)"
 Write-Host "  API Server     -> http://${ApiHost}:${ApiPort}  (behind control-plane)"

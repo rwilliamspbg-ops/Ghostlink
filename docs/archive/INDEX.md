@@ -22,6 +22,7 @@ Some archived files intentionally contain superseded status statements and shoul
 - [PRODUCTION_WIRING_STATUS.md](PRODUCTION_WIRING_STATUS.md)
 - [VERIFICATION.md](VERIFICATION.md)
 - [TESTING.md](TESTING.md)
+- [docs/archive/auto_discovery_improvement_plan.md](auto_discovery_improvement_plan.md): historical auto-discovery plan.
 - [stale-rust-sources/](stale-rust-sources): malformed/unwired historical Rust snapshots removed from active crates source tree.
 
 ## Why Archived

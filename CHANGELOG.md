@@ -6,6 +6,12 @@ All notable changes to Ghostlink Studio are documented here.
 
 ## [Unreleased]
 
+### Phase 6: Polish and Consistency Pass (Single Source of Truth, Port Alignment & Command Palette)
+
+- **Launcher Output & Health Recovery**: Updated `launch.sh` and `launch-native.ps1` to print `Open Studio at http://127.0.0.1:5173`. Improved `/api/health` error diagnosis to distinguish 401 Unauthorized from process connectivity failures.
+- **Unified Port & Service Documentation**: Standardized the 3-step happy path across `README.md`, `docs/QUICKSTART.md`, `docs/TROUBLESHOOTING.md`, `ghostlink_gui_modern/README.md`, `ghostlink_gui_modern/GUI_README.md`, `MIGRATION.md`, `docs/API_REFERENCE.md`, `.env.example`, `ghostlink.example.toml`, and Docker Compose manifests. Explicitly labeled port `:8003` as internal API and `:8080` as llama-server. Eliminated stale references to port 3000.
+- **Expanded Command Palette & Hotkeys**: Added searchable command entries in `CommandPalette.tsx` for all Phase 1–5 primary actions (Health retry, API key, Load/Download/Unload model, New Chat, Thread search, Prompt presets, Discover LAN peers, Use other machines, Enable Calculator/MCP, Index workspace, Toggle workspace context). Verified shortcut badges match active keydown listeners.
+
 ### Phase 4: Ghostlink Cluster Map & Human-Readable Placement Plan
 
 - **Cluster Map Topology & Peer Evaluation Endpoint** (`crates/ghost-link/src/rpc_cluster.rs`, `crates/ghost-link/src/main.rs`, `ghostlink_gui_modern/src/api.ts`):

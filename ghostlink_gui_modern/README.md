@@ -26,7 +26,7 @@ npm install
 npm run dev
 ```
 
-Access the GUI at `http://localhost:3000`
+Access the GUI at `http://127.0.0.1:5173`
 
 ### Production Build
 
@@ -39,12 +39,12 @@ npm run preview
 
 ```bash
 docker build -t ghostlink-gui .
-docker run -p 3000:3000 -e GHOSTLINK_API_BASE=http://localhost:8003 ghostlink-gui
+docker run -p 5173:5173 -e GHOSTLINK_API_BASE=http://127.0.0.1:8000 ghostlink-gui
 ```
 
 ## Environment Variables
 
-- `GHOSTLINK_API_BASE`: Backend API base URL (default: `http://127.0.0.1:8003`)
+- `GHOSTLINK_API_BASE`: Backend API base URL (default: `http://127.0.0.1:8000 (control-plane gateway; :8003 internal)`)
 
 ## Architecture
 
@@ -75,4 +75,4 @@ docker run -p 3000:3000 -e GHOSTLINK_API_BASE=http://localhost:8003 ghostlink-gu
 | Performance | Slow | Fast (React) |
 | Mobile Support | None | Full responsive |
 | Type Safety | None | Full TypeScript |
-| Accessibility | Poor | WCAG 2.1 AA |
+| Accessibility | Poor | Gated via e2e/axe (WCAG 2.1 A/AA) |

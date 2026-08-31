@@ -38,7 +38,7 @@ A request with no token, an expired JWT, or a wrong value gets `401`:
 ### Exchange the API key for a JWT
 
 ```bash
-curl -X POST http://127.0.0.1:8080/api/security/jwt/refresh \
+curl -X POST http://127.0.0.1:8000/api/security/jwt/refresh \
   -H "Authorization: Bearer <api-key>"
 ```
 
@@ -54,7 +54,7 @@ exchange — not just the persisted setting, since enabling TLS
 (`POST /api/security/pqc/enable`) only takes effect on the next restart.
 
 ```bash
-curl http://127.0.0.1:8080/api/security/pqc/state \
+curl http://127.0.0.1:8000/api/security/pqc/state \
   -H "Authorization: Bearer $GHOSTLINK_API_KEY"
 ```
 
@@ -75,7 +75,7 @@ most-recent-first. Resets on restart (no persistent trail across restarts
 yet).
 
 ```bash
-curl http://127.0.0.1:8080/api/security/audit-log \
+curl http://127.0.0.1:8000/api/security/audit-log \
   -H "Authorization: Bearer $GHOSTLINK_API_KEY"
 ```
 
@@ -98,7 +98,7 @@ rejects a `path` that resolves outside it.
 ### List a directory
 
 ```bash
-curl "http://127.0.0.1:8080/api/workspace/tree?path=" \
+curl "http://127.0.0.1:8000/api/workspace/tree?path=" \
   -H "Authorization: Bearer $GHOSTLINK_API_KEY"
 ```
 
@@ -109,10 +109,10 @@ curl "http://127.0.0.1:8080/api/workspace/tree?path=" \
 ### Read / write a file
 
 ```bash
-curl "http://127.0.0.1:8080/api/workspace/file?path=README.md" \
+curl "http://127.0.0.1:8000/api/workspace/file?path=README.md" \
   -H "Authorization: Bearer $GHOSTLINK_API_KEY"
 
-curl -X PUT http://127.0.0.1:8080/api/workspace/file \
+curl -X PUT http://127.0.0.1:8000/api/workspace/file \
   -H "Authorization: Bearer $GHOSTLINK_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"path": "README.md", "content": "..."}'
@@ -124,7 +124,7 @@ with a JSON `{"error": "..."}` body rather than a partial read/write.
 ### Index the workspace for repo-aware chat
 
 ```bash
-curl -X POST http://127.0.0.1:8080/api/workspace/index \
+curl -X POST http://127.0.0.1:8000/api/workspace/index \
   -H "Authorization: Bearer $GHOSTLINK_API_KEY"
 ```
 
@@ -144,7 +144,7 @@ multi-turn context is reconstructed server-side for this stateless endpoint
 — use the GUI's own session-backed chat for that).
 
 ```bash
-curl -X POST http://127.0.0.1:8080/v1/chat/completions \
+curl -X POST http://127.0.0.1:8000/v1/chat/completions \
   -H "Authorization: Bearer $GHOSTLINK_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
@@ -178,7 +178,7 @@ Legacy (non-chat) completion: a plain `prompt` string instead of a
 `/v1/chat/completions`.
 
 ```bash
-curl -X POST http://127.0.0.1:8080/v1/completions \
+curl -X POST http://127.0.0.1:8000/v1/completions \
   -H "Authorization: Bearer $GHOSTLINK_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
@@ -228,7 +228,7 @@ gets a real `501`, not a faked vector:
 real OpenAI API:
 
 ```bash
-curl -X POST http://127.0.0.1:8080/v1/embeddings \
+curl -X POST http://127.0.0.1:8000/v1/embeddings \
   -H "Authorization: Bearer $GHOSTLINK_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"model": "nomic-embed-text", "input": ["hello world"]}'
@@ -246,7 +246,7 @@ curl -X POST http://127.0.0.1:8080/v1/embeddings \
 ## `GET /v1/models`
 
 ```bash
-curl http://127.0.0.1:8080/v1/models -H "Authorization: Bearer $GHOSTLINK_API_KEY"
+curl http://127.0.0.1:8000/v1/models -H "Authorization: Bearer $GHOSTLINK_API_KEY"
 ```
 
 ```json
@@ -265,7 +265,7 @@ the API key as the SDK's own bearer token:
 ```python
 from openai import OpenAI
 
-client = OpenAI(base_url="http://127.0.0.1:8080/v1", api_key=GHOSTLINK_API_KEY)
+client = OpenAI(base_url="http://127.0.0.1:8000/v1", api_key=GHOSTLINK_API_KEY)
 resp = client.chat.completions.create(
     model="llama-3.2-1b-instruct",
     messages=[{"role": "user", "content": "Say hi in five words."}],

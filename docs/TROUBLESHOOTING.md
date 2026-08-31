@@ -8,8 +8,8 @@
 
 ## Frontend says "Connection Error"
 
-1. Check the backend is running: `curl http://127.0.0.1:8003/health`
-2. Check `VITE_GHOSTLINK_API_BASE` is set correctly in the environment (should be `http://127.0.0.1:8003`)
+1. Check the control-plane gateway health: `curl http://127.0.0.1:8000/health` (or internal API: `curl http://127.0.0.1:8003/health`)
+2. Check `VITE_GHOSTLINK_API_BASE` is set correctly in the environment (should be `http://127.0.0.1:8000`)
 3. Check the backend console for errors (Rust panic, port in use)
 
 ## Port already in use
