@@ -268,12 +268,21 @@ fn bench_health(c: &mut Criterion) {
             None,
         ));
     }
-    let monitor = NetworkHealthMonitor::new(cluster, HealthConfig::default());
+    let monitor = NetworkHealthMonitor::new(Arc::clone(&cluster), HealthConfig::default());
+    let fault_detector = ghostlink_core::health::FaultDetector::new(
+        Arc::clone(&cluster),
+        std::time::Duration::from_secs(10),
+    );
 
     let mut group = c.benchmark_group("health");
     group.bench_function("check_all_10_nodes", |b| {
         b.iter(|| {
             monitor.check_all();
+        });
+    });
+    group.bench_function("detect_failures_10_nodes", |b| {
+        b.iter(|| {
+            black_box(fault_detector.detect_failures());
         });
     });
     group.finish();

@@ -354,6 +354,24 @@ fn main() {
             None,
         ));
     }
+
+    let health_cluster = Arc::new(ClusterState::new());
+    for i in 0..10 {
+        health_cluster.register(NodeResources::new(
+            format!("node-{i}"),
+            24.0,
+            64.0,
+            "8.9",
+            None,
+        ));
+    }
+    let fault_detector = ghostlink_core::health::FaultDetector::new(
+        Arc::clone(&health_cluster),
+        std::time::Duration::from_secs(10),
+    );
+    bench("health: detect_failures (10 nodes)", 200_000, || {
+        let _ = fault_detector.detect_failures();
+    });
     bench("cluster: nodes() snapshot (10 nodes)", 200_000, || {
         let _ = cluster2.nodes();
     });

@@ -455,9 +455,13 @@ impl ClusterState {
 
     /// Check if a node has timed out
     pub fn check_heartbeat_timeout(&self, node_id: &str) -> bool {
-        if let Some(metrics) = self.get_metrics(node_id) {
-            let elapsed = Instant::now().duration_since(metrics.last_heartbeat);
-            elapsed >= metrics.heartbeat_timeout
+        // Optimize: Inspect node metrics directly under lock without cloning NodeMetrics struct.
+        let metrics = self
+            .metrics
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        if let Some(m) = metrics.get(node_id) {
+            Instant::now().duration_since(m.last_heartbeat) >= m.heartbeat_timeout
         } else {
             false
         }
