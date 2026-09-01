@@ -455,6 +455,7 @@ impl ClusterState {
 
     /// Check if a node has timed out
     pub fn check_heartbeat_timeout(&self, node_id: &str) -> bool {
+        // Optimize: Inspect node metrics directly under lock without cloning NodeMetrics struct.
         let metrics = self
             .metrics
             .lock()

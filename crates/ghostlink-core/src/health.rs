@@ -573,29 +573,25 @@ impl FaultDetector {
     /// Detect failed nodes based on heartbeat timeouts
     pub fn detect_failures(&self) -> Vec<String> {
         let mut failed_nodes: Vec<String> = Vec::new();
-        let now = Instant::now();
-        let nodes = self.cluster.nodes_snapshot();
 
-        // Optimize: Single-lock pass over cluster metrics to check heartbeat timeouts
-        // and update node failure statuses directly in place, avoiding per-node lock churn
-        // and deep NodeMetrics clones.
-        let mut metrics_guard = self
-            .cluster
-            .metrics
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner());
-
-        for node in nodes.iter() {
-            if let Some(m) = metrics_guard.get_mut(&node.id) {
-                if now.duration_since(m.last_heartbeat) >= m.heartbeat_timeout {
-                    if m.status != NodeStatus::Failed {
-                        m.status = NodeStatus::Failed;
+        for node in self.cluster.nodes_snapshot().iter() {
+            if self.cluster.check_heartbeat_timeout(&node.id) {
+                if let Some(metrics) = self.cluster.get_metrics(&node.id) {
+                    // Any node whose heartbeat has timed out should be marked
+                    // Failed, not just ones currently Active. This used to
+                    // check `status == Active`, so a node already marked
+                    // Degraded (e.g. by NetworkHealthMonitor) that then went
+                    // completely silent would never be detected as failed
+                    // here, and would never be reported in `failed_nodes`.
+                    if metrics.status != NodeStatus::Failed {
+                        self.cluster.mark_failed(&node.id);
                         failed_nodes.push(node.id.clone());
                     }
+                } else {
+                    // No metrics for this node - mark as failed
+                    self.cluster.mark_failed(&node.id);
+                    failed_nodes.push(node.id.clone());
                 }
-            } else {
-                // No metrics for this node - mark as failed
-                failed_nodes.push(node.id.clone());
             }
         }
 
