@@ -2,8 +2,24 @@ import { render, screen, fireEvent } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { AlertCircle, Inbox, Plus } from 'lucide-react';
 import { EmptyState, ErrorPanel, LoadingState } from './StatusViews';
+import { HealthPanel } from './HealthPanel';
 
 describe('StatusViews', () => {
+  it('renders HealthPanel with accessible Re-probe button attributes', async () => {
+    const mockApi = {
+      getHealth: vi.fn().mockResolvedValue({ success: true }),
+      getModels: vi.fn().mockResolvedValue({ models: [], current_model: 'llama-3' }),
+      getInferenceEngines: vi.fn().mockResolvedValue({ engines: [] }),
+      setApiKey: vi.fn(),
+    };
+
+    render(<HealthPanel api={mockApi as any} />);
+
+    const reprobeButton = await screen.findByRole('button', { name: /re-run health probes/i });
+    expect(reprobeButton).toBeInTheDocument();
+    expect(reprobeButton).toHaveAttribute('aria-label', 'Re-run health probes');
+    expect(reprobeButton).toHaveAttribute('aria-busy', 'false');
+  });
   it('renders LoadingState with correct ARIA attributes and motion-safe spin class', () => {
     render(<LoadingState label="Fetching models..." />);
     const statusEl = screen.getByRole('status');
