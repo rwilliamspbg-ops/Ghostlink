@@ -59,7 +59,7 @@ Route workloads across CPU, GPU, and NPU resources with explicit scheduling, har
   a request automatically splits across it via llama.cpp's own RPC backend —
   zero-config, no manual `--rpc` flags
 - Hardware-aware placement across mixed compute environments (CPU, GPU, NPU)
-- SPSC ring-buffer transport with spin-wait for sub-microsecond handoff
+- SPSC ring-buffer transport with spin-wait for sub-microsecond handoff (transport and latency research; real distributed inference uses llama.cpp's `ggml-rpc`)
 - TCP and Unix domain socket transport for multi-process pipelines
 - Session-level authentication on transport frames
 - Dynamic system profile watching with auto-tuning cache
@@ -257,8 +257,10 @@ these ran one after another with no shared state between them.
 
 ## Performance
 
-Sub-microsecond core primitives drive Ghostlink's distributed inference fabric. Benchmarks
+Sub-microsecond core primitives drive Ghostlink's transport and latency research layer. Benchmarks
 run on an **Intel i7-14700K (Linux/WSL2)** with `RUSTFLAGS="-C target-cpu=native"`.
+
+*Note: Real distributed LLM inference (`/v1/chat/completions`) uses llama.cpp's `ggml-rpc` tensor splitting. The zero-copy SPSC ring buffers and `flow` pipelines benchmarked below serve as transport and latency research components, and `/v1/chat/completions` does not run on `ghost-link flow`.*
 
 ### Microbenchmarks
 
@@ -400,11 +402,12 @@ cargo run -p ghost-link -- dashboard
 ### API Endpoints
 
 Every route below except `/health` requires `Authorization: Bearer <token>` —
-either the API key printed once at server startup (also saved to
-`api_key.txt`), or a short-lived JWT exchanged for it via
-`POST /api/security/jwt/refresh`. See [docs/API_REFERENCE.md](docs/API_REFERENCE.md)
-for full request/response examples and [docs/openapi.yaml](docs/openapi.yaml)
-for a machine-readable spec.
+either an API key printed once at server startup (saved to `api_key.txt`),
+or a short-lived JWT exchanged for it via `POST /api/security/jwt/refresh`.
+API keys carry role-based access permissions (`Admin`, `Operator`, or `Viewer`)
+for single-operator access control. Full multi-user / multi-tenant RBAC remains an open roadmap item.
+See [docs/API_REFERENCE.md](docs/API_REFERENCE.md) for full request/response examples
+and [docs/openapi.yaml](docs/openapi.yaml) for a machine-readable spec.
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
@@ -424,6 +427,7 @@ for a machine-readable spec.
 | `/api/inference/chat` | POST | Chat completion |
 | `/api/models/partial` | GET | List interrupted downloads (`.gguf.part` files) |
 | `/api/models/partial/discard` | POST | Delete an interrupted download |
+| `/api/security/keys` | GET / POST / DELETE | Manage API keys and role assignments (`Admin`-gated) |
 | `/api/security/jwt/refresh` | POST | Exchange the API key for a short-lived JWT |
 | `/api/security/pqc/state` | GET | Whether this running server is serving HTTPS/PQC-hybrid TLS |
 | `/api/security/pqc/enable` | POST | Persist `enable_tls: true` (takes effect on next restart) |
@@ -599,6 +603,8 @@ CI enforces the same checks across Ubuntu, Windows, and macOS.
 ## Project Status
 
 Ghostlink is positioned as a launch-ready open-source foundation with a strong demo story and public-facing collateral.
+
+*Note: `main` branch development is ahead of the last tagged release (`v2.0.0`).*
 
 Current strengths:
 - a working local launch path for experimentation and demos,

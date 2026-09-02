@@ -15,7 +15,7 @@ This document summarizes current security assumptions for Ghost-Link runtime and
 - Versioned discovery-frame authentication using HMAC-SHA256 with timestamp and nonce replay guards.
 - Optional transport auth token controls for TCP flow runs.
 - GUI readiness diagnostics and environment preflight checks.
-- **RBAC with scoped, revocable API keys** (since 2.0.0, `crates/ghost-link/src/auth.rs`):
+- **Role-based API key access control** (since 2.0.0, `crates/ghost-link/src/auth.rs`):
   a persisted, hashed multi-key store (`api_keys.json` — SHA-256 hash + last-4
   preview only, the raw key value is never stored) replaces a single shared
   bearer token. Each key carries a role — `Admin`, `Operator`, or `Viewer` —
@@ -30,7 +30,7 @@ This document summarizes current security assumptions for Ghost-Link runtime and
   `jwt_signing_secret` (`jwt_secret.txt`, `GHOSTLINK_JWT_SECRET_PATH`
   override) rather than the raw API key, and a JWT is only honored while its
   subject key id is still present in the store — revoking a key immediately
-  invalidates any outstanding JWT for it. See [API_REFERENCE.md](API_REFERENCE.md).
+  invalidates any outstanding JWT for it. *Note: this provides role-based API key authorization for operator access control (`Admin`, `Operator`, `Viewer`), but does not provide full multi-user / multi-tenant RBAC (user identities, team/project scoping, per-resource permissions).* See [API_REFERENCE.md](API_REFERENCE.md).
 - **Real bearer-token auth on every API route but `/health`** (since 1.11.0):
   a 256-bit API key generated once on first run, or a short-lived JWT
   (`jsonwebtoken`, HS256) exchanged for it via `POST /api/security/jwt/refresh`.

@@ -7,7 +7,7 @@ model management and worker discovery) see the table in
 machine-readable spec of the routes documented here, see
 [openapi.yaml](openapi.yaml).
 
-## Authentication
+## Authentication & Key Roles
 
 Every route except `/health` requires a bearer token:
 
@@ -17,12 +17,18 @@ Authorization: Bearer <token>
 
 On first run, the server generates a 256-bit API key, persists it to
 `api_key.txt` (or the path in `GHOSTLINK_API_KEY_PATH`), and prints it once
-to the console — that printout is the only way to learn it, since no API
-response ever returns it. Two kinds of token are accepted:
+to the console — that initial key carries the `Admin` role.
 
+The server enforces **role-based API key access control** (`crates/ghost-link/src/auth.rs`):
+- **`Admin`**: Full system administration. Can manage API keys (`/api/security/keys`), enable PQC TLS, and export audit logs.
+- **`Operator`**: Full operational capability. Can load/unload models, submit inference requests (`/v1/chat/completions`), and edit workspace files.
+- **`Viewer`**: Read-only inspection. Can view health, metrics, cluster status, audit logs, and exchange valid keys for JWTs.
+
+*Note: Role gating applies to API keys for operator access control; full multi-user / multi-tenant RBAC (user accounts, team namespacing, resource isolation) is not implemented.*
+
+Two kinds of token are accepted:
 1. **The raw API key itself** — simplest for a script or `curl`.
-2. **A short-lived JWT** (1 hour, HS256) exchanged for the API key via
-   `POST /api/security/jwt/refresh`.
+2. **A short-lived JWT** (1 hour, HS256) exchanged for a valid key via `POST /api/security/jwt/refresh`.
 
 A request with no token, an expired JWT, or a wrong value gets `401`:
 
@@ -65,6 +71,12 @@ curl http://127.0.0.1:8000/api/security/pqc/state \
   "note": "TLS is not active on this server (plain HTTP) — no key exchange is happening. Enable via POST /api/security/pqc/enable and restart."
 }
 ```
+
+### Key Management (`Admin`-gated)
+
+- `GET /api/security/keys`: List all active API keys (returns ID, name, role, created timestamp, and last 4 chars preview).
+- `POST /api/security/keys`: Create a new key (body: `{"name": "ci-bot", "role": "Operator"}`). Returns newly generated raw key once.
+- `DELETE /api/security/keys/:id`: Revoke a key by ID (immediately invalidating any outstanding JWTs for it). Refuses to delete the last remaining `Admin` key.
 
 ### Audit log
 

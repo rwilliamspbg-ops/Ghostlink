@@ -106,8 +106,7 @@ ROADMAP.md and SECURITY_MODEL.md already name honestly:
    inference requests. Wiring it to actually record auth failures, admin
    actions, and config changes is cheap relative to its trust payoff —
    prioritize it ahead of most Horizon 2 items.
-2. **RBAC / scoped multi-user API keys** — today's model is effectively
-   single-operator (one API key or JWT per instance). Any team deployment
+2. **Multi-user / multi-tenant RBAC** — today's model is role-based API key access control (`Admin`, `Operator`, `Viewer` roles on API keys in `auth.rs`), but lacks full multi-user identity management or team/project scoping. Any team deployment
    needs per-user scoped keys before it's a credible "team" or "enterprise"
    story, not just a home-lab one.
 3. **mTLS for fabric/node-to-node transport** (SECURITY_MODEL.md Roadmap

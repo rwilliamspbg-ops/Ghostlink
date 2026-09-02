@@ -6,6 +6,13 @@ All notable changes to Ghostlink Studio are documented here.
 
 ## [Unreleased]
 
+### Documentation & Truth Alignment
+
+- **Version Badge & Development Note**: Clarified that `main` branch development is ahead of the last tagged release (`v2.0.0`) and aligned version badge claims in `README.md`.
+- **Distributed Inference vs Research Pipelines**: Clarified in `README.md` that production OpenAI-compatible endpoints (`/v1/chat/completions`) run via llama.cpp's `ggml-rpc` tensor splitting, while zero-copy SPSC ring buffers and `flow` pipelines serve as transport/latency research components.
+- **Role-Based API Key Access Control Reconciliation**: Updated `README.md`, `docs/SECURITY_MODEL.md`, `docs/ROADMAP.md`, `docs/ENTERPRISE_PLAN.md`, and `docs/API_REFERENCE.md` to precisely distinguish role-based API key access control (`Admin`, `Operator`, `Viewer` roles on API keys in `crates/ghost-link/src/auth.rs`) from full multi-user / multi-tenant RBAC (user identities, team/project scoping, per-resource permissions).
+- **Current Truth Callouts**: Added 'Current truth' callout boxes to `docs/ROADMAP.md` and `docs/BENCHMARKS.md` documenting verified capabilities (30B model capacity split across nodes) vs unproven/in-progress capabilities (usable high tok/s and zero-touch one-command cluster setup).
+
 ## [2.1.0] - 2026-08-18
 
 ### Phase 6: Polish and Consistency Pass (Single Source of Truth, Port Alignment & Command Palette)
