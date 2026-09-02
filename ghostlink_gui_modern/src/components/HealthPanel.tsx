@@ -120,10 +120,12 @@ export const HealthPanel: React.FC<HealthPanelProps> = ({ api, onNavigateToTab }
         <button
           onClick={runProbes}
           disabled={probing}
+          aria-label={probing ? 'Probing system health...' : 'Re-run health probes'}
+          aria-busy={probing}
           className="flex items-center gap-2 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white rounded-lg text-xs font-bold transition disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
           title="Re-run health probes"
         >
-          <RefreshCw size={14} className={probing ? 'animate-spin' : ''} />
+          <RefreshCw size={14} className={probing ? 'animate-spin' : ''} aria-hidden="true" />
           {probing ? 'Probing...' : 'Re-probe'}
         </button>
       </div>
