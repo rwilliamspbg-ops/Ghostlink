@@ -221,7 +221,8 @@ impl NetworkHealthMonitor {
             let tcp_probe_ok = probe_results.get(&node.id).copied();
 
             let result = if let Some(m) = metrics_guard.get_mut(&node.id) {
-                let timeout = now.saturating_duration_since(m.last_heartbeat) >= m.heartbeat_timeout;
+                let timeout =
+                    now.saturating_duration_since(m.last_heartbeat) >= m.heartbeat_timeout;
                 let latency_us = if m.latency_samples > 0 {
                     m.avg_latency_us
                 } else {
