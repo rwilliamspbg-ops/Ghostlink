@@ -2199,6 +2199,10 @@ fn build_cluster_topology_json(
                     "allowlist_status": eval.allowlist_status,
                     "role": eval.role,
                     "excluded_reason": eval.excluded_reason,
+                    "rpc_child_pid": if is_local { rpc_cluster::get_rpc_supervisor_info().pid } else { None },
+                    "rpc_child_restarts": if is_local { Some(rpc_cluster::get_rpc_supervisor_info().restart_count) } else { None },
+                    "rpc_child_status": if is_local { Some(if rpc_cluster::get_rpc_supervisor_info().is_healthy { "running".to_string() } else { "stopped".to_string() }) } else { None },
+                    "rpc_child_last_exit": if is_local { rpc_cluster::get_rpc_supervisor_info().last_exit_status } else { None },
                 })
             })
             .collect::<Vec<_>>();
@@ -9094,7 +9098,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             );
         });
     }
-    let advertised_node = if settings.contribute_compute {
+    let advertised_node = if settings.contribute_compute && rpc_cluster::is_contributing_healthy() {
         let mut node = profile
             .node_resources
             .clone()

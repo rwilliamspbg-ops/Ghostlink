@@ -6,6 +6,7 @@ All notable changes to Ghostlink Studio are documented here.
 
 ## [Unreleased]
 
+- **Supervised `ggml-rpc-server` Child Process & Dead Contributor Revocation**: `rpc_cluster::ensure_contributing()` now supervises the `ggml-rpc-server` child process with bounded exponential backoff (1s to 30s, capped at 10 consecutive restarts) and double-bind / zombie process cleanup. A node advertises `contribute_compute` over UDP/mDNS discovery and cluster map topology APIs *only* while its `ggml-rpc-server` child process is running AND listening on its RPC port. If the child process crashes (e.g. KV-cache OOM or backend panic), discovery advertisement is revoked immediately and cluster topology displays `contribute_compute: false` with `excluded_reason: "rpc child not running"`, plus optional supervisor fields (`rpc_child_pid`, `rpc_child_restarts`, `rpc_child_status`, `rpc_child_last_exit`).
 ### Documentation & Truth Alignment
 
 - **Version Badge & Development Note**: Clarified that `main` branch development is ahead of the last tagged release (`v2.0.0`) and aligned version badge claims in `README.md`.
