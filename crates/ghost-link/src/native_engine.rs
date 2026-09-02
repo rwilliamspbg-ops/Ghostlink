@@ -652,7 +652,17 @@ impl NativeEngineClient {
     /// `GHOSTLINK_MODEL_READY_TIMEOUT_SECS`, when set to a valid positive
     /// integer, overrides either default so an operator can tune this
     /// further without a rebuild.
-    fn model_ready_timeout_secs(args: &[String]) -> u64 {
+    /// Calculates model-ready timeout in seconds dynamically based on model size (GB),
+    /// RPC peer count, and whether distributed inference (--rpc) is active.
+    ///
+    /// Formula:
+    ///   base = 90s (floor)
+    ///   size_component = floor(model_size_gb * 15s)
+    ///   peer_component = peer_count * 60s (if --rpc present)
+    ///   timeout = clamp(base + size_component + peer_component, 90s, 1800s)
+    ///
+    /// `GHOSTLINK_MODEL_READY_TIMEOUT_SECS` explicitly overrides this calculation.
+    pub fn compute_model_ready_timeout(args: &[String], model_size_gb: f32) -> u64 {
         if let Ok(val) = std::env::var("GHOSTLINK_MODEL_READY_TIMEOUT_SECS") {
             if let Ok(n) = val.trim().parse::<u64>() {
                 if n > 0 {
@@ -660,12 +670,28 @@ impl NativeEngineClient {
                 }
             }
         }
+
         let is_distributed = args.iter().any(|a| a == "--rpc");
-        if is_distributed {
-            600
+        let peer_count = if is_distributed {
+            args.iter()
+                .position(|a| a == "--rpc")
+                .and_then(|idx| args.get(idx + 1))
+                .map(|val| val.split(',').filter(|s| !s.trim().is_empty()).count())
+                .unwrap_or(1)
         } else {
-            90
-        }
+            0
+        };
+
+        let base_secs: u64 = 90;
+        let size_add: u64 = (model_size_gb.max(0.0) * 15.0) as u64;
+        let peer_add: u64 = (peer_count as u64) * 60;
+
+        let total = base_secs.saturating_add(size_add).saturating_add(peer_add);
+        total.clamp(90, 1800)
+    }
+
+    fn model_ready_timeout_secs(args: &[String]) -> u64 {
+        Self::compute_model_ready_timeout(args, 0.0)
     }
 
     /// Wait for llama-server to become ready. Polls `child`'s exit status
@@ -973,7 +999,7 @@ impl NativeEngineClient {
                 staging_child.id()
             );
 
-            let staging_timeout_secs = Self::model_ready_timeout_secs(args);
+            let staging_timeout_secs = Self::compute_model_ready_timeout(args, model_size_gb);
             let staged_ready = rt.block_on(Self::wait_for_llama_server_ready(
                 &staging_url,
                 staging_timeout_secs,
@@ -1020,7 +1046,7 @@ impl NativeEngineClient {
         let pid = child.id();
         eprintln!("[model-load] Started llama-server with PID: {pid}");
 
-        let final_timeout_secs = Self::model_ready_timeout_secs(winning_args);
+        let final_timeout_secs = Self::compute_model_ready_timeout(winning_args, model_size_gb);
         let ready = rt.block_on(Self::wait_for_llama_server_ready(
             &base_url,
             final_timeout_secs,
@@ -1828,7 +1854,7 @@ mod tests {
     }
 
     #[test]
-    fn model_ready_timeout_uses_600s_when_rpc_flag_present() {
+    fn model_ready_timeout_scales_with_rpc_flag_and_peers() {
         let _guard = env_lock().lock().expect("env lock poisoned");
         std::env::remove_var("GHOSTLINK_MODEL_READY_TIMEOUT_SECS");
         let args = vec![
@@ -1837,7 +1863,16 @@ mod tests {
             "-ts".to_string(),
             "3.9990,0.1000".to_string(),
         ];
-        assert_eq!(NativeEngineClient::model_ready_timeout_secs(&args), 600);
+        // 90s base + 1 peer * 60s = 150s for 0GB model size
+        assert_eq!(
+            NativeEngineClient::compute_model_ready_timeout(&args, 0.0),
+            150
+        );
+        // 90s base + 10GB * 15s + 1 peer * 60s = 300s for 10GB model size
+        assert_eq!(
+            NativeEngineClient::compute_model_ready_timeout(&args, 10.0),
+            300
+        );
     }
 
     #[test]
@@ -2527,5 +2562,52 @@ mod tests {
         );
 
         *handle.lock().expect("process handle lock poisoned") = None;
+    }
+    #[test]
+    fn model_ready_timeout_scales_with_model_size_and_peers() {
+        let _guard = env_lock().lock().expect("env lock poisoned");
+        std::env::remove_var("GHOSTLINK_MODEL_READY_TIMEOUT_SECS");
+
+        let args_single: Vec<String> = vec![];
+        // 0GB model -> 90s base
+        assert_eq!(
+            NativeEngineClient::compute_model_ready_timeout(&args_single, 0.0),
+            90
+        );
+        // 10GB model -> 90s + 150s = 240s
+        assert_eq!(
+            NativeEngineClient::compute_model_ready_timeout(&args_single, 10.0),
+            240
+        );
+
+        let args_dist = vec![
+            "--rpc".to_string(),
+            "10.0.0.1:50052,10.0.0.2:50052".to_string(),
+        ];
+        // 10GB model + 2 peers -> 90s + 150s + 120s = 360s
+        assert_eq!(
+            NativeEngineClient::compute_model_ready_timeout(&args_dist, 10.0),
+            360
+        );
+    }
+
+    #[test]
+    fn model_ready_timeout_respects_floor_and_cap() {
+        let _guard = env_lock().lock().expect("env lock poisoned");
+        std::env::remove_var("GHOSTLINK_MODEL_READY_TIMEOUT_SECS");
+
+        let args_single: Vec<String> = vec![];
+        // Floor test: negative or 0GB model -> 90s
+        assert_eq!(
+            NativeEngineClient::compute_model_ready_timeout(&args_single, -5.0),
+            90
+        );
+
+        // Cap test: 200GB model + 50 peers -> capped at 1800s
+        let args_huge = vec!["--rpc".to_string(), "host1:1,host2:2,host3:3".to_string()];
+        assert_eq!(
+            NativeEngineClient::compute_model_ready_timeout(&args_huge, 200.0),
+            1800
+        );
     }
 }

@@ -283,3 +283,6 @@ resp = client.chat.completions.create(
     messages=[{"role": "user", "content": "Say hi in five words."}],
 )
 ```
+
+- `distributed_inference` (bool): Enable cross-machine RPC tensor splitting.
+- `require_cluster_offload` (bool): When true, fail model load if offload is a no-op (-ngl == 0 or remote share < 1%) instead of falling back to single-node.

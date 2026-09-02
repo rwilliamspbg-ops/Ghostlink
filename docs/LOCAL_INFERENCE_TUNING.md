@@ -203,3 +203,26 @@ Windows launch model.
 # Or inspect the model-load log line from ghost-link:
 #   [model-load] Command: ... -fa on -b 1024 -ub 512 ...
 ```
+
+
+## Distributed Offload Thresholds & Model-Ready Timeout Scaling
+
+### Distributed Offload Guard
+When `distributed_inference: true` is set, Ghostlink checks if the distributed launch is meaningful before attaching `--rpc` and `-ts` flags:
+- **-ngl > 0**: If `-ngl` is set to `0` (CPU-only), model layers stay on the coordinator and no layers leave for remote RPC peers.
+- **Remote Share >= 1%**: If calculated remote tensor split share is below 1% (`MIN_REMOTE_SHARE_THRESHOLD = 0.01`), RPC communication overhead outweighs any offload benefit.
+
+When either condition fails:
+- Ghostlink logs a warning (`tracing::warn!`), sets `distributed_active: false` in the placement plan, and populates `summary_text` with an explicit explanation.
+- By default, Ghostlink falls back to single-node local execution so inference succeeds.
+- If `GHOSTLINK_REQUIRE_CLUSTER_OFFLOAD=1` or `require_cluster_offload: true` in settings, Ghostlink fails the load outright with a 400 error.
+
+### Model-Ready Timeout Scaling
+Cross-machine RPC model loads take significantly longer than single-node loads, scaling with model file size and peer count.
+
+Ghostlink dynamically calculates the `llama-server` model-ready timeout as:
+$$\text{timeout\_secs} = \text{clamp}(90\text{s (floor)} + (\text{model\_size\_gb} \times 15\text{s}) + (\text{peer\_count} \times 60\text{s}), 90\text{s}, 1800\text{s})$$
+
+- **Floor**: 90s minimum.
+- **Cap**: 1800s (30 minutes) maximum.
+- **Override**: Set `GHOSTLINK_MODEL_READY_TIMEOUT_SECS=<seconds>` to force a specific timeout.
