@@ -221,7 +221,7 @@ impl NetworkHealthMonitor {
             let tcp_probe_ok = probe_results.get(&node.id).copied();
 
             let result = if let Some(m) = metrics_guard.get_mut(&node.id) {
-                let timeout = now.duration_since(m.last_heartbeat) >= m.heartbeat_timeout;
+                let timeout = now.saturating_duration_since(m.last_heartbeat) >= m.heartbeat_timeout;
                 let latency_us = if m.latency_samples > 0 {
                     m.avg_latency_us
                 } else {
@@ -571,27 +571,49 @@ impl FaultDetector {
     }
 
     /// Detect failed nodes based on heartbeat timeouts
+    ///
+    /// OPTIMIZATION: Acquires the cluster metrics lock once and mutates status in-place
+    /// instead of acquiring locks repeatedly (up to 3N times) and deep-cloning `NodeMetrics`
+    /// (including heap-allocated latency history vectors) on every node check.
     pub fn detect_failures(&self) -> Vec<String> {
-        let mut failed_nodes: Vec<String> = Vec::new();
+        let nodes_snapshot = self.cluster.nodes_snapshot();
+        let now = Instant::now();
+        let mut failed_nodes = Vec::new();
 
-        for node in self.cluster.nodes_snapshot().iter() {
-            if self.cluster.check_heartbeat_timeout(&node.id) {
-                if let Some(metrics) = self.cluster.get_metrics(&node.id) {
+        let mut metrics = self
+            .cluster
+            .metrics
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+
+        for node in nodes_snapshot.iter() {
+            if let Some(m) = metrics.get_mut(&node.id) {
+                if now.saturating_duration_since(m.last_heartbeat) >= m.heartbeat_timeout {
                     // Any node whose heartbeat has timed out should be marked
                     // Failed, not just ones currently Active. This used to
                     // check `status == Active`, so a node already marked
                     // Degraded (e.g. by NetworkHealthMonitor) that then went
                     // completely silent would never be detected as failed
                     // here, and would never be reported in `failed_nodes`.
-                    if metrics.status != NodeStatus::Failed {
-                        self.cluster.mark_failed(&node.id);
+                    if m.status != NodeStatus::Failed {
+                        m.status = NodeStatus::Failed;
                         failed_nodes.push(node.id.clone());
                     }
-                } else {
-                    // No metrics for this node - mark as failed
-                    self.cluster.mark_failed(&node.id);
-                    failed_nodes.push(node.id.clone());
                 }
+            } else {
+                // No metrics for this node - insert entry with Failed status so
+                // it is only reported once on initial failure detection.
+                let mut m = crate::cluster::NodeMetrics::new(
+                    node.vram_gb,
+                    node.system_memory_gb,
+                    node.compute_capability.clone(),
+                    Duration::from_secs(5),
+                );
+                m.name = node.id.clone();
+                m.gpu_name = node.gpu_name.clone();
+                m.status = NodeStatus::Failed;
+                metrics.insert(node.id.clone(), m);
+                failed_nodes.push(node.id.clone());
             }
         }
 
