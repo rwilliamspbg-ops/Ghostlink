@@ -1295,6 +1295,31 @@ pub fn tensor_split_flag_value(split: &[f32]) -> String {
         .join(",")
 }
 
+/// Minimum required aggregate remote split share (1%) for a load to be treated as distributed.
+pub const MIN_REMOTE_SHARE_THRESHOLD: f32 = 0.01;
+
+/// Validates whether a computed tensor split and effective -ngl qualify for distributed offload.
+/// Returns Ok(()) if valid, or Err(warning_reason) if invalid.
+pub fn validate_distributed_offload(ngl: i32, tensor_splits: &[f32]) -> Result<(), String> {
+    if ngl == 0 {
+        return Err("distributed_inference is enabled but effective -ngl is 0 (CPU-only), so no layers leave the coordinator".to_string());
+    }
+    let total_weight: f32 = tensor_splits.iter().sum();
+    if total_weight <= 0.0 {
+        return Err("distributed_inference tensor split total weight is zero".to_string());
+    }
+    let remote_weight: f32 = tensor_splits.iter().skip(1).sum();
+    let remote_share = remote_weight / total_weight;
+    if remote_share < MIN_REMOTE_SHARE_THRESHOLD {
+        return Err(format!(
+            "remote tensor share ({:.4}%) is below the {:.1}% minimum threshold for distributed offload",
+            remote_share * 100.0,
+            MIN_REMOTE_SHARE_THRESHOLD * 100.0
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2086,5 +2111,29 @@ mod tests {
             eval.excluded_reason,
             Some("rpc child not running".to_string())
         );
+    }
+    #[test]
+    fn validate_distributed_offload_rejects_ngl_zero() {
+        let split = vec![0.8, 0.2];
+        let res = validate_distributed_offload(0, &split);
+        assert!(res.is_err());
+        assert!(res.unwrap_err().contains("-ngl is 0"));
+    }
+
+    #[test]
+    fn validate_distributed_offload_rejects_tiny_remote_share() {
+        let split = vec![999.0, 1.0]; // 1 / 1000 = 0.1% remote share (< 1% threshold)
+        let res = validate_distributed_offload(30, &split);
+        assert!(res.is_err());
+        assert!(res
+            .unwrap_err()
+            .contains("below the 1.0% minimum threshold"));
+    }
+
+    #[test]
+    fn validate_distributed_offload_accepts_valid_remote_share() {
+        let split = vec![80.0, 20.0]; // 20% remote share
+        let res = validate_distributed_offload(30, &split);
+        assert!(res.is_ok());
     }
 }

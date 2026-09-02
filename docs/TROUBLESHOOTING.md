@@ -67,3 +67,14 @@ hour regardless).
 - **Exponential Moving Average (EMA)**: The dashboard "Throughput" gauge displays an EMA across active inference turns (`0.65` prior EMA + `0.35` new sample).
 - **Zero-Token & Error Filtering**: Stream cancellations, failed requests, or 0-token generations are excluded from EMA calculations so they do not drag performance graphs down to zero.
 - **Unit Reconciliation**: Both `/api/metrics` and `ChatTab` live stream `tok/s` use standard tokens-per-second (`tok/s`). Fabric node throughput graphs remain on internal GB/s or k-token scales without affecting client GUI metrics.
+
+### Distributed Offload Fallback or No-Op Warning
+- **Symptom:** Placement plan summary states `Single-machine inference on local node ... (Distributed offload warning: ...)` despite `distributed_inference` being enabled.
+- **Cause 1:** `-ngl` is set to 0 (CPU-only), so no layers leave the coordinator.
+- **Cause 2:** Remote tensor split share is below 1%, meaning remote peer VRAM/RAM is negligible relative to local node capacity.
+- **Fix:** Set `-ngl` > 0 (or leave `ngl_auto: true`), and ensure remote peer nodes have sufficient VRAM/RAM for > 1% share. If strict cluster offload is required, set `GHOSTLINK_REQUIRE_CLUSTER_OFFLOAD=1` in the environment.
+
+### Model-Ready Timeout During Cross-Machine Load
+- **Symptom:** `llama-server` load times out waiting for `/health` during large model loads across multiple RPC nodes.
+- **Cause:** Large GGUF file distribution and tensor initialization across slow network links exceeds the calculated timeout.
+- **Fix:** Increase the timeout via `GHOSTLINK_MODEL_READY_TIMEOUT_SECS=1200` (or higher up to 1800s).

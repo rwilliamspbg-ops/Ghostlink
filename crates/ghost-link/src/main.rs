@@ -1890,6 +1890,10 @@ struct RuntimeSettings {
     /// deserialize.
     #[serde(default)]
     rpc_shared_secret: String,
+    /// When true, any distributed inference load where -ngl == 0 or remote share is below
+    /// threshold will return a hard load error rather than warning and falling back to single-node.
+    #[serde(default)]
+    require_cluster_offload: bool,
 
     // -- Model-load performance tuning (GUI "Model Performance" section) --
     //
@@ -2008,6 +2012,9 @@ fn apply_native_engine_tuning_env(settings: &RuntimeSettings) {
     if let Some(no_mmap) = settings.no_mmap {
         std::env::set_var("GHOSTLINK_NO_MMAP", if no_mmap { "1" } else { "0" });
     }
+    if settings.require_cluster_offload {
+        std::env::set_var("GHOSTLINK_REQUIRE_CLUSTER_OFFLOAD", "1");
+    }
 }
 
 fn default_rpc_port() -> u16 {
@@ -2080,6 +2087,7 @@ impl Default for RuntimeSettings {
             rpc_port: default_rpc_port(),
             rpc_allowed_peers: Vec::new(),
             rpc_shared_secret: String::new(),
+            require_cluster_offload: false,
             ngl_auto: true,
             ctx_size_auto: true,
             threads_auto: true,
@@ -2248,6 +2256,8 @@ fn build_cluster_topology_json(
         if settings.distributed_inference && !active_rpc_peers.is_empty() {
             let splits =
                 rpc_cluster::compute_tensor_split(local_vram, local_ram, &active_rpc_peers);
+            let validation = rpc_cluster::validate_distributed_offload(settings.ngl, &splits);
+            let is_valid_dist = validation.is_ok();
             let total_weight: f32 = splits.iter().sum();
             let mut node_splits = Vec::new();
 
@@ -2299,19 +2309,27 @@ fn build_cluster_topology_json(
                 })
                 .collect();
 
-            let summary_text = format!(
-                "Model {} with distributed on: split {}.",
-                current_model,
-                parts.join(", ")
-            );
+            let summary_text = if is_valid_dist {
+                format!(
+                    "Model {} with distributed on: split {}.",
+                    current_model,
+                    parts.join(", ")
+                )
+            } else {
+                let warn_reason = validation.unwrap_err();
+                format!(
+                    "Single-machine inference on local node for {} (Distributed offload warning: {}).",
+                    current_model, warn_reason
+                )
+            };
 
             serde_json::json!({
-                "distributed_active": true,
+                "distributed_active": is_valid_dist,
                 "has_plan": true,
                 "model_name": current_model,
                 "summary_text": summary_text,
                 "tensor_splits": node_splits,
-                "rpc_hosts": rpc_hosts,
+                "rpc_hosts": if is_valid_dist { rpc_hosts } else { Vec::new() },
             })
         } else {
             serde_json::json!({
@@ -5413,13 +5431,17 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         // qualifying peers, or (once `rpc_shared_secret` is set) every peer
         // fails the handshake — all of which reproduce single-node
         // behavior exactly.
-        let (rpc_servers, tensor_split) = async {
-            let (peers, local_vram, local_system_memory, shared_secret) = {
+        let (rpc_servers, tensor_split, dist_warning, require_offload) = async {
+            let (
+                peers,
+                local_vram,
+                local_system_memory,
+                shared_secret,
+                effective_ngl,
+                require_offload,
+            ) = {
                 let backend = lock_state(&state);
                 if backend.settings.distributed_inference {
-                    if backend.settings.ngl == 0 {
-                        tracing::warn!("distributed_inference is enabled but effective -ngl is 0 (CPU-only), offloading to GPU RPC peers will be limited or inactive");
-                    }
                     let local_build_id = native_engine::NativeEngineClient::get_llama_build_id();
                     let peers = rpc_cluster::discover_rpc_peers(
                         &backend.cluster,
@@ -5432,14 +5454,21 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                         .as_ref()
                         .map(|m| m.system_memory_gb)
                         .unwrap_or(0.0);
+                    let effective_ngl = backend.settings.ngl;
+                    let require_offload = backend.settings.require_cluster_offload
+                        || std::env::var("GHOSTLINK_REQUIRE_CLUSTER_OFFLOAD")
+                            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+                            .unwrap_or(false);
                     (
                         peers,
                         local_vram,
                         local_system_memory,
                         backend.settings.rpc_shared_secret.clone(),
+                        effective_ngl,
+                        require_offload,
                     )
                 } else {
-                    (Vec::new(), 0.0, 0.0, String::new())
+                    (Vec::new(), 0.0, 0.0, String::new(), -1, false)
                 }
             }; // <-- short-lived discovery lock dropped here, before any .await
 
@@ -5477,18 +5506,34 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             };
 
             if peers.is_empty() {
-                (None, None)
+                (None, None, None, require_offload)
             } else {
                 let split =
                     rpc_cluster::compute_tensor_split(local_vram, local_system_memory, &peers);
-                (
-                    Some(rpc_cluster::rpc_flag_value(&peers)),
-                    Some(rpc_cluster::tensor_split_flag_value(&split)),
-                )
+                match rpc_cluster::validate_distributed_offload(effective_ngl, &split) {
+                    Ok(()) => (
+                        Some(rpc_cluster::rpc_flag_value(&peers)),
+                        Some(rpc_cluster::tensor_split_flag_value(&split)),
+                        None,
+                        require_offload,
+                    ),
+                    Err(warn_msg) => {
+                        tracing::warn!("Distributed offload no-op: {warn_msg}");
+                        (None, None, Some(warn_msg), require_offload)
+                    }
+                }
             }
         }
         .instrument(tracing::info_span!("rpc_peer_discovery_and_admission"))
         .await;
+
+        if let Some(ref warn_msg) = dist_warning {
+            if require_offload {
+                return Json(serde_json::json!({
+                    "error": format!("Cluster offload required but invalid: {warn_msg}"),
+                }));
+            }
+        }
 
         // Extract model info and settings under the lock, then drop it before
         // the potentially-long blocking load_model_into_slot call.

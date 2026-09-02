@@ -6,6 +6,15 @@ All notable changes to Ghostlink Studio are documented here.
 
 ## [Unreleased]
 
+- **No-Op Distributed Offload Prevention & Warning**:
+  - When `distributed_inference: true`, if effective `-ngl` is `0` (CPU-only) or total remote tensor share is below the 1% minimum threshold (`MIN_REMOTE_SHARE_THRESHOLD = 0.01`), Ghostlink avoids passing `--rpc` and `-ts` flags to `llama-server`.
+  - Emits a structured `tracing::warn!` log and includes a clear warning note in the placement plan `summary_text` shown by the GUI (`"Single-machine inference on local node for ... (Distributed offload warning: ...)"`), setting `distributed_active: false`.
+  - Added `require_cluster_offload: bool` (`GHOSTLINK_REQUIRE_CLUSTER_OFFLOAD`) in `RuntimeSettings`: when enabled, a no-op distributed offload returns a hard load error rather than falling back to single-node.
+- **Dynamic Model-Ready Timeout Scaling**:
+  - Replaced hardcoded 90s/600s timeouts in `NativeEngineClient` with `compute_model_ready_timeout(args, model_size_gb)`:
+    $$\text{timeout} = \text{clamp}(90\text{s (floor)} + (\text{model\_size\_gb} \times 15\text{s}) + (\text{peer\_count} \times 60\text{s}), 90\text{s}, 1800\text{s})$$
+  - Fully overridable via `GHOSTLINK_MODEL_READY_TIMEOUT_SECS` env var or `RuntimeSettings`.
+
 - **Supervised `ggml-rpc-server` Child Process & Dead Contributor Revocation**: `rpc_cluster::ensure_contributing()` now supervises the `ggml-rpc-server` child process with bounded exponential backoff (1s to 30s, capped at 10 consecutive restarts) and double-bind / zombie process cleanup. A node advertises `contribute_compute` over UDP/mDNS discovery and cluster map topology APIs *only* while its `ggml-rpc-server` child process is running AND listening on its RPC port. If the child process crashes (e.g. KV-cache OOM or backend panic), discovery advertisement is revoked immediately and cluster topology displays `contribute_compute: false` with `excluded_reason: "rpc child not running"`, plus optional supervisor fields (`rpc_child_pid`, `rpc_child_restarts`, `rpc_child_status`, `rpc_child_last_exit`).
 ### Documentation & Truth Alignment
 
