@@ -1,5 +1,11 @@
 # Ghostlink: Path to Category Leadership
 
+> [!NOTE]
+> **Current truth (Verified: 2026-08-18)**
+> - **Proven:** Distributed VRAM/RAM capacity splitting across heterogeneous LAN nodes via `ggml-rpc` (e.g., loading and running a 30B-class MoE model split across nodes that individual machines cannot hold alone).
+> - **Unproven / In Progress:** High usable tokens-per-second (tok/s) throughput on network-bound split layers, and a fully automated zero-touch "one-command cluster" setup without manual network/contributor configuration.
+
+
 This is a competitive strategy document, not a task backlog. It answers one
 question: what does Ghostlink need to become the obvious choice instead of
 vLLM, Ollama, LM Studio, llama.cpp server, OpenWebUI, or a Kubernetes-based
@@ -397,7 +403,7 @@ Once Priority Zero is real and provable, these make it hard to copy.
 4. **LoRA / adapter support** in the native engine path — increasingly
    table-stakes, currently absent.
 5. **RBAC + audit logging that's actually populated.** **Status check
-   (2026-08-08): audit logging is done, RBAC is not.**
+   (2026-08-08): audit logging and API key role gating (Admin/Operator/Viewer) are done; full multi-user/multi-tenant RBAC is not.**
    `/api/security/audit-log` used to be hardcoded to always return empty;
    it's now backed by a real in-memory, capped (`AUDIT_LOG_CAP`) log of
    actual security events (failed auth, PQC/JWT actions, tool-call
@@ -481,7 +487,7 @@ speculative gold-plating.
 1. **Scoped API keys / RBAC** — teams/projects namespacing, least-privilege
    MCP tool access, model-level permissions. This *is* Horizon 2 item 5's
    remaining piece, not a new item; sequencing note below. **Status check
-   (2026-08-15): the core (3-role RBAC) shipped.** `auth.rs` now persists a
+   (2026-08-15): the core 3-role API key access control shipped.** `auth.rs` now persists a
    hashed, multi-key store (`api_keys.json`) instead of one shared global
    key — each key carries a role (`Admin`/`Operator`/`Viewer`), checked by
    `main.rs`'s `required_role()` against every route (GET/HEAD default to

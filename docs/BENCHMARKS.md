@@ -1,5 +1,11 @@
 # Ghostlink Studio - Performance Benchmarks
 
+> [!NOTE]
+> **Current truth (Verified: 2026-08-18)**
+> - **Proven:** Distributed VRAM/RAM capacity splitting across heterogeneous LAN nodes via `ggml-rpc` (e.g., loading and running a 30B-class MoE model split across nodes that individual machines cannot hold alone).
+> - **Unproven / In Progress:** High usable tokens-per-second (tok/s) throughput on network-bound split layers, and a fully automated zero-touch "one-command cluster" setup without manual network/contributor configuration.
+
+
 ## Overview
 
 This document contains performance benchmarks for the Ghostlink Studio system, measuring throughput and latency across different configurations.
