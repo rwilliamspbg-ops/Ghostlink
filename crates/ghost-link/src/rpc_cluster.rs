@@ -75,7 +75,7 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use tokio::io::copy_bidirectional;
 use tokio::net::{TcpListener, TcpStream};
@@ -189,12 +189,186 @@ const RPC_PEER_MIN_DELIVERY_RATIO: f32 = 0.90;
 /// second time.
 static RPC_ALLOWLIST_PROXY_STARTED: OnceLock<()> = OnceLock::new();
 
-static RPC_CONTRIBUTOR_PROCESS: OnceLock<Arc<Mutex<Option<Child>>>> = OnceLock::new();
+const MAX_CONSECUTIVE_RESTARTS: u32 = 10;
+const INITIAL_BACKOFF_SECS: u64 = 1;
+const MAX_BACKOFF_SECS: u64 = 30;
 
-fn contributor_handle() -> Arc<Mutex<Option<Child>>> {
-    RPC_CONTRIBUTOR_PROCESS
-        .get_or_init(|| Arc::new(Mutex::new(None)))
+#[derive(Debug)]
+pub struct RpcSupervisor {
+    child: Option<Child>,
+    pid: Option<u32>,
+    start_time: Option<SystemTime>,
+    last_exit_status: Option<String>,
+    restart_count: u32,
+    consecutive_failures: u32,
+    last_spawn_attempt: Option<Instant>,
+    last_health_check: Option<Instant>,
+    last_health_result: bool,
+    spawn_host: String,
+    spawn_port: u16,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct RpcSupervisorInfo {
+    pub pid: Option<u32>,
+    pub start_time: Option<String>,
+    pub last_exit_status: Option<String>,
+    pub restart_count: u32,
+    pub consecutive_failures: u32,
+    pub is_healthy: bool,
+}
+
+impl Default for RpcSupervisor {
+    fn default() -> Self {
+        Self {
+            child: None,
+            pid: None,
+            start_time: None,
+            last_exit_status: None,
+            restart_count: 0,
+            consecutive_failures: 0,
+            last_spawn_attempt: None,
+            last_health_check: None,
+            last_health_result: false,
+            spawn_host: "127.0.0.1".to_string(),
+            spawn_port: 50052,
+        }
+    }
+}
+
+impl RpcSupervisor {
+    pub fn check_child_status(&mut self) -> bool {
+        if let Some(child) = self.child.as_mut() {
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    let exit_str = status.to_string();
+                    tracing::warn!(
+                        "rpc_cluster: ggml-rpc-server child (PID {:?}) exited with status: {}",
+                        self.pid,
+                        exit_str
+                    );
+                    self.last_exit_status = Some(exit_str);
+                    self.child = None;
+                    self.pid = None;
+                    self.last_health_result = false;
+                    self.last_health_check = Some(Instant::now());
+                    false
+                }
+                Ok(None) => {
+                    if let Some(last_check) = self.last_health_check {
+                        if last_check.elapsed() < Duration::from_millis(500) {
+                            return self.last_health_result;
+                        }
+                    }
+
+                    let addr_str = format!("{}:{}", self.spawn_host, self.spawn_port);
+                    let healthy =
+                        if let Ok(addrs) = std::net::ToSocketAddrs::to_socket_addrs(&addr_str) {
+                            let mut ok = false;
+                            for addr in addrs {
+                                if std::net::TcpStream::connect_timeout(
+                                    &addr,
+                                    Duration::from_millis(200),
+                                )
+                                .is_ok()
+                                {
+                                    ok = true;
+                                    break;
+                                }
+                            }
+                            ok
+                        } else {
+                            false
+                        };
+
+                    if healthy {
+                        self.consecutive_failures = 0;
+                    } else {
+                        tracing::warn!(
+                            "rpc_cluster: ggml-rpc-server process (PID {:?}) running but not listening on {}:{}",
+                            self.pid,
+                            self.spawn_host,
+                            self.spawn_port
+                        );
+                    }
+                    self.last_health_check = Some(Instant::now());
+                    self.last_health_result = healthy;
+                    healthy
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        "rpc_cluster: error querying ggml-rpc-server child (PID {:?}): {}",
+                        self.pid,
+                        err
+                    );
+                    self.last_health_result = false;
+                    self.last_health_check = Some(Instant::now());
+                    false
+                }
+            }
+        } else {
+            self.last_health_result = false;
+            false
+        }
+    }
+
+    pub fn is_healthy(&mut self) -> bool {
+        self.check_child_status()
+    }
+
+    pub fn get_info(&mut self) -> RpcSupervisorInfo {
+        let healthy = self.check_child_status();
+        let start_time_str = self.start_time.map(|st| {
+            st.duration_since(SystemTime::UNIX_EPOCH)
+                .map(|d| format!("{}", d.as_secs()))
+                .unwrap_or_default()
+        });
+        RpcSupervisorInfo {
+            pid: self.pid,
+            start_time: start_time_str,
+            last_exit_status: self.last_exit_status.clone(),
+            restart_count: self.restart_count,
+            consecutive_failures: self.consecutive_failures,
+            is_healthy: healthy,
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn stop(&mut self) {
+        if let Some(mut child) = self.child.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        self.pid = None;
+        self.last_health_result = false;
+        self.last_health_check = None;
+    }
+}
+
+static RPC_SUPERVISOR: OnceLock<Arc<Mutex<RpcSupervisor>>> = OnceLock::new();
+
+fn supervisor_handle() -> Arc<Mutex<RpcSupervisor>> {
+    RPC_SUPERVISOR
+        .get_or_init(|| Arc::new(Mutex::new(RpcSupervisor::default())))
         .clone()
+}
+
+pub fn is_contributing_healthy() -> bool {
+    let handle = supervisor_handle();
+    let mut sup = match handle.lock() {
+        Ok(guard) => guard,
+        Err(p) => p.into_inner(),
+    };
+    sup.is_healthy()
+}
+
+pub fn get_rpc_supervisor_info() -> RpcSupervisorInfo {
+    let handle = supervisor_handle();
+    let mut sup = match handle.lock() {
+        Ok(guard) => guard,
+        Err(p) => p.into_inner(),
+    };
+    sup.get_info()
 }
 
 /// Resolves the `ggml-rpc-server` binary, mirroring
@@ -269,13 +443,11 @@ pub fn ensure_contributing(
     shared_secret: &str,
     rt_handle: &Handle,
 ) {
-    let handle = contributor_handle();
-    let mut guard = handle.lock().unwrap_or_else(|p| p.into_inner());
-    if let Some(child) = guard.as_mut() {
-        if matches!(child.try_wait(), Ok(None)) {
-            return; // already running
-        }
-    }
+    let handle = supervisor_handle();
+    let mut sup = match handle.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
 
     let use_proxy = !allowed_peers.is_empty() || !shared_secret.is_empty();
     let (spawn_host, spawn_port): (String, u16) = if !use_proxy {
@@ -294,6 +466,34 @@ pub fn ensure_contributing(
     };
     maybe_start_auth_port(bind_host, port, shared_secret, rt_handle);
 
+    sup.spawn_host = spawn_host.clone();
+    sup.spawn_port = spawn_port;
+
+    if sup.check_child_status() {
+        return; // already running and listening
+    }
+
+    if sup.consecutive_failures >= MAX_CONSECUTIVE_RESTARTS {
+        tracing::error!(
+            "rpc_cluster: ggml-rpc-server reached max consecutive restarts ({}); supervision paused.",
+            MAX_CONSECUTIVE_RESTARTS
+        );
+        return;
+    }
+
+    if let Some(last_attempt) = sup.last_spawn_attempt {
+        let exp_secs = INITIAL_BACKOFF_SECS.saturating_mul(1 << sup.consecutive_failures.min(5));
+        let backoff = Duration::from_secs(exp_secs.min(MAX_BACKOFF_SECS));
+        if last_attempt.elapsed() < backoff {
+            tracing::info!(
+                "rpc_cluster: backing off ggml-rpc-server restart ({:?} remaining)",
+                backoff.saturating_sub(last_attempt.elapsed())
+            );
+            return;
+        }
+    }
+
+    sup.last_spawn_attempt = Some(Instant::now());
     let bin = get_rpc_server_bin();
     if !use_proxy {
         tracing::warn!(
@@ -374,8 +574,21 @@ pub fn ensure_contributing(
         .stdin(Stdio::null())
         .spawn()
     {
-        Ok(child) => *guard = Some(child),
+        Ok(child) => {
+            sup.pid = Some(child.id());
+            sup.child = Some(child);
+            sup.start_time = Some(SystemTime::now());
+            sup.restart_count += 1;
+            sup.consecutive_failures += 1;
+            tracing::info!(
+                "rpc_cluster: spawned ggml-rpc-server (PID {:?}) on {spawn_host}:{spawn_port} (restart count {})",
+                sup.pid,
+                sup.restart_count
+            );
+        }
         Err(err) => {
+            sup.consecutive_failures += 1;
+            sup.last_exit_status = Some(format!("Spawn failed: {}", err));
             tracing::warn!(
                 "rpc_cluster: failed to start ggml-rpc-server ('{bin}'): {err}. \
                  This node will not contribute compute to the cluster."
@@ -391,13 +604,12 @@ pub fn ensure_contributing(
 /// for tests.
 #[allow(dead_code)]
 pub fn stop_contributing() {
-    let handle = contributor_handle();
-    if let Ok(mut guard) = handle.lock() {
-        if let Some(mut child) = guard.take() {
-            let _ = child.kill();
-            let _ = child.wait();
-        }
+    let handle = supervisor_handle();
+    let mut sup = match handle.lock() {
+        Ok(guard) => guard,
+        Err(p) => p.into_inner(),
     };
+    sup.stop();
 }
 
 /// Spawns the allowlist proxy exactly once per process, the first time
@@ -847,9 +1059,20 @@ pub fn evaluate_peer(
     is_used_in_rpc: bool,
 ) -> PeerEvaluation {
     if is_local {
+        let healthy = is_contributing_healthy();
+        let contribute_effective = node.rpc_port.is_some() && healthy;
+        let reason = if node.rpc_port.is_some() && !healthy {
+            Some("rpc child not running".to_string())
+        } else {
+            None
+        };
         return PeerEvaluation {
-            rpc_port: node.rpc_port,
-            contribute_compute: node.rpc_port.is_some(),
+            rpc_port: if contribute_effective {
+                node.rpc_port
+            } else {
+                None
+            },
+            contribute_compute: contribute_effective,
             build_id_status: "match".to_string(),
             secret_status: if local_secret_configured {
                 "match".to_string()
@@ -858,7 +1081,7 @@ pub fn evaluate_peer(
             },
             allowlist_status: "n/a".to_string(),
             role: "coordinator".to_string(),
-            excluded_reason: None,
+            excluded_reason: reason,
         };
     }
 
@@ -1793,5 +2016,75 @@ mod tests {
             "matching secret via the real offset-derived port must succeed"
         );
         assert!(is_admitted(&IpAddr::V4(Ipv4Addr::LOCALHOST)));
+    }
+
+    #[test]
+    fn test_rpc_supervisor_state_tracking() {
+        let mut sup = RpcSupervisor::default();
+        assert!(!sup.is_healthy(), "default supervisor is not healthy");
+        let info = sup.get_info();
+        assert_eq!(info.pid, None);
+        assert_eq!(info.restart_count, 0);
+        assert_eq!(info.consecutive_failures, 0);
+        assert!(!info.is_healthy);
+    }
+
+    #[test]
+    fn test_rpc_supervisor_spawn_and_health_check() {
+        let mut sup = RpcSupervisor::default();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        sup.spawn_host = "127.0.0.1".to_string();
+        sup.spawn_port = port;
+
+        let child = std::process::Command::new(if cfg!(windows) { "timeout" } else { "sleep" })
+            .arg("5")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+
+        sup.pid = Some(child.id());
+        sup.child = Some(child);
+        sup.start_time = Some(std::time::SystemTime::now());
+        sup.restart_count = 1;
+
+        assert!(
+            sup.check_child_status(),
+            "child should be healthy while process is running and port is listening"
+        );
+        let info = sup.get_info();
+        assert!(info.is_healthy);
+        assert_eq!(info.restart_count, 1);
+        assert_eq!(info.pid, sup.pid);
+
+        sup.stop();
+        assert!(
+            !sup.is_healthy(),
+            "supervisor should not be healthy after stop"
+        );
+        let info_stopped = sup.get_info();
+        assert_eq!(info_stopped.pid, None);
+    }
+
+    #[test]
+    fn test_evaluate_peer_marks_local_unhealthy_when_child_dead() {
+        stop_contributing();
+        let node =
+            ghostlink_core::protocol::NodeResources::new("local-test", 16.0, 32.0, "8.6", None)
+                .with_rpc_port(50052);
+        let eval = evaluate_peer(&node, None, None, false, &[], true, false);
+        assert!(
+            !eval.contribute_compute,
+            "effective contribute_compute must be false when child process is down"
+        );
+        assert_eq!(
+            eval.rpc_port, None,
+            "rpc_port must be suppressed when child is down"
+        );
+        assert_eq!(
+            eval.excluded_reason,
+            Some("rpc child not running".to_string())
+        );
     }
 }

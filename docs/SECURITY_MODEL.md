@@ -12,6 +12,7 @@ This document summarizes current security assumptions for Ghost-Link runtime and
 
 ## Current Controls
 
+- **Supervised RPC Contributor Process & Revocation on Crash**: `ggml-rpc-server` is actively supervised by `rpc_cluster::RpcSupervisor`. Process health checks verify both PID status and TCP port responsiveness. If `ggml-rpc-server` crashes or freezes, Ghostlink immediately revokes its `contribute_compute` discovery advertisements (UDP/mDNS) and flags the node as unroutable (`excluded_reason: "rpc child not running"`) until auto-restart with exponential backoff successfully restores process and port health.
 - Versioned discovery-frame authentication using HMAC-SHA256 with timestamp and nonce replay guards.
 - Optional transport auth token controls for TCP flow runs.
 - GUI readiness diagnostics and environment preflight checks.
