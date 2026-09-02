@@ -32,6 +32,7 @@ const ToastItem: React.FC<Toast> = ({ id, type, message }) => {
         onClick={() => removeToast(id)}
         className="text-current opacity-60 hover:opacity-100 transition shrink-0 rounded focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
         aria-label="Dismiss notification"
+        title="Dismiss notification"
       >
         <X size={14} aria-hidden="true" />
       </button>
@@ -47,6 +48,7 @@ export const Toaster: React.FC = () => {
     <div
       className="fixed bottom-24 right-4 z-[90] flex flex-col gap-2 w-full max-w-sm px-4 sm:px-0"
       aria-live="polite"
+      aria-label="Notifications"
     >
       {toasts.map((t) => (
         <ToastItem key={t.id} {...t} />
