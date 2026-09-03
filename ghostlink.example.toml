@@ -101,3 +101,23 @@ request_drain_timeout_secs = 30
 #   GHOSTLINK_LLAMA_SERVER_ARGS="-fa on -b 1024 -ub 512"   # ~8GB VRAM profile
 #   GHOSTLINK_VRAM_GB=8
 #   GHOSTLINK_LLAMA_NGL=40
+
+[audit]
+# Path for the durable audit log JSONL file
+# Overridden by GHOSTLINK_AUDIT_LOG_PATH
+path = "audit_log.jsonl"
+
+# Maximum size in bytes of active audit log file before rotating
+# Default: 10485760 (10 MB). Set to 0 to disable byte-based rotation.
+# Overridden by GHOSTLINK_AUDIT_LOG_MAX_BYTES
+max_bytes = 10485760
+
+# Maximum line count of active audit log file before rotating
+# Default: 0 (disabled). Set to > 0 to rotate when line count reaches limit.
+# Overridden by GHOSTLINK_AUDIT_LOG_MAX_LINES
+max_lines = 0
+
+# Maximum number of rotated audit log files to retain (.1 through .N)
+# Default: 5. Older files beyond this limit are automatically purged.
+# Overridden by GHOSTLINK_AUDIT_LOG_MAX_FILES
+max_files = 5
