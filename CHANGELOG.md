@@ -1,3 +1,5 @@
+- **`rpc_cluster::compute_tensor_split` weighted capacity heuristic**: CPU-only nodes (0 VRAM) now use system RAM scaled by a conservative `CPU_RAM_HAIRCUT` factor (0.5) to receive a proportional tensor split share, enabling CPU-only peers to take real work when needed to fit models while maintaining GPU preference when discrete VRAM is present.
+
 # CHANGELOG
 
 All notable changes to Ghostlink Studio are documented here.

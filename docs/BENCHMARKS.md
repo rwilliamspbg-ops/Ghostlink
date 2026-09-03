@@ -494,8 +494,7 @@ under the `-ts 0.1000,0.1000` split (both nodes report equal declared VRAM
 — 0.0 GB, CPU-only — so `rpc_cluster::compute_tensor_split` floors both to
 an even split; these two containers also happened to have equal RAM, so the
 even split was correct here. When an all-CPU-only cluster's nodes have
-*unequal* RAM, `compute_tensor_split` now weights by system RAM instead of
-flooring every node to the same 0.1 — see the function's doc comment).
+*unequal* RAM, `compute_tensor_split` computes weighted capacity: discrete VRAM is used for GPU layers, while 0 VRAM CPU-only nodes use system RAM scaled by a conservative 0.5 haircut (`CPU_RAM_HAIRCUT`).
 
 **But it is not a proportional total-memory reduction**, and this is the
 honest, load-bearing caveat: the coordinator's `file` (mmap'd GGUF page

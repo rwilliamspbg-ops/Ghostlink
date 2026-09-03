@@ -108,8 +108,8 @@ to prove out transport latency and never runs real model layers.
   same assumption UDP/mDNS discovery already makes.
 - A node serving a request, with `distributed_inference: true` in settings,
   discovers healthy RPC-contributing peers from live `ClusterState`
-  (`discover_rpc_peers`), computes a VRAM-proportional `--tensor-split`
-  (`compute_tensor_split`), and launches its local `llama-server` with
+  (`discover_rpc_peers`), computes a weighted capacity `--tensor-split`
+  (`compute_tensor_split`, using discrete VRAM for GPU nodes and CPU RAM scaled by `CPU_RAM_HAIRCUT = 0.5` for 0 VRAM CPU-only nodes), and launches its local `llama-server` with
   `--rpc host:port,... -ts a,b,...` — llama.cpp's own backend scheduler does
   the real cross-process tensor execution. Off by default; a single-node
   deployment sees zero behavior change.
