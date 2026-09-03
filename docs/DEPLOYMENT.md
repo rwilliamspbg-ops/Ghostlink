@@ -138,6 +138,50 @@ For a containerized two-machine-shaped example, see
 `flow --remote-addr` against it across the compose network, closer to a
 real multi-host topology than loopback.
 
+
+## Production Status & Hardening Caution
+
+> [!CAUTION]
+> **Pre-Production Status**: Treat current release status as **pre-production** until multi-host LAN soak tests are green. While capacity splitting across heterogeneous nodes is verified, network-bound tokens-per-second throughput optimization and zero-touch cluster orchestration remain in progress.
+
+## Production LAN Deployment Checklist
+
+Before deploying Ghostlink across a multi-host LAN for production or team workloads, verify every item in this checklist:
+
+### 1. Build & Version Matching
+- [ ] **Identical Ghostlink and llama.cpp Builds**: Ensure every node runs the exact same Ghostlink binary and `llama.cpp` commit (`ggml-rpc` protocol).
+  > **Why**: Upstream `ggml-rpc` does not perform internal version negotiation. Version-mismatched peers can silently corrupt tensor computations on larger models. Ghostlink peer discovery checks `rpc_build_id` and excludes confirmed mismatches, but all nodes should be compiled from the identical commit.
+
+### 2. RPC Peer Authentication & Network Access
+- [ ] **Configure Shared Secret (`rpc_shared_secret`)**: Set `rpc_shared_secret` in `ghostlink.toml` (or `GHOSTLINK_RPC_SHARED_SECRET` environment variable) identically across all cluster nodes.
+  > **Why**: When configured, Ghostlink requires a random-nonce HMAC-SHA256 handshake over a challenge port before granting temporary IP admission to a contributor.
+- [ ] **Restrict Allowed Peers (`rpc_allowed_peers`)**: Define `rpc_allowed_peers` in `ghostlink.toml` with explicit IPv4 addresses or CIDR subnets (e.g. `["192.168.1.0/24"]`).
+  > **Why**: An empty list exposes the RPC port to any host on the network. The allowlist proxy ensures only trusted IP ranges can connect.
+
+### 3. Opt-In Compute Contribution
+- [ ] **Default-Off Contributor Mode**: Confirm `contribute_compute = false` by default on all nodes.
+  > **Why**: Compute contribution must be an explicit operator choice. Nodes intended as contributors must set `contribute_compute = true` to spawn the local `ggml-rpc-server` worker.
+
+### 4. Contributor Lifecycle & Loss Behavior
+- [ ] **Supervised Worker Process**: Understand that `ggml-rpc-server` is supervised by Ghostlink (`RpcSupervisor`).
+  > **What happens when a contributor process crashes**: Ghostlink immediately revokes the node's discovery advertisement (`contribute_compute` set to false, `excluded_reason: "rpc child not running"`) and stops routing new inference requests to it until auto-restart succeeds.
+- [ ] **Drain and Restart on Contributor Loss**:
+  > **What happens if a contributor dies mid-request**: If an active RPC peer disappears during model load or generation, Ghostlink drains non-viable server topology, cancels the request cleanly, and logs a contributor loss error rather than producing corrupted output. *Live mid-generation token state migration across nodes remains an open roadmap item.*
+
+### 5. Network Architecture & Port Exposure
+Verify firewall rules and bindings match Ghostlink's system port architecture:
+
+| Port | Service | Exposure | Description |
+|---|---|---|---|
+| `:8000` | **Go Control Plane** | **Public / Browser** | **Single public entry point** for Web GUI and external clients. Handles CORS and proxies API calls internally. |
+| `:8003` | **Rust Internal API** | Internal Loopback / Private | Internal engine API. Requires Bearer API key authentication. |
+| `:8080` | `llama-server` | Internal Loopback | Local native inference engine instance. |
+| `:50052` | `ggml-rpc-server` | LAN (allowlisted) | Distributed RPC tensor execution worker port. |
+| `:11134` | UDP/mDNS Discovery | LAN | Cluster auto-discovery and HMAC challenge auth port. |
+
+> [!IMPORTANT]
+> **GUI Port Restriction**: The Web GUI **NEVER** connects directly to port `:8003`. All browser requests must target the Go control plane on port `:8000`. Direct browser calls to `:8003` will fail due to CORS or route restrictions.
+
 ## Configuration File Usage
 
 Ghost-Link supports TOML config defaults via:

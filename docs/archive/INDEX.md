@@ -6,6 +6,7 @@ Some archived files intentionally contain superseded status statements and shoul
 
 ## Archived Files
 
+- [_archived/](../../_archived/): historical root documentation and legacy setup scripts preserved for reference.
 - [docs/archive/legacy-root-docs/GPU_CPU_SWITCHING_PLAN.md](legacy-root-docs/GPU_CPU_SWITCHING_PLAN.md)
 - [docs/archive/legacy-root-docs/IMPLEMENTATION_STATUS.md](legacy-root-docs/IMPLEMENTATION_STATUS.md)
 - [docs/archive/legacy-root-docs/OPTIMIZATION_COMPLETE.md](legacy-root-docs/OPTIMIZATION_COMPLETE.md)

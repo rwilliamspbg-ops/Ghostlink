@@ -1,9 +1,14 @@
 # Ghostlink: Path to Category Leadership
 
 > [!NOTE]
-> **Current truth (Verified: 2026-08-18)**
-> - **Proven:** Distributed VRAM/RAM capacity splitting across heterogeneous LAN nodes via `ggml-rpc` (e.g., loading and running a 30B-class MoE model split across nodes that individual machines cannot hold alone).
-> - **Unproven / In Progress:** High usable tokens-per-second (tok/s) throughput on network-bound split layers, and a fully automated zero-touch "one-command cluster" setup without manual network/contributor configuration.
+> **Current truth (Verified: 2026-09-03)**
+> - **Proven & Shipped on `main`:**
+>   - **Distributed Capacity Splitting**: Heterogeneous VRAM/RAM splitting via `ggml-rpc` (loading and running 30B-class MoE models split across nodes that individual machines cannot hold alone).
+>   - **Contributor Supervision & Drain-and-Restart**: Active process supervision (`RpcSupervisor`) revokes advertisements on worker crash; mid-request contributor loss drains non-viable topology and fails requests cleanly without output corruption.
+>   - **Version-Mismatch Rejection**: Peer discovery checks `rpc_build_id` and excludes confirmed `ggml-rpc` build mismatches to prevent silent tensor output corruption.
+>   - **Scoped Role-Based Access Control**: 4-role API key authorization (`owner`, `operator`, `inference`, `viewer`) with persisted hashed key storage (`api_keys.json`).
+>   - **RPC Admission & Audit Rotation**: `rpc_shared_secret` HMAC challenge handshake, `rpc_allowed_peers` IP allowlisting, and bounded audit log rotation/retention (`audit_log.jsonl.N`).
+> - **Unproven / In Progress:** High usable tokens-per-second (tok/s) throughput on network-bound split layers, live mid-generation token state migration, and transport-layer encryption for raw RPC byte streams.
 
 
 This is a competitive strategy document, not a task backlog. It answers one

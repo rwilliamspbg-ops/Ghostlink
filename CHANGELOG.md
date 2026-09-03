@@ -8,6 +8,10 @@ All notable changes to Ghostlink Studio are documented here.
 
 ## [Unreleased]
 
+- **Production LAN Runbook & Post-Hardening Current Truth**:
+  - Added production LAN deployment checklist to `docs/DEPLOYMENT.md` covering build/version matching, `rpc_shared_secret` HMAC challenges, `rpc_allowed_peers` allowlisting, opt-in `contribute_compute`, contributor process supervision (`RpcSupervisor`), drain-and-restart on contributor loss, and system port architecture (`:8000` public vs `:8003` internal API).
+  - Updated `README.md` and `docs/ROADMAP.md` "Current truth" statements, strengths, remaining known gaps, and compact benchmark table.
+  - Maintained canonical pointers in `docs/archive/INDEX.md` and updated `docs/COMPARISON.md` references.
 - **Hardened Docker RPC Fabric E2E Assertions & Connectivity-Only Mode**:
   - Hardened `scripts/rpc_fabric_assert.py` to assert two healthy peers, `real_inference: true`, live RPC accept/connection evidence in `ggml-rpc-server.log`, and placement plan verification.
   - Correctly labels `-ngl 0` (CPU-only) runs as "connectivity-only" and asserts `distributed_active: false` (preventing false compute split claims when `-ngl 0`), while supporting `--require-compute-split` for GPU runners (`-ngl > 0`).
