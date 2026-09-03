@@ -8,6 +8,14 @@ All notable changes to Ghostlink Studio are documented here.
 
 ## [Unreleased]
 
+- **Scoped Multi-Key RBAC for HTTP API**:
+  - Expanded role-based API key access control (`crates/ghost-link/src/auth.rs`) to support explicit roles: `owner`, `operator`, `inference`, and `viewer`.
+  - Keys are persisted in `api_keys.json` (SHA-256 hash + last-4 preview only, raw key shown once upon minting and never stored/recoverable).
+  - First-run generates a single `owner` key printed to startup output and saved to `api_keys.json`.
+  - `/api/security/keys` (list, create, revoke) is strictly `owner`-gated.
+  - `/v1/*` and `/api/inference/*` routes are accessible by `inference`, `operator`, and `owner` roles.
+  - `/health` remains public.
+
 - **Audit Log Capping, Rotation, and Retention**:
   - Implemented file capping (`GHOSTLINK_AUDIT_LOG_MAX_BYTES`, default 10MB; `GHOSTLINK_AUDIT_LOG_MAX_LINES`, default disabled) and automatic file rotation (`audit_log.jsonl.1` .. `.N`) for the durable on-disk audit log.
   - Implemented retention purging (`GHOSTLINK_AUDIT_LOG_MAX_FILES`, default 5 files) to prevent unbounded disk growth.

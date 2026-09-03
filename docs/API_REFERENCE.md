@@ -17,12 +17,20 @@ Authorization: Bearer <token>
 
 On first run, the server generates a 256-bit API key, persists it to
 `api_key.txt` (or the path in `GHOSTLINK_API_KEY_PATH`), and prints it once
-to the console — that initial key carries the `Admin` role.
+to the console — that initial key carries the `owner` role.
 
 The server enforces **role-based API key access control** (`crates/ghost-link/src/auth.rs`):
-- **`Admin`**: Full system administration. Can manage API keys (`/api/security/keys`), enable PQC TLS, and export audit logs.
-- **`Operator`**: Full operational capability. Can load/unload models, submit inference requests (`/v1/chat/completions`), and edit workspace files.
-- **`Viewer`**: Read-only inspection. Can view health, metrics, cluster status, audit logs, and exchange valid keys for JWTs.
+- **`owner`**: Full system administration and authentication key minting/revocation (`/api/security/keys`), PQC TLS enablement, and audit log export.
+- **`operator`**: Full operational management including models, workers, settings, workspace, sessions, MCP, and inference, except auth key minting.
+- **`inference`**: OpenAI-compatible inference routes (`/v1/chat/completions`, `/v1/completions`, `/v1/embeddings`, `/v1/models`, `/api/inference/*`, `/api/ollama/*`) plus health checks.
+- **`viewer`**: Read-only inspection. Can view cluster, metrics, models list, and audit logs.
+
+| Role | API Key Mint / Revoke | Models / Workers / Settings | OpenAI Inference Routes | Cluster / Metrics List | `/health` |
+| --- | --- | --- | --- | --- | --- |
+| **`owner`** | Yes | Yes | Yes | Yes | Yes |
+| **`operator`** | No | Yes | Yes | Yes | Yes |
+| **`inference`** | No | No | Yes | No | Yes |
+| **`viewer`** | No | No | No | Yes | Yes |
 
 *Note: Role gating applies to API keys for operator access control; full multi-user / multi-tenant RBAC (user accounts, team namespacing, resource isolation) is not implemented.*
 
@@ -72,11 +80,11 @@ curl http://127.0.0.1:8000/api/security/pqc/state \
 }
 ```
 
-### Key Management (`Admin`-gated)
+### Key Management (`owner`-gated)
 
 - `GET /api/security/keys`: List all active API keys (returns ID, name, role, created timestamp, and last 4 chars preview).
 - `POST /api/security/keys`: Create a new key (body: `{"name": "ci-bot", "role": "Operator"}`). Returns newly generated raw key once.
-- `DELETE /api/security/keys/:id`: Revoke a key by ID (immediately invalidating any outstanding JWTs for it). Refuses to delete the last remaining `Admin` key.
+- `DELETE /api/security/keys/:id`: Revoke a key by ID (immediately invalidating any outstanding JWTs for it). Refuses to delete the last remaining `owner` key.
 
 ### Audit log
 

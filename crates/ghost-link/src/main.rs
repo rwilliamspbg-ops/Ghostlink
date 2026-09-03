@@ -1736,10 +1736,17 @@ fn required_role(method: &axum::http::Method, path: &str) -> auth::Role {
         || path == "/api/security/pqc/enable"
         || path.starts_with("/api/security/audit-log/export")
     {
-        return auth::Role::Admin;
+        return auth::Role::Owner;
     }
     if path == "/api/security/jwt/refresh" {
         return auth::Role::Viewer;
+    }
+    if path.starts_with("/v1/")
+        || path.starts_with("/api/inference")
+        || path == "/api/ollama/chat"
+        || path == "/api/ollama/embeddings"
+    {
+        return auth::Role::Inference;
     }
     if method == axum::http::Method::GET || method == axum::http::Method::HEAD {
         auth::Role::Viewer
@@ -1763,15 +1770,15 @@ fn key_record_public_json(record: &auth::ApiKeyRecord) -> serde_json::Value {
 
 /// Whether removing `id` from `keys` would leave zero `Admin`-role keys —
 /// the lockout condition `delete_key_from_store` refuses.
-fn would_remove_last_admin(keys: &[auth::ApiKeyRecord], id: &str) -> bool {
+fn would_remove_last_owner(keys: &[auth::ApiKeyRecord], id: &str) -> bool {
     let target_is_admin = keys
         .iter()
-        .any(|k| k.id == id && k.role == auth::Role::Admin);
+        .any(|k| k.id == id && k.role == auth::Role::Owner);
     if !target_is_admin {
         return false;
     }
     keys.iter()
-        .filter(|k| k.role == auth::Role::Admin && k.id != id)
+        .filter(|k| k.role == auth::Role::Owner && k.id != id)
         .count()
         == 0
 }
@@ -1792,10 +1799,10 @@ fn delete_key_from_store(
             format!("no API key with id '{id}'"),
         ));
     }
-    if would_remove_last_admin(keys, id) {
+    if would_remove_last_owner(keys, id) {
         return Err((
             axum::http::StatusCode::BAD_REQUEST,
-            "cannot delete the last remaining Admin key — create another Admin key first"
+            "cannot delete the last remaining Owner key — create another Owner key first"
                 .to_string(),
         ));
     }
@@ -7217,7 +7224,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
     }
 
     /// Revokes a key by id. Refuses (400) to remove the last remaining
-    /// `Admin` key — see `would_remove_last_admin` — since that would
+    /// `Admin` key — see `would_remove_last_owner` — since that would
     /// permanently lock every caller out of key management with no
     /// recovery path short of deleting `api_keys.json` and re-bootstrapping
     /// from `api_key.txt`.
@@ -11989,7 +11996,7 @@ mod tests {
             enable_tls_active: false,
             plugin_registry: backend_plugin::BackendPluginRegistry::from_env(),
             audit_log: std::collections::VecDeque::new(),
-            api_keys: vec![auth::create_key("test-admin".to_string(), auth::Role::Admin).0],
+            api_keys: vec![auth::create_key("test-admin".to_string(), auth::Role::Owner).0],
             models_scan_cache: ApiResponseCache::new(),
         }))
     }
@@ -12081,19 +12088,19 @@ mod tests {
         use axum::http::Method;
         assert_eq!(
             required_role(&Method::GET, "/api/security/keys"),
-            auth::Role::Admin
+            auth::Role::Owner
         );
         assert_eq!(
             required_role(&Method::POST, "/api/security/keys"),
-            auth::Role::Admin
+            auth::Role::Owner
         );
         assert_eq!(
             required_role(&Method::DELETE, "/api/security/keys/key_abc"),
-            auth::Role::Admin
+            auth::Role::Owner
         );
         assert_eq!(
             required_role(&Method::POST, "/api/security/pqc/enable"),
-            auth::Role::Admin
+            auth::Role::Owner
         );
     }
 
@@ -12120,7 +12127,7 @@ mod tests {
         assert_eq!(
             required_role(&Method::GET, "/api/security/pqc/state"),
             auth::Role::Viewer,
-            "reading PQC state is a GET, distinct from POST .../pqc/enable which is Admin-only"
+            "reading PQC state is a GET, distinct from POST .../pqc/enable which is Owner-only"
         );
         assert_eq!(
             required_role(&Method::POST, "/api/models/load"),
@@ -12137,8 +12144,98 @@ mod tests {
     }
 
     #[test]
+    fn required_role_enforces_inference_role_for_chat_and_completions() {
+        use axum::http::Method;
+        assert_eq!(
+            required_role(&Method::POST, "/v1/chat/completions"),
+            auth::Role::Inference
+        );
+        assert_eq!(
+            required_role(&Method::POST, "/v1/completions"),
+            auth::Role::Inference
+        );
+        assert_eq!(
+            required_role(&Method::POST, "/v1/embeddings"),
+            auth::Role::Inference
+        );
+        assert_eq!(
+            required_role(&Method::GET, "/v1/models"),
+            auth::Role::Inference
+        );
+        assert_eq!(
+            required_role(&Method::POST, "/api/inference/chat"),
+            auth::Role::Inference
+        );
+        assert_eq!(
+            required_role(&Method::POST, "/api/ollama/chat"),
+            auth::Role::Inference
+        );
+    }
+
+    #[test]
+    fn role_matrix_allow_deny_verification() {
+        use axum::http::Method;
+
+        let routes = [
+            (Method::POST, "/api/security/keys", auth::Role::Owner),
+            (Method::POST, "/api/models/load", auth::Role::Operator),
+            (Method::POST, "/v1/chat/completions", auth::Role::Inference),
+            (Method::GET, "/api/workers", auth::Role::Viewer),
+            (Method::GET, "/api/metrics", auth::Role::Viewer),
+        ];
+
+        let roles = [
+            auth::Role::Owner,
+            auth::Role::Operator,
+            auth::Role::Inference,
+            auth::Role::Viewer,
+        ];
+
+        for (method, path, required) in &routes {
+            let req_role = required_role(method, path);
+            assert_eq!(req_role, *required, "route {} {}", method, path);
+            for role in &roles {
+                let allowed = role.satisfies(req_role);
+                if *role == auth::Role::Owner {
+                    assert!(allowed, "Owner should be allowed on {} {}", method, path);
+                } else if *role == auth::Role::Operator {
+                    if *required == auth::Role::Owner {
+                        assert!(
+                            !allowed,
+                            "Operator should be denied on Owner route {} {}",
+                            method, path
+                        );
+                    } else {
+                        assert!(allowed, "Operator should be allowed on {} {}", method, path);
+                    }
+                } else if *role == auth::Role::Inference {
+                    if *required == auth::Role::Owner || *required == auth::Role::Operator {
+                        assert!(
+                            !allowed,
+                            "Inference should be denied on {} {}",
+                            method, path
+                        );
+                    } else {
+                        assert!(
+                            allowed,
+                            "Inference should be allowed on {} {}",
+                            method, path
+                        );
+                    }
+                } else if *role == auth::Role::Viewer {
+                    if *required == auth::Role::Viewer {
+                        assert!(allowed, "Viewer should be allowed on {} {}", method, path);
+                    } else {
+                        assert!(!allowed, "Viewer should be denied on {} {}", method, path);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn delete_key_from_store_refuses_to_remove_the_last_admin() {
-        let (admin, _raw) = auth::create_key("only-admin".to_string(), auth::Role::Admin);
+        let (admin, _raw) = auth::create_key("only-admin".to_string(), auth::Role::Owner);
         let mut keys = vec![admin.clone()];
 
         let err = delete_key_from_store(&mut keys, &admin.id).expect_err("must refuse");
@@ -12148,8 +12245,8 @@ mod tests {
 
     #[test]
     fn delete_key_from_store_allows_removing_a_non_last_admin_or_any_non_admin() {
-        let (admin_a, _) = auth::create_key("admin-a".to_string(), auth::Role::Admin);
-        let (admin_b, _) = auth::create_key("admin-b".to_string(), auth::Role::Admin);
+        let (admin_a, _) = auth::create_key("admin-a".to_string(), auth::Role::Owner);
+        let (admin_b, _) = auth::create_key("admin-b".to_string(), auth::Role::Owner);
         let (viewer, _) = auth::create_key("viewer".to_string(), auth::Role::Viewer);
         let mut keys = vec![admin_a.clone(), admin_b.clone(), viewer.clone()];
 
@@ -12196,7 +12293,7 @@ mod tests {
         let keys = load_api_keys();
         assert_eq!(keys.len(), 1);
         assert_eq!(keys[0].id, auth::BOOTSTRAP_KEY_ID);
-        assert_eq!(keys[0].role, auth::Role::Admin);
+        assert_eq!(keys[0].role, auth::Role::Owner);
         assert!(
             api_keys_path.exists(),
             "the migrated store must be persisted"

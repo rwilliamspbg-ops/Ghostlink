@@ -1,5 +1,5 @@
 //! Real bearer-token auth: a persisted, hashed API-key store (each key
-//! carrying a role — Admin/Operator/Viewer) and short-lived JWTs
+//! carrying a role — Owner/Operator/Inference/Viewer) and short-lived JWTs
 //! (`jsonwebtoken`, HS256) issued by exchanging a valid key — replacing
 //! both the previous hardcoded `"new-token-123"` JWT-refresh stub and the
 //! single-shared-key-with-no-roles model that preceded this file.
@@ -29,8 +29,10 @@ pub const BOOTSTRAP_KEY_ID: &str = "key_bootstrap";
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Role {
-    Admin,
+    #[serde(alias = "admin")]
+    Owner,
     Operator,
+    Inference,
     Viewer,
 }
 
@@ -38,8 +40,9 @@ impl Role {
     fn rank(self) -> u8 {
         match self {
             Role::Viewer => 0,
-            Role::Operator => 1,
-            Role::Admin => 2,
+            Role::Inference => 1,
+            Role::Operator => 2,
+            Role::Owner => 3,
         }
     }
 
@@ -155,7 +158,7 @@ fn load_or_create_api_key() -> String {
     println!("Read the key from that file before using it.");
     println!("Send it as a bearer token on every API request, or exchange it for");
     println!("a short-lived token via POST /api/security/jwt/refresh.");
-    println!("This key is now the 'bootstrap' Admin entry in your key store — see");
+    println!("This key is now the 'bootstrap' Owner entry in your key store — see");
     println!("GET /api/security/keys to create additional, more narrowly-scoped keys.");
     println!("=======================================================================");
     key
@@ -197,14 +200,14 @@ fn jwt_signing_secret() -> &'static str {
 
 /// Builds the bootstrap `ApiKeyRecord` from the existing (or freshly
 /// generated) `active_api_key()` value — the migration path that makes an
-/// existing `api_key.txt` keep working, unchanged, as the sole Admin key
+/// existing `api_key.txt` keep working, unchanged, as the sole Owner key
 /// once the key store exists.
 pub fn bootstrap_key_record() -> ApiKeyRecord {
     let raw = active_api_key();
     ApiKeyRecord {
         id: BOOTSTRAP_KEY_ID.to_string(),
         name: "bootstrap".to_string(),
-        role: Role::Admin,
+        role: Role::Owner,
         key_hash: hash_key(raw),
         key_preview: key_preview(raw),
         created_at: chrono::Utc::now().to_rfc3339(),
@@ -359,15 +362,15 @@ mod tests {
 
     #[test]
     fn role_satisfies_is_a_strict_hierarchy() {
-        assert!(Role::Admin.satisfies(Role::Admin));
-        assert!(Role::Admin.satisfies(Role::Operator));
-        assert!(Role::Admin.satisfies(Role::Viewer));
+        assert!(Role::Owner.satisfies(Role::Owner));
+        assert!(Role::Owner.satisfies(Role::Operator));
+        assert!(Role::Owner.satisfies(Role::Viewer));
         assert!(Role::Operator.satisfies(Role::Operator));
         assert!(Role::Operator.satisfies(Role::Viewer));
-        assert!(!Role::Operator.satisfies(Role::Admin));
+        assert!(!Role::Operator.satisfies(Role::Owner));
         assert!(Role::Viewer.satisfies(Role::Viewer));
         assert!(!Role::Viewer.satisfies(Role::Operator));
-        assert!(!Role::Viewer.satisfies(Role::Admin));
+        assert!(!Role::Viewer.satisfies(Role::Owner));
     }
 
     #[test]
@@ -395,12 +398,12 @@ mod tests {
 
     #[test]
     fn authenticate_matches_raw_key_and_rejects_unknown_or_empty_tokens() {
-        let (record, raw) = create_key("tester".to_string(), Role::Admin);
+        let (record, raw) = create_key("tester".to_string(), Role::Owner);
         let keys = vec![record.clone()];
 
         let ctx = authenticate(&raw, &keys).expect("raw key should authenticate");
         assert_eq!(ctx.key_id, record.id);
-        assert_eq!(ctx.role, Role::Admin);
+        assert_eq!(ctx.role, Role::Owner);
 
         assert!(authenticate("not-a-real-key", &keys).is_none());
         assert!(authenticate("", &keys).is_none());
@@ -451,17 +454,32 @@ mod tests {
         let (mut record, _raw) = create_key("role-change".to_string(), Role::Viewer);
         let jwt = issue_jwt(&record.id).expect("issue_jwt should succeed");
 
-        record.role = Role::Admin;
+        record.role = Role::Owner;
         let keys = vec![record];
         let ctx =
             authenticate(&jwt, &keys).expect("JWT should still authenticate after a role change");
         assert_eq!(
             ctx.role,
-            Role::Admin,
+            Role::Owner,
             "role must be read fresh from the store, not from the JWT claims"
         );
 
         std::env::remove_var("GHOSTLINK_JWT_SECRET_PATH");
         let _ = std::fs::remove_file(&path);
     }
+}
+
+#[test]
+fn role_deserializes_admin_alias_as_owner() {
+    let json = r#""admin""#;
+    let role: Role = serde_json::from_str(json).unwrap();
+    assert_eq!(role, Role::Owner);
+
+    let json_owner = r#""owner""#;
+    let role_owner: Role = serde_json::from_str(json_owner).unwrap();
+    assert_eq!(role_owner, Role::Owner);
+
+    let json_inf = r#""inference""#;
+    let role_inf: Role = serde_json::from_str(json_inf).unwrap();
+    assert_eq!(role_inf, Role::Inference);
 }
