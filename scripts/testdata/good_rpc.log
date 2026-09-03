@@ -1,0 +1,4 @@
+[2026-09-03 21:00:00] ggml_rpc_server: listening on 0.0.0.0:50052
+[2026-09-03 21:00:05] Accepted client connection from 172.30.0.12:54321
+[2026-09-03 21:00:05] RPC command received: GET_DEVICES
+[2026-09-03 21:00:06] Client connection closed

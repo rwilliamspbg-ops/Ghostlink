@@ -8,6 +8,12 @@ All notable changes to Ghostlink Studio are documented here.
 
 ## [Unreleased]
 
+- **Hardened Docker RPC Fabric E2E Assertions & Connectivity-Only Mode**:
+  - Hardened `scripts/rpc_fabric_assert.py` to assert two healthy peers, `real_inference: true`, live RPC accept/connection evidence in `ggml-rpc-server.log`, and placement plan verification.
+  - Correctly labels `-ngl 0` (CPU-only) runs as "connectivity-only" and asserts `distributed_active: false` (preventing false compute split claims when `-ngl 0`), while supporting `--require-compute-split` for GPU runners (`-ngl > 0`).
+  - Added unit tests in `tests/test_rpc_fabric_assert.py` using mock log and topology fixtures (`scripts/testdata/`).
+  - Updated `.github/workflows/distributed-e2e.yml` with documented comments/inputs for GPU vs CPU runners and unit test execution.
+  - Added `docs/TESTING.md` documenting local execution of the Docker RPC fabric and assertion script.
 - **Scoped Multi-Key RBAC for HTTP API**:
   - Expanded role-based API key access control (`crates/ghost-link/src/auth.rs`) to support explicit roles: `owner`, `operator`, `inference`, and `viewer`.
   - Keys are persisted in `api_keys.json` (SHA-256 hash + last-4 preview only, raw key shown once upon minting and never stored/recoverable).

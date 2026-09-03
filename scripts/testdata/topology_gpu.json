@@ -1,0 +1,12 @@
+{
+  "count": 2,
+  "nodes": [
+    {"id": "rpc-coordinator", "role": "coordinator"},
+    {"id": "rpc-contributor", "role": "contributor"}
+  ],
+  "placement_plan": {
+    "distributed_active": true,
+    "active_rpc_targets": ["172.30.0.11:50052"],
+    "summary_text": "Model stories15M-q4_0 with distributed on: split 0.50 on rpc-coordinator (12 GB VRAM), 0.50 on rpc-contributor (12 GB VRAM)"
+  }
+}

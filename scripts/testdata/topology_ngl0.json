@@ -1,0 +1,12 @@
+{
+  "count": 2,
+  "nodes": [
+    {"id": "rpc-coordinator", "role": "coordinator"},
+    {"id": "rpc-contributor", "role": "contributor"}
+  ],
+  "placement_plan": {
+    "distributed_active": false,
+    "active_rpc_targets": [],
+    "summary_text": "Single-machine inference on local node for stories15M-q4_0 (Distributed offload warning: distributed_inference is enabled but effective -ngl is 0 (CPU-only), so no layers leave the coordinator)"
+  }
+}

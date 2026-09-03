@@ -8,9 +8,17 @@ name: Distributed E2E (RPC Fabric)
 # count — that a real chat completion executed across both containers:
 # UDP discovery found the peer, the coordinator built --rpc/-ts flags with
 # zero manual input, a real chat completion came back with
-# real_inference: true, and the contributor's own ggml-rpc-server log shows
-# it actually accepted a connection. See docs/ROADMAP.md's Horizon 1 #1 —
-# this is the CI test that section calls for.
+# real_inference: true, the placement plan correctly classifies -ngl 0
+# as connectivity-only (and does NOT claim compute split), and the
+# contributor's own ggml-rpc-server log shows it actually accepted a connection.
+#
+# NOTE ON GPU VS CPU RUNNERS:
+# Default GitHub-hosted runners are CPU-only (-ngl 0). In CPU mode, the job
+# asserts live RPC connection/accept logging and labels the execution as
+# "connectivity-only" while ensuring no compute split is falsely claimed.
+# On GPU runners (or self-hosted GPU nodes with -ngl > 0 / GHOSTLINK_LLAMA_NGL=-1),
+# pass `--require-compute-split` to scripts/rpc_fabric_assert.py to assert
+# active tensor offloading across peers (distributed_active: true).
 #
 # Path-filtered like production-gate.yml: this does a from-source llama.cpp
 # build (several minutes) so it only runs when something that could plausibly
@@ -53,6 +61,12 @@ on:
       - 'scripts/rpc_fabric_assert.py'
       - '.github/workflows/distributed-e2e.yml'
   workflow_dispatch:
+    inputs:
+      require_compute_split:
+        description: 'Require active tensor compute split (-ngl > 0, for GPU runners)'
+        required: false
+        type: boolean
+        default: false
 
 concurrency:
   group: distributed-e2e-${{ github.ref }}
@@ -73,6 +87,9 @@ jobs:
       - name: Install assertion script dependencies
         run: pip install requests urllib3
 
+      - name: Run assertion script unit tests
+        run: python3 -m unittest tests/test_rpc_fabric_assert.py
+
       - name: Build fabric images
         run: docker compose -f docker-compose.rpc-fabric.yml build
 
@@ -81,7 +98,12 @@ jobs:
           docker compose -f docker-compose.rpc-fabric.yml up -d --wait --wait-timeout 300
 
       - name: Run distributed-inference assertion
-        run: python3 scripts/rpc_fabric_assert.py
+        run: |
+          EXTRA_FLAGS=""
+          if [ "${{ inputs.require_compute_split }}" = "true" ]; then
+            EXTRA_FLAGS="--require-compute-split"
+          fi
+          python3 scripts/rpc_fabric_assert.py $EXTRA_FLAGS
 
       - name: Dump container logs
         if: always()
