@@ -100,9 +100,20 @@ pub struct PlacementPlan {
 
 impl PlacementPlan {
     /// Create new placement plan
+    ///
+    /// OPTIMIZATION: Consolidates total_layers summation and participating_nodes collection
+    /// into a single pass over assignments. Deduplicates node IDs in-place without duplicate
+    /// string allocations when nodes have multiple chunked assignments.
     pub fn new(assignments: Vec<LayerAssignment>, quantization_mode: QuantizationMode) -> Self {
-        let participating_nodes = assignments.iter().map(|a| a.node_id.clone()).collect();
-        let total_layers = assignments.iter().map(|a| a.num_layers).sum();
+        let mut participating_nodes = Vec::with_capacity(assignments.len());
+        let mut total_layers = 0usize;
+
+        for a in &assignments {
+            total_layers += a.num_layers;
+            if !participating_nodes.contains(&a.node_id) {
+                participating_nodes.push(a.node_id.clone());
+            }
+        }
 
         Self {
             assignments,
@@ -389,27 +400,8 @@ pub fn assign_layers_with_runtime_profile(
     assign_layers_chunked(nodes, layers, tuning.max_layers_per_assignment)
 }
 
-/// Assign layers with fault tolerance and load balancing
-pub fn assign_layers_with_fault_tolerance(
-    cluster: &ClusterState,
-    layers: &[LayerSpec],
-) -> Result<PlacementPlan, String> {
-    let nodes = cluster.nodes_snapshot();
-
-    if nodes.is_empty() {
-        return Err("no nodes available".into());
-    }
-
-    // First pass: greedy assignment
-    let assignments = assign_layers_sequentially(&nodes, layers)?;
-
-    // Calculate average delivery ratio across all nodes in a single lock pass
-    // (avoids the clone/allocation of active_nodes() and the lock contention
-    // of taking it twice). Also avoids a real divide-by-zero/TOCTOU hazard:
-    // calling `active_nodes()` twice (once for the sum, once for the count)
-    // risked dividing by a different node count than was summed if a node's
-    // status changed between calls, and an empty active set (e.g. all nodes
-    // failed but still registered) would divide by zero.
+/// Helper to calculate average delivery ratio across all active nodes in a single lock pass.
+fn calculate_average_delivery_ratio(cluster: &ClusterState) -> f32 {
     let (sum_delivery, active_count) = {
         let metrics = cluster
             .metrics
@@ -426,16 +418,28 @@ pub fn assign_layers_with_fault_tolerance(
         (sum, count)
     };
 
-    // Fall back to 0.0 (not 1.0) when there are zero active nodes to sample:
-    // this selects the most conservative quantization mode below. Assuming a
-    // perfect 1.0 ratio when we have literally no corroborating health data
-    // is optimistic in exactly the scenario (all nodes failed/degraded) where
-    // it's least likely to be true.
-    let total_delivery_ratio = if active_count > 0 {
+    if active_count > 0 {
         sum_delivery / active_count as f32
     } else {
         0.0
-    };
+    }
+}
+
+/// Assign layers with fault tolerance and load balancing
+pub fn assign_layers_with_fault_tolerance(
+    cluster: &ClusterState,
+    layers: &[LayerSpec],
+) -> Result<PlacementPlan, String> {
+    let nodes = cluster.nodes_snapshot();
+
+    if nodes.is_empty() {
+        return Err("no nodes available".into());
+    }
+
+    // First pass: greedy assignment
+    let assignments = assign_layers_sequentially(&nodes, layers)?;
+
+    let total_delivery_ratio = calculate_average_delivery_ratio(cluster);
 
     // Select quantization mode based on health
     let quantization_mode = select_quantization_mode(total_delivery_ratio);
@@ -462,28 +466,7 @@ pub fn assign_layers_with_fault_tolerance_and_runtime(
     // Directly run the chunked layout computation
     let assignments = assign_layers_chunked(&nodes, layers, tuning.max_layers_per_assignment)?;
 
-    // Calculate average delivery ratio across all nodes in a single lock pass
-    let (sum_delivery, active_count) = {
-        let metrics = cluster
-            .metrics
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner());
-        let mut sum = 0.0f32;
-        let mut count = 0usize;
-        for metric in metrics.values() {
-            if metric.status == NodeStatus::Active {
-                sum += metric.delivery_ratio;
-                count += 1;
-            }
-        }
-        (sum, count)
-    };
-
-    let total_delivery_ratio = if active_count > 0 {
-        sum_delivery / active_count as f32
-    } else {
-        0.0
-    };
+    let total_delivery_ratio = calculate_average_delivery_ratio(cluster);
 
     // Select quantization mode based on health
     let quantization_mode = select_quantization_mode(total_delivery_ratio);
@@ -645,6 +628,11 @@ impl Default for RebalanceTrigger {
 }
 
 impl RebalanceTrigger {
+    /// Evaluates if cluster migration is needed due to load or latency imbalance.
+    ///
+    /// OPTIMIZATION: Consolidates node counting and overtaxed/available node search into a
+    /// single pass over node metrics under lock. Borrows string references (&str) during traversal,
+    /// allocating owned Strings only when a migration candidate pair is confirmed.
     pub fn evaluate(
         &self,
         cluster: &ClusterState,
@@ -657,28 +645,31 @@ impl RebalanceTrigger {
                 .unwrap_or_else(|poison| poison.into_inner());
 
             let mut active_count = 0usize;
+            let mut overtaxed_ref: Option<&str> = None;
+            let mut available_ref: Option<&str> = None;
+
             for m in metrics.values() {
                 if m.status == NodeStatus::Active {
                     active_count += 1;
+                    let is_overtaxed = m.delivery_ratio < 0.90 || m.avg_latency_us > 15.0;
+                    if is_overtaxed {
+                        if overtaxed_ref.is_none() {
+                            overtaxed_ref = Some(&m.name);
+                        }
+                    } else if available_ref.is_none() && m.available_vram_gb > 8.0 {
+                        available_ref = Some(&m.name);
+                    }
                 }
             }
+
             if active_count < 2 {
                 return None;
             }
 
-            let mut overtaxed_name = None;
-            let mut available_name = None;
-
-            for m in metrics.values() {
-                if m.status == NodeStatus::Active {
-                    if m.delivery_ratio < 0.90 || m.avg_latency_us > 15.0 {
-                        overtaxed_name = Some(m.name.clone());
-                    } else if m.available_vram_gb > 8.0 {
-                        available_name = Some(m.name.clone());
-                    }
-                }
-            }
-            (overtaxed_name, available_name)
+            (
+                overtaxed_ref.map(|s| s.to_string()),
+                available_ref.map(|s| s.to_string()),
+            )
         };
 
         if let (Some(source), Some(target)) = (overtaxed, available) {
@@ -853,5 +844,37 @@ mod tests {
 
         let tuning = PlanningTuning::from_runtime_profile(&profile, 40);
         assert!(tuning.max_layers_per_assignment <= 4);
+    }
+
+    #[test]
+    fn test_rebalance_trigger_evaluate_never_selects_overtaxed_as_available() {
+        let cluster = ClusterState::new();
+        cluster.register(NodeResources::new("node-1", 24.0, 64.0, "8.9", None));
+        cluster.register(NodeResources::new("node-2", 24.0, 64.0, "8.9", None));
+
+        // Node 1 is overtaxed (delivery ratio < 0.90)
+        cluster.get_metrics_mut("node-1", |m| {
+            m.delivery_ratio = 0.50;
+            m.available_vram_gb = 16.0;
+        });
+
+        // Node 2 is also overtaxed (delivery ratio < 0.90) with high VRAM
+        cluster.get_metrics_mut("node-2", |m| {
+            m.delivery_ratio = 0.60;
+            m.available_vram_gb = 16.0;
+        });
+
+        let trigger = RebalanceTrigger::default();
+        let plan = PlacementPlan::new(
+            vec![LayerAssignment::new("node-1".into(), 0, 10, 10.0)],
+            QuantizationMode::None,
+        );
+
+        let planner = trigger.evaluate(&cluster, &plan);
+        // Since both nodes are overtaxed, neither should be chosen as an "available" target
+        assert!(
+            planner.is_none(),
+            "overtaxed nodes must never be selected as available rebalance targets"
+        );
     }
 }
