@@ -381,7 +381,7 @@ Once Priority Zero is real and provable, these make it hard to copy.
    without corrupting output is a real research-adjacent problem... a
    simpler 'drain and restart the affected request' fallback is an
    acceptable first cut" — and that first cut hasn't been attempted either.
-   Deliberately not attempted in this pass: this needs its own dedicated
+    **Status update:** First-cut drain+restart continuous rebalancing shipped on the real serving path, automatically detecting contributor loss/unhealthiness, draining non-viable topology, and failing in-flight requests cleanly without output corruption. Live mid-token stage migration remains open.
    scoping, not a fast-follow bolted onto an unrelated feature.
 2. **Speculative decoding across heterogeneous nodes** — a small/fast node
    (or NPU) drafts, a large/slow node verifies. This is a genuinely novel
