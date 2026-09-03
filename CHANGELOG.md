@@ -8,6 +8,12 @@ All notable changes to Ghostlink Studio are documented here.
 
 ## [Unreleased]
 
+- **Drain and Restart on Contributor Loss for Serving Path**:
+  - Implemented continuous rebalancing / resilience for the real llama-server RPC serving path (InferenceEngine::Native).
+  - Added active --rpc target tracking in NativeEngineClient (active_rpc_servers()) and contributor health checking in rpc_cluster::check_active_rpc_peers_healthy.
+  - When an RPC contributor disappears mid-load or mid-request, Ghostlink unloads/drains non-viable server topology, failing/cancelling requests cleanly without output corruption. Live mid-token stage migration remains an open roadmap item.
+  - Updated handle_gui_session_cancel to update and persist session cancellation state.
+
 - **No-Op Distributed Offload Prevention & Warning**:
   - When `distributed_inference: true`, if effective `-ngl` is `0` (CPU-only) or total remote tensor share is below the 1% minimum threshold (`MIN_REMOTE_SHARE_THRESHOLD = 0.01`), Ghostlink avoids passing `--rpc` and `-ts` flags to `llama-server`.
   - Emits a structured `tracing::warn!` log and includes a clear warning note in the placement plan `summary_text` shown by the GUI (`"Single-machine inference on local node for ... (Distributed offload warning: ...)"`), setting `distributed_active: false`.
