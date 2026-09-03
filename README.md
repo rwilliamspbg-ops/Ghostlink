@@ -296,6 +296,17 @@ comparison baseline), see
 [docs/BENCHMARKS.md's "LLM-Shaped Workload Benchmarks"](docs/BENCHMARKS.md#llm-shaped-workload-benchmarks--2026-08-05)
 section.
 
+
+### Measured Real-Hardware & Fabric Benchmarks
+
+For full details, methodology, and latency histograms, see [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
+
+| Hardware | Model | Throughput (tok/s) | Date | Repro Command |
+|---|---|---|---|---|
+| Docker 16-CPU VM (WSL2) | Qwen2.5-1.5B-Q4_K_M (1.04 GB) | 32.53 tok/s (distributed) | 2026-08-01 | `docker compose -f docker-compose.rpc-fabric-benchmark.yml up -d && python3 scripts/rpc_fabric_benchmark.py --runs 5` |
+| AMD Radeon 860M + Linux Mini PC | Qwen2.5-1.5B-Q4_K_M (1.04 GB) | 53.57 tok/s (distributed) | 2026-08-03 | `POST /api/inference/chat` on live discovered 2-node LAN cluster |
+| AMD Radeon 860M + Linux Mini PC | Qwen3-Coder-30B-A3B-Q3_K_L (13.58 GB) | 1.47–2.52 tok/s (split load) | 2026-08-03 | `POST /api/inference/chat` (`-ngl 20`) — single-node hard OOMs |
+
 ### Reproduce these numbers / other hardware
 
 ```bash
@@ -606,15 +617,17 @@ Ghostlink is positioned as a launch-ready open-source foundation with a strong d
 
 *Note: `main` branch development is ahead of the last tagged release (`v2.0.0`).*
 
-Current strengths:
-- a working local launch path for experimentation and demos,
-- a clear positioning around distributed inference scheduling and routing,
-- public assets for comparison, demo flow, and product storytelling.
+### Current Strengths
+- **Verified VRAM/RAM Capacity Splitting**: Real cross-machine tensor splitting via `ggml-rpc` allows loading models too large for any single machine alone (e.g. 30B-class MoE models).
+- **Hardened Cluster Security**: Scoped API key access control (`owner`, `operator`, `inference`, `viewer`), HMAC-SHA256 discovery authentication, and `rpc_shared_secret` nonce challenge peer admission.
+- **Resilient Contributor Process Lifecycle**: `ggml-rpc-server` is actively supervised by `RpcSupervisor`; if a worker crashes, discovery advertisement is revoked immediately and active requests fail/drain cleanly.
+- **Zero-Config Developer Launcher**: One-command setup (`launch.sh` / `launch.bat`) manages builds, services, and the Web GUI with built-in Monaco editor and MCP tools.
 
-Current focus areas:
-- strengthening the end-to-end demo experience,
-- improving documentation for deployment and production use,
-- expanding real-world validation across more hardware and runtime setups.
+### Remaining Known Gaps
+- **arm64 Prebuilt Release Binaries**: Standalone prebuilt release artifacts are currently provided for x86_64; arm64 hosts (e.g. Apple Silicon, ARM Linux) build from source.
+- **GUI & Control Plane Release Packaging**: Prebuilt binaries package the core Rust engine (`ghost-link`); the Go control plane (`control-plane`) and React GUI (`ghostlink_gui_modern`) run via source/launchers.
+- **RPC Byte Stream Unencrypted**: `rpc_shared_secret` authenticates peer admission at the boundary, but the underlying `ggml-rpc` byte stream itself remains plain TCP without transport-layer encryption.
+- **Usable Multi-Node Speed Unproven**: While cross-machine VRAM capacity splitting is verified, high tokens-per-second throughput on network-bound split layers and zero-touch cluster orchestration across arbitrary networks are still in progress (see [docs/BENCHMARKS.md](docs/BENCHMARKS.md)).
 
 **Public launch assets:**
 - Live site: https://rwilliamspbg-ops.github.io/Ghostlink/
