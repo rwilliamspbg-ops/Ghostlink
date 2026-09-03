@@ -2267,12 +2267,19 @@ fn build_cluster_topology_json(
             } else {
                 1.0
             };
+            let local_cap_str = if local_vram > 0.0 {
+                format!("{:.0} GB VRAM", local_vram)
+            } else {
+                format!("{:.0} GB RAM (CPU)", local_ram)
+            };
             node_splits.push(serde_json::json!({
                 "node_id": local_node_id,
                 "label": local_node_id,
                 "weight": splits[0],
                 "percentage": local_share,
                 "vram_gb": local_vram,
+                "system_memory_gb": local_ram,
+                "capacity_label": local_cap_str,
             }));
 
             // Peers
@@ -2283,12 +2290,19 @@ fn build_cluster_topology_json(
                 } else {
                     0.0
                 };
+                let peer_cap_str = if peer.vram_gb > 0.0 {
+                    format!("{:.0} GB VRAM", peer.vram_gb)
+                } else {
+                    format!("{:.0} GB RAM (CPU)", peer.system_memory_gb)
+                };
                 node_splits.push(serde_json::json!({
                     "node_id": peer.node_id,
                     "label": peer.node_id,
                     "weight": p_weight,
                     "percentage": p_share,
                     "vram_gb": peer.vram_gb,
+                    "system_memory_gb": peer.system_memory_gb,
+                    "capacity_label": peer_cap_str,
                 }));
             }
 
@@ -2301,10 +2315,10 @@ fn build_cluster_topology_json(
                 .iter()
                 .map(|ns| {
                     format!(
-                        "{:.2} on {} ({:.0} GB)",
+                        "{:.2} on {} ({})",
                         ns["percentage"].as_f64().unwrap_or(0.0),
                         ns["label"].as_str().unwrap_or(""),
-                        ns["vram_gb"].as_f64().unwrap_or(0.0)
+                        ns["capacity_label"].as_str().unwrap_or("")
                     )
                 })
                 .collect();

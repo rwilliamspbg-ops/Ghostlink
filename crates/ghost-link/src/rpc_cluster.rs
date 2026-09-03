@@ -1244,36 +1244,39 @@ pub fn discover_rpc_peers(
     })
 }
 
+/// Conservative haircut constant applied to system RAM for CPU-only (0 VRAM) nodes.
+/// Scaling system RAM by 0.5 (50%) prevents OOMing CPU-only nodes while allowing
+/// CPU-only peers to accept a meaningful weight share when needed to fit models.
+pub const CPU_RAM_HAIRCUT: f32 = 0.5;
+
 /// Computes a `--tensor-split` ratio: the local device first, then each
 /// remote peer in the same order as `peers` — llama.cpp registers backend
 /// devices in exactly that order (local device(s), then `--rpc` targets in
 /// the order given), so the split array's positions must line up with it.
-/// Proportional to each device's reported VRAM; llama.cpp normalizes the
-/// values itself; these don't need to sum to 1.
 ///
-/// If *no* device in the split (local or any peer) reports real VRAM — an
-/// all-CPU-only cluster — falls back to a split proportional to system RAM
-/// instead. Without this, every device's weight floors to the same 0.1 and
-/// the split silently becomes uniform regardless of how differently capable
-/// the CPU-only nodes actually are, overloading the weaker one. RAM is only
-/// used as a fallback *within* an all-CPU-only split (comparing RAM against
-/// another node's real VRAM would need an unmeasured GPU/CPU conversion
-/// factor this repo hasn't benchmarked — see docs/LOCAL_INFERENCE_TUNING.md's
-/// "measure, don't guess" stance) — a mixed GPU/CPU cluster still uses the
-/// plain VRAM-with-0.1-floor behavior for its CPU-only members.
+/// Shares are computed based on weighted capacity:
+/// - Discrete GPU nodes use reported VRAM (in GB) when VRAM > 0.
+/// - CPU-only nodes (0 VRAM) use system RAM scaled by `CPU_RAM_HAIRCUT` (0.5).
+/// - Every device weight is floored at 0.1 to avoid a dead device entry.
 pub fn compute_tensor_split(
     local_vram_gb: f32,
     local_system_memory_gb: f32,
     peers: &[RpcPeer],
 ) -> Vec<f32> {
-    let all_vram_unreported = local_vram_gb <= 0.0 && peers.iter().all(|p| p.vram_gb <= 0.0);
-    if all_vram_unreported {
-        let mut split = vec![local_system_memory_gb.max(0.1)];
-        split.extend(peers.iter().map(|p| p.system_memory_gb.max(0.1)));
-        return split;
-    }
-    let mut split = vec![local_vram_gb.max(0.1)];
-    split.extend(peers.iter().map(|p| p.vram_gb.max(0.1)));
+    let calc_weight = |vram: f32, ram: f32| -> f32 {
+        if vram > 0.0 {
+            vram.max(0.1)
+        } else {
+            (ram * CPU_RAM_HAIRCUT).max(0.1)
+        }
+    };
+
+    let mut split = vec![calc_weight(local_vram_gb, local_system_memory_gb)];
+    split.extend(
+        peers
+            .iter()
+            .map(|p| calc_weight(p.vram_gb, p.system_memory_gb)),
+    );
     split
 }
 
@@ -1648,44 +1651,61 @@ mod tests {
     }
 
     #[test]
-    fn tensor_split_falls_back_to_ram_proportional_when_no_device_reports_vram() {
-        // All-CPU-only cluster: every peer's vram_gb is 0, so the plain
-        // VRAM-with-0.1-floor path would previously produce a uniform
-        // 0.1/0.1/0.1 split regardless of how differently capable these
-        // nodes actually are. RAM should drive the split instead.
-        let peers = vec![
-            RpcPeer {
-                node_id: "a".to_string(),
-                addr: loopback(1),
-                vram_gb: 0.0,
-                system_memory_gb: 32.0,
-            },
-            RpcPeer {
-                node_id: "b".to_string(),
-                addr: loopback(2),
-                vram_gb: 0.0,
-                system_memory_gb: 8.0,
-            },
-        ];
-        let split = compute_tensor_split(0.0, 64.0, &peers);
-        assert_eq!(split, vec![64.0, 32.0, 8.0]);
+    fn tensor_split_two_gpus() {
+        let peers = vec![RpcPeer {
+            node_id: "peer-gpu".to_string(),
+            addr: loopback(1),
+            vram_gb: 12.0,
+            system_memory_gb: 32.0,
+        }];
+        let split = compute_tensor_split(16.0, 64.0, &peers);
+        assert_eq!(split, vec![16.0, 12.0]);
     }
 
     #[test]
-    fn tensor_split_uses_vram_floor_not_ram_when_cluster_is_mixed() {
-        // Mixed cluster: local device has real VRAM, so even a CPU-only
-        // peer (0 VRAM) must stay on the plain VRAM-with-0.1-floor path,
-        // not get promoted to a RAM-proportional weight — comparing RAM
-        // directly against another device's VRAM would need an unmeasured
-        // conversion factor this repo hasn't benchmarked.
+    fn tensor_split_gpu_plus_zero_vram_high_ram() {
+        // Coordinator GPU (16 GB VRAM), peer 0 VRAM high RAM (64 GB system RAM).
+        // Peer RAM is scaled by CPU_RAM_HAIRCUT (0.5), yielding weight 32.0.
         let peers = vec![RpcPeer {
-            node_id: "a".to_string(),
+            node_id: "peer-cpu".to_string(),
             addr: loopback(1),
             vram_gb: 0.0,
-            system_memory_gb: 128.0,
+            system_memory_gb: 64.0,
         }];
         let split = compute_tensor_split(16.0, 32.0, &peers);
-        assert_eq!(split, vec![16.0, 0.1]);
+        assert_eq!(split, vec![16.0, 32.0]);
+    }
+
+    #[test]
+    fn tensor_split_two_zero_vram_nodes() {
+        // Both nodes are 0 VRAM CPU-only (Coordinator 64 GB RAM, Peer 32 GB RAM).
+        // Both scaled by CPU_RAM_HAIRCUT (0.5): 32.0 and 16.0.
+        let peers = vec![RpcPeer {
+            node_id: "peer-cpu".to_string(),
+            addr: loopback(1),
+            vram_gb: 0.0,
+            system_memory_gb: 32.0,
+        }];
+        let split = compute_tensor_split(0.0, 64.0, &peers);
+        assert_eq!(split, vec![32.0, 16.0]);
+    }
+
+    #[test]
+    fn tensor_split_model_larger_than_coordinator_vram() {
+        // Model requires e.g. 24 GB, but coordinator only has 8 GB VRAM.
+        // Peer CPU node has 64 GB RAM (effective weight 32 GB).
+        // Total cluster weight = 40.0, coordinator share = 8/40 = 20%, peer share = 32/40 = 80%.
+        let peers = vec![RpcPeer {
+            node_id: "peer-cpu-large".to_string(),
+            addr: loopback(1),
+            vram_gb: 0.0,
+            system_memory_gb: 64.0,
+        }];
+        let split = compute_tensor_split(8.0, 16.0, &peers);
+        assert_eq!(split, vec![8.0, 32.0]);
+        let total_weight: f32 = split.iter().sum();
+        let peer_share = split[1] / total_weight;
+        assert_eq!(peer_share, 0.8);
     }
 
     #[test]
