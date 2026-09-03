@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import { MetricsTab } from './MetricsTab';
 import { useAppStore } from '../store';
 
@@ -155,5 +155,26 @@ describe('MetricsTab', () => {
     });
     rerender(<MetricsTab api={api} />);
     expect(screen.getByLabelText('Export metrics history as CSV')).toBeDisabled();
+  });
+
+  it('triggers a toast notification upon CSV export', () => {
+    const addToastSpy = vi.fn();
+    useAppStore.setState({
+      addToast: addToastSpy,
+    });
+    const api = createMockApi();
+    render(<MetricsTab api={api} />);
+
+    // Mock URL.createObjectURL and URL.revokeObjectURL for jsdom environment
+    window.URL.createObjectURL = vi.fn().mockReturnValue('blob:mock-url');
+    window.URL.revokeObjectURL = vi.fn();
+
+    const exportBtn = screen.getByLabelText('Export metrics history as CSV');
+    fireEvent.click(exportBtn);
+
+    expect(addToastSpy).toHaveBeenCalledWith({
+      type: 'success',
+      message: 'Exported 3 metrics samples to CSV.',
+    });
   });
 });
