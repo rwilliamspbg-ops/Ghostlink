@@ -5,13 +5,13 @@
 //! Security-tab feed exactly as before — fast, restart-reset, capped at
 //! `AUDIT_LOG_CAP`. This module adds what it was missing: an append-only,
 //! on-disk trail (`append_durable`/`read_all_durable`) that survives a
-//! restart and isn't capped, plus a CEF (Common Event Format) export path
-//! for SIEM ingestion, matching `docs/ROADMAP.md`'s Enterprise Trust Track
-//! item #3.
+//! restart, bounded with file rotation and retention controls, plus a CEF
+//! (Common Event Format) export path for SIEM ingestion, matching
+//! `docs/ROADMAP.md`'s Enterprise Trust Track item #3.
 
 use serde::{Deserialize, Serialize};
 use std::io::{BufRead, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// One row for the GUI's Security tab audit log — field names/shape match
 /// what `SecurityTab.tsx` already expects (it predates a real backend for
@@ -30,6 +30,10 @@ pub struct AuditLogEntry {
 
 pub const AUDIT_LOG_CAP: usize = 500;
 
+pub const DEFAULT_AUDIT_LOG_MAX_BYTES: u64 = 10 * 1024 * 1024; // 10 MB
+pub const DEFAULT_AUDIT_LOG_MAX_LINES: usize = 0; // 0 = disabled
+pub const DEFAULT_AUDIT_LOG_MAX_FILES: usize = 5; // retain 5 rotated files
+
 /// Appends one entry and trims from the front once over `AUDIT_LOG_CAP` —
 /// split out from `record_audit_event` (`main.rs`) so it's unit-testable
 /// against a bare `VecDeque` without needing to construct a full
@@ -47,12 +51,110 @@ fn audit_log_path() -> PathBuf {
         .unwrap_or_else(|_| PathBuf::from("audit_log.jsonl"))
 }
 
-/// Appends one entry to the durable, append-only, restart-surviving audit
-/// trail — one JSON object per line (JSONL: trivial to append to, trivial
-/// to `tail`/`grep`, no schema-migration machinery needed). Best-effort:
-/// warns rather than failing the caller's request on a write error, the
-/// same tradeoff every other persistence function in this codebase makes
-/// (`save_settings`, `save_api_keys`, ...).
+fn audit_log_max_bytes() -> u64 {
+    std::env::var("GHOSTLINK_AUDIT_LOG_MAX_BYTES")
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .unwrap_or(DEFAULT_AUDIT_LOG_MAX_BYTES)
+}
+
+fn audit_log_max_lines() -> usize {
+    std::env::var("GHOSTLINK_AUDIT_LOG_MAX_LINES")
+        .ok()
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .unwrap_or(DEFAULT_AUDIT_LOG_MAX_LINES)
+}
+
+fn audit_log_max_files() -> usize {
+    std::env::var("GHOSTLINK_AUDIT_LOG_MAX_FILES")
+        .ok()
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .unwrap_or(DEFAULT_AUDIT_LOG_MAX_FILES)
+}
+
+fn rotated_path(base_path: &Path, index: usize) -> PathBuf {
+    let mut os_string = base_path.as_os_str().to_os_string();
+    os_string.push(format!(".{index}"));
+    PathBuf::from(os_string)
+}
+
+fn count_file_lines(path: &Path) -> usize {
+    let Ok(file) = std::fs::File::open(path) else {
+        return 0;
+    };
+    std::io::BufReader::new(file).lines().count()
+}
+
+fn should_rotate(path: &Path) -> bool {
+    let Ok(meta) = std::fs::metadata(path) else {
+        return false;
+    };
+    let file_bytes = meta.len();
+    if file_bytes == 0 {
+        return false;
+    }
+
+    let max_bytes = audit_log_max_bytes();
+    if max_bytes > 0 && file_bytes >= max_bytes {
+        return true;
+    }
+
+    let max_lines = audit_log_max_lines();
+    if max_lines > 0 && count_file_lines(path) >= max_lines {
+        return true;
+    }
+
+    false
+}
+
+fn rotate_audit_log(path: &Path) {
+    let max_files = audit_log_max_files();
+    if max_files == 0 {
+        if path.exists() {
+            let _ = std::fs::remove_file(path);
+        }
+        return;
+    }
+
+    // Shift existing rotated files from max_files - 1 down to 1
+    for i in (1..max_files).rev() {
+        let src = rotated_path(path, i);
+        let dst = rotated_path(path, i + 1);
+        if src.exists() {
+            if dst.exists() {
+                let _ = std::fs::remove_file(&dst);
+            }
+            let _ = std::fs::rename(&src, &dst);
+        }
+    }
+
+    // Move active path to path.1
+    if path.exists() {
+        let dst = rotated_path(path, 1);
+        if dst.exists() {
+            let _ = std::fs::remove_file(&dst);
+        }
+        let _ = std::fs::rename(path, dst);
+    }
+
+    // Purge any excess rotated files beyond max_files
+    let mut excess = max_files + 1;
+    loop {
+        let excess_path = rotated_path(path, excess);
+        if excess_path.exists() {
+            let _ = std::fs::remove_file(&excess_path);
+            excess += 1;
+        } else {
+            break;
+        }
+    }
+}
+
+/// Appends one entry to the durable, restart-surviving audit trail —
+/// one JSON object per line (JSONL). Applies rotation and retention policies
+/// (`GHOSTLINK_AUDIT_LOG_MAX_BYTES`, `GHOSTLINK_AUDIT_LOG_MAX_LINES`,
+/// `GHOSTLINK_AUDIT_LOG_MAX_FILES`). Best-effort: warns rather than failing
+/// the caller's request on a write error.
 pub fn append_durable(entry: &AuditLogEntry) {
     let line = match serde_json::to_string(entry) {
         Ok(l) => l,
@@ -62,6 +164,17 @@ pub fn append_durable(entry: &AuditLogEntry) {
         }
     };
     let path = audit_log_path();
+
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() && !parent.exists() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+    }
+
+    if should_rotate(&path) {
+        rotate_audit_log(&path);
+    }
+
     let result = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -75,14 +188,8 @@ pub fn append_durable(entry: &AuditLogEntry) {
     }
 }
 
-/// Reads the full durable audit trail (not just the capped in-memory live
-/// view). A line that fails to parse (a truncated write, a manual edit, a
-/// future format change) is skipped with a warning rather than failing the
-/// whole read — one bad line shouldn't hide the rest of a real security
-/// trail. No file yet is not an error: an empty trail, not a failure.
-pub fn read_all_durable() -> Vec<AuditLogEntry> {
-    let path = audit_log_path();
-    let file = match std::fs::File::open(&path) {
+fn read_entries_from_file(path: &Path) -> Vec<AuditLogEntry> {
+    let file = match std::fs::File::open(path) {
         Ok(f) => f,
         Err(_) => return Vec::new(),
     };
@@ -93,16 +200,52 @@ pub fn read_all_durable() -> Vec<AuditLogEntry> {
             Ok(l) => match serde_json::from_str::<AuditLogEntry>(&l) {
                 Ok(entry) => Some(entry),
                 Err(err) => {
-                    tracing::warn!("audit_log: skipping unparseable line in durable trail: {err}");
+                    tracing::warn!(
+                        "audit_log: skipping unparseable line in durable trail at {}: {err}",
+                        path.display()
+                    );
                     None
                 }
             },
             Err(err) => {
-                tracing::warn!("audit_log: skipping unreadable line in durable trail: {err}");
+                tracing::warn!(
+                    "audit_log: skipping unreadable line in durable trail at {}: {err}",
+                    path.display()
+                );
                 None
             }
         })
         .collect()
+}
+
+/// Reads the full durable audit trail across active and retained rotated files.
+/// Entries are returned in chronological order (oldest rotated files first, then active file).
+/// Unparseable or unreadable lines are skipped with a warning.
+pub fn read_all_durable() -> Vec<AuditLogEntry> {
+    let path = audit_log_path();
+    let mut files_to_read = Vec::new();
+
+    let max_files = audit_log_max_files();
+    let max_check = max_files.max(100);
+    let mut existing_indices = Vec::new();
+    for k in 1..=max_check {
+        let p = rotated_path(&path, k);
+        if p.exists() {
+            existing_indices.push(k);
+        }
+    }
+    existing_indices.sort_unstable_by(|a, b| b.cmp(a));
+
+    for k in existing_indices {
+        files_to_read.push(rotated_path(&path, k));
+    }
+    files_to_read.push(path);
+
+    let mut all_entries = Vec::new();
+    for file_path in files_to_read {
+        all_entries.extend(read_entries_from_file(&file_path));
+    }
+    all_entries
 }
 
 /// CEF severity (0-10 scale): a successful event is informational,
@@ -288,6 +431,168 @@ mod tests {
         assert!(read_all_durable().is_empty());
 
         std::env::remove_var("GHOSTLINK_AUDIT_LOG_PATH");
+    }
+
+    #[test]
+    fn append_durable_rotates_and_retains_by_max_lines() {
+        let _guard = env_lock().lock().expect("env lock poisoned");
+        let temp_dir = std::env::temp_dir();
+        let path = temp_dir.join(format!(
+            "ghostlink-test-audit-rotate-lines-{}.jsonl",
+            std::process::id()
+        ));
+
+        // Clean up any test artifacts
+        let _ = std::fs::remove_file(&path);
+        for i in 1..=10 {
+            let _ = std::fs::remove_file(rotated_path(&path, i));
+        }
+
+        std::env::set_var("GHOSTLINK_AUDIT_LOG_PATH", &path);
+        std::env::set_var("GHOSTLINK_AUDIT_LOG_MAX_LINES", "2");
+        std::env::set_var("GHOSTLINK_AUDIT_LOG_MAX_FILES", "2");
+
+        // Write 6 entries.
+        // Entry 1, 2 -> path (file has 2 lines)
+        // Entry 3 -> triggers rotation! path -> path.1, entry 3 written to path (1 line)
+        // Entry 4 -> path (2 lines)
+        // Entry 5 -> triggers rotation! path.1 -> path.2, path -> path.1, entry 5 written to path (1 line)
+        // Entry 6 -> path (2 lines)
+        for i in 1..=6 {
+            append_durable(&sample(&format!("event-{i}"), "SUCCESS", None));
+        }
+
+        assert!(path.exists(), "active file must exist");
+        assert!(rotated_path(&path, 1).exists(), "path.1 must exist");
+        assert!(rotated_path(&path, 2).exists(), "path.2 must exist");
+        assert!(
+            !rotated_path(&path, 3).exists(),
+            "path.3 must NOT exist because max_files is 2"
+        );
+
+        let all_entries = read_all_durable();
+        // Since entries 1, 2 rotated to path.2 then got purged when entry 5 rotated path.1 -> path.2 and old path.2 was dropped!
+        // Wait, let's trace:
+        // Entry 1, 2 written -> path has [e1, e2]
+        // Entry 3 written -> path had 2 lines >= max_lines(2). Rotates: path -> path.1. path has [e3].
+        // Entry 4 written -> path has [e3, e4] (2 lines).
+        // Entry 5 written -> path had 2 lines >= max_lines(2). Rotates: path.1 -> path.2, path -> path.1. path has [e5].
+        // Entry 6 written -> path has [e5, e6] (2 lines).
+        // Rotated files retained:
+        // path.2 has [e1, e2]
+        // path.1 has [e3, e4]
+        // path has [e5, e6]
+        // Total entries retained = 6!
+        assert_eq!(all_entries.len(), 6);
+        assert_eq!(all_entries[0].event, "event-1");
+        assert_eq!(all_entries[5].event, "event-6");
+
+        // Now append entry 7:
+        // path has 2 lines >= max_lines(2). Rotates:
+        // path.2 (which has [e1, e2]) is purged because max_files=2.
+        // path.1 ([e3, e4]) -> path.2
+        // path ([e5, e6]) -> path.1
+        // path gets [e7].
+        append_durable(&sample("event-7", "SUCCESS", None));
+        let entries_after_7 = read_all_durable();
+        assert_eq!(
+            entries_after_7.len(),
+            5,
+            "e1 and e2 must be purged beyond retention limit"
+        );
+        assert_eq!(entries_after_7[0].event, "event-3");
+        assert_eq!(entries_after_7[4].event, "event-7");
+
+        std::env::remove_var("GHOSTLINK_AUDIT_LOG_PATH");
+        std::env::remove_var("GHOSTLINK_AUDIT_LOG_MAX_LINES");
+        std::env::remove_var("GHOSTLINK_AUDIT_LOG_MAX_FILES");
+        let _ = std::fs::remove_file(&path);
+        for i in 1..=10 {
+            let _ = std::fs::remove_file(rotated_path(&path, i));
+        }
+    }
+
+    #[test]
+    fn append_durable_rotates_by_max_bytes() {
+        let _guard = env_lock().lock().expect("env lock poisoned");
+        let temp_dir = std::env::temp_dir();
+        let path = temp_dir.join(format!(
+            "ghostlink-test-audit-rotate-bytes-{}.jsonl",
+            std::process::id()
+        ));
+
+        let _ = std::fs::remove_file(&path);
+        for i in 1..=10 {
+            let _ = std::fs::remove_file(rotated_path(&path, i));
+        }
+
+        std::env::set_var("GHOSTLINK_AUDIT_LOG_PATH", &path);
+        // Each JSON line for sample is ~100 bytes. Set max_bytes = 150.
+        std::env::set_var("GHOSTLINK_AUDIT_LOG_MAX_BYTES", "150");
+        std::env::set_var("GHOSTLINK_AUDIT_LOG_MAX_FILES", "2");
+
+        append_durable(&sample("byte-event-1", "SUCCESS", None));
+        append_durable(&sample("byte-event-2", "SUCCESS", None)); // file size ~200 > 150
+        append_durable(&sample("byte-event-3", "SUCCESS", None)); // triggers rotation!
+
+        assert!(path.exists());
+        assert!(rotated_path(&path, 1).exists());
+
+        let entries = read_all_durable();
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[0].event, "byte-event-1");
+        assert_eq!(entries[2].event, "byte-event-3");
+
+        std::env::remove_var("GHOSTLINK_AUDIT_LOG_PATH");
+        std::env::remove_var("GHOSTLINK_AUDIT_LOG_MAX_BYTES");
+        std::env::remove_var("GHOSTLINK_AUDIT_LOG_MAX_FILES");
+        let _ = std::fs::remove_file(&path);
+        for i in 1..=10 {
+            let _ = std::fs::remove_file(rotated_path(&path, i));
+        }
+    }
+
+    #[test]
+    fn append_durable_purges_excess_rotated_files() {
+        let _guard = env_lock().lock().expect("env lock poisoned");
+        let temp_dir = std::env::temp_dir();
+        let path = temp_dir.join(format!(
+            "ghostlink-test-audit-purge-excess-{}.jsonl",
+            std::process::id()
+        ));
+
+        let _ = std::fs::remove_file(&path);
+        for i in 1..=10 {
+            let _ = std::fs::remove_file(rotated_path(&path, i));
+        }
+
+        // Manually create files .1, .2, .3, .4
+        std::fs::write(&path, "active\n").unwrap();
+        std::fs::write(rotated_path(&path, 1), "rot1\n").unwrap();
+        std::fs::write(rotated_path(&path, 2), "rot2\n").unwrap();
+        std::fs::write(rotated_path(&path, 3), "rot3\n").unwrap();
+        std::fs::write(rotated_path(&path, 4), "rot4\n").unwrap();
+
+        std::env::set_var("GHOSTLINK_AUDIT_LOG_PATH", &path);
+        std::env::set_var("GHOSTLINK_AUDIT_LOG_MAX_LINES", "1");
+        std::env::set_var("GHOSTLINK_AUDIT_LOG_MAX_FILES", "2");
+
+        // Appending will trigger rotation because active file has 1 line >= max_lines 1.
+        append_durable(&sample("purge-trigger", "SUCCESS", None));
+
+        // max_files is 2. Rotated files .1 and .2 should exist. .3 and .4 should be purged!
+        assert!(rotated_path(&path, 1).exists());
+        assert!(rotated_path(&path, 2).exists());
+        assert!(!rotated_path(&path, 3).exists(), ".3 must be purged");
+        assert!(!rotated_path(&path, 4).exists(), ".4 must be purged");
+
+        std::env::remove_var("GHOSTLINK_AUDIT_LOG_PATH");
+        std::env::remove_var("GHOSTLINK_AUDIT_LOG_MAX_LINES");
+        std::env::remove_var("GHOSTLINK_AUDIT_LOG_MAX_FILES");
+        let _ = std::fs::remove_file(&path);
+        for i in 1..=10 {
+            let _ = std::fs::remove_file(rotated_path(&path, i));
+        }
     }
 
     #[test]

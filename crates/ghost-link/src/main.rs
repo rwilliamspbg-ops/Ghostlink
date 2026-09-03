@@ -63,6 +63,7 @@ struct FileConfig {
     discovery: Option<DiscoveryDefaults>,
     tcp: Option<TcpDefaults>,
     gui: Option<GuiDefaults>,
+    audit: Option<AuditDefaults>,
     #[allow(dead_code)]
     #[serde(default)]
     compute: Option<toml::Value>,
@@ -111,6 +112,15 @@ struct TcpDefaults {
 #[serde(deny_unknown_fields)]
 struct GuiDefaults {
     python: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AuditDefaults {
+    path: Option<String>,
+    max_bytes: Option<u64>,
+    max_lines: Option<usize>,
+    max_files: Option<usize>,
 }
 
 #[derive(Debug)]
@@ -336,6 +346,21 @@ fn apply_file_config_to_env(config: &FileConfig) {
             if should_apply_gui_python_override(value) {
                 set_env_if_absent("GHOSTLINK_PYTHON", value.clone());
             }
+        }
+    }
+
+    if let Some(audit) = &config.audit {
+        if let Some(value) = &audit.path {
+            set_env_if_absent("GHOSTLINK_AUDIT_LOG_PATH", value.clone());
+        }
+        if let Some(value) = audit.max_bytes {
+            set_env_if_absent("GHOSTLINK_AUDIT_LOG_MAX_BYTES", value.to_string());
+        }
+        if let Some(value) = audit.max_lines {
+            set_env_if_absent("GHOSTLINK_AUDIT_LOG_MAX_LINES", value.to_string());
+        }
+        if let Some(value) = audit.max_files {
+            set_env_if_absent("GHOSTLINK_AUDIT_LOG_MAX_FILES", value.to_string());
         }
     }
 }
@@ -12490,10 +12515,22 @@ mod tests {
         };
         config.gui = Some(gui);
 
+        let audit = AuditDefaults {
+            path: Some("/tmp/custom_audit.jsonl".to_string()),
+            max_bytes: Some(1048576),
+            max_lines: Some(500),
+            max_files: Some(3),
+        };
+        config.audit = Some(audit);
+
         std::env::remove_var("GHOSTLINK_FLOW_DEFAULT_LOCAL_ID");
         std::env::remove_var("GHOSTLINK_FLOW_DEFAULT_REMOTE_VRAM_GB");
         std::env::remove_var("GHOSTLINK_CLUSTER_START_DEFAULT_NODE_COUNT");
         std::env::remove_var("GHOSTLINK_PYTHON");
+        std::env::remove_var("GHOSTLINK_AUDIT_LOG_PATH");
+        std::env::remove_var("GHOSTLINK_AUDIT_LOG_MAX_BYTES");
+        std::env::remove_var("GHOSTLINK_AUDIT_LOG_MAX_LINES");
+        std::env::remove_var("GHOSTLINK_AUDIT_LOG_MAX_FILES");
 
         apply_file_config_to_env(&config);
 
@@ -12514,10 +12551,28 @@ mod tests {
             "/usr/bin/python3.11"
         );
 
+        assert_eq!(
+            std::env::var("GHOSTLINK_AUDIT_LOG_PATH").unwrap(),
+            "/tmp/custom_audit.jsonl"
+        );
+        assert_eq!(
+            std::env::var("GHOSTLINK_AUDIT_LOG_MAX_BYTES").unwrap(),
+            "1048576"
+        );
+        assert_eq!(
+            std::env::var("GHOSTLINK_AUDIT_LOG_MAX_LINES").unwrap(),
+            "500"
+        );
+        assert_eq!(std::env::var("GHOSTLINK_AUDIT_LOG_MAX_FILES").unwrap(), "3");
+
         std::env::remove_var("GHOSTLINK_FLOW_DEFAULT_LOCAL_ID");
         std::env::remove_var("GHOSTLINK_FLOW_DEFAULT_REMOTE_VRAM_GB");
         std::env::remove_var("GHOSTLINK_CLUSTER_START_DEFAULT_NODE_COUNT");
         std::env::remove_var("GHOSTLINK_PYTHON");
+        std::env::remove_var("GHOSTLINK_AUDIT_LOG_PATH");
+        std::env::remove_var("GHOSTLINK_AUDIT_LOG_MAX_BYTES");
+        std::env::remove_var("GHOSTLINK_AUDIT_LOG_MAX_LINES");
+        std::env::remove_var("GHOSTLINK_AUDIT_LOG_MAX_FILES");
     }
 
     #[test]

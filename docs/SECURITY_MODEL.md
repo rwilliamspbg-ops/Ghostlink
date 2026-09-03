@@ -53,16 +53,18 @@ This document summarizes current security assumptions for Ghost-Link runtime and
   cluster's nodes is a manual, opt-in step. This does **not** encrypt the RPC
   byte stream itself (upstream llama.cpp's `--rpc` client leaves no protocol
   slot for that); it is a peer-admission control, not transport encryption.
-- **Durable, append-only audit trail with CEF/JSON export** (since 2.0.0,
+- **Durable, bounded audit trail with CEF/JSON export and rotation** (since 2.0.0,
   `crates/ghost-link/src/audit_log.rs`): every audit event (auth failures,
   JWT refresh, PQC enable, key management, tool-call approve/deny) is written
   as a JSON line to `audit_log.jsonl` (`GHOSTLINK_AUDIT_LOG_PATH` override),
   in addition to the capped in-memory feed the GUI's Security tab reads live.
   `GET /api/security/audit-log/export?format=json|cef` returns the full
-  durable history in JSON or Common Event Format for SIEM ingestion, and is
-  gated `Admin`-only (the live capped feed remains `Viewer`-accessible). The
-  durable file has **no built-in cap, rotation, or retention policy** — plan
-  disk monitoring and log rotation for long-running deployments.
+  retained history across active and rotated files in JSON or Common Event Format
+  for SIEM ingestion, and is gated `Admin`-only (the live capped feed remains
+  `Viewer`-accessible). Active audit log files are automatically capped and rotated
+  (`audit_log.jsonl.1` .. `.N`) based on byte size (`GHOSTLINK_AUDIT_LOG_MAX_BYTES`, default 10MB)
+  or line count (`GHOSTLINK_AUDIT_LOG_MAX_LINES`, default disabled), and retained up to a
+  configurable file limit (`GHOSTLINK_AUDIT_LOG_MAX_FILES`, default 5 files) before purging older archives.
 - **Opt-in OpenTelemetry tracing export** (since 2.0.0, `crates/ghost-link/src/otel.rs`):
   gated entirely on `GHOSTLINK_OTEL_EXPORTER_ENDPOINT` — unset, behavior is
   unchanged from prior releases. When set, HTTP requests and the distributed-
@@ -122,5 +124,3 @@ Future security milestones should include:
   itself — this remains the open gap.
 - Enforced deprecation timeline for legacy CRC32 compatibility mode.
 - Formal threat model review cadence tied to release checkpoints.
-- Retention/rotation policy for the durable audit trail (`audit_log.jsonl`)
-  — it is unbounded and append-only today.

@@ -8,6 +8,12 @@ All notable changes to Ghostlink Studio are documented here.
 
 ## [Unreleased]
 
+- **Audit Log Capping, Rotation, and Retention**:
+  - Implemented file capping (`GHOSTLINK_AUDIT_LOG_MAX_BYTES`, default 10MB; `GHOSTLINK_AUDIT_LOG_MAX_LINES`, default disabled) and automatic file rotation (`audit_log.jsonl.1` .. `.N`) for the durable on-disk audit log.
+  - Implemented retention purging (`GHOSTLINK_AUDIT_LOG_MAX_FILES`, default 5 files) to prevent unbounded disk growth.
+  - Added support for `[audit]` configuration table in `ghostlink.toml` (`path`, `max_bytes`, `max_lines`, `max_files`).
+  - Updated `read_all_durable()` and SIEM export endpoints (`GET /api/security/audit-log/export?format=json|cef`) to read across active and retained rotated log files in chronological order.
+
 - **Drain and Restart on Contributor Loss for Serving Path**:
   - Implemented continuous rebalancing / resilience for the real llama-server RPC serving path (InferenceEngine::Native).
   - Added active --rpc target tracking in NativeEngineClient (active_rpc_servers()) and contributor health checking in rpc_cluster::check_active_rpc_peers_healthy.
