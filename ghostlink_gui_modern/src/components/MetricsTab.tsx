@@ -25,7 +25,7 @@ interface BackendStatus {
 }
 
 export const MetricsTab: React.FC<{ api: any }> = React.memo(({ api }) => {
-  const { metrics, setMetrics, metricsHistory, workers } = useAppStore();
+  const { metrics, setMetrics, metricsHistory, workers, addToast } = useAppStore();
   const [loading, setLoading] = React.useState(false);
   const [history, setHistory] = React.useState<MetricsHistoryPoint[]>([]);
 
@@ -106,6 +106,7 @@ export const MetricsTab: React.FC<{ api: any }> = React.memo(({ api }) => {
     a.download = `ghostlink-metrics-${new Date().toISOString().replace(/[:.]/g, '-')}.csv`;
     a.click();
     URL.revokeObjectURL(url);
+    addToast({ type: 'success', message: `Exported ${metricsHistory.length} metrics samples to CSV.` });
   };
 
   const throughputHistory = useMemo(() => metricsHistory.map((m) => m.throughput ?? 0), [metricsHistory]);

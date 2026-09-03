@@ -404,6 +404,7 @@ function App() {
             <button
                 ref={sidebarOpenButtonRef}
                 onClick={() => setSidebarOpen(true)}
+                title="Open sidebar"
                 aria-label="Open sidebar"
                 aria-expanded={false}
                 aria-controls="primary-sidebar"
@@ -416,6 +417,7 @@ function App() {
         {sidebarOpen && (
             <button
                 onClick={() => setSidebarOpen(false)}
+                title="Collapse sidebar"
                 aria-label="Collapse sidebar"
                 aria-expanded={true}
                 aria-controls="primary-sidebar"
