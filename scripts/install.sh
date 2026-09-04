@@ -3,7 +3,7 @@
 #
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/rwilliamspbg-ops/Ghostlink/main/scripts/install.sh | sh
-#   VERSION=v1.16.1 sh install.sh          # install a specific release instead of latest
+#   VERSION=v2.2.0 sh install.sh          # install a specific release instead of latest
 #   GHOSTLINK_INSTALL_DIR=/opt/bin sh install.sh   # install somewhere other than ~/.local/bin
 #
 # This downloads the prebuilt `ghost-link` binary from this repo's GitHub

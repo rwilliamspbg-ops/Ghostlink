@@ -29,7 +29,7 @@
         anything wrong.
 
 .PARAMETER Version
-    Release tag to install, e.g. "v1.16.1". Defaults to $env:VERSION, or
+    Release tag to install, e.g. "v2.2.0". Defaults to $env:VERSION, or
     the latest release if neither is set.
 
 .PARAMETER InstallDir
@@ -40,7 +40,7 @@
     irm https://raw.githubusercontent.com/rwilliamspbg-ops/Ghostlink/main/scripts/install.ps1 | iex
 
 .EXAMPLE
-    $env:VERSION = "v1.16.1"
+    $env:VERSION = "v2.2.0"
     irm https://raw.githubusercontent.com/rwilliamspbg-ops/Ghostlink/main/scripts/install.ps1 | iex
 #>
 [CmdletBinding()]
