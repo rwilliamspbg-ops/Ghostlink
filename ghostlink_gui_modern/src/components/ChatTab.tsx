@@ -635,8 +635,9 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
               onClick={() => setShowSidebar(false)}
               className="p-1.5 text-slate-400 hover:text-white rounded-lg hover:bg-slate-900 transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
               title="Close sidebar"
+              aria-label="Close sidebar"
             >
-              <PanelLeftClose size={16} />
+              <PanelLeftClose size={16} aria-hidden="true" />
             </button>
           </div>
 
@@ -735,8 +736,9 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                 onClick={() => setShowSidebar(true)}
                 className="p-1.5 text-slate-400 hover:text-white rounded-lg hover:bg-slate-900 transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
                 title="Open sidebar"
+                aria-label="Open sidebar"
               >
-                <PanelLeft size={16} />
+                <PanelLeft size={16} aria-hidden="true" />
               </button>
             )}
 
@@ -818,8 +820,10 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                 showKnobs ? "bg-slate-800 text-white" : "hover:bg-slate-900"
               }`}
               title="Per-thread settings & system prompt presets"
+              aria-label={showKnobs ? "Hide thread settings" : "Show thread settings"}
+              aria-expanded={showKnobs}
             >
-              <SlidersHorizontal size={16} />
+              <SlidersHorizontal size={16} aria-hidden="true" />
             </button>
           </div>
         </div>
@@ -1081,8 +1085,9 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                                 }}
                                 className="p-1 hover:text-white rounded transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
                                 title="Edit message"
+                                aria-label="Edit message"
                               >
-                                <Pencil size={14} />
+                                <Pencil size={14} aria-hidden="true" />
                               </button>
                             ) : (
                               <>
@@ -1090,8 +1095,9 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                                   onClick={() => handleRegenerateAssistant(m.id)}
                                   className="p-1 hover:text-white rounded transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
                                   title="Regenerate assistant response"
+                                  aria-label="Regenerate response"
                                 >
-                                  <RotateCcw size={14} />
+                                  <RotateCcw size={14} aria-hidden="true" />
                                 </button>
                                 <button
                                   onClick={() => handleRating(m.id, "up")}
@@ -1102,7 +1108,7 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                                   aria-pressed={messageRatings[m.id] === "up"}
                                   title="Good response"
                                 >
-                                  <ThumbsUp size={14} />
+                                  <ThumbsUp size={14} aria-hidden="true" />
                                 </button>
                                 <button
                                   onClick={() => handleRating(m.id, "down")}
@@ -1113,7 +1119,7 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                                   aria-pressed={messageRatings[m.id] === "down"}
                                   title="Poor response"
                                 >
-                                  <ThumbsDown size={14} />
+                                  <ThumbsDown size={14} aria-hidden="true" />
                                 </button>
                               </>
                             )}
@@ -1122,8 +1128,9 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                               onClick={() => handleDeleteMessage(m.id)}
                               className="p-1 hover:text-red-400 rounded transition ml-auto focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
                               title="Delete message"
+                              aria-label="Delete message"
                             >
-                              <Trash2 size={14} />
+                              <Trash2 size={14} aria-hidden="true" />
                             </button>
                           </div>
                         </div>
@@ -1155,9 +1162,11 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
               </span>
               <button
                 onClick={() => setShowPromptLibrary(false)}
-                className="text-slate-400 hover:text-white"
+                className="text-slate-400 hover:text-white focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none rounded"
+                aria-label="Close prompt templates library"
+                title="Close"
               >
-                <X size={14} />
+                <X size={14} aria-hidden="true" />
               </button>
             </div>
             <div className="mt-3 max-h-48 overflow-y-auto space-y-1.5">
@@ -1199,9 +1208,11 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                     <span className="truncate max-w-[150px]">{a.name}</span>
                     <button
                       onClick={() => setAttachments((prev) => prev.filter((x) => x.id !== a.id))}
-                      className="text-slate-500 hover:text-white"
+                      className="text-slate-500 hover:text-white focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none rounded"
+                      aria-label={`Remove attachment ${a.name}`}
+                      title={`Remove ${a.name}`}
                     >
-                      <X size={12} />
+                      <X size={12} aria-hidden="true" />
                     </button>
                   </span>
                 ))}
@@ -1264,16 +1275,18 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                   onClick={() => setShowPromptLibrary(!showPromptLibrary)}
                   className="p-2 text-slate-400 hover:text-white rounded-xl hover:bg-slate-800 transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none disabled:opacity-40 disabled:cursor-not-allowed"
                   title={toolCallsSupported ? "Select tools" : "Tool calling is unavailable for this engine"}
+                  aria-label={toolCallsSupported ? "Select tools" : "Tool calling unavailable"}
                 >
-                  <Wrench size={16} />
+                  <Wrench size={16} aria-hidden="true" />
                 </button>
                 <button
                   type="button"
                   onClick={() => setShowPromptLibrary(!showPromptLibrary)}
                   className="p-2 text-slate-400 hover:text-white rounded-xl hover:bg-slate-800 transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
                   title="Prompt Templates (/)"
+                  aria-label="Prompt Templates"
                 >
-                  <BookOpen size={16} />
+                  <BookOpen size={16} aria-hidden="true" />
                 </button>
 
                 <button
@@ -1281,8 +1294,9 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                   onClick={() => fileInputRef.current?.click()}
                   className="p-2 text-slate-400 hover:text-white rounded-xl hover:bg-slate-800 transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
                   title="Attach text file"
+                  aria-label="Attach text file"
                 >
-                  <Paperclip size={16} />
+                  <Paperclip size={16} aria-hidden="true" />
                 </button>
 
                 {getSpeechRecognitionCtor() && (
@@ -1295,7 +1309,7 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                     aria-label={isRecording ? "Stop voice input" : "Start voice input"}
                     title={isRecording ? "Stop voice input" : "Start voice input"}
                   >
-                    <Mic size={16} />
+                    <Mic size={16} aria-hidden="true" />
                   </button>
                 )}
 
@@ -1305,8 +1319,9 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                     onClick={handleStop}
                     className="p-2 bg-red-600 hover:bg-red-500 text-white rounded-xl transition shadow-lg focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
                     title="Stop generation"
+                    aria-label="Stop generation"
                   >
-                    <Square size={16} />
+                    <Square size={16} aria-hidden="true" />
                   </button>
                 ) : (
                   <button
@@ -1315,8 +1330,9 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                     disabled={!input.trim() && attachments.length === 0}
                     className="p-2 bg-blue-600 hover:bg-blue-500 disabled:bg-slate-800 disabled:text-slate-600 text-white rounded-xl transition shadow-lg focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
                     title="Send message"
+                    aria-label="Send message"
                   >
-                    <Send size={16} />
+                    <Send size={16} aria-hidden="true" />
                   </button>
                 )}
               </div>
