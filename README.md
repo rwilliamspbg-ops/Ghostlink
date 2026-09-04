@@ -131,7 +131,8 @@ the `ghost-link` binary, its checksums, and an SBOM are (see
 [`scripts/release_bundle.sh`](scripts/release_bundle.sh)). The one-line
 install gets you the CLI and OpenAI-compatible API server; for the full
 browser GUI, use the build-from-source or Docker paths below. Release
-binaries are also **x86_64/amd64-only** — there's no arm64 build yet, and
+binaries are also **x86_64/amd64-only** — tagged release installers are x86_64-only
+(though arm64 CI workflow artifacts exist on GitHub Actions workflow runs), and
 both scripts detect and refuse non-x86_64 hosts rather than silently
 handing you a binary that won't run.
 
@@ -625,7 +626,7 @@ To publish: tag v2.2.0 and push; do not claim the GitHub Release exists in this 
 - **Zero-Config Developer Launcher**: One-command setup (`launch.sh` / `launch.bat`) manages builds, services, and the Web GUI with built-in Monaco editor and MCP tools.
 
 ### Remaining Known Gaps
-- **arm64 Prebuilt Release Binaries**: Standalone prebuilt release artifacts are currently provided for x86_64; arm64 hosts (e.g. Apple Silicon, ARM Linux) build from source.
+- **arm64 Prebuilt Release Binaries**: Prebuilt arm64 CI workflow artifacts (`aarch64-unknown-linux-gnu` and `aarch64-apple-darwin`) are built and uploaded on GitHub Actions CI runs; tagged release installer downloads remain x86_64-only for now.
 - **GUI & Control Plane Release Packaging**: Prebuilt binaries package the core Rust engine (`ghost-link`); the Go control plane (`control-plane`) and React GUI (`ghostlink_gui_modern`) run via source/launchers.
 - **RPC Byte Stream Unencrypted**: `rpc_shared_secret` authenticates peer admission at the boundary, but the underlying `ggml-rpc` byte stream itself remains plain TCP without transport-layer encryption.
 - **Usable Multi-Node Speed Unproven**: While cross-machine VRAM capacity splitting is verified, high tokens-per-second throughput on network-bound split layers and zero-touch cluster orchestration across arbitrary networks are still in progress (see [docs/BENCHMARKS.md](docs/BENCHMARKS.md)).
