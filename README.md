@@ -11,7 +11,7 @@ Route workloads across CPU, GPU, and NPU resources with explicit scheduling, har
 [![MSRV](https://github.com/rwilliamspbg-ops/Ghostlink/actions/workflows/msrv.yml/badge.svg)](https://github.com/rwilliamspbg-ops/Ghostlink/actions/workflows/msrv.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Docs](https://img.shields.io/badge/Docs-GitHub%20Pages-0ea5e9)](https://rwilliamspbg-ops.github.io/Ghostlink/)
-[![Version](https://img.shields.io/badge/version-2.0.0-blueviolet)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-2.2.0-blueviolet)](CHANGELOG.md)
 [![Rust](https://img.shields.io/badge/Rust-2021-orange?logo=rust)](Cargo.toml)
 [![Platforms](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey)](#quick-start)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
@@ -117,7 +117,7 @@ ghost-link doctor --strict         # sanity-check your setup
 ghost-link serve 127.0.0.1 8003    # start the OpenAI-compatible API server
 ```
 
-Both scripts accept `VERSION=v2.0.0` (env var) to pin a specific release
+Both scripts accept `VERSION=v2.2.0` (env var) to pin a specific release
 instead of latest, and print PATH guidance if the install directory isn't
 already on it. Source for both lives at
 [`scripts/install.sh`](scripts/install.sh) and
@@ -615,7 +615,8 @@ CI enforces the same checks across Ubuntu, Windows, and macOS.
 
 Ghostlink is positioned as a launch-ready open-source foundation with a strong demo story and public-facing collateral.
 
-*Note: `main` branch development is ahead of the last tagged release (`v2.0.0`).*
+*Note: `main` branch development is at `v2.2.0`.*
+To publish: tag v2.2.0 and push; do not claim the GitHub Release exists in this PR.
 
 ### Current Strengths
 - **Verified VRAM/RAM Capacity Splitting**: Real cross-machine tensor splitting via `ggml-rpc` allows loading models too large for any single machine alone (e.g. 30B-class MoE models).

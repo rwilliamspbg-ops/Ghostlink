@@ -1,5 +1,3 @@
-- **`rpc_cluster::compute_tensor_split` weighted capacity heuristic**: CPU-only nodes (0 VRAM) now use system RAM scaled by a conservative `CPU_RAM_HAIRCUT` factor (0.5) to receive a proportional tensor split share, enabling CPU-only peers to take real work when needed to fit models while maintaining GPU preference when discrete VRAM is present.
-
 # CHANGELOG
 
 All notable changes to Ghostlink Studio are documented here.
@@ -8,6 +6,9 @@ All notable changes to Ghostlink Studio are documented here.
 
 ## [Unreleased]
 
+## [2.2.0] - 2026-09-04
+
+- **`rpc_cluster::compute_tensor_split` weighted capacity heuristic**: CPU-only nodes (0 VRAM) now use system RAM scaled by a conservative `CPU_RAM_HAIRCUT` factor (0.5) to receive a proportional tensor split share, enabling CPU-only peers to take real work when needed to fit models while maintaining GPU preference when discrete VRAM is present.
 - **Production LAN Runbook & Post-Hardening Current Truth**:
   - Added production LAN deployment checklist to `docs/DEPLOYMENT.md` covering build/version matching, `rpc_shared_secret` HMAC challenges, `rpc_allowed_peers` allowlisting, opt-in `contribute_compute`, contributor process supervision (`RpcSupervisor`), drain-and-restart on contributor loss, and system port architecture (`:8000` public vs `:8003` internal API).
   - Updated `README.md` and `docs/ROADMAP.md` "Current truth" statements, strengths, remaining known gaps, and compact benchmark table.
