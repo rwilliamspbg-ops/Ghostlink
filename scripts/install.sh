@@ -23,9 +23,8 @@
 #     ubuntu-latest GitHub Actions runner." There is no distro-specific
 #     testing or guarantee beyond that (e.g. it may not run on musl-based
 #     distros like Alpine).
-#   - Only x86_64/amd64 binaries are published as of this writing -- there is
-#     no separate arm64 build for any OS (check the `os:` matrix in
-#     .github/workflows/release-artifacts.yml if that has since changed).
+#   - Tagged release installers are x86_64/amd64-only (arm64 artifact may
+#     exist on CI; release installers are still x86_64 until tagged).
 #     This script refuses to install on non-x86_64 hosts rather than
 #     silently handing you a binary that won't run.
 #
@@ -76,14 +75,14 @@ case "$os_name" in
 esac
 
 # --- Arch detection ----------------------------------------------------------
-# No arm64/aarch64 build exists for any OS today (single-arch matrix, no
-# cross-compilation step) -- warn clearly and refuse rather than install a
-# binary that will not execute.
+# Tagged release installers are x86_64/amd64-only today (arm64 artifact may
+# exist on CI; release installers are still x86_64 until tagged). Warn clearly
+# and refuse rather than install a binary that will not execute.
 arch_name="$(uname -m)"
 case "$arch_name" in
   x86_64 | amd64) : ;;
   *)
-    die "unsupported architecture '${arch_name}'. Ghostlink release binaries are x86_64/amd64-only as of this writing -- there is no arm64/aarch64 build for Linux, macOS, or Windows (check .github/workflows/release-artifacts.yml's build matrix in case this has changed since). Refusing to install a binary that won't run on this machine. On Apple Silicon you may be able to run the x86_64 binary under Rosetta 2 if you have it installed, or build from source: ${GITHUB}#quick-start"
+    die "unsupported architecture '${arch_name}'. Ghostlink release binaries are x86_64/amd64-only as of this writing (arm64 artifact may exist on CI; release installers are still x86_64 until tagged). Refusing to install a binary that won't run on this machine. On Apple Silicon you may be able to run the x86_64 binary under Rosetta 2 if you have it installed, or build from source: ${GITHUB}#quick-start"
     ;;
 esac
 

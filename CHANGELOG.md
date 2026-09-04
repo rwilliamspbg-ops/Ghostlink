@@ -6,6 +6,8 @@ All notable changes to Ghostlink Studio are documented here.
 
 ## [Unreleased]
 
+- **aarch64 CI Artifact Cross-Compilation Workflow**: Added a `rust-aarch64` CI matrix job in `.github/workflows/ci.yml` cross-compiling/building `ghost-link` binaries for `aarch64-unknown-linux-gnu` (on `ubuntu-latest` with `gcc-aarch64-linux-gnu`) and `aarch64-apple-darwin` (on `macos-latest`), uploading `ghost-link-aarch64-unknown-linux-gnu` and `ghost-link-aarch64-apple-darwin` binary artifacts on workflow runs. Updated `scripts/install.sh` non-x86_64 refusal message and `README.md` remaining known gaps to clarify that arm64 CI workflow artifacts exist while release installers remain x86_64 until tagged.
+
 ## [2.2.0] - 2026-09-04
 
 - **`rpc_cluster::compute_tensor_split` weighted capacity heuristic**: CPU-only nodes (0 VRAM) now use system RAM scaled by a conservative `CPU_RAM_HAIRCUT` factor (0.5) to receive a proportional tensor split share, enabling CPU-only peers to take real work when needed to fit models while maintaining GPU preference when discrete VRAM is present.
