@@ -26,6 +26,7 @@ In Ghostlink Phase 4+, check the **Cluster Topology / Workers** tab in the GUI. 
 Common reasons and fixes:
 - **rpc child not running:** The peer node's `ggml-rpc-server` child process crashed or failed to bind its port. Ghostlink's supervisor automatically attempts to restart the process with bounded exponential backoff (up to 10 restarts). Check `GHOSTLINK_RPC_SERVER_LOG` or peer system logs for crash details.
 - **RPC build does not match coordinator:** The peer is running a different `llama.cpp` build commit. Rebuild both nodes at the same `llama.cpp` commit.
+- **RPC build fingerprint missing:** The peer (or local coordinator) did not report a `llama.cpp` build fingerprint. By default, missing fingerprints are excluded to prevent silent output corruption. Rebuild both nodes at the same `llama.cpp` commit, or enable `rpc_allow_unknown_build_id: true` in settings (`GHOSTLINK_RPC_ALLOW_UNKNOWN_BUILD_ID=1`) if you must permit unknown builds in legacy lab environments.
 - **rpc_shared_secret missing or handshake mismatch:** The peer has a different or missing shared secret. Ensure identical secrets are set in Workers > Advanced.
 - **peer IP not in coordinator rpc_allowed_peers:** The peer's IP address or CIDR range is blocked by the coordinator's allowlist. Add its IP to `rpc_allowed_peers`.
 - **contribute_compute off / no rpc_port advertised:** The peer has not enabled "Contribute local GPU/CPU compute" or advertised an `rpc_port`.

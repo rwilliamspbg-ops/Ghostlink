@@ -41,6 +41,14 @@ This document summarizes current security assumptions for Ghost-Link runtime and
   dev, forced on when the server binds a non-loopback address. Off by
   default; enable via `POST /api/security/pqc/enable` (takes effect on next
   restart) and confirm with `GET /api/security/pqc/state`.
+- **ggml-rpc Build Fingerprint Matching & Default Unknown Exclusion**:
+  `rpc_cluster::discover_rpc_peers` and `evaluate_peer` enforce matching `llama.cpp`
+  build fingerprints (`rpc_build_id`). By default, peers with unknown or missing build
+  fingerprints are excluded (`excluded_reason: "RPC build fingerprint missing"`) alongside
+  explicit build mismatches (`excluded_reason: "RPC build does not match coordinator"`).
+  For legacy mixed-version lab environments where unknown build IDs must be permitted,
+  `rpc_allow_unknown_build_id = true` in settings or `GHOSTLINK_RPC_ALLOW_UNKNOWN_BUILD_ID=1`
+  re-enables admission of unknown build fingerprints.
 - **RPC peer authentication via `rpc_shared_secret` handshake** (since 2.0.0,
   `crates/ghost-link/src/rpc_cluster.rs`): the existing `rpc_allowed_peers` IP
   allowlist (1.17.0) doesn't stop a device already inside the allowed range,

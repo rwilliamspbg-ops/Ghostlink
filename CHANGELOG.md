@@ -6,6 +6,10 @@ All notable changes to Ghostlink Studio are documented here.
 
 ## [Unreleased]
 
+- **Strict Default Exclusion for Unknown ggml-rpc Build Fingerprints**:
+  `rpc_cluster::discover_rpc_peers` and `evaluate_peer` now exclude peers with missing or unknown `rpc_build_id` build fingerprints by default (`excluded_reason: "RPC build fingerprint missing"`), matching the strict security stance of explicit build mismatches (`excluded_reason: "RPC build does not match coordinator"`). Added `rpc_allow_unknown_build_id` (settings.json, default `false`) and `GHOSTLINK_RPC_ALLOW_UNKNOWN_BUILD_ID` environment variable to opt back into admitting unknown build fingerprints in mixed-version lab environments.
+
+
 ## [2.2.0] - 2026-09-04
 
 - **`rpc_cluster::compute_tensor_split` weighted capacity heuristic**: CPU-only nodes (0 VRAM) now use system RAM scaled by a conservative `CPU_RAM_HAIRCUT` factor (0.5) to receive a proportional tensor split share, enabling CPU-only peers to take real work when needed to fit models while maintaining GPU preference when discrete VRAM is present.
