@@ -18,10 +18,10 @@ cargo test -p ghost-link
 cargo test -p ghostlink-core
 ```
 
-### Python Assertion & Unit Tests
-Run unit tests for the RPC fabric assertion script using mock log and topology fixtures:
+### Python Assertion & Soak Unit Tests
+Run unit tests for the RPC fabric assertion and soak scripts using mock log and topology fixtures:
 ```bash
-python3 -m unittest tests/test_rpc_fabric_assert.py
+python3 -m unittest tests/test_rpc_fabric_assert.py tests/test_rpc_fabric_soak.py
 ```
 
 ---
@@ -62,7 +62,10 @@ Ghostlink includes a two-container Docker Compose setup (`docker-compose.rpc-fab
    python3 scripts/rpc_fabric_assert.py --require-compute-split
    ```
 
-3. **Tear down the fabric**:
+3. **How to Soak & Fault Test**:
+   Run the repeatable RPC fabric soak and contributor-kill drain harness (`python3 scripts/rpc_fabric_soak.py`), which asserts drain-and-restart behavior without requiring a GPU or large model. The harness sends baseline inference requests to the existing `stories15M-q4_0` model, kills/stops the contributor container (`ghostlink-rpc-contributor`), asserts that the coordinator immediately removes the dead peer from `active_rpc_targets` in `/api/cluster/topology`, verifies that in-flight or subsequent requests fail or cancel cleanly without hanging, and optionally restarts the contributor to verify re-admission and discovery recovery.
+
+4. **Tear down the fabric**:
    ```bash
    docker compose -f docker-compose.rpc-fabric.yml down -v
    ```

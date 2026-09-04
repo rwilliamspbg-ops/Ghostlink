@@ -163,6 +163,9 @@ Before deploying Ghostlink across a multi-host LAN for production or team worklo
   > **Why**: Compute contribution must be an explicit operator choice. Nodes intended as contributors must set `contribute_compute = true` to spawn the local `ggml-rpc-server` worker.
 
 ### 4. Contributor Lifecycle & Loss Behavior
+- [ ] **RPC Fabric Soak and Contributor Drain Harness**:
+  > **How to soak**: Operators can validate cluster drain-and-restart behavior without a GPU or large model by running `python3 scripts/rpc_fabric_soak.py` against a running `docker-compose.rpc-fabric.yml` environment. The script issues baseline inference requests against `stories15M-q4_0`, kills/stops the contributor container (`ghostlink-rpc-contributor`), asserts that the coordinator immediately purges the dead peer from `active_rpc_targets` in `/api/cluster/topology`, verifies that in-flight or subsequent requests cancel or fail cleanly without hanging past timeout, and optionally restarts the contributor to verify re-admission and discovery recovery.
+
 - [ ] **Supervised Worker Process**: Understand that `ggml-rpc-server` is supervised by Ghostlink (`RpcSupervisor`).
   > **What happens when a contributor process crashes**: Ghostlink immediately revokes the node's discovery advertisement (`contribute_compute` set to false, `excluded_reason: "rpc child not running"`) and stops routing new inference requests to it until auto-restart succeeds.
 - [ ] **Drain and Restart on Contributor Loss**:
