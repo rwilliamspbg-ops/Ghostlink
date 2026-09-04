@@ -1376,11 +1376,12 @@ mod tests {
             Some(loopback(9000)),
             NodeStatus::Active,
         );
-        register_peer(
+        register_peer_with_build_id(
             &cluster,
             "contributor",
             12.0,
             Some(50052),
+            None,
             Some(loopback(9001)),
             NodeStatus::Active,
         );
@@ -1575,11 +1576,12 @@ mod tests {
             Some(loopback(9000)),
             NodeStatus::Active,
         );
-        register_peer(
+        register_peer_with_build_id(
             &cluster,
             "contributor",
             12.0,
             Some(50052),
+            None,
             Some(loopback(9001)),
             NodeStatus::Active,
         );

@@ -6,7 +6,9 @@ All notable changes to Ghostlink Studio are documented here.
 
 ## [Unreleased]
 
-- **aarch64 CI Artifact Cross-Compilation Workflow**: Added a `rust-aarch64` CI matrix job in `.github/workflows/ci.yml` cross-compiling/building `ghost-link` binaries for `aarch64-unknown-linux-gnu` (on `ubuntu-latest` with `gcc-aarch64-linux-gnu`) and `aarch64-apple-darwin` (on `macos-latest`), uploading `ghost-link-aarch64-unknown-linux-gnu` and `ghost-link-aarch64-apple-darwin` binary artifacts on workflow runs. Updated `scripts/install.sh` non-x86_64 refusal message and `README.md` remaining known gaps to clarify that arm64 CI workflow artifacts exist while release installers remain x86_64 until tagged.
+- **Strict Default Exclusion for Unknown ggml-rpc Build Fingerprints**:
+  `rpc_cluster::discover_rpc_peers` and `evaluate_peer` now exclude peers with missing or unknown `rpc_build_id` build fingerprints by default (`excluded_reason: "RPC build fingerprint missing"`), matching the strict security stance of explicit build mismatches (`excluded_reason: "RPC build does not match coordinator"`). Added `rpc_allow_unknown_build_id` (settings.json, default `false`) and `GHOSTLINK_RPC_ALLOW_UNKNOWN_BUILD_ID` environment variable to opt back into admitting unknown build fingerprints in mixed-version lab environments.
+
 
 ## [2.2.0] - 2026-09-04
 
