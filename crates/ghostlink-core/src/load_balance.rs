@@ -211,6 +211,7 @@ impl LoadBalancer {
 
         // Greedy assignment: assign contiguous layers to nodes based on VRAM using O(1) indices
         let mut distributions = Vec::with_capacity(sorted_nodes.len());
+        let mut participating_nodes = Vec::with_capacity(sorted_nodes.len());
         let mut current_layer_idx = 0usize;
 
         for node in &sorted_nodes {
@@ -235,13 +236,19 @@ impl LoadBalancer {
                 let end_layer = sorted_layers[end_idx - 1].index + 1;
                 // Optimize: Reuse `used_vram` directly instead of re-iterating over sorted_layers[start_idx..end_idx] to re-sum vram_gb.
                 let slice = TensorSlice::new((start_layer, end_layer), used_vram);
-                distributions.push((node.id.clone(), vec![slice]));
+                let node_id = node.id.clone();
+                participating_nodes.push(node_id.clone());
+                distributions.push((node_id, vec![slice]));
                 current_layer_idx = end_idx;
             }
         }
 
         if current_layer_idx >= sorted_layers.len() {
-            Ok(LoadDistributionPlan::new(distributions, total_layer_count))
+            Ok(LoadDistributionPlan {
+                distributions,
+                total_layers: total_layer_count,
+                participating_nodes,
+            })
         } else {
             Err(format!(
                 "insufficient VRAM: {} layers remain",
@@ -494,7 +501,12 @@ fn chunk_distribution_plan(
         })
         .collect();
 
-    LoadDistributionPlan::new(distributions, plan.total_layers)
+    // Optimize: Reuse existing owned participating_nodes vector from input plan rather than re-cloning string IDs from distributions.
+    LoadDistributionPlan {
+        distributions,
+        total_layers: plan.total_layers,
+        participating_nodes: plan.participating_nodes,
+    }
 }
 
 /// Load statistics collector
