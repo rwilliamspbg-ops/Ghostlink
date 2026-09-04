@@ -6,6 +6,12 @@ All notable changes to Ghostlink Studio are documented here.
 
 ## [Unreleased]
 
+- **RPC Fabric Soak & Contributor-Kill Drain Harness**:
+  Added `scripts/rpc_fabric_soak.py` and `tests/test_rpc_fabric_soak.py` to test and assert drain-and-restart behavior across Docker RPC peers without requiring a GPU or large model.
+  Asserts peer discovery (2+ healthy nodes), baseline model generation, contributor container stop/kill (`ghostlink-rpc-contributor`), immediate coordinator purging of the dead node from `active_rpc_targets` in `/api/cluster/topology`, clean cancellation or failure of in-flight/subsequent work without hanging past timeout, and optional contributor restart and re-admission.
+  Wired unit tests and an optional soak step into `.github/workflows/distributed-e2e.yml` with Docker availability guards.
+  Updated `docs/TESTING.md` and `docs/DEPLOYMENT.md` with "how to soak" runbook instructions.
+
 - **Strict Default Exclusion for Unknown ggml-rpc Build Fingerprints**:
   `rpc_cluster::discover_rpc_peers` and `evaluate_peer` now exclude peers with missing or unknown `rpc_build_id` build fingerprints by default (`excluded_reason: "RPC build fingerprint missing"`), matching the strict security stance of explicit build mismatches (`excluded_reason: "RPC build does not match coordinator"`). Added `rpc_allow_unknown_build_id` (settings.json, default `false`) and `GHOSTLINK_RPC_ALLOW_UNKNOWN_BUILD_ID` environment variable to opt back into admitting unknown build fingerprints in mixed-version lab environments.
 

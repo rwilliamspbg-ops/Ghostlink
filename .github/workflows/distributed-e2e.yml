@@ -4,26 +4,7 @@ name: Distributed E2E (RPC Fabric)
 # (llama.cpp's ggml-rpc backend — crates/ghost-link/src/rpc_cluster.rs).
 # Builds docker-compose.rpc-fabric.yml (a contributor node + a coordinator
 # node on an isolated bridge network), then runs
-# scripts/rpc_fabric_assert.py, which proves — not just asserts node
-# count — that a real chat completion executed across both containers:
-# UDP discovery found the peer, the coordinator built --rpc/-ts flags with
-# zero manual input, a real chat completion came back with
-# real_inference: true, the placement plan correctly classifies -ngl 0
-# as connectivity-only (and does NOT claim compute split), and the
-# contributor's own ggml-rpc-server log shows it actually accepted a connection.
-#
-# NOTE ON GPU VS CPU RUNNERS:
-# Default GitHub-hosted runners are CPU-only (-ngl 0). In CPU mode, the job
-# asserts live RPC connection/accept logging and labels the execution as
-# "connectivity-only" while ensuring no compute split is falsely claimed.
-# On GPU runners (or self-hosted GPU nodes with -ngl > 0 / GHOSTLINK_LLAMA_NGL=-1),
-# pass `--require-compute-split` to scripts/rpc_fabric_assert.py to assert
-# active tensor offloading across peers (distributed_active: true).
-#
-# Path-filtered like production-gate.yml: this does a from-source llama.cpp
-# build (several minutes) so it only runs when something that could plausibly
-# break the distributed path actually changed, plus on every push to main
-# and on manual dispatch.
+# scripts/rpc_fabric_assert.py and scripts/rpc_fabric_soak.py.
 
 on:
   push:
@@ -42,6 +23,9 @@ on:
       - 'docker-compose.rpc-fabric.yml'
       - 'scripts/rpc_fabric_entrypoint.sh'
       - 'scripts/rpc_fabric_assert.py'
+      - 'scripts/rpc_fabric_soak.py'
+      - 'tests/test_rpc_fabric_assert.py'
+      - 'tests/test_rpc_fabric_soak.py'
       - '.github/workflows/distributed-e2e.yml'
   pull_request:
     branches: [main]
@@ -59,6 +43,9 @@ on:
       - 'docker-compose.rpc-fabric.yml'
       - 'scripts/rpc_fabric_entrypoint.sh'
       - 'scripts/rpc_fabric_assert.py'
+      - 'scripts/rpc_fabric_soak.py'
+      - 'tests/test_rpc_fabric_assert.py'
+      - 'tests/test_rpc_fabric_soak.py'
       - '.github/workflows/distributed-e2e.yml'
   workflow_dispatch:
     inputs:
@@ -67,6 +54,11 @@ on:
         required: false
         type: boolean
         default: false
+      run_soak_test:
+        description: 'Run RPC fabric soak and contributor-kill drain test'
+        required: false
+        type: boolean
+        default: true
 
 concurrency:
   group: distributed-e2e-${{ github.ref }}
@@ -87,17 +79,29 @@ jobs:
       - name: Install assertion script dependencies
         run: pip install requests urllib3
 
-      - name: Run assertion script unit tests
-        run: python3 -m unittest tests/test_rpc_fabric_assert.py
+      - name: Run assertion & soak script unit tests
+        run: python3 -m unittest tests/test_rpc_fabric_assert.py tests/test_rpc_fabric_soak.py
+
+      - name: Check Docker availability
+        id: check_docker
+        run: |
+          if command -v docker &> /dev/null && docker info &> /dev/null; then
+            echo "docker_available=true" >> $GITHUB_OUTPUT
+          else
+            echo "docker_available=false" >> $GITHUB_OUTPUT
+          fi
 
       - name: Build fabric images
+        if: steps.check_docker.outputs.docker_available == 'true'
         run: docker compose -f docker-compose.rpc-fabric.yml build
 
       - name: Start fabric
+        if: steps.check_docker.outputs.docker_available == 'true'
         run: |
           docker compose -f docker-compose.rpc-fabric.yml up -d --wait --wait-timeout 300
 
       - name: Run distributed-inference assertion
+        if: steps.check_docker.outputs.docker_available == 'true'
         run: |
           EXTRA_FLAGS=""
           if [ "${{ inputs.require_compute_split }}" = "true" ]; then
@@ -105,8 +109,13 @@ jobs:
           fi
           python3 scripts/rpc_fabric_assert.py $EXTRA_FLAGS
 
+      - name: Run RPC fabric soak and contributor-kill drain test
+        if: steps.check_docker.outputs.docker_available == 'true' && (github.event_name != 'workflow_dispatch' || inputs.run_soak_test != false)
+        run: |
+          python3 scripts/rpc_fabric_soak.py
+
       - name: Dump container logs
-        if: always()
+        if: always() && steps.check_docker.outputs.docker_available == 'true'
         run: |
           mkdir -p ./tmp
           docker compose -f docker-compose.rpc-fabric.yml logs --no-color rpc-contributor > ./tmp/rpc-contributor.log 2>&1 || true
@@ -114,7 +123,7 @@ jobs:
           docker exec ghostlink-rpc-contributor cat /tmp/ggml-rpc-server.log > ./tmp/ggml-rpc-server.log 2>&1 || true
 
       - name: Upload fabric logs
-        if: always()
+        if: always() && steps.check_docker.outputs.docker_available == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: distributed-e2e-logs
@@ -122,5 +131,5 @@ jobs:
           retention-days: 14
 
       - name: Tear down fabric
-        if: always()
+        if: always() && steps.check_docker.outputs.docker_available == 'true'
         run: docker compose -f docker-compose.rpc-fabric.yml down -v
