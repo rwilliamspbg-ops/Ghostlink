@@ -194,7 +194,7 @@ def main() -> int:
                 verify=False,
             )
             r.raise_for_status()
-            log(f"Baseline generation OK: {r.json().get(choices, [{}])[0].get(message, {}).get(content)!r}")
+            log(f"Baseline generation OK: {r.json().get('choices', [{}])[0].get('message', {}).get('content')!r}")
 
             step(4, f"[Round {round_num}] kill/stop contributor container ({args.contributor_container})")
             ret, out = docker_cmd("stop", args.contributor_container)
