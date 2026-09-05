@@ -636,14 +636,21 @@ export const WorkersTab: React.FC<{ api: any }> = ({ api }) => {
       {/* How to Join Modal */}
       {showHowToJoin && (
         <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 max-w-lg w-full space-y-6 shadow-2xl">
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="how-to-join-title"
+            className="bg-slate-900 border border-slate-800 rounded-3xl p-6 max-w-lg w-full space-y-6 shadow-2xl"
+          >
             <div className="flex items-center justify-between pb-4 border-b border-slate-800">
-              <h3 className="text-base font-bold text-slate-100 flex items-center gap-2">
+              <h3 id="how-to-join-title" className="text-base font-bold text-slate-100 flex items-center gap-2">
                 <Network className="text-blue-400" size={20} />
                 How to join a second machine
               </h3>
               <button
                 onClick={() => setShowHowToJoin(false)}
+                aria-label="Close dialog"
+                title="Close dialog"
                 className="text-slate-400 hover:text-white p-1 rounded-lg focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
               >
                 ✕
@@ -690,10 +697,15 @@ export const WorkersTab: React.FC<{ api: any }> = ({ api }) => {
       {/* Contribute Warning Modal */}
       {showContributeWarning && (
         <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 max-w-md w-full space-y-5 shadow-2xl">
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="contribute-warning-title"
+            className="bg-slate-900 border border-slate-800 rounded-3xl p-6 max-w-md w-full space-y-5 shadow-2xl"
+          >
             <div className="flex items-center gap-3 text-amber-400">
               <AlertTriangle size={24} />
-              <h3 className="text-base font-bold text-slate-100">LAN Security Warning</h3>
+              <h3 id="contribute-warning-title" className="text-base font-bold text-slate-100">LAN Security Warning</h3>
             </div>
 
             <p className="text-xs text-slate-300 leading-relaxed">
@@ -724,16 +736,21 @@ export const WorkersTab: React.FC<{ api: any }> = ({ api }) => {
         <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
           <form
             onSubmit={handleAddWorkerSubmit}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="add-worker-title"
             className="bg-slate-900 border border-slate-800 rounded-3xl p-6 max-w-md w-full space-y-5 shadow-2xl"
           >
             <div className="flex items-center justify-between pb-3 border-b border-slate-800">
-              <h3 className="text-base font-bold text-slate-100 flex items-center gap-2">
+              <h3 id="add-worker-title" className="text-base font-bold text-slate-100 flex items-center gap-2">
                 <Plus className="text-blue-400" size={20} />
                 Add Worker Manually
               </h3>
               <button
                 type="button"
                 onClick={() => setShowAddForm(false)}
+                aria-label="Close dialog"
+                title="Close dialog"
                 className="text-slate-400 hover:text-white p-1 rounded-lg focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
               >
                 ✕
