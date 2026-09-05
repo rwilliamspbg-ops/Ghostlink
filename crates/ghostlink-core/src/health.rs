@@ -182,8 +182,8 @@ impl NetworkHealthMonitor {
         let now = Instant::now();
         let nodes_snapshot = self.cluster.nodes_snapshot();
 
-        // Phase 1: Collect probe target addresses under a brief lock read
-        let targets: Vec<(String, SocketAddr)> = {
+        // Phase 1: Collect probe target addresses under a brief lock read (borrowing &str)
+        let targets: Vec<(&str, SocketAddr)> = {
             let probe_targets = self
                 .tcp_probe_targets
                 .lock()
@@ -193,7 +193,7 @@ impl NetworkHealthMonitor {
                 .filter_map(|node| {
                     probe_targets
                         .get(&node.id)
-                        .map(|addr| (node.id.clone(), *addr))
+                        .map(|addr| (node.id.as_str(), *addr))
                 })
                 .collect()
         };
@@ -218,7 +218,7 @@ impl NetworkHealthMonitor {
             .unwrap_or_else(|poison| poison.into_inner());
 
         for node in nodes_snapshot.iter() {
-            let tcp_probe_ok = probe_results.get(&node.id).copied();
+            let tcp_probe_ok = probe_results.get(node.id.as_str()).copied();
 
             let result = if let Some(m) = metrics_guard.get_mut(&node.id) {
                 let timeout =
@@ -275,8 +275,14 @@ impl NetworkHealthMonitor {
                 }
             };
 
-            // Store recent check results in O(1) ring buffer (keep last 10)
-            let node_checks = checks.entry(node.id.clone()).or_default();
+            // Store recent check results in O(1) ring buffer (keep last 10).
+            // OPTIMIZATION: Use get_mut to avoid cloning node.id on every periodic check
+            // when the node is already present in recent_checks.
+            let node_checks = if let Some(node_checks) = checks.get_mut(&node.id) {
+                node_checks
+            } else {
+                checks.entry(node.id.clone()).or_default()
+            };
             node_checks.push_back(result);
             if node_checks.len() > 10 {
                 node_checks.pop_front();

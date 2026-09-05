@@ -187,11 +187,12 @@ fn bench_cluster(c: &mut Criterion) {
             ))
         });
     });
+    let node_ids: Vec<String> = (0..10).map(|i| format!("node-{i}")).collect();
     group.bench_function("with_metrics_10_nodes", |b| {
         b.iter(|| {
             snapshot_cluster.with_metrics(|metrics_map| {
-                for i in 0..10 {
-                    black_box(metrics_map.get(&format!("node-{i}")));
+                for id in &node_ids {
+                    black_box(metrics_map.get(id));
                 }
             })
         });
