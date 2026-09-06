@@ -83,8 +83,37 @@ impl ExecutionBackend {
 }
 
 unsafe fn scale_scalar(input: &[f32], output: *mut f32, scale: f32) {
-    for (i, &src) in input.iter().enumerate() {
-        output.add(i).write(src * scale);
+    // Unroll loop 8x using chunks_exact(8) with independent temporary accumulators.
+    // This breaks data dependency chains, eliminates slice bounds checking,
+    // and unlocks instruction-level SIMD pipelining in LLVM/rustc compiler optimizations.
+    let chunks = input.chunks_exact(8);
+    let remainder = chunks.remainder();
+    let mut out_ptr = output;
+
+    for chunk in chunks {
+        let v0 = chunk[0] * scale;
+        let v1 = chunk[1] * scale;
+        let v2 = chunk[2] * scale;
+        let v3 = chunk[3] * scale;
+        let v4 = chunk[4] * scale;
+        let v5 = chunk[5] * scale;
+        let v6 = chunk[6] * scale;
+        let v7 = chunk[7] * scale;
+
+        out_ptr.write(v0);
+        out_ptr.add(1).write(v1);
+        out_ptr.add(2).write(v2);
+        out_ptr.add(3).write(v3);
+        out_ptr.add(4).write(v4);
+        out_ptr.add(5).write(v5);
+        out_ptr.add(6).write(v6);
+        out_ptr.add(7).write(v7);
+
+        out_ptr = out_ptr.add(8);
+    }
+
+    for (i, &src) in remainder.iter().enumerate() {
+        out_ptr.add(i).write(src * scale);
     }
 }
 
