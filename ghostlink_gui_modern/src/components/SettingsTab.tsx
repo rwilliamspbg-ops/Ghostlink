@@ -218,6 +218,7 @@ export const SettingsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
     auto?: boolean; onAutoChange?: (v: boolean) => void; autoNote?: string;
   }) => {
     const fieldId = label.toLowerCase().replace(/\s+/g, '-');
+    const descId = `${fieldId}-desc`;
     const hasAuto = onAutoChange !== undefined;
     // Settings round-trip through an f32 backend, so fractional values arrive
     // as things like 0.8999999761581421 — round for display to the precision
@@ -251,7 +252,7 @@ export const SettingsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
             )}
           </div>
         </div>
-        {desc && <p className="text-[10px] text-slate-500">{desc}</p>}
+        {desc && <p id={descId} className="text-[10px] text-slate-500">{desc}</p>}
         {hasAuto && auto ? (
           <p className="text-xs text-slate-500 italic bg-slate-900/50 rounded-xl px-3 py-2">
             {autoNote || 'Decided automatically at model-load time from detected VRAM and model size.'}
@@ -267,6 +268,7 @@ export const SettingsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
               step={step || 1}
               value={value ?? 0}
               onChange={(e) => onChange(parseFloat(e.target.value))}
+              aria-describedby={desc ? descId : undefined}
               className="w-full h-1.5 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-blue-500 focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
             />
             <div className="flex justify-between text-[10px] text-slate-600">
@@ -283,6 +285,10 @@ export const SettingsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
     label: string; desc?: string; checked: boolean; onChange: (v: boolean) => void; warning?: string; disabled?: boolean;
   }) => {
     const fieldId = label.toLowerCase().replace(/\s+/g, '-');
+    const descId = `${fieldId}-desc`;
+    const warningId = `${fieldId}-warning`;
+    const describedBy = [desc ? descId : null, warning ? warningId : null].filter(Boolean).join(' ') || undefined;
+
     return (
       <div className="space-y-1.5">
         <label htmlFor={fieldId} className={`flex items-center justify-between gap-3 ${disabled ? 'opacity-50' : 'cursor-pointer select-none'}`}>
@@ -294,13 +300,14 @@ export const SettingsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
             checked={checked}
             disabled={disabled}
             onChange={(e) => onChange(e.target.checked)}
+            aria-describedby={describedBy}
             title={label}
             className="h-4 w-4 rounded border-slate-700 bg-slate-800 text-blue-500 focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
           />
         </label>
-        {desc && <p className="text-[10px] text-slate-500">{desc}</p>}
+        {desc && <p id={descId} className="text-[10px] text-slate-500">{desc}</p>}
         {warning && (
-          <div role="status" className="flex items-start gap-2 text-xs text-orange-400 bg-orange-500/10 px-3 py-2 rounded-xl">
+          <div id={warningId} role="status" className="flex items-start gap-2 text-xs text-orange-400 bg-orange-500/10 px-3 py-2 rounded-xl">
             <AlertTriangle size={14} className="mt-0.5 shrink-0" aria-hidden="true" />
             <span>{warning}</span>
           </div>
@@ -312,6 +319,9 @@ export const SettingsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
   const TriStateField = ({ label, desc, value, onChange }: {
     label: string; desc?: string; value: boolean | null; onChange: (v: boolean | null) => void;
   }) => {
+    const fieldId = label.toLowerCase().replace(/\s+/g, '-');
+    const descId = `${fieldId}-desc`;
+    const labelId = `${fieldId}-label`;
     const options: { key: string; optValue: boolean | null; text: string }[] = [
       { key: 'auto', optValue: null, text: 'Auto' },
       { key: 'on', optValue: true, text: 'On' },
@@ -319,9 +329,9 @@ export const SettingsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
     ];
     return (
       <div className="space-y-1.5">
-        <span className="text-sm font-medium text-slate-300">{label}</span>
-        {desc && <p className="text-[10px] text-slate-500">{desc}</p>}
-        <div className="flex gap-2" role="radiogroup" aria-label={label}>
+        <span id={labelId} className="text-sm font-medium text-slate-300">{label}</span>
+        {desc && <p id={descId} className="text-[10px] text-slate-500">{desc}</p>}
+        <div className="flex gap-2" role="radiogroup" aria-labelledby={labelId} aria-describedby={desc ? descId : undefined}>
           {options.map((opt) => (
             <button
               key={opt.key}
@@ -348,16 +358,18 @@ export const SettingsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
     label: string; desc?: string; value: string; options: { value: string; label: string }[]; onChange: (v: string) => void; disabled?: boolean;
   }) => {
     const fieldId = label.toLowerCase().replace(/\s+/g, '-');
+    const descId = `${fieldId}-desc`;
     return (
       <div className="space-y-1.5">
         <label htmlFor={fieldId} className={`text-sm font-medium text-slate-300 ${disabled ? 'opacity-50' : ''}`}>{label}</label>
-        {desc && <p className="text-[10px] text-slate-500">{desc}</p>}
+        {desc && <p id={descId} className="text-[10px] text-slate-500">{desc}</p>}
         <select
           id={fieldId}
           name={fieldId}
           value={value ?? ''}
           onChange={(e) => onChange(e.target.value)}
           disabled={disabled}
+          aria-describedby={desc ? descId : undefined}
           title={disabled ? `${label} (disabled — see description above)` : label}
           className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2.5 text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500/50 focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none disabled:opacity-50 disabled:cursor-not-allowed"
         >
@@ -373,10 +385,11 @@ export const SettingsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
     label: string; desc?: string; value: string; onChange: (v: string) => void; type?: string; placeholder?: string;
   }) => {
     const fieldId = label.toLowerCase().replace(/\s+/g, '-');
+    const descId = `${fieldId}-desc`;
     return (
       <div className="space-y-1.5">
         <label htmlFor={fieldId} className="text-sm font-medium text-slate-300">{label}</label>
-        {desc && <p className="text-[10px] text-slate-500">{desc}</p>}
+        {desc && <p id={descId} className="text-[10px] text-slate-500">{desc}</p>}
         <input
           id={fieldId}
           name={fieldId}
@@ -384,6 +397,7 @@ export const SettingsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
           value={value ?? ''}
           onChange={(e) => onChange(e.target.value)}
           placeholder={placeholder}
+          aria-describedby={desc ? descId : undefined}
           className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2.5 text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500/50 font-mono focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
         />
       </div>
