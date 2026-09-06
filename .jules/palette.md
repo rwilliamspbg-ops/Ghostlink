@@ -1,5 +1,9 @@
 # Palette's Journal
 
+## 2026-09-05 - [Modal Dialog ARIA Attributes & Close Button Labels]
+**Learning:** Modal overlay dialogs without explicit `role="dialog"`, `aria-modal="true"`, and `aria-labelledby` fail to communicate dialog boundaries to screen reader users. Additionally, icon-only close triggers (`✕`) require explicit `aria-label="Close dialog"` and `title="Close dialog"` so screen readers and mouse hover tooltips explicitly announce their purpose.
+**Action:** Always annotate custom modal dialog containers with `role="dialog"`, `aria-modal="true"`, and `aria-labelledby`, and ensure icon-only close triggers have explicit ARIA labels and native title attributes.
+
 ## 2026-08-20 - [Chat Sidebar Thread Navigation Accessibility & Focus States]
 **Learning:** Non-semantic click containers (such as non-interactive `div` wrappers used for saved thread items in sidebars) completely lock out keyboard navigators, as default Tab traversal skips them entirely. Refactoring item rows to use semantic `<button>` elements for thread selection—complemented by high-contrast `focus-visible:` focus outlines, explicit `aria-label`s, and `group-focus-within:opacity-100` on secondary action triggers (Pin, Rename, Delete)—guarantees keyboard users can focus and interact with every chat thread and action trigger seamlessly.
 **Action:** Always implement listbox and tree item triggers using semantic `<button>` elements with `focus-visible:` focus rings, explicit ARIA labels, and `group-focus-within` visibility for inline action triggers.
