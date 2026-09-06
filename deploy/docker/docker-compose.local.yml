@@ -1,20 +1,20 @@
 services:
   ghostlink-node-a:
-    image: rust:1.88-bookworm
+    image: rust:1.89-bookworm
     working_dir: /workspace
     volumes:
       - ../../:/workspace
     command: ["bash", "-lc", "cargo run -p ghost-link -- listen node-a --once"]
 
   ghostlink-node-b:
-    image: rust:1.88-bookworm
+    image: rust:1.89-bookworm
     working_dir: /workspace
     volumes:
       - ../../:/workspace
     command: ["bash", "-lc", "cargo run -p ghost-link -- listen node-b --once"]
 
   ghostlink-controller:
-    image: rust:1.88-bookworm
+    image: rust:1.89-bookworm
     working_dir: /workspace
     depends_on:
       - ghostlink-node-a

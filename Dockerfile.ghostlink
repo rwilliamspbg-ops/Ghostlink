@@ -2,7 +2,7 @@
 # Optimized for layer caching and minimal final image size
 
 # Build stage
-FROM rust:1.88-bookworm as builder
+FROM rust:1.89-bookworm as builder
 WORKDIR /build
 
 # Copy workspace manifests and source

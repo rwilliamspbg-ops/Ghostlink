@@ -10,7 +10,7 @@
 # which intentionally stays a plain `cargo build` image.
 
 # ---- Stage 1: Rust build (ghost-link + ghostlink-core) --------------------
-FROM rust:1.88-bookworm AS rust-builder
+FROM rust:1.89-bookworm AS rust-builder
 WORKDIR /build
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
