@@ -20,7 +20,6 @@ use std::time::Duration;
 use std::time::Instant;
 
 #[cfg(unix)]
-#[cfg(unix)]
 use std::net::Shutdown as UnixSocketShutdown;
 #[cfg(unix)]
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -1052,7 +1051,7 @@ fn _read_payload(
     } else {
         let mut payload_bytes = vec![0u8; payload_len * 4];
         reader.read_exact(&mut payload_bytes)?;
-        for (i, chunk) in payload_bytes.chunks_exact(4).enumerate() {
+        for (i, chunk) in payload_bytes.as_chunks::<4>().0.iter().enumerate() {
             payload_buf[i] = f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
         }
     }

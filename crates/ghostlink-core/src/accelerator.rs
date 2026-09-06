@@ -83,11 +83,10 @@ impl ExecutionBackend {
 }
 
 unsafe fn scale_scalar(input: &[f32], output: *mut f32, scale: f32) {
-    // Unroll loop 8x using chunks_exact(8) with independent temporary accumulators.
+    // Unroll loop 8x using fixed-size array chunks with independent temporary accumulators.
     // This breaks data dependency chains, eliminates slice bounds checking,
     // and unlocks instruction-level SIMD pipelining in LLVM/rustc compiler optimizations.
-    let chunks = input.chunks_exact(8);
-    let remainder = chunks.remainder();
+    let (chunks, remainder) = input.as_chunks::<8>();
     let mut out_ptr = output;
 
     for chunk in chunks {

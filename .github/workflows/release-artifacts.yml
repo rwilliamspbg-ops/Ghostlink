@@ -45,6 +45,19 @@ jobs:
           set -euo pipefail
           [[ "${GITHUB_REF_NAME}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9._-]+)?$ ]]
 
+      - name: Verify artifact versions match release tag
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          core_version="$(sed -n 's/^version = "\(.*\)"$/\1/p' crates/ghostlink-core/Cargo.toml | head -1)"
+          cli_version="$(sed -n 's/^version = "\(.*\)"$/\1/p' crates/ghost-link/Cargo.toml | head -1)"
+          gui_version="$(node -p "require('./ghostlink_gui_modern/package.json').version")"
+          [[ "$core_version" == "$version" ]]
+          [[ "$cli_version" == "$version" ]]
+          [[ "$gui_version" == "$version" ]]
+
       - name: Run release validation gates
         shell: bash
         run: |

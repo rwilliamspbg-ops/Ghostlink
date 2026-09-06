@@ -1,6 +1,6 @@
 {
   "name": "ghostlink-client",
-  "version": "0.1.0",
+  "version": "2.2.1",
   "description": "JavaScript/TypeScript client for the Ghostlink Studio API: OpenAI-compatible chat/completions/embeddings, plus native token-streaming chat, workers, metrics, and settings.",
   "type": "module",
   "main": "./dist/index.cjs",

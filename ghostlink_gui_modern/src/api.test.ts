@@ -210,6 +210,28 @@ describe('GhostlinkAPI', () => {
       expect(result.success).toBe(true);
       expect(mockAxiosInstance.post).toHaveBeenCalledWith('/api/sessions/s1/cancel');
     });
+
+    it('should normalize server metrics-history timestamps for the UI', async () => {
+      mockAxiosInstance.get.mockResolvedValue({
+        data: {
+          history: [{ timestamp_ms: 123, throughput: 42, cpu: 25, memory: 50, gpu: 75, latency_p50: 10, latency_p95: 20, active_nodes: 2, inference_backend: 'native' }],
+        },
+      });
+
+      const result = await api.getMetricsHistory();
+
+      expect(result.history).toEqual([expect.objectContaining({ t: 123, throughput: 42, inference_backend: 'native' })]);
+      expect(mockAxiosInstance.get).toHaveBeenCalledWith('/api/metrics/history', { timeout: 4000 });
+    });
+
+    it('should delete a saved session', async () => {
+      mockAxiosInstance.delete.mockResolvedValue({ data: { status: 'ok', deleted: true } });
+
+      const result = await api.deleteSession('s1');
+
+      expect(result.success).toBe(true);
+      expect(mockAxiosInstance.delete).toHaveBeenCalledWith('/api/sessions/s1');
+    });
   });
 
   describe('Worker Operations', () => {

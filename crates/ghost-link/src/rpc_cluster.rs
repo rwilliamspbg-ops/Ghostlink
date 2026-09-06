@@ -1049,6 +1049,7 @@ pub struct PeerEvaluation {
 }
 
 /// Evaluates a peer's detailed status and exclusion reason relative to local coordinator settings.
+#[allow(clippy::too_many_arguments)]
 pub fn evaluate_peer(
     node: &ghostlink_core::protocol::NodeResources,
     metrics: Option<&ghostlink_core::cluster::NodeMetrics>,
@@ -1057,6 +1058,7 @@ pub fn evaluate_peer(
     allowlist: &[String],
     is_local: bool,
     is_used_in_rpc: bool,
+    allow_unknown_build_id: bool,
 ) -> PeerEvaluation {
     if is_local {
         let healthy = is_contributing_healthy();
@@ -1138,6 +1140,8 @@ pub fn evaluate_peer(
         reason = Some("rpc_shared_secret missing or handshake mismatch".to_string());
     } else if build_id_status == "mismatch" {
         reason = Some("RPC build does not match coordinator".to_string());
+    } else if build_id_status == "unknown" && !allow_unknown_build_id {
+        reason = Some("RPC build fingerprint missing".to_string());
     }
 
     let role = if is_used_in_rpc {
@@ -1161,6 +1165,18 @@ pub fn discover_rpc_peers(
     cluster: &ClusterState,
     local_node_id: &str,
     local_rpc_build_id: Option<&str>,
+) -> Vec<RpcPeer> {
+    discover_rpc_peers_with_policy(cluster, local_node_id, local_rpc_build_id, false)
+}
+
+/// Discovers healthy RPC peers after enforcing the configured build-fingerprint
+/// policy. Unknown fingerprints are rejected unless mixed-version admission is
+/// explicitly enabled for a controlled lab environment.
+pub fn discover_rpc_peers_with_policy(
+    cluster: &ClusterState,
+    local_node_id: &str,
+    local_rpc_build_id: Option<&str>,
+    allow_unknown_build_id: bool,
 ) -> Vec<RpcPeer> {
     let nodes = cluster.nodes_snapshot();
     cluster.with_metrics(|metrics_map| {
@@ -1218,7 +1234,7 @@ pub fn discover_rpc_peers(
                     (Some(local), Some(peer)) => {
                         debug_assert_eq!(local, peer);
                     }
-                    _ => {
+                    _ if allow_unknown_build_id => {
                         tracing::warn!(
                             "rpc_cluster: peer '{}' did not report a verifiable llama.cpp build \
                              fingerprint (predates version-compatibility checking, or couldn't \
@@ -1226,6 +1242,15 @@ pub fn discover_rpc_peers(
                              node's build; proceeding anyway.",
                             node.id
                         );
+                    }
+                    _ => {
+                        tracing::warn!(
+                            "rpc_cluster: excluding peer '{}' because its llama.cpp build fingerprint \
+                             is missing or unknown. Set rpc_allow_unknown_build_id only for a controlled \
+                             mixed-version lab environment.",
+                            node.id
+                        );
+                        return None;
                     }
                 }
 
@@ -1410,7 +1435,7 @@ mod tests {
             NodeStatus::Active,
         );
 
-        let peers = discover_rpc_peers(&cluster, "local", None);
+        let peers = discover_rpc_peers_with_policy(&cluster, "local", None, true);
 
         assert_eq!(peers.len(), 1);
         assert_eq!(peers[0].node_id, "contributor");
@@ -1434,7 +1459,7 @@ mod tests {
         // would hurt throughput more than excluding it.
         cluster.get_metrics_mut("flaky", |m| m.delivery_ratio = 0.5);
 
-        let peers = discover_rpc_peers(&cluster, "local", None);
+        let peers = discover_rpc_peers_with_policy(&cluster, "local", None, true);
 
         assert!(peers.is_empty());
     }
@@ -1453,7 +1478,7 @@ mod tests {
         // delivery_ratio defaults to 1.0 until real samples come in — must
         // not be treated as "below the health floor" before it has data.
 
-        let peers = discover_rpc_peers(&cluster, "local", None);
+        let peers = discover_rpc_peers_with_policy(&cluster, "local", None, true);
 
         assert_eq!(peers.len(), 1);
         assert_eq!(peers[0].node_id, "fresh");
@@ -1494,7 +1519,7 @@ mod tests {
             NodeStatus::Active,
         );
 
-        let peers = discover_rpc_peers(&cluster, "local", None);
+        let peers = discover_rpc_peers_with_policy(&cluster, "local", None, true);
         assert_eq!(peers.len(), 2);
         assert_eq!(peers[0].node_id, "alpha");
         assert_eq!(peers[1].node_id, "zeta");
@@ -1559,7 +1584,7 @@ mod tests {
     }
 
     #[test]
-    fn does_not_exclude_peer_with_unknown_rpc_build_id() {
+    fn excludes_peer_with_unknown_rpc_build_id_by_default() {
         // Asymmetry from bug 1's fix: a peer reporting `None` (predates this
         // field, or couldn't determine its own build) must NOT be treated as
         // a mismatch and excluded -- only an *actual confirmed* mismatch
@@ -1588,16 +1613,14 @@ mod tests {
 
         let peers = discover_rpc_peers(&cluster, "local", Some("da296d6"));
 
-        assert_eq!(
-            peers.len(),
-            1,
-            "a peer with no rpc_build_id must still be used, not excluded"
+        assert!(
+            peers.is_empty(),
+            "a peer with no rpc_build_id must be excluded by default"
         );
-        assert_eq!(peers[0].node_id, "contributor");
     }
 
     #[test]
-    fn does_not_exclude_peer_when_local_build_id_is_unknown() {
+    fn allows_unknown_rpc_build_ids_only_when_explicitly_enabled() {
         // Mirror case: if this node itself couldn't determine its own build
         // id, it also can't confirm a mismatch, so peers should still be used.
         let cluster = ClusterState::new();
@@ -1620,7 +1643,7 @@ mod tests {
             NodeStatus::Active,
         );
 
-        let peers = discover_rpc_peers(&cluster, "local", None);
+        let peers = discover_rpc_peers_with_policy(&cluster, "local", None, true);
 
         assert_eq!(peers.len(), 1);
         assert_eq!(peers[0].node_id, "contributor");
@@ -2120,7 +2143,7 @@ mod tests {
         let node =
             ghostlink_core::protocol::NodeResources::new("local-test", 16.0, 32.0, "8.6", None)
                 .with_rpc_port(50052);
-        let eval = evaluate_peer(&node, None, None, false, &[], true, false);
+        let eval = evaluate_peer(&node, None, None, false, &[], true, false, false);
         assert!(
             !eval.contribute_compute,
             "effective contribute_compute must be false when child process is down"
@@ -2132,6 +2155,35 @@ mod tests {
         assert_eq!(
             eval.excluded_reason,
             Some("rpc child not running".to_string())
+        );
+    }
+
+    #[test]
+    fn evaluate_peer_reports_unknown_build_as_excluded_by_default() {
+        let node =
+            ghostlink_core::protocol::NodeResources::new("contributor", 16.0, 32.0, "8.6", None)
+                .with_rpc_port(50052);
+        let metrics = ghostlink_core::cluster::NodeMetrics::new(
+            16.0,
+            32.0,
+            "8.6".to_string(),
+            Duration::from_secs(30),
+        );
+
+        let eval = evaluate_peer(
+            &node,
+            Some(&metrics),
+            Some("known-build"),
+            false,
+            &[],
+            false,
+            false,
+            false,
+        );
+
+        assert_eq!(
+            eval.excluded_reason,
+            Some("RPC build fingerprint missing".to_string())
         );
     }
     #[test]
