@@ -1,0 +1,91 @@
+name: Publish SDKs
+
+'on':
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  publish-js:
+    name: Publish JavaScript SDK to npm
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: sdks/js
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+          cache: npm
+          cache-dependency-path: sdks/js/package-lock.json
+      - name: Validate release tag and package version
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "${GITHUB_REF_NAME}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9._-]+)?$ ]]
+          [[ "$(node -p "require('./package.json').version")" == "${GITHUB_REF_NAME#v}" ]]
+      - name: Require NPM_TOKEN
+        shell: bash
+        env:
+          TOKEN_SET: ${{ secrets.NPM_TOKEN != '' }}
+        run: |
+          set -euo pipefail
+          [[ "${TOKEN_SET}" == "true" ]]
+      - run: npm ci
+      - run: npm run type-check
+      - run: npm test
+      - run: npm run build
+      - name: Publish package
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish --access public
+
+  publish-python:
+    name: Publish Python SDK to PyPI
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: sdks/python
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.11'
+      - name: Validate release tag and package version
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "${GITHUB_REF_NAME}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9._-]+)?$ ]]
+          python - <<'PY'
+          import os
+          import tomllib
+
+          with open("pyproject.toml", "rb") as manifest:
+              version = tomllib.load(manifest)["project"]["version"]
+          assert version == os.environ["GITHUB_REF_NAME"].removeprefix("v")
+          PY
+      - name: Require PYPI_API_TOKEN
+        shell: bash
+        env:
+          TOKEN_SET: ${{ secrets.PYPI_API_TOKEN != '' }}
+        run: |
+          set -euo pipefail
+          [[ "${TOKEN_SET}" == "true" ]]
+      - name: Install build and test dependencies
+        run: python -m pip install --upgrade pip build twine '.[test]'
+      - run: python -m pytest
+      - run: python -m build
+      - run: python -m twine check dist/*
+      - name: Publish package
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
+        run: python -m twine upload dist/*

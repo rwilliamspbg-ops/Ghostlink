@@ -4,10 +4,10 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ghostlink-client"
-version = "0.1.0"
+version = "2.2.1"
 description = "Python client for the Ghostlink Studio API: OpenAI-compatible chat/completions/embeddings, plus native token-streaming chat, workers, metrics, and settings."
 readme = "README.md"
-license = { text = "MIT" }
+license = "MIT"
 authors = [{ name = "Ghostlink contributors" }]
 requires-python = ">=3.9"
 dependencies = [
@@ -18,7 +18,6 @@ classifiers = [
     "Intended Audience :: Developers",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3 :: Only",
-    "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
     "Typing :: Typed",
 ]

@@ -20,7 +20,6 @@ use std::time::Duration;
 use std::time::Instant;
 
 #[cfg(unix)]
-#[cfg(unix)]
 use std::net::Shutdown as UnixSocketShutdown;
 #[cfg(unix)]
 use std::os::unix::net::{UnixListener, UnixStream};

@@ -1,18 +1,8 @@
 import axios, { AxiosInstance } from 'axios';
-import { Model, Metric, Session, Worker, Settings, McpServer, McpServerInput, WorkspaceEntry } from './store';
+import { Model, Metric, MetricSample, Session, Worker, Settings, McpServer, McpServerInput, WorkspaceEntry } from './store';
 import { InferenceEngineDescriptor } from './types/engines';
 
-export interface MetricsHistoryPoint {
-  timestamp_ms: number;
-  throughput: number;
-  cpu: number;
-  memory: number;
-  gpu: number;
-  latency_p50: number;
-  latency_p95: number;
-  active_nodes: number;
-  inference_backend: string;
-}
+export type MetricsHistoryPoint = MetricSample;
 
 export interface ClusterTopologyNode {
   id: string;
@@ -550,7 +540,20 @@ export class GhostlinkAPI {
   async getMetricsHistory(): Promise<{ history: MetricsHistoryPoint[]; error?: string }> {
     try {
       const response = await this.http.get('/api/metrics/history', { timeout: 4000 });
-      return { history: response.data.history || [] };
+      const history = Array.isArray(response.data?.history)
+        ? response.data.history.map((point: any): MetricsHistoryPoint => ({
+            t: Number(point.timestamp_ms) || Date.now(),
+            throughput: Number(point.throughput) || 0,
+            cpu: Number(point.cpu) || 0,
+            memory: Number(point.memory) || 0,
+            gpu: Number(point.gpu) || 0,
+            latency_p50: Number(point.latency_p50) || 0,
+            latency_p95: Number(point.latency_p95) || 0,
+            active_nodes: Number(point.active_nodes) || 0,
+            inference_backend: point.inference_backend ? String(point.inference_backend) : undefined,
+          }))
+        : [];
+      return { history };
     } catch (error: any) {
       return { history: [], error: error.message };
     }
@@ -568,6 +571,9 @@ export class GhostlinkAPI {
   async cancelSession(sessionId: string) {
     try {
       const response = await this.http.post(`/api/sessions/${sessionId}/cancel`);
+      if (response.data?.status === 'error') {
+        return { success: false, error: response.data.error || 'Failed to cancel session' };
+      }
       return { success: true, data: response.data };
     } catch (error: any) {
       return { success: false, error: error.response?.data?.error || error.message };
@@ -586,6 +592,9 @@ export class GhostlinkAPI {
   async loadSession(sessionId: string): Promise<{ success: boolean; session?: any; error?: string }> {
     try {
       const response = await this.http.get(`/api/sessions/${sessionId}`);
+      if (response.data?.status === 'error' || !response.data?.session) {
+        return { success: false, error: response.data?.error || 'Session not found' };
+      }
       return { success: true, session: response.data.session };
     } catch (error: any) {
       return { success: false, error: error.response?.data?.error || error.message };
@@ -636,7 +645,10 @@ export class GhostlinkAPI {
 
   async deleteSession(sessionId: string): Promise<{ success: boolean; error?: string }> {
     try {
-      await this.http.delete(`/api/sessions/${encodeURIComponent(sessionId)}`);
+      const response = await this.http.delete(`/api/sessions/${encodeURIComponent(sessionId)}`);
+      if (response.data?.status === 'error' || response.data?.deleted === false) {
+        return { success: false, error: response.data.error || 'Failed to delete session' };
+      }
       return { success: true };
     } catch (error: any) {
       return { success: false, error: error.response?.data?.error || error.message };

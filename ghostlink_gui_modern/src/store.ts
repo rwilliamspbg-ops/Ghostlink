@@ -36,6 +36,7 @@ export interface Metric {
 
 export interface Session {
   id: string;
+  name?: string;
   model: string;
   status: string;
   throughput: number;

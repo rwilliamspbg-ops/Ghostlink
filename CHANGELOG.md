@@ -6,6 +6,11 @@ All notable changes to Ghostlink Studio are documented here.
 
 ## [Unreleased]
 
+## [2.2.1] - 2026-09-06
+
+- **Metrics History, Saved Sessions, and GUI Dependency Lock Repair**:
+  Normalized `/api/metrics/history`'s `timestamp_ms` payload into the GUI's timestamped history model so trend cards and utilization charts render real server samples. Saved sessions now display their names, open their persisted messages as a chat thread, and can be permanently deleted with `DELETE /api/sessions/:id`; session cancellation now persists its `Cancelled` status instead of returning a no-op success. Synchronized `ghostlink_gui_modern/pnpm-lock.yaml` with its declared dependencies so a frozen install is reproducible.
+
 - **RPC Fabric Soak & Contributor-Kill Drain Harness**:
   Added `scripts/rpc_fabric_soak.py` and `tests/test_rpc_fabric_soak.py` to test and assert drain-and-restart behavior across Docker RPC peers without requiring a GPU or large model.
   Asserts peer discovery (2+ healthy nodes), baseline model generation, contributor container stop/kill (`ghostlink-rpc-contributor`), immediate coordinator purging of the dead node from `active_rpc_targets` in `/api/cluster/topology`, clean cancellation or failure of in-flight/subsequent work without hanging past timeout, and optional contributor restart and re-admission.
@@ -14,6 +19,12 @@ All notable changes to Ghostlink Studio are documented here.
 
 - **Strict Default Exclusion for Unknown ggml-rpc Build Fingerprints**:
   `rpc_cluster::discover_rpc_peers` and `evaluate_peer` now exclude peers with missing or unknown `rpc_build_id` build fingerprints by default (`excluded_reason: "RPC build fingerprint missing"`), matching the strict security stance of explicit build mismatches (`excluded_reason: "RPC build does not match coordinator"`). Added `rpc_allow_unknown_build_id` (settings.json, default `false`) and `GHOSTLINK_RPC_ALLOW_UNKNOWN_BUILD_ID` environment variable to opt back into admitting unknown build fingerprints in mixed-version lab environments.
+
+- **Coordinated SDK Publication and Artifact Version Gates**:
+  Aligned `ghostlink-core`, `ghost-link`, Ghostlink Studio, and the JavaScript and Python SDKs at `2.2.1`. Added tag-triggered npm and PyPI publication after each SDK's test, typecheck/build, and distribution validation; publication requires `NPM_TOKEN` and `PYPI_API_TOKEN`, respectively. Crate and artifact workflows now reject a release tag when its publishable manifest versions do not match the tag.
+
+- **Published Rust MSRV Corrected to 1.89**:
+  Updated `ghostlink-core` and `ghost-link` package metadata from stale `rust-version = "1.85.0"` to `1.89.0`, matching the repository's MSRV CI workflow and the current locked dependency graph.
 
 
 ## [2.2.0] - 2026-09-04

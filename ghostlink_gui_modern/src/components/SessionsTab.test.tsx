@@ -85,4 +85,53 @@ describe('SessionsTab', () => {
     expect(confirmSpy).toHaveBeenCalled();
     expect(api.cancelSession).not.toHaveBeenCalled();
   });
+
+  it('opens a saved session as a chat thread', async () => {
+    useAppStore.setState({
+      sessions: [{ id: 'saved-1', name: 'Release notes', model: 'llama-3-8b', status: 'saved', throughput: 0, latency: 0, tokens: 2 }],
+    });
+    const api = {
+      ...createMockApi(),
+      getSessions: vi.fn().mockResolvedValue({
+        sessions: [{ id: 'saved-1', name: 'Release notes', model: 'llama-3-8b', status: 'saved', throughput: 0, latency: 0, tokens: 2 }],
+      }),
+      loadSession: vi.fn().mockResolvedValue({
+        success: true,
+        session: {
+          id: 'saved-1',
+          name: 'Release notes',
+          model: 'llama-3-8b',
+          messages: [{ role: 'user', content: 'Summarize this' }, { role: 'assistant', content: 'Summary' }],
+        },
+      }),
+    };
+
+    render(<SessionsTab api={api} />);
+    await waitFor(() => expect(screen.getByText('Release notes')).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: /open saved session saved-1/i }));
+
+    await waitFor(() => expect(api.loadSession).toHaveBeenCalledWith('saved-1'));
+    expect(useAppStore.getState().activeTab).toBe(0);
+    expect(useAppStore.getState().chatMessages.map((message) => message.content)).toEqual(['Summarize this', 'Summary']);
+  });
+
+  it('deletes a saved session after confirmation', async () => {
+    useAppStore.setState({
+      sessions: [{ id: 'saved-1', name: 'Release notes', model: 'llama-3-8b', status: 'saved', throughput: 0, latency: 0, tokens: 2 }],
+    });
+    const api = {
+      ...createMockApi(),
+      getSessions: vi.fn().mockResolvedValue({
+        sessions: [{ id: 'saved-1', name: 'Release notes', model: 'llama-3-8b', status: 'saved', throughput: 0, latency: 0, tokens: 2 }],
+      }),
+      deleteSession: vi.fn().mockResolvedValue({ success: true }),
+    };
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+
+    render(<SessionsTab api={api} />);
+    await waitFor(() => expect(screen.getByText('Release notes')).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: /delete saved session saved-1/i }));
+
+    await waitFor(() => expect(api.deleteSession).toHaveBeenCalledWith('saved-1'));
+  });
 });

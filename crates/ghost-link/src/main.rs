@@ -1922,6 +1922,10 @@ struct RuntimeSettings {
     /// deserialize.
     #[serde(default)]
     rpc_shared_secret: String,
+    /// Admit RPC peers without a verifiable llama.cpp build fingerprint.
+    /// Disabled by default because missing fingerprints prevent mismatch checks.
+    #[serde(default)]
+    rpc_allow_unknown_build_id: bool,
     /// When true, any distributed inference load where -ngl == 0 or remote share is below
     /// threshold will return a hard load error rather than warning and falling back to single-node.
     #[serde(default)]
@@ -2119,6 +2123,7 @@ impl Default for RuntimeSettings {
             rpc_port: default_rpc_port(),
             rpc_allowed_peers: Vec::new(),
             rpc_shared_secret: String::new(),
+            rpc_allow_unknown_build_id: false,
             require_cluster_offload: false,
             ngl_auto: true,
             ctx_size_auto: true,
@@ -2169,9 +2174,22 @@ fn build_cluster_topology_json(
     let nodes = cluster.nodes_snapshot();
     let local_build_id = native_engine::NativeEngineClient::get_llama_build_id();
     let local_secret_configured = !settings.rpc_shared_secret.is_empty();
+    let allow_unknown_build_id = settings.rpc_allow_unknown_build_id
+        || std::env::var("GHOSTLINK_RPC_ALLOW_UNKNOWN_BUILD_ID")
+            .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
 
     let active_rpc_peers = if settings.distributed_inference {
-        rpc_cluster::discover_rpc_peers(cluster, local_node_id, local_build_id.as_deref())
+        if allow_unknown_build_id {
+            rpc_cluster::discover_rpc_peers_with_policy(
+                cluster,
+                local_node_id,
+                local_build_id.as_deref(),
+                true,
+            )
+        } else {
+            rpc_cluster::discover_rpc_peers(cluster, local_node_id, local_build_id.as_deref())
+        }
     } else {
         Vec::new()
     };
@@ -2194,6 +2212,7 @@ fn build_cluster_topology_json(
                     &settings.rpc_allowed_peers,
                     is_local,
                     is_used_in_rpc,
+                    allow_unknown_build_id,
                 );
 
                 let status = metrics
@@ -5489,11 +5508,24 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                 let backend = lock_state(&state);
                 if backend.settings.distributed_inference {
                     let local_build_id = native_engine::NativeEngineClient::get_llama_build_id();
-                    let peers = rpc_cluster::discover_rpc_peers(
-                        &backend.cluster,
-                        &backend.local_node_id,
-                        local_build_id.as_deref(),
-                    );
+                    let allow_unknown_build_id = backend.settings.rpc_allow_unknown_build_id
+                        || std::env::var("GHOSTLINK_RPC_ALLOW_UNKNOWN_BUILD_ID")
+                            .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
+                            .unwrap_or(false);
+                    let peers = if allow_unknown_build_id {
+                        rpc_cluster::discover_rpc_peers_with_policy(
+                            &backend.cluster,
+                            &backend.local_node_id,
+                            local_build_id.as_deref(),
+                            true,
+                        )
+                    } else {
+                        rpc_cluster::discover_rpc_peers(
+                            &backend.cluster,
+                            &backend.local_node_id,
+                            local_build_id.as_deref(),
+                        )
+                    };
                     let local_metrics = backend.cluster.get_metrics(&backend.local_node_id);
                     let local_vram = local_metrics.as_ref().map(|m| m.vram_gb).unwrap_or(0.0);
                     let local_system_memory = local_metrics
@@ -6605,8 +6637,22 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         Json(serde_json::json!({ "sessions": sessions }))
     }
 
-    async fn handle_gui_session_cancel(Path(session_id): Path<String>) -> Json<serde_json::Value> {
-        Json(serde_json::json!({ "status": "ok", "session_id": session_id, "cancelled": true }))
+    async fn handle_gui_session_cancel(
+        State(state): State<Arc<Mutex<BackendState>>>,
+        Path(session_id): Path<String>,
+    ) -> Json<serde_json::Value> {
+        let mut backend = lock_state(&state);
+        if let Some(session) = backend
+            .sessions
+            .iter_mut()
+            .find(|session| session.id == session_id)
+        {
+            session.status = "Cancelled".to_string();
+            save_persistent_sessions(&backend.sessions);
+            Json(serde_json::json!({ "status": "ok", "session_id": session_id, "cancelled": true }))
+        } else {
+            Json(serde_json::json!({ "status": "error", "error": "session not found" }))
+        }
     }
 
     async fn handle_gui_session_save(
@@ -7954,11 +8000,6 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                 enabled_tools.extend(mcp_registry.tool_schemas_for_server(&server_name).await);
             }
         }
-        // Standalone servers (sequential-thinking, docker-mcp-gateway, rag,
-        // git, ...) have no checkbox slot to opt into — they're always
-        // available once connected, same as the comment above already
-        // documented for server_for_slot but never actually wired up here.
-        enabled_tools.extend(mcp_registry.standalone_tool_schemas().await);
 
         let token_estimate = req.message.split_whitespace().count().clamp(1, 1024);
         let (history_turns, history_truncated) = trim_conversation_history(
@@ -8919,6 +8960,11 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                             // next distributed model load without a restart
                             // — only the receiving/contributing side needs one.
                             current.rpc_shared_secret = s.to_string();
+                        }
+                    }
+                    "rpc_allow_unknown_build_id" => {
+                        if let Some(enabled) = value.as_bool() {
+                            current.rpc_allow_unknown_build_id = enabled;
                         }
                     }
                     "ngl_auto" => {

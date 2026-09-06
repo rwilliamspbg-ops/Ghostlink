@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { RefreshCw, XCircle, Clock, Database, Zap, MessageSquare } from 'lucide-react';
+import { RefreshCw, XCircle, Clock, Database, Zap, MessageSquare, FolderOpen, Trash2 } from 'lucide-react';
 import { useAppStore } from '../store';
 import { EmptyState, ErrorPanel } from './StatusViews';
 
@@ -18,7 +18,7 @@ function sessionStatusClasses(status: string): string {
 }
 
 export const SessionsTab: React.FC<{ api: any }> = ({ api }) => {
-  const { sessions, setSessions, addToast, setActiveTab } = useAppStore();
+  const { sessions, setSessions, addToast, setActiveTab, createThread, renameThread, setCurrentModel } = useAppStore();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
@@ -44,6 +44,39 @@ export const SessionsTab: React.FC<{ api: any }> = ({ api }) => {
       addToast({ type: 'error', message: result.error || `Failed to cancel session ${id}` });
       return;
     }
+    refreshSessions();
+  };
+
+  const handleOpen = async (id: string) => {
+    const result = await api.loadSession(id);
+    if (!result.success || !result.session) {
+      addToast({ type: 'error', message: result.error || `Failed to open session ${id}` });
+      return;
+    }
+
+    const messages = Array.isArray(result.session.messages)
+      ? result.session.messages
+          .filter((message: any) => message?.role === 'user' || message?.role === 'assistant')
+          .map((message: any, index: number) => ({
+            role: message.role,
+            content: String(message.content ?? ''),
+            id: `${result.session.id}-${index}`,
+            timestamp: '',
+          }))
+      : [];
+    const thread = createThread(messages, result.session.model);
+    renameThread(thread.id, result.session.name || result.session.id);
+    if (result.session.model) setCurrentModel(result.session.model);
+    setActiveTab(0);
+  };
+
+  const handleDelete = async (id: string) => {
+    const result = await api.deleteSession(id);
+    if (!result.success) {
+      addToast({ type: 'error', message: result.error || `Failed to delete session ${id}` });
+      return;
+    }
+    addToast({ type: 'success', message: `Deleted session ${id}` });
     refreshSessions();
   };
 
@@ -87,7 +120,8 @@ export const SessionsTab: React.FC<{ api: any }> = ({ api }) => {
                         <Zap size={20} />
                       </div>
                       <div>
-                        <h3 className="font-bold text-slate-200">{session.id}</h3>
+                        <h3 className="font-bold text-slate-200">{session.name || session.id}</h3>
+                        {session.name && <p className="text-xs text-slate-500">{session.id}</p>}
                         <div className="flex items-center gap-2 text-xs text-slate-500">
                             <Database size={12} />
                             <span>{session.model}</span>
@@ -98,18 +132,43 @@ export const SessionsTab: React.FC<{ api: any }> = ({ api }) => {
                         <div className={`px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider ${sessionStatusClasses(session.status)}`}>
                             {session.status}
                         </div>
-                        <button
-                            onClick={() => {
-                              if (window.confirm(`Are you sure you want to cancel session ${session.id}? This will immediately terminate the running inference.`)) {
-                                handleCancel(session.id);
-                              }
-                            }}
-                            className="p-2 text-slate-500 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
-                            aria-label={`Cancel session ${session.id}`}
-                            title={`Cancel session ${session.id}`}
-                        >
-                            <XCircle size={18} aria-hidden="true" />
-                        </button>
+                        {session.status.toLowerCase() === 'saved' ? (
+                          <>
+                            <button
+                              onClick={() => handleOpen(session.id)}
+                              className="p-2 text-slate-500 hover:text-blue-400 hover:bg-blue-500/10 rounded-lg transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
+                              aria-label={`Open saved session ${session.id}`}
+                              title={`Open saved session ${session.id}`}
+                            >
+                              <FolderOpen size={18} aria-hidden="true" />
+                            </button>
+                            <button
+                              onClick={() => {
+                                if (window.confirm(`Are you sure you want to delete saved session ${session.id}? This cannot be undone.`)) {
+                                  handleDelete(session.id);
+                                }
+                              }}
+                              className="p-2 text-slate-500 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
+                              aria-label={`Delete saved session ${session.id}`}
+                              title={`Delete saved session ${session.id}`}
+                            >
+                              <Trash2 size={18} aria-hidden="true" />
+                            </button>
+                          </>
+                        ) : (
+                          <button
+                              onClick={() => {
+                                if (window.confirm(`Are you sure you want to cancel session ${session.id}? This will immediately terminate the running inference.`)) {
+                                  handleCancel(session.id);
+                                }
+                              }}
+                              className="p-2 text-slate-500 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
+                              aria-label={`Cancel session ${session.id}`}
+                              title={`Cancel session ${session.id}`}
+                          >
+                              <XCircle size={18} aria-hidden="true" />
+                          </button>
+                        )}
                     </div>
                   </div>
 
