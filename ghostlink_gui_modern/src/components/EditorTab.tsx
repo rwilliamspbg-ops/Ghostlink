@@ -156,6 +156,7 @@ const TreeNode: React.FC<{
         <button
           onClick={toggle}
           title={entry.path}
+          aria-expanded={entry.is_dir ? expanded : undefined}
           className={`flex items-center gap-1.5 flex-1 min-w-0 py-1 text-left text-xs transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none rounded ${
             isOpen ? 'text-blue-400' : 'text-slate-400 hover:text-slate-200'
           }`}
@@ -175,7 +176,7 @@ const TreeNode: React.FC<{
         </button>
       </div>
       {entry.is_dir && expanded && children && (
-        <div>
+        <div role="group" aria-label={`${entry.name} contents`}>
           {children.map((child) => (
             <TreeNode
               key={child.path}
@@ -623,7 +624,12 @@ export const EditorTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
               <>
                 <FileIcon size={14} className="text-slate-500 shrink-0" aria-hidden="true" />
                 <span className="text-sm font-medium text-slate-200 truncate">{editorOpenPath}</span>
-                {dirty && <span className="w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0" title="Unsaved changes" />}
+                {dirty && (
+                  <span className="flex items-center gap-1">
+                    <span className="w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0" title="Unsaved changes" aria-hidden="true" />
+                    <span className="sr-only">(unsaved)</span>
+                  </span>
+                )}
               </>
             ) : (
               <span className="text-sm text-slate-600">Select a file to open</span>
