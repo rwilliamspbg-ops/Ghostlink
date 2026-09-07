@@ -230,4 +230,23 @@ describe('SettingsTab', () => {
     expect(confirmSpy).toHaveBeenCalled();
     expect(api.resetSettings).not.toHaveBeenCalled();
   });
+
+  it('associates field descriptions with input controls via aria-describedby', async () => {
+    const api = createMockApi();
+
+    render(<SettingsTab api={api} />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Sampling Parameters')).toBeInTheDocument();
+    });
+
+    const tempSlider = screen.getByLabelText('Temperature');
+    expect(tempSlider).toHaveAttribute('aria-describedby', 'temperature-desc');
+
+    const apiHostInput = screen.getByLabelText('API Host');
+    expect(apiHostInput).toHaveAttribute('aria-describedby', 'api-host-desc');
+
+    const backendSelect = screen.getByLabelText('Backend');
+    expect(backendSelect).toHaveAttribute('aria-describedby', 'backend-desc');
+  });
 });
