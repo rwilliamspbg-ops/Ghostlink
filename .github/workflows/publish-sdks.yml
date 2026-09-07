@@ -32,6 +32,7 @@ jobs:
           [[ "${GITHUB_REF_NAME}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9._-]+)?$ ]]
           [[ "$(node -p "require('./package.json').version")" == "${GITHUB_REF_NAME#v}" ]]
       - name: Require NPM_TOKEN
+        if: startsWith(github.ref, 'refs/tags/')
         shell: bash
         env:
           TOKEN_SET: ${{ secrets.NPM_TOKEN != '' }}
@@ -43,6 +44,7 @@ jobs:
       - run: npm test
       - run: npm run build
       - name: Publish package
+        if: startsWith(github.ref, 'refs/tags/')
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: npm publish --access public
@@ -73,6 +75,7 @@ jobs:
           assert version == os.environ["GITHUB_REF_NAME"].removeprefix("v")
           PY
       - name: Require PYPI_API_TOKEN
+        if: startsWith(github.ref, 'refs/tags/')
         shell: bash
         env:
           TOKEN_SET: ${{ secrets.PYPI_API_TOKEN != '' }}
@@ -85,6 +88,7 @@ jobs:
       - run: python -m build
       - run: python -m twine check dist/*
       - name: Publish package
+        if: startsWith(github.ref, 'refs/tags/')
         env:
           TWINE_USERNAME: __token__
           TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
