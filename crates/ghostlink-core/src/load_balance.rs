@@ -462,6 +462,17 @@ fn chunk_distribution_plan(
     max_layers_per_slice: usize,
 ) -> LoadDistributionPlan {
     let slice_limit = max_layers_per_slice.max(1);
+
+    // Fast path: Avoid rebuilding distribution tuples and vector allocations if no slice exceeds the limit.
+    let needs_chunking = plan.distributions.iter().any(|(_, slices)| {
+        slices
+            .iter()
+            .any(|s| s.layer_range.1.saturating_sub(s.layer_range.0) > slice_limit)
+    });
+    if !needs_chunking {
+        return plan;
+    }
+
     let distributions = plan
         .distributions
         .into_iter()
