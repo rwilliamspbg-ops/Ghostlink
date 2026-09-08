@@ -49,12 +49,21 @@ impl FrameHeader {
     }
 
     /// Encode header directly into a pre-allocated buffer (zero-copy)
+    ///
+    /// OPTIMIZATION: Assigns bytes directly to constant indices instead of calling `copy_from_slice`.
+    /// This eliminates slice bounds checking overhead and enables rustc/LLVM to emit optimal stores.
     #[inline]
     pub fn encode_into(&self, buf: &mut [u8; Self::HEADER_SIZE]) {
-        buf[0..2].copy_from_slice(&self.ether_type.to_le_bytes());
+        let et = self.ether_type.to_le_bytes();
+        let crc = self.crc.to_le_bytes();
+        buf[0] = et[0];
+        buf[1] = et[1];
         buf[2] = self.kind;
         buf[3] = self.version;
-        buf[4..8].copy_from_slice(&self.crc.to_le_bytes());
+        buf[4] = crc[0];
+        buf[5] = crc[1];
+        buf[6] = crc[2];
+        buf[7] = crc[3];
     }
 
     /// Decode header from bytes (zero-copy, no allocation)
@@ -483,7 +492,9 @@ impl DiscoveryFrame {
                 version: PROTOCOL_VERSION,
                 crc,
             };
-            header.encode_into(unsafe { &mut *(buf.as_mut_ptr() as *mut [u8; 8]) });
+            if let Ok(header_buf) = (&mut buf[..8]).try_into() {
+                header.encode_into(header_buf);
+            }
 
             buf.len()
         } else {
@@ -495,7 +506,9 @@ impl DiscoveryFrame {
                 version: PROTOCOL_VERSION,
                 crc: crc32(&[]),
             };
-            header.encode_into(unsafe { &mut *(buf.as_mut_ptr() as *mut [u8; 8]) });
+            if let Ok(header_buf) = (&mut buf[..8]).try_into() {
+                header.encode_into(header_buf);
+            }
             buf.len()
         }
     }
