@@ -572,9 +572,12 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
           )}
           <button
             onClick={refreshModels}
-            className="flex items-center gap-2 px-4 py-2 bg-slate-800 hover:bg-blue-600 text-white rounded-xl text-xs font-bold transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none group-hover:shadow-lg group-hover:shadow-blue-500/20"
+            disabled={loading}
+            aria-busy={loading}
+            aria-label={loading ? 'Refreshing models...' : 'Refresh models'}
+            className="flex items-center gap-2 px-4 py-2 bg-slate-800 hover:bg-blue-600 text-white rounded-xl text-xs font-bold transition disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none group-hover:shadow-lg group-hover:shadow-blue-500/20"
           >
-            <RefreshCw size={16} aria-hidden="true" /> Refresh
+            <RefreshCw size={16} className={loading ? 'animate-spin' : ''} aria-hidden="true" /> Refresh
           </button>
         </div>
       </div>
