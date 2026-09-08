@@ -105,7 +105,7 @@ describe('EditorTab', () => {
     });
   });
 
-  it('expands a directory node and lists its children', async () => {
+  it('expands a directory node, updates aria-expanded, and lists its children in a group', async () => {
     const api = createMockApi();
     (api.getWorkspaceTree as any).mockImplementation((path: string) => {
       if (path === '') {
@@ -116,10 +116,15 @@ describe('EditorTab', () => {
     render(<EditorTab api={api} />);
     await waitFor(() => expect(screen.getByText('src')).toBeInTheDocument());
 
-    fireEvent.click(screen.getByText('src'));
+    const dirBtn = screen.getByRole('button', { name: 'src' });
+    expect(dirBtn).toHaveAttribute('aria-expanded', 'false');
+
+    fireEvent.click(dirBtn);
 
     await waitFor(() => {
       expect(api.getWorkspaceTree).toHaveBeenCalledWith('src');
+      expect(dirBtn).toHaveAttribute('aria-expanded', 'true');
+      expect(screen.getByRole('group', { name: 'src contents' })).toBeInTheDocument();
       expect(screen.getByText('App.tsx')).toBeInTheDocument();
     });
   });
@@ -136,6 +141,7 @@ describe('EditorTab', () => {
 
     fireEvent.change(screen.getByTestId('mock-editor'), { target: { value: '# Hello, edited' } });
     expect(saveButton).not.toBeDisabled();
+    expect(screen.getByText('(unsaved)')).toBeInTheDocument();
 
     fireEvent.click(saveButton);
     await waitFor(() => {

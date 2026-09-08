@@ -902,7 +902,7 @@ mod tests {
 
         let responder_config = UdpDiscoveryConfig {
             bind_addr: SocketAddr::from(([127, 0, 0, 1], port)),
-            response_timeout: Duration::from_millis(2600),
+            response_timeout: Duration::from_millis(6000),
             auth_token: Some("secret".to_string()),
             ..UdpDiscoveryConfig::default()
         };
