@@ -28,6 +28,7 @@ function createMockApi(engine: 'ollama' | 'vllm' | 'native' = 'ollama'): Ghostli
   vi.spyOn(api, 'loadModel').mockResolvedValue({ success: true, data: {} });
   vi.spyOn(api, 'unloadModel').mockResolvedValue({ success: true, data: {} });
   vi.spyOn(api, 'deleteModel').mockResolvedValue({ success: true, data: {} });
+  vi.spyOn(api, 'listPartialDownloads').mockResolvedValue({ partials: [] });
   vi.spyOn(api, 'searchHuggingFace').mockResolvedValue({ models: [{ id: 'test/model', name: 'Test Model', downloads: 1000, likes: 50 }] });
   vi.spyOn(api, 'getRuntimes').mockResolvedValue({
     available_runtimes: [{ runtime: 'cpu', memory_gb: 16, is_primary: true, is_available: true }],
@@ -190,5 +191,34 @@ describe('ModelsTab', () => {
     expect(screen.queryByTitle('Delete from Ollama')).not.toBeInTheDocument();
     expect(screen.queryByTitle('View Modelfile')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Unload' })).not.toBeInTheDocument();
+  });
+
+  it('disables Refresh button and sets aria-busy while loading models', async () => {
+    const api = createMockApi();
+    let resolveGetModels: (val: any) => void;
+    vi.spyOn(api, 'getModels').mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveGetModels = resolve;
+        })
+    );
+
+    render(<ModelsTab api={api} />);
+
+    const refreshBtn = screen.getByRole('button', { name: /refresh/i });
+    expect(refreshBtn).toBeDisabled();
+    expect(refreshBtn).toHaveAttribute('aria-busy', 'true');
+    expect(refreshBtn).toHaveAttribute('aria-label', 'Refreshing models...');
+
+    resolveGetModels!({
+      models: [],
+      current_model: 'none',
+    });
+
+    await waitFor(() => {
+      expect(refreshBtn).not.toBeDisabled();
+      expect(refreshBtn).toHaveAttribute('aria-busy', 'false');
+      expect(refreshBtn).toHaveAttribute('aria-label', 'Refresh models');
+    });
   });
 });
