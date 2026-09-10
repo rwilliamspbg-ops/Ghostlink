@@ -41,9 +41,11 @@ describe('SessionsTab', () => {
       expect(screen.getByText('mistral-7b')).toBeInTheDocument();
     });
 
-    // Check tooltip/title on Refresh button
+    // Check tooltip/title and accessibility on Refresh button
     const refreshBtn = screen.getByRole('button', { name: /refresh sessions/i });
     expect(refreshBtn).toHaveAttribute('title', 'Refresh sessions');
+    expect(refreshBtn).not.toBeDisabled();
+    expect(refreshBtn).toHaveAttribute('aria-busy', 'false');
 
     // Check tooltip/title on Cancel session buttons
     const cancelBtn1 = screen.getByRole('button', { name: /cancel session session-1/i });
@@ -133,5 +135,28 @@ describe('SessionsTab', () => {
     fireEvent.click(screen.getByRole('button', { name: /delete saved session saved-1/i }));
 
     await waitFor(() => expect(api.deleteSession).toHaveBeenCalledWith('saved-1'));
+  });
+
+  it('shows loading state and disables refresh button during refresh', async () => {
+    let resolveGetSessions: (val: any) => void = () => {};
+    const pendingPromise = new Promise((resolve) => {
+      resolveGetSessions = resolve;
+    });
+
+    const api = {
+      getSessions: vi.fn().mockImplementation(() => pendingPromise),
+    };
+
+    render(<SessionsTab api={api} />);
+
+    const refreshBtn = screen.getByRole('button', { name: /refreshing sessions\.\.\./i });
+    expect(refreshBtn).toBeDisabled();
+    expect(refreshBtn).toHaveAttribute('aria-busy', 'true');
+
+    resolveGetSessions({ sessions: [] });
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /refresh sessions/i })).not.toBeDisabled();
+    });
   });
 });

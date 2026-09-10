@@ -86,9 +86,11 @@ export const SessionsTab: React.FC<{ api: any }> = ({ api }) => {
         <h2 className="text-xl font-bold text-white">Active Sessions</h2>
         <button
           onClick={refreshSessions}
-          aria-label="Refresh sessions"
+          disabled={loading}
+          aria-busy={loading}
+          aria-label={loading ? 'Refreshing sessions...' : 'Refresh sessions'}
           title="Refresh sessions"
-          className="p-2 rounded-lg hover:bg-slate-900 text-slate-400 hover:text-white transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
+          className="p-2 rounded-lg hover:bg-slate-900 text-slate-400 hover:text-white transition disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
         >
           <RefreshCw size={18} className={loading ? 'animate-spin' : ''} aria-hidden="true" />
         </button>
