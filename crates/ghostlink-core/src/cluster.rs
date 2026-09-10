@@ -307,8 +307,10 @@ impl ClusterState {
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
 
-        // Optimization: Operate on references/moves and avoid redundant cloning of NodeResources fields.
-        // Also avoid marking nodes_snapshot_dirty when updating a node with unchanged resources.
+        // Optimization: Zero-allocation node re-registration path.
+        // Avoid cloning `node` or its string fields when capability resources are unchanged,
+        // move owned `node` directly into existing map entries on resource updates,
+        // and skip atomic cache operations when VRAM and memory deltas are zero.
         let vram_gb = node.vram_gb;
         let system_memory_gb = node.system_memory_gb;
         let mut vram_delta = vram_gb;
@@ -328,54 +330,66 @@ impl ClusterState {
                 && existing.rpc_build_id == node.rpc_build_id
             {
                 resources_changed = false;
-            } else {
-                *existing = node.clone();
             }
-        } else {
-            nodes.insert(node.id.clone(), node.clone());
         }
 
         if let Some(existing_metrics) = metrics.get_mut(&node.id) {
             existing_metrics.vram_gb = vram_gb;
             existing_metrics.total_vram_gb = vram_gb;
             existing_metrics.system_memory_gb = system_memory_gb;
-            existing_metrics
-                .compute_capability
-                .clone_from(&node.compute_capability);
-            existing_metrics.gpu_name.clone_from(&node.gpu_name);
+            if existing_metrics.compute_capability != node.compute_capability {
+                existing_metrics
+                    .compute_capability
+                    .clone_from(&node.compute_capability);
+            }
+            if existing_metrics.gpu_name != node.gpu_name {
+                existing_metrics.gpu_name.clone_from(&node.gpu_name);
+            }
             existing_metrics.heartbeat_timeout = Duration::from_secs(5);
             if addr.is_some() {
                 existing_metrics.ip_address = addr;
             }
+
+            if resources_changed {
+                if let Some(existing) = nodes.get_mut(&node.id) {
+                    *existing = node;
+                }
+            }
         } else {
+            let node_id = node.id.clone();
             let mut node_metrics = NodeMetrics::new(
                 vram_gb,
                 system_memory_gb,
                 node.compute_capability.clone(),
                 Duration::from_secs(5),
             );
-            node_metrics.name = node.id.clone();
+            node_metrics.name = node_id.clone();
             node_metrics.gpu_name = node.gpu_name.clone();
             node_metrics.ip_address = addr;
-            metrics.insert(node.id.clone(), node_metrics);
+            metrics.insert(node_id.clone(), node_metrics);
+            nodes.insert(node_id, node);
         }
 
         if resources_changed {
             self.nodes_snapshot_dirty.store(true, Ordering::Release);
         }
 
-        let current_total_vram = f64::from_bits(self.total_vram_cache.load(Ordering::Acquire));
-        self.total_vram_cache.store(
-            (current_total_vram + vram_delta as f64).to_bits(),
-            Ordering::Release,
-        );
+        if vram_delta != 0.0 {
+            let current_total_vram = f64::from_bits(self.total_vram_cache.load(Ordering::Acquire));
+            self.total_vram_cache.store(
+                (current_total_vram + vram_delta as f64).to_bits(),
+                Ordering::Release,
+            );
+        }
 
-        let current_total_system_mem =
-            f64::from_bits(self.total_system_memory_cache.load(Ordering::Acquire));
-        self.total_system_memory_cache.store(
-            (current_total_system_mem + system_memory_delta as f64).to_bits(),
-            Ordering::Release,
-        );
+        if system_memory_delta != 0.0 {
+            let current_total_system_mem =
+                f64::from_bits(self.total_system_memory_cache.load(Ordering::Acquire));
+            self.total_system_memory_cache.store(
+                (current_total_system_mem + system_memory_delta as f64).to_bits(),
+                Ordering::Release,
+            );
+        }
 
         self.last_update.store(
             std::time::SystemTime::now()
