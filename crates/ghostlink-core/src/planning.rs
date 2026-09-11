@@ -5,7 +5,6 @@
 //! - Adaptive quantization trigger (select_quantization_mode)
 //! - Load balancing and fault detection integration
 
-use crate::accelerator::ExecutionBackend;
 use crate::cluster::ClusterState;
 use crate::cluster::NodeStatus;
 use crate::host::{AccelerationMode, RuntimeProfile};
@@ -131,6 +130,8 @@ impl PlacementPlan {
             QuantizationMode::Int4 => "4-bit Quantized",
         };
 
+        // OPTIMIZATION: Reuses `mode_str` directly instead of executing a second match block
+        // and allocating intermediate owned Strings via `.to_string()`.
         format!(
             "Placement Plan ({})\n\
              =================\n\
@@ -139,11 +140,7 @@ impl PlacementPlan {
              Nodes: {}\n",
             mode_str,
             self.total_layers,
-            match self.quantization_mode {
-                QuantizationMode::None => "Full Precision".to_string(),
-                QuantizationMode::Int8 => "8-bit Quantized".to_string(),
-                QuantizationMode::Int4 => "4-bit Quantized".to_string(),
-            },
+            mode_str,
             self.participating_nodes.join(", ")
         )
     }
@@ -158,15 +155,16 @@ pub struct PlanningTuning {
 
 impl PlanningTuning {
     /// Derive planning hints from the detected runtime profile.
+    ///
+    /// OPTIMIZATION: Direct single-pass match over acceleration mode avoids instantiating an unused
+    /// ExecutionBackend struct and double-matching on `profile.acceleration_mode`.
     pub fn from_runtime_profile(profile: &RuntimeProfile, total_layers: usize) -> Self {
-        let backend = ExecutionBackend::from_runtime_profile(profile);
-        let worker_count = backend.worker_count.max(1);
-        let accelerator_bias = match profile.acceleration_mode {
-            AccelerationMode::Gpu => 2,
-            AccelerationMode::Avx512 => 1,
-            _ => 0,
+        let worker_count = profile.recommended_workers.max(1);
+        let (accelerator_bias, vector_bias) = match profile.acceleration_mode {
+            AccelerationMode::Gpu => (2, 2),
+            AccelerationMode::Avx512 => (1, 2),
+            _ => (0, 1),
         };
-        let vector_bias = (backend.vector_width_bits / 256).max(1);
         let target_chunks = (worker_count + accelerator_bias + vector_bias - 1).max(1);
         let chunk_size = if total_layers == 0 {
             1
