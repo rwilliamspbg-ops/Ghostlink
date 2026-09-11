@@ -54,6 +54,7 @@ export const CommandPalette: React.FC = () => {
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLUListElement>(null);
   const triggerRef = useRef<HTMLElement | null>(null);
+  const dialogRef = useRef<HTMLDivElement>(null);
   const shouldReduceMotion = useReducedMotion();
 
   const commands = useMemo<Command[]>(
@@ -232,8 +233,8 @@ export const CommandPalette: React.FC = () => {
         });
         return;
       }
-      if (e.key === 'Escape') {
-        setOpen((o) => (o ? false : o));
+      if (e.key === 'Escape' && open) {
+        setOpen(false);
         return;
       }
       // Ctrl/Cmd+Shift+O for "new chat"
@@ -250,6 +251,27 @@ export const CommandPalette: React.FC = () => {
           setActiveTab(0);
         }
       }
+
+      // Keyboard focus trap when Command Palette dialog is open
+      if (open && e.key === 'Tab') {
+        const dialog = dialogRef.current;
+        if (!dialog) return;
+        const focusables = Array.from(
+          dialog.querySelectorAll<HTMLElement>(
+            'a[href], button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])'
+          )
+        );
+        if (focusables.length === 0) return;
+        const first = focusables[0];
+        const last = focusables[focusables.length - 1];
+        if (e.shiftKey && document.activeElement === first) {
+          e.preventDefault();
+          last.focus();
+        } else if (!e.shiftKey && document.activeElement === last) {
+          e.preventDefault();
+          first.focus();
+        }
+      }
     };
     const handleOpenPalette = () => {
       setOpen((o) => {
@@ -263,7 +285,7 @@ export const CommandPalette: React.FC = () => {
       document.removeEventListener('keydown', handleKeyDown);
       window.removeEventListener('open-command-palette', handleOpenPalette);
     };
-  }, [setActiveTab, setChatMessages]);
+  }, [setActiveTab, setChatMessages, open]);
 
   useEffect(() => {
     if (open) {
@@ -307,6 +329,7 @@ export const CommandPalette: React.FC = () => {
           onClick={() => setOpen(false)}
         >
           <motion.div
+            ref={dialogRef}
             initial={shouldReduceMotion ? { opacity: 0 } : { opacity: 0, scale: 0.96, y: -8 }}
             animate={shouldReduceMotion ? { opacity: 1 } : { opacity: 1, scale: 1, y: 0 }}
             exit={shouldReduceMotion ? { opacity: 0 } : { opacity: 0, scale: 0.96, y: -8 }}

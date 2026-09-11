@@ -89,6 +89,26 @@ describe('CommandPalette', () => {
     }
   });
 
+  it('traps keyboard focus within modal when open', () => {
+    render(<CommandPalette />);
+
+    act(() => {
+      window.dispatchEvent(new CustomEvent('open-command-palette'));
+    });
+
+    const searchInput = screen.getByRole('combobox', { name: 'Search commands' });
+    searchInput.focus();
+    expect(document.activeElement).toBe(searchInput);
+
+    // Press Tab on the input (the only focusable element) - should remain on or loop to focusable inside dialog
+    fireEvent.keyDown(window, { key: 'Tab' });
+    expect(document.activeElement).toBe(searchInput);
+
+    // Press Shift+Tab on the input - should remain on or loop to focusable inside dialog
+    fireEvent.keyDown(window, { key: 'Tab', shiftKey: true });
+    expect(document.activeElement).toBe(searchInput);
+  });
+
   it('triggers custom events and tab navigation on command selection', () => {
     const setActiveTabMock = vi.fn();
     useAppStore.setState({ setActiveTab: setActiveTabMock });
