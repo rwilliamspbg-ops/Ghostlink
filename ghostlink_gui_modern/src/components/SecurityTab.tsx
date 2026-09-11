@@ -27,6 +27,7 @@ export const SecurityTab: React.FC<{ api: any }> = ({ api }) => {
   const [showApiKey, setShowApiKey] = useState(false);
   const [pqcRestartRequired, setPqcRestartRequired] = useState(false);
   const [tokenCopied, setTokenCopied] = useState(false);
+  const [auditLoading, setAuditLoading] = useState(false);
 
   const handleCopyToken = async () => {
     if (!token) return;
@@ -46,7 +47,23 @@ export const SecurityTab: React.FC<{ api: any }> = ({ api }) => {
   const handleSaveApiKey = () => {
     api.setApiKey?.(apiKeyInput.trim());
     setApiKeySaved(true);
+    addToast({ type: 'success', message: 'API key saved for this session' });
     setTimeout(() => setApiKeySaved(false), 2000);
+  };
+
+  const handleRefreshAuditLog = async () => {
+    setAuditLoading(true);
+    try {
+      const result = await api.getAuditLog();
+      if (result.entries) {
+        setAuditLog(result.entries.map((e: any) => ({
+          ...e,
+          time: e.time ? new Date(e.time).toLocaleString() : e.time,
+        })));
+      }
+    } finally {
+      setAuditLoading(false);
+    }
   };
 
   useEffect(() => {
@@ -142,15 +159,27 @@ export const SecurityTab: React.FC<{ api: any }> = ({ api }) => {
                 onClick={() => setShowApiKey(!showApiKey)}
                 className="px-3 text-slate-500 hover:text-white transition rounded-xl focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
                 aria-label={showApiKey ? 'Hide API key' : 'Show API key'}
+                title={showApiKey ? 'Hide API key' : 'Show API key'}
                 aria-pressed={showApiKey}
               >
                 {showApiKey ? <EyeOff size={16} aria-hidden="true" /> : <Eye size={16} aria-hidden="true" />}
               </button>
               <button
                 onClick={handleSaveApiKey}
-                className="px-5 py-2.5 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-sm font-bold transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
+                aria-label={apiKeySaved ? 'API key saved' : 'Save API key'}
+                title={apiKeySaved ? 'API key saved' : 'Save API key'}
+                className={`px-5 py-2.5 rounded-xl text-sm font-bold transition flex items-center gap-1.5 focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none ${
+                  apiKeySaved ? 'bg-green-600 text-white' : 'bg-blue-600 hover:bg-blue-500 text-white'
+                }`}
               >
-                {apiKeySaved ? 'Saved' : 'Save'}
+                {apiKeySaved ? (
+                  <>
+                    <Check size={16} aria-hidden="true" />
+                    Saved
+                  </>
+                ) : (
+                  'Save'
+                )}
               </button>
             </div>
           </div>
@@ -265,12 +294,14 @@ export const SecurityTab: React.FC<{ api: any }> = ({ api }) => {
             <div className="p-6 border-b border-slate-800 flex items-center justify-between">
                 <h3 className="font-bold text-slate-100">Security Audit Log</h3>
                 <button
-                  onClick={async () => { const result = await api.getAuditLog(); if (result.entries) setAuditLog(result.entries); }}
-                  className="p-2 hover:bg-slate-800 rounded-lg transition text-slate-500 hover:text-white focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
-                  aria-label="Refresh audit log"
-                  title="Refresh audit log"
+                  onClick={handleRefreshAuditLog}
+                  disabled={auditLoading}
+                  aria-busy={auditLoading}
+                  className="p-2 hover:bg-slate-800 rounded-lg transition text-slate-500 hover:text-white disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
+                  aria-label={auditLoading ? 'Refreshing audit log...' : 'Refresh audit log'}
+                  title={auditLoading ? 'Refreshing audit log...' : 'Refresh audit log'}
                 >
-                  <RefreshCw size={14} aria-hidden="true" />
+                  <RefreshCw size={14} className={auditLoading ? 'animate-spin' : ''} aria-hidden="true" />
                 </button>
             </div>
             <div className="divide-y divide-slate-800/50 font-mono text-[10px]">

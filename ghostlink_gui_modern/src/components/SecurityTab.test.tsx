@@ -37,16 +37,41 @@ describe('SecurityTab', () => {
     });
   });
 
-  it('saves the entered API key via api.setApiKey and shows confirmation', async () => {
+  it('saves the entered API key via api.setApiKey and shows confirmation with ARIA label', async () => {
     const api = createMockApi();
     render(<SecurityTab api={api} />);
 
     const input = screen.getByLabelText('API key');
     fireEvent.change(input, { target: { value: 'new-key-456' } });
-    fireEvent.click(screen.getByRole('button', { name: /save/i }));
+    const saveBtn = screen.getByRole('button', { name: /save api key/i });
+    fireEvent.click(saveBtn);
 
     expect(api.setApiKey).toHaveBeenCalledWith('new-key-456');
-    expect(await screen.findByText('Saved')).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: /api key saved/i })).toBeInTheDocument();
+    expect(screen.getByText('Saved')).toBeInTheDocument();
+  });
+
+  it('handles audit log refresh button loading state and aria-busy attribute', async () => {
+    let resolveAudit: any;
+    const auditPromise = new Promise((resolve) => { resolveAudit = resolve; });
+    const api = createMockApi({
+      getAuditLog: vi.fn().mockImplementation(() => auditPromise),
+    });
+
+    render(<SecurityTab api={api} />);
+
+    const refreshBtn = screen.getByRole('button', { name: 'Refresh audit log' });
+    fireEvent.click(refreshBtn);
+
+    expect(refreshBtn).toHaveAttribute('aria-busy', 'true');
+    expect(screen.getByRole('button', { name: 'Refreshing audit log...' })).toBeInTheDocument();
+
+    resolveAudit({ entries: [{ event: 'TEST_EVENT', status: 'SUCCESS', ip: '127.0.0.1', time: '2026-09-11T00:00:00Z' }] });
+
+    await waitFor(() => {
+      expect(refreshBtn).toHaveAttribute('aria-busy', 'false');
+      expect(screen.getByText('TEST_EVENT')).toBeInTheDocument();
+    });
   });
 
   it('shows a restart-required message rather than claiming PQC is already active', async () => {
