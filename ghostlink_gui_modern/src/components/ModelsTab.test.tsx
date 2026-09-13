@@ -154,7 +154,7 @@ describe('ModelsTab', () => {
     const api = createMockApi();
     render(<ModelsTab api={api} />);
     await waitFor(() => {
-      expect(screen.getByRole('button', { name: 'Use' })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /Use/i })).toBeInTheDocument();
     });
   });
 
@@ -170,9 +170,9 @@ describe('ModelsTab', () => {
     const api = createMockApi();
     render(<ModelsTab api={api} />);
     await waitFor(() => {
-      expect(screen.getByRole('button', { name: 'Use' })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /Use/i })).toBeInTheDocument();
     });
-    fireEvent.click(screen.getByRole('button', { name: 'Use' }));
+    fireEvent.click(screen.getByRole('button', { name: /Use/i }));
     await waitFor(() => {
       expect(api.loadModel).toHaveBeenCalled();
     });

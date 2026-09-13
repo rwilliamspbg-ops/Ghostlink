@@ -664,12 +664,14 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                               <button
                                 onClick={() => handleUnloadModel(model.name)}
                                 disabled={pendingActions[model.name] === 'unloading' || loading}
+                                aria-busy={pendingActions[model.name] === 'unloading'}
+                                aria-label={pendingActions[model.name] === 'unloading' ? `Unloading ${model.name}...` : `Unload ${model.name}`}
                                 className="flex items-center gap-2 px-3 py-1 bg-slate-800 hover:bg-slate-700 text-xs font-medium rounded-full transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
                               >
                                 {pendingActions[model.name] === 'unloading' ? (
-                                  <Loader size={16} className="mr-1" />
+                                  <Loader size={16} className="mr-1 animate-spin" aria-hidden="true" />
                                 ) : (
-                                  <X size={16} />
+                                  <X size={16} aria-hidden="true" />
                                 )}
                                 Unload
                               </button>
@@ -679,13 +681,15 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                           <button
                             onClick={() => handleSetModel(model.name)}
                             disabled={pendingActions[model.name] === 'setting' || loading}
+                            aria-busy={pendingActions[model.name] === 'setting'}
+                            aria-label={pendingActions[model.name] === 'setting' ? `Switching to ${model.name}...` : `Use ${model.name}`}
                             title={model.usable ? undefined : 'Not downloaded yet — selecting will show an error until it is'}
                             className="flex items-center gap-2 px-3 py-1 bg-slate-800 hover:bg-blue-600 text-xs font-medium rounded-full transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
                           >
                             {pendingActions[model.name] === 'setting' ? (
-                              <Loader size={16} className="mr-1" />
+                              <Loader size={16} className="mr-1 animate-spin" aria-hidden="true" />
                             ) : (
-                              <Check size={16} />
+                              <Check size={16} aria-hidden="true" />
                             )}
                             Use
                           </button>
@@ -704,12 +708,13 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                           <button
                             onClick={() => handleDeleteModel(model.name)}
                             disabled={pendingActions[model.name] === 'deleting' || loading}
+                            aria-busy={pendingActions[model.name] === 'deleting'}
                             className="p-1 hover:bg-slate-700 rounded-lg transition text-slate-400 hover:text-red-400 focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
                             title={canManageRemoteCatalog ? 'Delete from Ollama' : 'Delete model file'}
                             aria-label={canManageRemoteCatalog ? `Delete ${model.name} from Ollama` : `Delete model file ${model.name}`}
                           >
                             {pendingActions[model.name] === 'deleting' ? (
-                              <Loader size={16} className="mr-1" aria-hidden="true" />
+                              <Loader size={16} className="mr-1 animate-spin" aria-hidden="true" />
                             ) : (
                               <Trash2 size={16} aria-hidden="true" />
                             )}
@@ -864,6 +869,7 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                       <button
                         onClick={() => handlePullModel(model.name)}
                         disabled={pendingActions[model.name] === 'downloading' || loading || !canManageRemoteCatalog}
+                        aria-busy={pendingActions[model.name] === 'downloading'}
                         title={
                           !canManageRemoteCatalog
                             ? 'Pulling models is disabled because the remote server manages model inventory'
@@ -882,11 +888,11 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                       >
                         {pendingActions[model.name] === 'downloading' ? (
                           <>
-                            <Loader size={14} className="mr-2" />
+                            <Loader size={14} className="mr-2 animate-spin" aria-hidden="true" />
                             {progressLabel(downloadProgress[model.name])}
                           </>
                         ) : (
-                          <Download size={14} />
+                          <Download size={14} aria-hidden="true" />
                         )}
                         {pendingActions[model.name] === 'downloading' ? '' : canManageRemoteCatalog ? 'Pull' : 'Server managed'}
                       </button>
@@ -948,14 +954,15 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                       }
                       className="inline-flex items-center gap-2 px-4 py-2 bg-slate-800 hover:bg-blue-600 text-white rounded-xl text-xs font-bold transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none group-hover:shadow-lg group-hover:shadow-blue-500/20"
                       disabled={pendingActions[m.id] === 'downloading' || loading || !canDownloadLocalModels}
+                      aria-busy={pendingActions[m.id] === 'downloading'}
                     >
                       {pendingActions[m.id] === 'downloading' ? (
                         <>
-                          <Loader size={14} className="mr-2" />
+                          <Loader size={14} className="mr-2 animate-spin" aria-hidden="true" />
                           {progressLabel(downloadProgress[m.id])}
                         </>
                       ) : (
-                        <Download size={14} />
+                        <Download size={14} aria-hidden="true" />
                       )}
                       {pendingActions[m.id] === 'downloading' ? '' : canDownloadLocalModels ? 'Download' : 'Server managed'}
                     </button>
