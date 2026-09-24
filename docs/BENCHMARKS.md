@@ -175,7 +175,7 @@ contributes.
 Real, measured results from a genuinely different hardware class than
 every other entry in this document — a low-power consumer mini PC with no
 dedicated GPU, running native Linux rather than Windows. This is the real
-Linux data point [ENTERPRISE_PLAN.md](ENTERPRISE_PLAN.md)'s Track A flagged
+Linux data point [ENTERPRISE_PLAN.md](archive/ENTERPRISE_PLAN.md)'s Track A flagged
 as missing (this is also the same host used for the real two-machine LAN
 benchmark in the Multi-Node Performance section below).
 
