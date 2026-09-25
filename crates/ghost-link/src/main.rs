@@ -6986,7 +6986,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                     | "models"
                     | "mcp_workspace"
                     | "tmp"
-                    | "_archived"
+                    | "docs/archive"
             )
     }
 

@@ -6,6 +6,9 @@ All notable changes to Ghostlink Studio are documented here.
 
 ## [Unreleased]
 
+- **Repository Hygiene and Archive Consolidation (PR 2)** (`docs/archive/ENTERPRISE_PLAN.md`, `docs/archive/INDEX.md`, `crates/ghost-link/src/main.rs`, `docs/BENCHMARKS.md`):
+  Consolidated parallel legacy root `_archived/` directory into `docs/archive/` and removed `_archived/` to maintain a single unified documentation archive index (`docs/archive/INDEX.md`). Moved commercial go-to-market plan `ENTERPRISE_PLAN.md` out of active user documentation into `docs/archive/`. Archived `docker-compose.demo.yml` and updated internal rust path exclusions in `crates/ghost-link/src/main.rs`.
+
 - **Identity and Documentation Refactoring (PR 1)** (`README.md`, `docs/QUICKSTART.md`, `docs/ROADMAP.md`, `docs/KNOWN_LIMITATIONS.md`):
   Refactored core documentation to emphasize Ghostlink's primary product identity and happy path: peer discovery -> GGUF tensor split via `ggml-rpc` -> OpenAI-compatible `/v1/chat/completions`. Explicitly demoted synthetic pipeline tools (`flow`), SPSC ring buffers, and AF_XDP as experimental research components whose synthetic tok/s metrics do not represent LLM inference speed. Added a 2-node reproduce recipe in `docs/QUICKSTART.md` referencing real runs from `BENCHMARKS.md`. Resolved ROADMAP drift for installer scripts in `docs/ROADMAP.md`. Created `docs/KNOWN_LIMITATIONS.md` detailing unencrypted `ggml-rpc`, 30B split decode performance (~1.5–2.5 tok/s), x86_64 installer limits, standalone CLI binary release scope, and LAN-trust security model.
 

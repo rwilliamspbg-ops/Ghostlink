@@ -6,6 +6,7 @@ Some archived files intentionally contain superseded status statements and shoul
 
 ## Archived Files
 
+- [ENTERPRISE_PLAN.md](ENTERPRISE_PLAN.md): commercial trust and enterprise plan roadmap (archived out of active user docs).
 - [_archived/](../../_archived/): historical root documentation and legacy setup scripts preserved for reference.
 - [docs/archive/legacy-root-docs/GPU_CPU_SWITCHING_PLAN.md](legacy-root-docs/GPU_CPU_SWITCHING_PLAN.md)
 - [docs/archive/legacy-root-docs/IMPLEMENTATION_STATUS.md](legacy-root-docs/IMPLEMENTATION_STATUS.md)
