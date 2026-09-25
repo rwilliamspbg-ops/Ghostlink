@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { RefreshCw, XCircle, Clock, Database, Zap, MessageSquare, FolderOpen, Trash2 } from 'lucide-react';
+import { RefreshCw, XCircle, Clock, Database, Zap, MessageSquare, FolderOpen, Trash2, Loader } from 'lucide-react';
 import { useAppStore } from '../store';
 import { EmptyState, ErrorPanel } from './StatusViews';
 
@@ -20,6 +20,7 @@ function sessionStatusClasses(status: string): string {
 export const SessionsTab: React.FC<{ api: any }> = ({ api }) => {
   const { sessions, setSessions, addToast, setActiveTab, createThread, renameThread, setCurrentModel } = useAppStore();
   const [loading, setLoading] = useState(false);
+  const [actionSessionId, setActionSessionId] = useState<string | null>(null);
   const [error, setError] = useState('');
 
   const refreshSessions = useCallback(async () => {
@@ -39,45 +40,62 @@ export const SessionsTab: React.FC<{ api: any }> = ({ api }) => {
   }, [refreshSessions]);
 
   const handleCancel = async (id: string) => {
-    const result = await api.cancelSession(id);
-    if (result?.success === false) {
-      addToast({ type: 'error', message: result.error || `Failed to cancel session ${id}` });
-      return;
+    setActionSessionId(id);
+    try {
+      const result = await api.cancelSession(id);
+      if (result?.success === false) {
+        addToast({ type: 'error', message: result.error || `Failed to cancel session ${id}` });
+        return;
+      }
+      addToast({ type: 'info', message: `Cancelled session ${id}` });
+      await refreshSessions();
+    } finally {
+      setActionSessionId(null);
     }
-    refreshSessions();
   };
 
   const handleOpen = async (id: string) => {
-    const result = await api.loadSession(id);
-    if (!result.success || !result.session) {
-      addToast({ type: 'error', message: result.error || `Failed to open session ${id}` });
-      return;
-    }
+    setActionSessionId(id);
+    try {
+      const result = await api.loadSession(id);
+      if (!result.success || !result.session) {
+        addToast({ type: 'error', message: result.error || `Failed to open session ${id}` });
+        return;
+      }
 
-    const messages = Array.isArray(result.session.messages)
-      ? result.session.messages
-          .filter((message: any) => message?.role === 'user' || message?.role === 'assistant')
-          .map((message: any, index: number) => ({
-            role: message.role,
-            content: String(message.content ?? ''),
-            id: `${result.session.id}-${index}`,
-            timestamp: '',
-          }))
-      : [];
-    const thread = createThread(messages, result.session.model);
-    renameThread(thread.id, result.session.name || result.session.id);
-    if (result.session.model) setCurrentModel(result.session.model);
-    setActiveTab(0);
+      const messages = Array.isArray(result.session.messages)
+        ? result.session.messages
+            .filter((message: any) => message?.role === 'user' || message?.role === 'assistant')
+            .map((message: any, index: number) => ({
+              role: message.role,
+              content: String(message.content ?? ''),
+              id: `${result.session.id}-${index}`,
+              timestamp: '',
+            }))
+        : [];
+      const thread = createThread(messages, result.session.model);
+      renameThread(thread.id, result.session.name || result.session.id);
+      if (result.session.model) setCurrentModel(result.session.model);
+      addToast({ type: 'success', message: `Opened session ${result.session.name || id}` });
+      setActiveTab(0);
+    } finally {
+      setActionSessionId(null);
+    }
   };
 
   const handleDelete = async (id: string) => {
-    const result = await api.deleteSession(id);
-    if (!result.success) {
-      addToast({ type: 'error', message: result.error || `Failed to delete session ${id}` });
-      return;
+    setActionSessionId(id);
+    try {
+      const result = await api.deleteSession(id);
+      if (!result.success) {
+        addToast({ type: 'error', message: result.error || `Failed to delete session ${id}` });
+        return;
+      }
+      addToast({ type: 'success', message: `Deleted session ${id}` });
+      await refreshSessions();
+    } finally {
+      setActionSessionId(null);
     }
-    addToast({ type: 'success', message: `Deleted session ${id}` });
-    refreshSessions();
   };
 
   return (
@@ -138,11 +156,25 @@ export const SessionsTab: React.FC<{ api: any }> = ({ api }) => {
                           <>
                             <button
                               onClick={() => handleOpen(session.id)}
-                              className="p-2 text-slate-500 hover:text-blue-400 hover:bg-blue-500/10 rounded-lg transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
-                              aria-label={`Open saved session ${session.id}`}
-                              title={`Open saved session ${session.id}`}
+                              disabled={actionSessionId === session.id}
+                              aria-busy={actionSessionId === session.id}
+                              className="p-2 text-slate-500 hover:text-blue-400 hover:bg-blue-500/10 rounded-lg transition disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
+                              aria-label={
+                                actionSessionId === session.id
+                                  ? `Opening saved session ${session.id}...`
+                                  : `Open saved session ${session.id}`
+                              }
+                              title={
+                                actionSessionId === session.id
+                                  ? `Opening saved session ${session.id}...`
+                                  : `Open saved session ${session.id}`
+                              }
                             >
-                              <FolderOpen size={18} aria-hidden="true" />
+                              {actionSessionId === session.id ? (
+                                <Loader size={18} className="animate-spin text-blue-400" aria-hidden="true" />
+                              ) : (
+                                <FolderOpen size={18} aria-hidden="true" />
+                              )}
                             </button>
                             <button
                               onClick={() => {
@@ -150,11 +182,25 @@ export const SessionsTab: React.FC<{ api: any }> = ({ api }) => {
                                   handleDelete(session.id);
                                 }
                               }}
-                              className="p-2 text-slate-500 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
-                              aria-label={`Delete saved session ${session.id}`}
-                              title={`Delete saved session ${session.id}`}
+                              disabled={actionSessionId === session.id}
+                              aria-busy={actionSessionId === session.id}
+                              className="p-2 text-slate-500 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
+                              aria-label={
+                                actionSessionId === session.id
+                                  ? `Deleting saved session ${session.id}...`
+                                  : `Delete saved session ${session.id}`
+                              }
+                              title={
+                                actionSessionId === session.id
+                                  ? `Deleting saved session ${session.id}...`
+                                  : `Delete saved session ${session.id}`
+                              }
                             >
-                              <Trash2 size={18} aria-hidden="true" />
+                              {actionSessionId === session.id ? (
+                                <Loader size={18} className="animate-spin text-red-400" aria-hidden="true" />
+                              ) : (
+                                <Trash2 size={18} aria-hidden="true" />
+                              )}
                             </button>
                           </>
                         ) : (
@@ -164,11 +210,25 @@ export const SessionsTab: React.FC<{ api: any }> = ({ api }) => {
                                   handleCancel(session.id);
                                 }
                               }}
-                              className="p-2 text-slate-500 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
-                              aria-label={`Cancel session ${session.id}`}
-                              title={`Cancel session ${session.id}`}
+                              disabled={actionSessionId === session.id}
+                              aria-busy={actionSessionId === session.id}
+                              className="p-2 text-slate-500 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
+                              aria-label={
+                                actionSessionId === session.id
+                                  ? `Cancelling session ${session.id}...`
+                                  : `Cancel session ${session.id}`
+                              }
+                              title={
+                                actionSessionId === session.id
+                                  ? `Cancelling session ${session.id}...`
+                                  : `Cancel session ${session.id}`
+                              }
                           >
-                              <XCircle size={18} aria-hidden="true" />
+                              {actionSessionId === session.id ? (
+                                <Loader size={18} className="animate-spin text-red-400" aria-hidden="true" />
+                              ) : (
+                                <XCircle size={18} aria-hidden="true" />
+                              )}
                           </button>
                         )}
                     </div>
