@@ -618,6 +618,29 @@ pub fn stop_contributing() {
 /// the race actually spawns) so the periodic respawn-supervision loop's
 /// repeated `ensure_contributing` calls don't try to rebind the public port
 /// every 30s.
+/// Validates security requirements for non-loopback RPC binds (fail closed).
+/// If `bind_ip` is non-loopback, both `rpc_shared_secret` and `rpc_allowed_peers`
+/// must be configured and non-empty.
+pub fn validate_non_loopback_rpc_security(
+    bind_ip: &IpAddr,
+    secret: &str,
+    allowlist: &[String],
+) -> Result<(), String> {
+    if !bind_ip.is_loopback() {
+        if secret.trim().is_empty() {
+            return Err(format!(
+                "Non-loopback RPC bind address {bind_ip} requires rpc_shared_secret to be set (fail closed)."
+            ));
+        }
+        if allowlist.is_empty() {
+            return Err(format!(
+                "Non-loopback RPC bind address {bind_ip} requires rpc_allowed_peers allowlist to be set (fail closed)."
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn maybe_start_allowlist_proxy(
     bind_host: &str,
     public_port: u16,
@@ -631,8 +654,16 @@ fn maybe_start_allowlist_proxy(
     }
 
     let public_addr_str = format!("{bind_host}:{public_port}");
-    let public_addr: SocketAddr = match public_addr_str.parse() {
-        Ok(addr) => addr,
+    let public_addr: SocketAddr = match public_addr_str.parse::<SocketAddr>() {
+        Ok(addr) => {
+            if let Err(err) =
+                validate_non_loopback_rpc_security(&addr.ip(), shared_secret, allowed_peers)
+            {
+                tracing::warn!("rpc_cluster: rejecting non-loopback allowlist proxy start - {err}");
+                return;
+            }
+            addr
+        }
         Err(err) => {
             tracing::warn!(
                 "rpc_cluster: cannot start rpc_allowed_peers proxy \u{2014} invalid bind address \
@@ -762,7 +793,7 @@ fn maybe_start_auth_port(bind_host: &str, rpc_port: u16, secret: &str, rt_handle
 
     let auth_port = rpc_port.saturating_add(RPC_AUTH_PORT_OFFSET);
     let addr_str = format!("{bind_host}:{auth_port}");
-    let addr: SocketAddr = match addr_str.parse() {
+    let addr: SocketAddr = match addr_str.parse::<SocketAddr>() {
         Ok(addr) => addr,
         Err(err) => {
             tracing::warn!(
@@ -937,20 +968,42 @@ pub fn ip_allowed(ip: &IpAddr, allowlist: &[String]) -> bool {
         return true;
     }
 
-    let ip_v4 = match ip {
-        IpAddr::V4(v4) => *v4,
-        IpAddr::V6(_) => {
-            tracing::warn!(
-                "rpc_cluster: rejecting connection from {ip} \u{2014} rpc_allowed_peers only \
-                 supports IPv4 addresses/CIDR ranges today, so an IPv6 peer can never match"
-            );
-            return false;
-        }
+    allowlist.iter().any(|entry| ip_entry_matches(entry, ip))
+}
+
+fn ip_entry_matches(entry: &str, ip: &IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => ipv4_entry_matches(entry, *v4),
+        IpAddr::V6(v6) => ipv6_entry_matches(entry, *v6),
+    }
+}
+
+fn ipv6_entry_matches(entry: &str, ip: std::net::Ipv6Addr) -> bool {
+    let entry = entry.trim();
+
+    let Some((network_str, prefix_str)) = entry.split_once('/') else {
+        return match entry.parse::<std::net::Ipv6Addr>() {
+            Ok(addr) => addr == ip,
+            Err(_) => false,
+        };
     };
 
-    allowlist
-        .iter()
-        .any(|entry| ipv4_entry_matches(entry, ip_v4))
+    let (Ok(network), Ok(prefix)) = (
+        network_str.parse::<std::net::Ipv6Addr>(),
+        prefix_str.parse::<u32>(),
+    ) else {
+        return false;
+    };
+    if prefix > 128 {
+        return false;
+    }
+
+    let mask: u128 = if prefix == 0 {
+        0
+    } else {
+        u128::MAX << (128 - prefix)
+    };
+    (u128::from(network) & mask) == (u128::from(ip) & mask)
 }
 
 /// Matches a single `rpc_allowed_peers` entry (exact IPv4 address or IPv4
@@ -2218,5 +2271,43 @@ mod tests {
         let split = vec![80.0, 20.0]; // 20% remote share
         let res = validate_distributed_offload(30, &split);
         assert!(res.is_ok());
+    }
+
+    #[test]
+    fn validate_non_loopback_rpc_security_rejects_missing_secret_or_allowlist() {
+        let public_ip: IpAddr = "192.168.1.100".parse().unwrap();
+        let loopback_ip: IpAddr = "127.0.0.1".parse().unwrap();
+
+        // Loopback passes even with empty secret/allowlist
+        assert!(validate_non_loopback_rpc_security(&loopback_ip, "", &[]).is_ok());
+
+        // Non-loopback fails closed if secret or allowlist is empty
+        assert!(validate_non_loopback_rpc_security(
+            &public_ip,
+            "",
+            &["192.168.1.0/24".to_string()]
+        )
+        .is_err());
+        assert!(validate_non_loopback_rpc_security(&public_ip, "secret123", &[]).is_err());
+
+        // Non-loopback passes when both secret and allowlist are set
+        assert!(validate_non_loopback_rpc_security(
+            &public_ip,
+            "secret123",
+            &["192.168.1.0/24".to_string()]
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn ip_allowed_ipv6_exact_and_cidr_matching() {
+        let allowlist = vec!["::1".to_string(), "2001:db8::/32".to_string()];
+        let loopback_v6: IpAddr = "::1".parse().unwrap();
+        let in_cidr_v6: IpAddr = "2001:db8::1".parse().unwrap();
+        let out_v6: IpAddr = "2001:db9::1".parse().unwrap();
+
+        assert!(ip_allowed(&loopback_v6, &allowlist));
+        assert!(ip_allowed(&in_cidr_v6, &allowlist));
+        assert!(!ip_allowed(&out_v6, &allowlist));
     }
 }

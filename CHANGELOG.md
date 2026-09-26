@@ -6,6 +6,9 @@ All notable changes to Ghostlink Studio are documented here.
 
 ## [Unreleased]
 
+- **Secure-by-Default RPC Fabric & IPv6 CIDR Support (PR 3)** (`crates/ghost-link/src/rpc_cluster.rs`, `docs/SECURITY_MODEL.md`):
+  Enforced fail-closed security validation (`validate_non_loopback_rpc_security`) for non-loopback RPC listener binds, requiring both `rpc_shared_secret` and `rpc_allowed_peers` to be set when binding outside loopback. Added full IPv6 exact address and IPv6 CIDR range matching to `ip_allowed`. Documented HMAC challenge-response peer admission vs wire-level tensor payload encryption limits in `docs/SECURITY_MODEL.md`.
+
 - **Repository Hygiene and Archive Consolidation (PR 2)** (`docs/archive/ENTERPRISE_PLAN.md`, `docs/archive/INDEX.md`, `crates/ghost-link/src/main.rs`, `docs/BENCHMARKS.md`):
   Consolidated parallel legacy root `_archived/` directory into `docs/archive/` and removed `_archived/` to maintain a single unified documentation archive index (`docs/archive/INDEX.md`). Moved commercial go-to-market plan `ENTERPRISE_PLAN.md` out of active user documentation into `docs/archive/`. Archived `docker-compose.demo.yml` and updated internal rust path exclusions in `crates/ghost-link/src/main.rs`.
 
