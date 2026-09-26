@@ -116,13 +116,28 @@ unsafe fn scale_scalar(input: &[f32], output: *mut f32, scale: f32) {
     }
 }
 
+unsafe fn scale_vectorized(input: &[f32], output: *mut f32, scale: f32) {
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    {
+        scale_x86_256(input, output, scale);
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        scale_neon(input, output, scale);
+    }
+    #[cfg(not(any(target_arch = "x86", target_arch = "x86_64", target_arch = "aarch64")))]
+    {
+        scale_scalar(input, output, scale);
+    }
+}
+
 unsafe fn parallel_scale_scalar(input: &[f32], output: *mut f32, scale: f32, worker_count: usize) {
     let worker_count = worker_count.max(1);
     // Thread fan-out can dominate runtime for moderate tensor sizes.
-    // Keep GPU fallback scalar in-process unless there is enough work.
+    // Keep GPU fallback in-process unless there is enough work.
     const MIN_PARALLEL_LEN: usize = 65_536;
     if worker_count <= 1 || input.len() < MIN_PARALLEL_LEN {
-        scale_scalar(input, output, scale);
+        scale_vectorized(input, output, scale);
         return;
     }
 
@@ -132,7 +147,7 @@ unsafe fn parallel_scale_scalar(input: &[f32], output: *mut f32, scale: f32, wor
             let out_ptr = SendPtr(output.add(i * chunk_size));
             scope.spawn(move || {
                 let p = out_ptr;
-                scale_scalar(in_chunk, p.0, scale);
+                scale_vectorized(in_chunk, p.0, scale);
             });
         }
     });

@@ -1,3 +1,7 @@
+## 2026-09-25 - [SIMD Vectorization for In-Process Accelerator Scaling Fallback]
+**Learning:** In GPU-mode tensor scaling (`ExecutionBackend::scale_f32_slice`), `parallel_scale_scalar` previously fell back to unvectorized scalar float multiplication (`scale_scalar`) for small slices or per-worker threads. Dispatching in-process/fallback CPU scaling through `scale_vectorized` (utilizing AVX2 / NEON hardware vector instructions with runtime feature detection) reduced `accelerator_scale_f32_slice` benchmark latency by ~26.7% (from ~1.36 µs down to ~0.99 µs).
+**Action:** Always route CPU fallback execution paths in accelerator backends through runtime SIMD vectorization helpers (`scale_vectorized`) rather than unvectorized scalar routines.
+
 ## 2026-09-24 - [Zero-Lookup Chunk Start Layer Tracking]
 **Learning:** In chunked layer assignment (`assign_layers_chunked`), flushing a chunk previously executed `if let Some(next_layer) = layers.get(i + 1)` to look up and store the starting layer index for the next chunk. Updating `chunk_start_layer = layer.index` directly at chunk boundary transitions (`i == chunk_start`) inside the main traversal loop eliminated slice indexing bounds checks on chunk flushes, yielding a ~26.6% speedup in `planning/80_layers_8_nodes_autotuned` (from ~688 ns to ~504 ns).
 **Action:** When chunking slice elements during loop iteration, update start boundary properties directly upon entering a new chunk window (`i == chunk_start`) instead of speculatively indexing into the slice (`slice.get(i + 1)`) upon chunk completion.
