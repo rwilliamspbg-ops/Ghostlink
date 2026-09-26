@@ -1,0 +1,91 @@
+name: Tag Release on Main
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+concurrency:
+  group: tag-release-main
+  cancel-in-progress: false
+
+jobs:
+  tag-release:
+    name: Tag Release on Main
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Read and validate product version lockstep
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          version="$(sed -n 's/^version = "\(.*\)"$/\1/p' crates/ghost-link/Cargo.toml | head -1)"
+          core_version="$(sed -n 's/^version = "\(.*\)"$/\1/p' crates/ghostlink-core/Cargo.toml | head -1)"
+          gui_version="$(node -p "require('./ghostlink_gui_modern/package.json').version")"
+          js_sdk_version="$(node -p "require('./sdks/js/package.json').version")"
+          py_sdk_version="$(python3 -c '
+import tomllib
+with open("sdks/python/pyproject.toml", "rb") as f:
+    print(tomllib.load(f)["project"]["version"])
+')"
+
+          echo "Detected ghost-link version: ${version}"
+          echo "core_version: ${core_version}"
+          echo "gui_version: ${gui_version}"
+          echo "js_sdk_version: ${js_sdk_version}"
+          echo "py_sdk_version: ${py_sdk_version}"
+
+          if [[ "${core_version}" != "${version}" ]] || \
+             [[ "${gui_version}" != "${version}" ]] || \
+             [[ "${js_sdk_version}" != "${version}" ]] || \
+             [[ "${py_sdk_version}" != "${version}" ]]; then
+            echo "::error::Version mismatch across manifests! ghost-link=${version}, core=${core_version}, gui=${gui_version}, js_sdk=${js_sdk_version}, py_sdk=${py_sdk_version}"
+            exit 1
+          fi
+
+          if ! grep -qF "## [${version}]" CHANGELOG.md; then
+            echo "::error::CHANGELOG.md is missing header '## [${version}]'"
+            exit 1
+          fi
+
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+      - name: Check if tag already exists
+        id: tag_check
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="v${{ steps.version.outputs.version }}"
+          if git rev-parse "$tag" >/dev/null 2>&1; then
+            echo "Tag $tag already exists locally."
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          elif git ls-remote --tags origin "refs/tags/$tag" | grep -q "$tag"; then
+            echo "Tag $tag already exists on remote."
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Tag $tag does not exist."
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create and push release tag
+        if: steps.tag_check.outputs.exists == 'false'
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="v${{ steps.version.outputs.version }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$tag" -m "Ghostlink ${tag}"
+          git push origin "$tag"

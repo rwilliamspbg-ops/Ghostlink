@@ -27,7 +27,11 @@ echo.
 echo Launching Ghostlink natively on Windows...
 echo.
 
-powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT_DIR%\launch-native.ps1" -OpenBrowser %*
+set "PS_CMD=powershell"
+where pwsh >nul 2>nul
+if not errorlevel 1 set "PS_CMD=pwsh"
+
+%PS_CMD% -NoProfile -ExecutionPolicy Bypass -File "%ROOT_DIR%\launch-native.ps1" -OpenBrowser %*
 set "RC=%ERRORLEVEL%"
 
 if not "%RC%"=="0" (

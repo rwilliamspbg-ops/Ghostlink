@@ -1,3 +1,22 @@
+## First-Run Launcher Failures
+
+If `launch.bat` or `launch.sh` fails on first run:
+1. **Missing Tool Preflight Check**: Ensure Rust (`cargo`), Go (`go`), Node.js (`node`), `npm`, and `git` are installed. On Windows, use `winget`:
+   ```powershell
+   winget install Rustlang.Rustup
+   winget install GoLang.Go
+   winget install OpenJS.NodeJS.LTS
+   winget install Git.Git
+   ```
+2. **Native llama-server Build Error**: Building `llama-server` from source requires `cmake`, C++ build tools, and Vulkan SDK on Windows:
+   ```powershell
+   winget install Kitware.CMake
+   winget install Microsoft.VisualStudio.2022.BuildTools --override "--add Microsoft.VisualStudio.Workload.VCTools"
+   winget install KhronosGroup.VulkanSDK
+   ```
+   Inspect detailed build output at `logs/llama_cmake_configure.log` and `logs/llama_cmake_build.log`.
+3. **Non-AMD64 Architecture Warning**: Official release binaries and prebuilt native components are x86_64/AMD64 only.
+
 # Troubleshooting
 
 ## Settings tab doesn't load
@@ -15,9 +34,14 @@
 ## Port already in use
 
 Kill existing processes:
-```powershell
-taskkill /f /im ghost-link.exe && taskkill /f /im node.exe
-```
+- **Windows**:
+  ```powershell
+  taskkill /f /im ghost-link.exe /im control-plane.exe /im llama-server.exe /im node.exe
+  ```
+- **Unix**:
+  ```bash
+  kill $(lsof -t -i:8000 -i:8003 -i:5173 -i:8080) 2>/dev/null || true
+  ```
 
 ## Distributed inference: a peer is discovered but never used
 
@@ -58,8 +82,11 @@ hour regardless).
 
 | Component | Location |
 |---|---|
-| Backend API | Console window (or `/tmp/ghostlink_api.log` on Linux) |
-| Frontend | Browser dev console + Vite terminal |
+| Control-Plane Gateway | `logs/control_plane.log` (Windows) or `/tmp/ghostlink_control_plane.log` (Unix) |
+| Ghostlink API | `logs/ghostlink_api.log` (Windows) or `/tmp/ghostlink_api.log` (Unix) |
+| React Frontend | `logs/ghostlink_frontend.log` (Windows) or `/tmp/ghostlink_frontend.log` (Unix) |
+| llama-server build | `logs/llama_cmake_configure.log` & `logs/llama_cmake_build.log` |
+| Ollama (if enabled) | `logs/ollama.log` |
 
 
 ### Metrics tokens look wrong or display 0 tok/s

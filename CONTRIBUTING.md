@@ -98,6 +98,19 @@ If a status document is no longer current, move it to `docs/archive/` and update
 - If cross-cutting changes are unavoidable, include a short risk section and rollback strategy in the PR body.
 - For large feature deliveries, consider a sequence of smaller stacked PRs.
 
+## Tag & Release Publication Flow
+
+1. **Version Consistency**: Release PRs must bump product version across all publishable manifests to `X.Y.Z` (`crates/ghostlink-core/Cargo.toml`, `crates/ghost-link/Cargo.toml`, `ghostlink_gui_modern/package.json`, `sdks/js/package.json`, `sdks/python/pyproject.toml`) and `CHANGELOG.md` (`## [X.Y.Z] - YYYY-MM-DD`).
+2. **Automated Tagging**: Upon merging a release PR to `main`, `.github/workflows/tag-release-on-main.yml` validates version consistency across all manifests and creates/pushes tag `vX.Y.Z`.
+3. **Publish Workflows**: Tag `vX.Y.Z` automatically triggers:
+   - `.github/workflows/publish-crates.yml` (crates.io publication for `ghostlink-core` and `ghost-link`)
+   - `.github/workflows/publish-sdks.yml` (npm and PyPI publication for JavaScript and Python SDKs)
+   - `.github/workflows/release-artifacts.yml` (GitHub Release asset bundles, SHA256SUMS, SBOM, provenance)
+4. **Manual Tag Fallback**: If workflow permissions prevent automatic tagging on main, create and push the tag manually:
+   ```bash
+   git tag -a v2.2.2 -m "Ghostlink 2.2.2" && git push origin v2.2.2
+   ```
+
 ## Release Rubric
 
 For release-oriented PRs, include a checklist based on:
