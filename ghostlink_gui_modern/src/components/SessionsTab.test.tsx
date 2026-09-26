@@ -52,8 +52,16 @@ describe('SessionsTab', () => {
     expect(cancelBtn1).toHaveAttribute('title', 'Cancel session session-1');
   });
 
-  it('prompts confirm and calls cancelSession when confirmed', async () => {
-    const api = createMockApi();
+  it('prompts confirm, shows loading state, and calls cancelSession when confirmed', async () => {
+    let resolveCancelSession: (val: any) => void = () => {};
+    const cancelPromise = new Promise((resolve) => {
+      resolveCancelSession = resolve;
+    });
+
+    const api = {
+      ...createMockApi(),
+      cancelSession: vi.fn().mockImplementation(() => cancelPromise),
+    };
     const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
 
     render(<SessionsTab api={api} />);
@@ -69,6 +77,17 @@ describe('SessionsTab', () => {
       'Are you sure you want to cancel session session-1? This will immediately terminate the running inference.'
     );
     expect(api.cancelSession).toHaveBeenCalledWith('session-1');
+
+    // Check action busy and disabled state during async cancellation
+    const busyBtn = screen.getByRole('button', { name: /cancelling session session-1\.\.\./i });
+    expect(busyBtn).toBeDisabled();
+    expect(busyBtn).toHaveAttribute('aria-busy', 'true');
+
+    resolveCancelSession({ success: true });
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /cancel session session-1/i })).not.toBeDisabled();
+    });
   });
 
   it('does not call cancelSession when cancel is rejected in confirm dialog', async () => {
