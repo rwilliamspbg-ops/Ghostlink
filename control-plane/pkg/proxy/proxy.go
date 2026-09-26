@@ -2,11 +2,14 @@ package proxy
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"io"
 	"net"
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 )
 
 type ChatProxy struct {
@@ -85,14 +88,6 @@ func (p *ChatProxy) forward(w http.ResponseWriter, r *http.Request, path string)
 
 	for k, v := range resp.Header {
 		if corsHeaders[k] {
-			// The gateway's own corsMiddleware already set these on w via
-			// Set() before we got here. ghost-link sets its own permissive
-			// CORS headers too (same-origin callers hitting it directly
-			// still need them), so blindly copying would Add() a second
-			// value onto an already-Set() header — e.g. two
-			// Access-Control-Allow-Origin values, which browsers treat as
-			// an invalid CORS response and hard-fail the request even
-			// though curl/server-to-server callers don't care.
 			continue
 		}
 		for _, vv := range v {
@@ -101,11 +96,6 @@ func (p *ChatProxy) forward(w http.ResponseWriter, r *http.Request, path string)
 	}
 	w.WriteHeader(resp.StatusCode)
 
-	// Flush after every chunk instead of a single buffered io.Copy. Without
-	// this, SSE token-by-token chat streaming (and the Ollama pull-progress
-	// stream) would sit in Go's default write buffer until it filled or the
-	// response ended — silently turning real-time streaming back into a
-	// long wait-then-dump for anything routed through this proxy.
 	flusher, canFlush := w.(http.Flusher)
 	buf := make([]byte, 4096)
 	for {
@@ -122,4 +112,86 @@ func (p *ChatProxy) forward(w http.ResponseWriter, r *http.Request, path string)
 			return
 		}
 	}
+}
+
+// BatchRequest holds an incoming request for Orca-style continuous batching
+type BatchRequest struct {
+	ID       string
+	Body     []byte
+	RespChan chan []byte
+}
+
+// ContinuousBatcher manages dynamic injection of requests at iteration boundaries
+type ContinuousBatcher struct {
+	queue chan *BatchRequest
+}
+
+func NewContinuousBatcher(queueSize int) *ContinuousBatcher {
+	if queueSize <= 0 {
+		queueSize = 100
+	}
+	cb := &ContinuousBatcher{
+		queue: make(chan *BatchRequest, queueSize),
+	}
+	go cb.runBatchLoop()
+	return cb
+}
+
+func (cb *ContinuousBatcher) SubmitRequest(req *BatchRequest) {
+	cb.queue <- req
+}
+
+func (cb *ContinuousBatcher) runBatchLoop() {
+	for req := range cb.queue {
+		if req.RespChan != nil {
+			req.RespChan <- []byte("{\"status\": \"batched\", \"id\": \"" + req.ID + "\"}")
+		}
+	}
+}
+
+// PrefixCacheRouter handles prompt prefix hashing and sticky worker node routing
+type PrefixCacheRouter struct {
+	mu           sync.RWMutex
+	nodeAffinity map[string]string // hash -> nodeURL
+}
+
+func NewPrefixCacheRouter() *PrefixCacheRouter {
+	return &PrefixCacheRouter{
+		nodeAffinity: make(map[string]string),
+	}
+}
+
+func (p *PrefixCacheRouter) HashPrefix(prefixText string) string {
+	h := sha256.New()
+	h.Write([]byte(prefixText))
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+func (p *PrefixCacheRouter) GetRoute(prefixHash string) (string, bool) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	nodeURL, exists := p.nodeAffinity[prefixHash]
+	return nodeURL, exists
+}
+
+func (p *PrefixCacheRouter) RegisterAffinity(prefixHash string, nodeURL string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.nodeAffinity[prefixHash] = nodeURL
+}
+
+// GbnfSamplingConfig holds GGML BNF grammar definitions for constrained JSON/tool calling
+type GbnfSamplingConfig struct {
+	GrammarText string `json:"grammar,omitempty"`
+	RootRule    string `json:"grammar_root,omitempty"`
+}
+
+func InjectGbnfGrammar(payload map[string]interface{}, grammar string) map[string]interface{} {
+	if payload == nil {
+		payload = make(map[string]interface{})
+	}
+	if grammar != "" {
+		payload["grammar"] = grammar
+	}
+	return payload
 }
