@@ -30,6 +30,12 @@ $ErrorActionPreference = "Stop"
 $RootDir = $PSScriptRoot
 Set-Location $RootDir
 
+# Warn on non-AMD64 Windows hosts
+$procArch = $env:PROCESSOR_ARCHITECTURE
+if ($procArch -ne "AMD64" -and $env:PROCESSOR_ARCHITEW6432 -ne "AMD64") {
+    Write-Warn "Non-AMD64 architecture detected ($procArch). Release binaries and prebuilt components are optimized for x86_64."
+}
+
 $LogDir = Join-Path $RootDir "logs"
 New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
 New-Item -ItemType Directory -Force -Path (Join-Path $RootDir "models") | Out-Null
@@ -141,6 +147,37 @@ Write-Host ""
 Write-Host "Ghostlink Studio - native Windows launch" -ForegroundColor White
 Write-Host ""
 
+# --- 0. Preflight Tool Checks & Listener Cleanup ---
+Write-Step "Checking required core tools"
+$missingTools = @()
+if (-not (Get-Command "cargo" -ErrorAction SilentlyContinue)) { $missingTools += "cargo (Rust: winget install --id Rustlang.Rustup)" }
+if (-not (Get-Command "rustc" -ErrorAction SilentlyContinue)) { $missingTools += "rustc (Rust: winget install --id Rustlang.Rustup)" }
+if (-not (Get-Command "go" -ErrorAction SilentlyContinue))    { $missingTools += "go (Go: winget install --id GoLang.Go)" }
+if (-not (Get-Command "node" -ErrorAction SilentlyContinue))  { $missingTools += "node (Node.js: winget install --id OpenJS.NodeJS)" }
+if (-not (Get-Command "npm" -ErrorAction SilentlyContinue))   { $missingTools += "npm (Node.js: winget install --id OpenJS.NodeJS)" }
+if (-not (Get-Command "git" -ErrorAction SilentlyContinue))   { $missingTools += "git (Git: winget install --id Git.Git)" }
+
+if ($missingTools.Count -gt 0) {
+    Write-Err "Missing required tools for native launch:"
+    foreach ($tool in $missingTools) {
+        Write-Host "  - $tool" -ForegroundColor Yellow
+    }
+    exit 1
+}
+Write-Ok "Core tools present"
+
+Write-Step "Clearing stale listeners on ports ($ControlPlanePort, $ApiPort, $GuiPort, $LlamaPort)"
+Free-Port $ControlPlanePort
+Free-Port $ApiPort
+Free-Port $GuiPort
+Free-Port $LlamaPort
+
+if ($env:GHOSTLINK_GPU_NAME -or $env:GHOSTLINK_VRAM_GB -or $env:GHOSTLINK_LLAMA_NGL) {
+    Write-Step "GPU environment override set: GPU=$env:GHOSTLINK_GPU_NAME VRAM=$env:GHOSTLINK_VRAM_GB NGL=$env:GHOSTLINK_LLAMA_NGL"
+} else {
+    Write-Step "No GPU override set - using dynamic hardware auto-detection"
+}
+
 # --- 1. Build ghost-link.exe (native Windows binary, real GPU auto-detection) ---
 Write-Step "Ghost-Link API binary"
 $ApiBin = Join-Path $RootDir "target\release\ghost-link.exe"
@@ -206,6 +243,13 @@ if ($InferenceBackend -eq "ollama") {
     }
 
     if (-not $LlamaBin -and -not $SkipLlamaBuild) {
+        if (-not (Get-Command "cmake" -ErrorAction SilentlyContinue)) {
+            Write-Err "cmake is required to build llama-server but was not found."
+            Write-Host "  Install cmake: winget install --id Kitware.CMake" -ForegroundColor Yellow
+            Write-Host "  Install C++ build tools: winget install --id Microsoft.VisualStudio.2022.BuildTools --override `"--add Microsoft.VisualStudio.Workload.VCTools`"" -ForegroundColor Yellow
+            Write-Host "  Install Vulkan SDK for Vulkan GPU offload: winget install --id KhronosGroup.VulkanSDK" -ForegroundColor Yellow
+            exit 1
+        }
         Write-Warn "Building llama-server with Vulkan support (first run only, several minutes)..."
         $LlamaDir = Join-Path $RootDir "third_party\llama.cpp"
         if (-not (Test-Path $LlamaDir)) {
@@ -213,10 +257,20 @@ if ($InferenceBackend -eq "ollama") {
         }
         Push-Location $LlamaDir
         try {
-            cmake -S . -B build -DGGML_VULKAN=ON -DCMAKE_BUILD_TYPE=Release *>> (Join-Path $LogDir "llama_cmake_configure.log")
-            if ($LASTEXITCODE -ne 0) { Write-Err "cmake configure failed - see logs\llama_cmake_configure.log"; exit 1 }
-            cmake --build build --config Release --target llama-server -j *>> (Join-Path $LogDir "llama_cmake_build.log")
-            if ($LASTEXITCODE -ne 0) { Write-Err "llama-server build failed - see logs\llama_cmake_build.log"; exit 1 }
+            $cmakeLog = Join-Path $LogDir "llama_cmake_configure.log"
+        $buildLog = Join-Path $LogDir "llama_cmake_build.log"
+        cmake -S . -B build -DGGML_VULKAN=ON -DCMAKE_BUILD_TYPE=Release *>> $cmakeLog
+        if ($LASTEXITCODE -ne 0) {
+            Write-Err "cmake configure failed - see $cmakeLog"
+            Get-Content $cmakeLog -Tail 30 -ErrorAction SilentlyContinue
+            exit 1
+        }
+        cmake --build build --config Release --target llama-server -j *>> $buildLog
+        if ($LASTEXITCODE -ne 0) {
+            Write-Err "llama-server build failed - see $buildLog"
+            Get-Content $buildLog -Tail 30 -ErrorAction SilentlyContinue
+            exit 1
+        }
         } finally {
             Pop-Location
         }
@@ -307,10 +361,7 @@ $env:GHOSTLINK_LLAMA_THREADS = [Math]::Max(1, $logicalCores - 1)
 # CPU-only automatically when GHOSTLINK_LLAMA_NGL is *not* set, as a safety
 # net for other deployments/hosts that haven't made this same measured
 # tradeoff; this script opts out of that default explicitly.
-$env:GHOSTLINK_GPU_NAME = "AMD Radeon 860M Graphics"
-$env:GHOSTLINK_VRAM_GB = "8"
-$env:GHOSTLINK_COMPUTE_CAPABILITY = "gpu"
-$env:GHOSTLINK_LLAMA_NGL = "-1"
+# GPU hardware auto-detection active by default (environment overrides respected if set)
 
 # Deliberately NOT forcing GHOSTLINK_CTX_SIZE here (this launch path used to
 # unconditionally set it to 16384). Found the hard way: that value was tuned

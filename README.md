@@ -11,7 +11,7 @@ Route workloads across CPU, GPU, and NPU resources with explicit scheduling, har
 [![MSRV](https://github.com/rwilliamspbg-ops/Ghostlink/actions/workflows/msrv.yml/badge.svg)](https://github.com/rwilliamspbg-ops/Ghostlink/actions/workflows/msrv.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Docs](https://img.shields.io/badge/Docs-GitHub%20Pages-0ea5e9)](https://rwilliamspbg-ops.github.io/Ghostlink/)
-[![Version](https://img.shields.io/badge/version-2.2.1-blueviolet)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-2.2.2-blueviolet)](CHANGELOG.md)
 [![Rust](https://img.shields.io/badge/Rust-2021-orange?logo=rust)](Cargo.toml)
 [![Platforms](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey)](#quick-start)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
@@ -111,7 +111,7 @@ ghost-link doctor --strict         # sanity-check your setup
 ghost-link serve 127.0.0.1 8003    # start the OpenAI-compatible API server
 ```
 
-Both scripts accept `VERSION=v2.2.1` (env var) to pin a specific release
+Both scripts accept `VERSION=v2.2.2` (env var) to pin a specific release
 instead of latest, and print PATH guidance if the install directory isn't
 already on it. Source for both lives at
 [`scripts/install.sh`](scripts/install.sh) and
@@ -142,9 +142,12 @@ published release binary.
 | Tool | Required | How to Install |
 |------|----------|---------------|
 | **Rust** | Yes | `winget install Rustlang.Rustup` or https://rustup.rs |
+| **Go** | Yes (Control-Plane gateway) | `winget install GoLang.Go` or https://go.dev/dl/ |
 | **Node.js** | Yes | `winget install OpenJS.NodeJS.LTS` or https://nodejs.org (LTS) |
+| **Git** | Yes | `winget install Git.Git` |
 | **CMake** | For llama.cpp | `winget install Kitware.CMake` or https://cmake.org/download/ |
-| **Git** | For llama.cpp | `winget install Git.Git` |
+| **C++ Build Tools** | For llama.cpp | `winget install Microsoft.VisualStudio.2022.BuildTools --override "--add Microsoft.VisualStudio.Workload.VCTools"` |
+| **Vulkan SDK** | For native Vulkan GPU offload | `winget install KhronosGroup.VulkanSDK` or https://vulkan.lunarg.com |
 
 **Clone and launch**
 
@@ -189,7 +192,7 @@ $env:GHOSTLINK_USE_WSL="1"; .\launch.bat
 
 ### Linux / macOS
 
-**Prerequisites**: Rust, Node.js, curl; cmake optional (a prebuilt `llama-server` is used as a fallback if cmake isn't available).
+**Prerequisites**: Rust, Go, Node.js, npm, git, curl; cmake optional (a prebuilt `llama-server` is used as a fallback if cmake isn't available).
 
 ```bash
 git clone https://github.com/rwilliamspbg-ops/Ghostlink.git
@@ -618,7 +621,7 @@ CI enforces the same checks across Ubuntu, Windows, and macOS.
 Ghostlink is positioned as a launch-ready open-source foundation with a strong demo story and public-facing collateral.
 
 *Note: `main` branch development is at `v2.2.1`.*
-To publish: tag v2.2.1 and push; do not claim the GitHub Release exists in this PR.
+To publish: tag v2.2.2 and push; do not claim the GitHub Release exists in this PR.
 
 ### Current Strengths
 - **Verified VRAM/RAM Capacity Splitting**: Real cross-machine tensor splitting via `ggml-rpc` allows loading models too large for any single machine alone (e.g. 30B-class MoE models).

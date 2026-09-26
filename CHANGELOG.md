@@ -6,6 +6,19 @@ All notable changes to Ghostlink Studio are documented here.
 
 ## [Unreleased]
 
+- None.
+
+## [2.2.2] - 2026-09-26
+
+- **Full First-Run Stack Launchers (Windows Native & Unix)** (`launch.bat`, `launch-native.ps1`, `launch.sh`):
+  Completed clean first-run startup on native Windows and Unix environments. Added tool preflight checks (`powershell`, `cargo`, `rustc`, `go`, `node`, `npm`, `git`, `cmake`, C++ compiler, Vulkan SDK) with clear `winget` installation instructions on failure. Automated `logs/` and `models/` directory creation, lazy binary builds for `ghost-link` and Go `control-plane`, default model download (`stories15M-q4_0.gguf`), stale listener port clearing (`8000`, `8003`, `5173`, `8080`), `ghostlink_gui_modern/public/env-config.js` gateway URL injection (`http://127.0.0.1:8000`), Vite dev server dependency verification/startup (`:5173`), and graceful Ctrl+C cleanup.
+
+- **Hardware Auto-Detection as Default** (`launch-native.ps1`, `docs/LOCAL_INFERENCE_TUNING.md`):
+  Removed machine-specific GPU name, VRAM, and `-ngl -1` hard-codes from `launch-native.ps1` in favor of dynamic hardware auto-detection, while retaining support for operator environment overrides (`GHOSTLINK_GPU_NAME`, `GHOSTLINK_VRAM_GB`, `GHOSTLINK_LLAMA_NGL`).
+
+- **Main Branch Tag & Release Pipeline Automation** (`.github/workflows/tag-release-on-main.yml`, `.github/workflows/publish-crates.yml`, `CONTRIBUTING.md`):
+  Added automated tag creation on `push` to `main` when manifest versions and `CHANGELOG.md` notes match and no tag exists yet. Created tag `v2.2.2` triggers publication workflows for crates.io, npm, PyPI, and GitHub Release artifacts.
+
 - **Repository Hygiene and Archive Consolidation (PR 2)** (`docs/archive/ENTERPRISE_PLAN.md`, `docs/archive/INDEX.md`, `crates/ghost-link/src/main.rs`, `docs/BENCHMARKS.md`):
   Consolidated parallel legacy root `_archived/` directory into `docs/archive/` and removed `_archived/` to maintain a single unified documentation archive index (`docs/archive/INDEX.md`). Moved commercial go-to-market plan `ENTERPRISE_PLAN.md` out of active user documentation into `docs/archive/`. Archived `docker-compose.demo.yml` and updated internal rust path exclusions in `crates/ghost-link/src/main.rs`.
 
