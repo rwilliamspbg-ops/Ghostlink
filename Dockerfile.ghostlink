@@ -30,6 +30,9 @@ RUN chown -R ghostlink:ghostlink /app
 
 USER ghostlink
 
+ENV GHOSTLINK_TLS_CERT_PATH="/tmp/tls_cert.pem"
+ENV GHOSTLINK_TLS_KEY_PATH="/tmp/tls_key.pem"
+
 # Default to no special role; accept role via environment or CLI args
 ENV GHOSTLINK_TCP_AUTH_TOKEN=""
 ENV GHOSTLINK_ROLE="worker"
