@@ -15,6 +15,14 @@ services:
     ports:
       - "8080:8080"
     environment:
+      GHOSTLINK_SETTINGS_PATH: "/tmp/settings.json"
+      GHOSTLINK_API_KEY_PATH: "/tmp/api_key.txt"
+      GHOSTLINK_API_KEYS_PATH: "/tmp/api_keys.json"
+      GHOSTLINK_MODELS_PATH: "/tmp/models.json"
+      GHOSTLINK_SESSIONS_PATH: "/tmp/sessions.json"
+      GHOSTLINK_SESSION_SUMMARIES_PATH: "/tmp/session_summaries.json"
+      GHOSTLINK_SCHEDULES_PATH: "/tmp/schedules.json"
+      GHOSTLINK_APPROVALS_PATH: "/tmp/approvals.json"
       GHOSTLINK_DATA_DIR: "/tmp/data"
       GHOSTLINK_JWT_SECRET_PATH: "/tmp/jwt_secret.txt"
       LLAMA_ARG_HOST: 0.0.0.0
@@ -51,6 +59,14 @@ services:
     ports:
       - "8003:8003"
     environment:
+      GHOSTLINK_SETTINGS_PATH: "/tmp/settings.json"
+      GHOSTLINK_API_KEY_PATH: "/tmp/api_key.txt"
+      GHOSTLINK_API_KEYS_PATH: "/tmp/api_keys.json"
+      GHOSTLINK_MODELS_PATH: "/tmp/models.json"
+      GHOSTLINK_SESSIONS_PATH: "/tmp/sessions.json"
+      GHOSTLINK_SESSION_SUMMARIES_PATH: "/tmp/session_summaries.json"
+      GHOSTLINK_SCHEDULES_PATH: "/tmp/schedules.json"
+      GHOSTLINK_APPROVALS_PATH: "/tmp/approvals.json"
       GHOSTLINK_DATA_DIR: "/tmp/data"
       GHOSTLINK_JWT_SECRET_PATH: "/tmp/jwt_secret.txt"
       RUST_LOG: info
@@ -88,6 +104,14 @@ services:
     ports:
       - "5173:5173"
     environment:
+      GHOSTLINK_SETTINGS_PATH: "/tmp/settings.json"
+      GHOSTLINK_API_KEY_PATH: "/tmp/api_key.txt"
+      GHOSTLINK_API_KEYS_PATH: "/tmp/api_keys.json"
+      GHOSTLINK_MODELS_PATH: "/tmp/models.json"
+      GHOSTLINK_SESSIONS_PATH: "/tmp/sessions.json"
+      GHOSTLINK_SESSION_SUMMARIES_PATH: "/tmp/session_summaries.json"
+      GHOSTLINK_SCHEDULES_PATH: "/tmp/schedules.json"
+      GHOSTLINK_APPROVALS_PATH: "/tmp/approvals.json"
       GHOSTLINK_DATA_DIR: "/tmp/data"
       GHOSTLINK_JWT_SECRET_PATH: "/tmp/jwt_secret.txt"
       GHOSTLINK_API_BASE: http://127.0.0.1:8003

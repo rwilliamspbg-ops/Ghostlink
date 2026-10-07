@@ -22,6 +22,11 @@ services:
       ghostlink-rpc-fabric:
         ipv4_address: 172.30.0.11
     environment:
+      GHOSTLINK_API_KEYS_PATH: "/tmp/api_keys.json"
+      GHOSTLINK_SESSIONS_PATH: "/tmp/sessions.json"
+      GHOSTLINK_SESSION_SUMMARIES_PATH: "/tmp/session_summaries.json"
+      GHOSTLINK_SCHEDULES_PATH: "/tmp/schedules.json"
+      GHOSTLINK_APPROVALS_PATH: "/tmp/approvals.json"
       GHOSTLINK_DATA_DIR: "/tmp/data"
       GHOSTLINK_JWT_SECRET_PATH: "/tmp/jwt_secret.txt"
       GHOSTLINK_NODE_ID: "rpc-contributor"
@@ -67,6 +72,11 @@ services:
       ghostlink-rpc-fabric:
         ipv4_address: 172.30.0.12
     environment:
+      GHOSTLINK_API_KEYS_PATH: "/tmp/api_keys.json"
+      GHOSTLINK_SESSIONS_PATH: "/tmp/sessions.json"
+      GHOSTLINK_SESSION_SUMMARIES_PATH: "/tmp/session_summaries.json"
+      GHOSTLINK_SCHEDULES_PATH: "/tmp/schedules.json"
+      GHOSTLINK_APPROVALS_PATH: "/tmp/approvals.json"
       GHOSTLINK_DATA_DIR: "/tmp/data"
       GHOSTLINK_JWT_SECRET_PATH: "/tmp/jwt_secret.txt"
       GHOSTLINK_NODE_ID: "rpc-coordinator"

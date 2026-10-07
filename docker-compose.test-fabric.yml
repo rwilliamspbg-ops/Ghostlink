@@ -19,6 +19,14 @@ services:
       ghostlink-fabric:
         ipv4_address: 172.20.0.2
     environment:
+      GHOSTLINK_SETTINGS_PATH: "/tmp/settings.json"
+      GHOSTLINK_API_KEY_PATH: "/tmp/api_key.txt"
+      GHOSTLINK_API_KEYS_PATH: "/tmp/api_keys.json"
+      GHOSTLINK_MODELS_PATH: "/tmp/models.json"
+      GHOSTLINK_SESSIONS_PATH: "/tmp/sessions.json"
+      GHOSTLINK_SESSION_SUMMARIES_PATH: "/tmp/session_summaries.json"
+      GHOSTLINK_SCHEDULES_PATH: "/tmp/schedules.json"
+      GHOSTLINK_APPROVALS_PATH: "/tmp/approvals.json"
       GHOSTLINK_DATA_DIR: "/tmp/data"
       GHOSTLINK_JWT_SECRET_PATH: "/tmp/jwt_secret.txt"
       GHOSTLINK_TCP_AUTH_TOKEN: "fabric-test-token"
@@ -54,6 +62,14 @@ services:
       ghostlink-fabric:
         ipv4_address: 172.20.0.3
     environment:
+      GHOSTLINK_SETTINGS_PATH: "/tmp/settings.json"
+      GHOSTLINK_API_KEY_PATH: "/tmp/api_key.txt"
+      GHOSTLINK_API_KEYS_PATH: "/tmp/api_keys.json"
+      GHOSTLINK_MODELS_PATH: "/tmp/models.json"
+      GHOSTLINK_SESSIONS_PATH: "/tmp/sessions.json"
+      GHOSTLINK_SESSION_SUMMARIES_PATH: "/tmp/session_summaries.json"
+      GHOSTLINK_SCHEDULES_PATH: "/tmp/schedules.json"
+      GHOSTLINK_APPROVALS_PATH: "/tmp/approvals.json"
       GHOSTLINK_DATA_DIR: "/tmp/data"
       GHOSTLINK_JWT_SECRET_PATH: "/tmp/jwt_secret.txt"
       GHOSTLINK_TCP_AUTH_TOKEN: "fabric-test-token"
@@ -89,6 +105,14 @@ services:
       ghostlink-fabric:
         ipv4_address: 172.20.0.10
     environment:
+      GHOSTLINK_SETTINGS_PATH: "/tmp/settings.json"
+      GHOSTLINK_API_KEY_PATH: "/tmp/api_key.txt"
+      GHOSTLINK_API_KEYS_PATH: "/tmp/api_keys.json"
+      GHOSTLINK_MODELS_PATH: "/tmp/models.json"
+      GHOSTLINK_SESSIONS_PATH: "/tmp/sessions.json"
+      GHOSTLINK_SESSION_SUMMARIES_PATH: "/tmp/session_summaries.json"
+      GHOSTLINK_SCHEDULES_PATH: "/tmp/schedules.json"
+      GHOSTLINK_APPROVALS_PATH: "/tmp/approvals.json"
       GHOSTLINK_DATA_DIR: "/tmp/data"
       GHOSTLINK_JWT_SECRET_PATH: "/tmp/jwt_secret.txt"
       GHOSTLINK_TCP_AUTH_TOKEN: "fabric-test-token"
