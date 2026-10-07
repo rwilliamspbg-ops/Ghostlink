@@ -22,7 +22,9 @@ RUN apt-get update && apt-get install -y \
     libfontconfig1 \
     libxrandr2 \
     libasound2 \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd -g 10001 testuser \
+    && useradd -u 10001 -g testuser -m -s /bin/bash testuser
 
 WORKDIR /app
 
@@ -30,6 +32,9 @@ COPY third_party/mohawk_gui/requirements-runtime.txt .
 RUN pip3 install -r requirements-runtime.txt
 
 COPY . .
+RUN chown -R testuser:testuser /app
+
+USER testuser
 
 # Run tests by default
 CMD ["python3", "test_gui_framework.py", "--all"]

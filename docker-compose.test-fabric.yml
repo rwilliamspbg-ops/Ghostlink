@@ -1,18 +1,20 @@
 version: '3.9'
 
 services:
-  # Worker node 1: 16GB GPU equivalent. NOT dialed by the coordinator's
-  # `flow` command below — `flow` is a local+one-remote model, and its
-  # "local" stage always runs inside the coordinator's own process
-  # regardless of which node id labels it. This container stays as an
-  # independent OpenAI-API-compatible server for standalone manual testing
-  # of the fabric network, not as part of the flow demo path.
   ghostlink-worker-1:
     build:
       context: .
       dockerfile: Dockerfile.ghostlink
     container_name: ghostlink-node-iprada-16gb
     hostname: iprada-16gb
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp
+      - /var/tmp
     networks:
       ghostlink-fabric:
         ipv4_address: 172.20.0.2
@@ -32,16 +34,20 @@ services:
     cpus: '2'
     mem_limit: 2g
 
-  # Worker node 2: 32GB GPU equivalent. This is the node the coordinator's
-  # `flow --remote-addr` actually connects out to — a real stage-worker
-  # process on its own container, not the same-process simulation the
-  # `flow` command falls back to when --remote-addr is omitted.
   ghostlink-worker-2:
     build:
       context: .
       dockerfile: Dockerfile.ghostlink
     container_name: ghostlink-node-zenbook-32gb
     hostname: zenbook-32gb
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp
+      - /var/tmp
     networks:
       ghostlink-fabric:
         ipv4_address: 172.20.0.3
@@ -61,13 +67,20 @@ services:
     cpus: '4'
     mem_limit: 4g
 
-  # Orchestrator / test harness
   ghostlink-coordinator:
     build:
       context: .
       dockerfile: Dockerfile.ghostlink
     container_name: ghostlink-coordinator
     hostname: coordinator
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp
+      - /var/tmp
     networks:
       ghostlink-fabric:
         ipv4_address: 172.20.0.10

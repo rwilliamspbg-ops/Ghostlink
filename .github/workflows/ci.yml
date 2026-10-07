@@ -154,4 +154,46 @@ jobs:
         run: cargo publish -p ghostlink-core --dry-run
 
       - name: Dry-run publish ghost-link
-        run: cargo publish -p ghost-link --dry-run --allow-dirty || true
+        run: cargo publish -p ghost-link --dry-run
+
+  cargo-deny:
+    name: Cargo Deny Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v1
+        with:
+          arguments: --all-targets
+
+  coverage:
+    name: Coverage Report (llvm-cov)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@cargo-llvm-cov
+      - name: Run cargo llvm-cov
+        run: cargo llvm-cov --workspace --lcov --output-path lcov.info || true
+
+  miri:
+    name: Miri Check (ring.rs)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: miri
+      - name: Run Miri on ghostlink-core ring tests
+        run: cargo miri test -p ghostlink-core --lib ring::tests
+
+  fuzzing:
+    name: Fuzzing Check (protocol.rs)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz || true
+      - name: Build and smoke-test fuzz target
+        run: |
+          cargo fuzz build frame_decode || true

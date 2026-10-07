@@ -1,10 +1,17 @@
 version: '3.8'
 
 services:
-  # Ghostlink Backend
   ghostlink-backend:
     image: ghostlink:latest
     container_name: ghostlink-backend
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp
+      - /var/tmp
     ports:
       - "8003:8003"
     environment:
@@ -23,12 +30,19 @@ services:
       - ghostlink
     restart: unless-stopped
 
-  # Ghostlink Studio GUI
   ghostlink-gui:
     build:
       context: .
       dockerfile: Dockerfile
     container_name: ghostlink-gui
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp
+      - /var/tmp
     ports:
       - "5173:5173"
     environment:

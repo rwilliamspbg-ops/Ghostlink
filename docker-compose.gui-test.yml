@@ -4,6 +4,14 @@ services:
   llama-server:
     image: ghcr.io/ggml-org/llama.cpp:server
     container_name: ghostlink-llama-server
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp
+      - /var/tmp
     ports:
       - "8080:8080"
     environment:
@@ -27,6 +35,14 @@ services:
       context: .
       dockerfile: Dockerfile.gui-test
     container_name: ghostlink-backend
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp
+      - /var/tmp
     ports:
       - "8003:8003"
     environment:

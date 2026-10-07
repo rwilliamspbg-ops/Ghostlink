@@ -2,9 +2,14 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-RUN pip install --no-cache-dir requests==2.32.3
+RUN pip install --no-cache-dir requests==2.32.3 \
+    && groupadd -g 10001 demouser \
+    && useradd -u 10001 -g demouser -m -s /bin/false demouser
 
 COPY . /app
+RUN chown -R demouser:demouser /app
+
+USER demouser
 
 EXPOSE 8001 9999
 

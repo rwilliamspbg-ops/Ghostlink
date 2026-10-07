@@ -4,6 +4,14 @@ services:
   llama-server:
     image: ghcr.io/ggml-org/llama.cpp:server
     container_name: ghostlink-llama-server
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp
+      - /var/tmp
     ports:
       - "8080:8080"
     environment:
@@ -28,6 +36,14 @@ services:
       context: .
       dockerfile: Dockerfile.ghostlink
     container_name: ghostlink-backend
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp
+      - /var/tmp
     ports:
       - "8003:8003"
     environment:
@@ -41,12 +57,9 @@ services:
       llama-server:
         condition: service_healthy
     volumes:
-      - ./models.json:/app/models.json
+      - ./models.json:/app/models.json:ro
     command: serve 0.0.0.0 8003
     healthcheck:
-      # -k: binding 0.0.0.0 forces ghost-link's TLS-on-non-loopback rule
-      # (crates/ghost-link/src/tls.rs's is_loopback_host / main.rs's
-      # use_tls), so this serves a self-signed HTTPS cert, not plain HTTP.
       test: ["CMD", "curl", "-fk", "https://localhost:8003/health"]
       interval: 5s
       timeout: 3s
@@ -57,6 +70,14 @@ services:
       context: ./ghostlink_gui_modern
       dockerfile: Dockerfile
     container_name: ghostlink-frontend
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp
+      - /var/tmp
     ports:
       - "5173:5173"
     environment:

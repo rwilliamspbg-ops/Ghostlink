@@ -4,6 +4,14 @@ services:
       context: .
       dockerfile: Dockerfile.demo
     command: ["python3", "model_manager.py"]
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp
+      - /var/tmp
     environment:
       GHOSTLINK_MODEL_MANAGER_HOST: 0.0.0.0
       GHOSTLINK_MODEL_MANAGER_PORT: "8001"
@@ -17,6 +25,14 @@ services:
       context: .
       dockerfile: Dockerfile.demo
     command: ["python3", "real_llm_proxy.py", "backend"]
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp
+      - /var/tmp
     environment:
       GHOSTLINK_PROXY_HOST: 0.0.0.0
       GHOSTLINK_PROXY_PORT: "9999"
@@ -31,6 +47,15 @@ services:
 
   ollama:
     image: ollama/ollama:latest
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp
+      - /var/tmp
+      - /root/.ollama
     ports:
       - "11434:11434"
     restart: unless-stopped

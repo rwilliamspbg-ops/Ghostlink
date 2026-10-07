@@ -1,5 +1,6 @@
 [workspace]
 members = ["crates/ghost-link", "crates/ghostlink-core", "crates/mcp-calculator", "crates/mcp-memory", "crates/mcp-rag", "crates/mcp-vision"]
+exclude = ["fuzz"]
 resolver = "2"
 
 [workspace.package]

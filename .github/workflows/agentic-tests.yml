@@ -178,7 +178,8 @@ jobs:
         run: python3 scripts/test_tool_call_output.py --timeout 180
 
       - name: Test 4 - Token Budget
-        continue-on-error: true  # Optional - may not be fully implemented
+        # Tracked issue #402: token budget enforcement test step
+        timeout-minutes: 5
         run: python3 scripts/test_token_budget.py --timeout 180
 
       - name: Test 5 - Advanced Reliability

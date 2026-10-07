@@ -19,11 +19,16 @@ RUN apt-get update && apt-get install -y \
     curl \
     net-tools \
     iproute2 \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd -g 10001 ghostlink \
+    && useradd -u 10001 -g ghostlink -m -s /bin/false ghostlink
 
 COPY --from=builder /build/target/release/ghost-link /usr/local/bin/
 WORKDIR /app
 COPY . .
+RUN chown -R ghostlink:ghostlink /app
+
+USER ghostlink
 
 # Default to no special role; accept role via environment or CLI args
 ENV GHOSTLINK_TCP_AUTH_TOKEN=""

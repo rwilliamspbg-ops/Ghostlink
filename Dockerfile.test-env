@@ -20,7 +20,9 @@ RUN apt-get update && apt-get install -y \
     libglib2.0-dev \
     mesa-utils \
     xdg-utils \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd -g 10001 testuser \
+    && useradd -u 10001 -g testuser -m -s /bin/bash testuser
 
 # Set up working directory
 WORKDIR /app
@@ -34,10 +36,13 @@ RUN pip install pytest requests unittest-xml-reporter flake8 black pylint
 
 # Create directories for tests and artifacts
 RUN mkdir -p /tmp/test_artifacts/ && \
-      chmod 777 /tmp/test_artifacts/
+    chmod 777 /tmp/test_artifacts/
 
 # Copy all code  
 COPY . .
+RUN chown -R testuser:testuser /app
+
+USER testuser
 
 # Set environment variables  
 ENV PYTHONPATH=/app:${PYTHONPATH}

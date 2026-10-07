@@ -66,6 +66,7 @@ windows-sys = { version = "0.59", features = [
 ] }
 
 [dev-dependencies]
+loom = "0.7"
 tempfile = "3"
 tokio-test = "0.4"
 criterion = "0.5"
