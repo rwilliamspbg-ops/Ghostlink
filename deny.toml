@@ -92,18 +92,15 @@ allow = [
     "MIT",
     "AGPL-3.0-only",
     "CDLA-Permissive-2.0",
-    "MPL-2.0",
     "Apache-2.0",
     "Apache-2.0 WITH LLVM-exception",
     "BSD-2-Clause",
     "BSD-3-Clause",
     "ISC",
     "Unicode-3.0",
-    "OpenSSL",
     "Zlib",
     "CC0-1.0",
     "Unlicense",
-    "0BSD",
 ]
 # The confidence threshold for detecting a license from license text.
 # The higher the value, the more closely the license text must be to the
@@ -179,7 +176,6 @@ allow = [
 # If true, workspace members are automatically allowed even when using deny-by-default
 # This is useful for organizations that want to deny all external dependencies by default
 # but allow their own workspace crates without having to explicitly list them
-allow-workspace = false
 # List of crates to deny
 deny = [
     #"ansi_term@0.11.0",
