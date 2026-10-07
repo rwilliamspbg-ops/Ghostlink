@@ -171,7 +171,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: taiki-e/install-action@cargo-llvm-cov
       - name: Run cargo llvm-cov
-        run: cargo llvm-cov --workspace --lcov --output-path lcov.info || true
+        run: cargo llvm-cov --workspace --lcov --output-path lcov.info
 
   miri:
     name: Miri Check (ring.rs)
