@@ -30,6 +30,8 @@ SETTINGS_PATH="${GHOSTLINK_SETTINGS_PATH:-/app/settings.json}"
 # always serves HTTPS with a self-signed cert — callers need `curl -k` /
 # `verify=False`, not plain http://.
 API_KEY_PATH="${GHOSTLINK_API_KEY_PATH:-/app/api_key.txt}"
+TLS_CERT_PATH="${GHOSTLINK_TLS_CERT_PATH:-/tmp/tls_cert.pem}"
+TLS_KEY_PATH="${GHOSTLINK_TLS_KEY_PATH:-/tmp/tls_key.pem}"
 # auth::load_or_create_api_key() reuses whatever's already at this path
 # verbatim (trimmed) instead of generating a random one, so pre-seeding it
 # here gives scripts/rpc_fabric_assert.py a fixed, known bearer token
@@ -89,6 +91,8 @@ export GHOSTLINK_NODE_ID="$NODE_ID"
 export GHOSTLINK_DISCOVERY_LISTEN="$DISCOVERY_LISTEN"
 export GHOSTLINK_DISCOVERY_BROADCAST="$DISCOVERY_BROADCAST"
 export GHOSTLINK_API_KEY_PATH="$API_KEY_PATH"
+export GHOSTLINK_TLS_CERT_PATH="$TLS_CERT_PATH"
+export GHOSTLINK_TLS_KEY_PATH="$TLS_KEY_PATH"
 
 log "starting: ghost-link serve $API_HOST $API_PORT"
 exec /app/bin/ghost-link serve "$API_HOST" "$API_PORT"
