@@ -191,7 +191,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@nightly
       - name: Install cargo-fuzz
-        run: cargo install cargo-fuzz || true
+        run: cargo install cargo-fuzz
       - name: Build and smoke-test fuzz target
         run: |
-          cargo fuzz build frame_decode || true
+          cargo fuzz build frame_decode
