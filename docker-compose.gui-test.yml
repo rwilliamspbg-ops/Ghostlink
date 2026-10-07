@@ -25,13 +25,13 @@ services:
       GHOSTLINK_APPROVALS_PATH: "/tmp/approvals.json"
       GHOSTLINK_DATA_DIR: "/tmp/data"
       GHOSTLINK_JWT_SECRET_PATH: "/tmp/jwt_secret.txt"
-      - LLAMA_ARG_HOST=0.0.0.0
-      - LLAMA_ARG_PORT=8080
-      - LLAMA_ARG_NGL=${LLAMA_ARG_NGL:--1}
-      - LLAMA_ARG_MODEL=/models/model.gguf
-      - LLAMA_ARG_FLASH_ATTN=${LLAMA_ARG_FLASH_ATTN:-on}
-      - LLAMA_ARG_BATCH=${LLAMA_ARG_BATCH:-2048}
-      - LLAMA_ARG_UBATCH=${LLAMA_ARG_UBATCH:-512}
+      LLAMA_ARG_HOST: 0.0.0.0
+      LLAMA_ARG_PORT: 8080
+      LLAMA_ARG_NGL: ${LLAMA_ARG_NGL:--1}
+      LLAMA_ARG_MODEL: /models/model.gguf
+      LLAMA_ARG_FLASH_ATTN: ${LLAMA_ARG_FLASH_ATTN:-on}
+      LLAMA_ARG_BATCH: ${LLAMA_ARG_BATCH:-2048}
+      LLAMA_ARG_UBATCH: ${LLAMA_ARG_UBATCH:-512}
     volumes:
       - ${GHOSTLINK_MODEL_PATH:-/tmp/ghostlink-models/stories15M-q4_0.gguf}:/models/model.gguf:ro
     healthcheck:
@@ -66,11 +66,11 @@ services:
       GHOSTLINK_APPROVALS_PATH: "/tmp/approvals.json"
       GHOSTLINK_DATA_DIR: "/tmp/data"
       GHOSTLINK_JWT_SECRET_PATH: "/tmp/jwt_secret.txt"
-      - GHOSTLINK_BACKEND_HOST=0.0.0.0
-      - GHOSTLINK_BACKEND_PORT=8003
-      - GHOSTLINK_INFERENCE_BACKEND=native
-      - GHOSTLINK_NATIVE_ENGINE=llama_server
-      - GHOSTLINK_LLAMA_SERVER_URL=http://llama-server:8080/completion
+      GHOSTLINK_BACKEND_HOST: 0.0.0.0
+      GHOSTLINK_BACKEND_PORT: 8003
+      GHOSTLINK_INFERENCE_BACKEND: native
+      GHOSTLINK_NATIVE_ENGINE: llama_server
+      GHOSTLINK_LLAMA_SERVER_URL: http://llama-server:8080/completion
     depends_on:
       llama-server:
         condition: service_healthy

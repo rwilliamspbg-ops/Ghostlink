@@ -28,10 +28,10 @@ WORKDIR /app
 COPY . .
 RUN mkdir -p /shared && chown -R ghostlink:ghostlink /app /shared
 
-USER ghostlink
-
 ENV GHOSTLINK_TLS_CERT_PATH="/tmp/tls_cert.pem"
 ENV GHOSTLINK_TLS_KEY_PATH="/tmp/tls_key.pem"
+
+USER ghostlink
 
 # Default to no special role; accept role via environment or CLI args
 ENV GHOSTLINK_TCP_AUTH_TOKEN=""

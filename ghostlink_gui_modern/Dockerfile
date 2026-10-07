@@ -12,9 +12,10 @@ RUN npm install -g serve \
     && adduser -u 10001 -G guiuser -D guiuser
 
 COPY --from=build /app/dist ./dist
+RUN ln -sf /tmp/env-config.js /app/dist/env-config.js
 
 # Script to inject environment variables at runtime
-RUN printf '#!/bin/sh\necho "window._env_ = { GHOSTLINK_API_BASE: \"$GHOSTLINK_API_BASE\" };" > /app/dist/env-config.js\nexec serve -s dist -l 5173\n' > /app/entrypoint.sh
+RUN printf '#!/bin/sh\necho "window._env_ = { GHOSTLINK_API_BASE: \"$GHOSTLINK_API_BASE\" };" > /tmp/env-config.js\nexec serve -s dist -l 5173\n' > /app/entrypoint.sh
 RUN chmod +x /app/entrypoint.sh && chown -R guiuser:guiuser /app
 
 USER guiuser

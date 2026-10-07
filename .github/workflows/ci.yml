@@ -184,6 +184,15 @@ jobs:
       - name: Run Miri on ghostlink-core ring tests
         run: cargo miri test -p ghostlink-core --lib ring::tests
 
+  loom:
+    name: Loom Check (ring.rs)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Run Loom ordering test
+        run: RUSTFLAGS="--cfg loom" cargo test -p ghostlink-core --test loom_spsc_ring
+
   fuzzing:
     name: Fuzzing Check (protocol.rs)
     runs-on: ubuntu-latest

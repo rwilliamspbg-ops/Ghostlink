@@ -178,7 +178,7 @@ jobs:
         run: python3 scripts/test_tool_call_output.py --timeout 180
 
       - name: Test 4 - Token Budget
-        # Tracked issue #402: token budget enforcement test step
+        # Token budget enforcement test step
         timeout-minutes: 5
         run: python3 scripts/test_token_budget.py --timeout 180
 

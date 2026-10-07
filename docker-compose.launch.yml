@@ -60,13 +60,13 @@ services:
       - "8003:8003"
     environment:
       GHOSTLINK_SETTINGS_PATH: "/tmp/settings.json"
-      GHOSTLINK_API_KEY_PATH: "/tmp/api_key.txt"
-      GHOSTLINK_API_KEYS_PATH: "/tmp/api_keys.json"
+      GHOSTLINK_API_KEY_PATH: "/shared/api_key.txt"
+      GHOSTLINK_API_KEYS_PATH: "/shared/api_keys.json"
       GHOSTLINK_MODELS_PATH: "/tmp/models.json"
-      GHOSTLINK_SESSIONS_PATH: "/tmp/sessions.json"
-      GHOSTLINK_SESSION_SUMMARIES_PATH: "/tmp/session_summaries.json"
-      GHOSTLINK_SCHEDULES_PATH: "/tmp/schedules.json"
-      GHOSTLINK_APPROVALS_PATH: "/tmp/approvals.json"
+      GHOSTLINK_SESSIONS_PATH: "/state/sessions.json"
+      GHOSTLINK_SESSION_SUMMARIES_PATH: "/state/session_summaries.json"
+      GHOSTLINK_SCHEDULES_PATH: "/state/schedules.json"
+      GHOSTLINK_APPROVALS_PATH: "/state/approvals.json"
       GHOSTLINK_DATA_DIR: "/tmp/data"
       GHOSTLINK_JWT_SECRET_PATH: "/tmp/jwt_secret.txt"
       RUST_LOG: info
@@ -77,6 +77,9 @@ services:
       GHOSTLINK_LLAMA_SERVER_URL: http://llama-server:8080/completion
     networks:
       - ghostlink-network
+    volumes:
+      - ghostlink-auth:/shared
+      - ghostlink-state:/state
     depends_on:
       llama-server:
         condition: service_healthy
@@ -124,3 +127,7 @@ services:
 networks:
   ghostlink-network:
     driver: bridge
+
+volumes:
+  ghostlink-auth:
+  ghostlink-state:

@@ -37,7 +37,7 @@ services:
     ports:
       - "8001:8001"
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      test: ["CMD", "curl", "-fk", "https://localhost:8001/health"]
       interval: 5s
       timeout: 3s
       retries: 3

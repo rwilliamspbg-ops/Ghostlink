@@ -16,6 +16,9 @@ categories = ["asynchronous", "network-programming"]
 # which depends on this crate and is released together with it.
 rust-version = "1.89.0"
 
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
+
 [features]
 default = []
 rocm = []
@@ -64,6 +67,9 @@ windows-sys = { version = "0.59", features = [
     "Win32_System_SystemInformation",
     "Win32_Foundation",
 ] }
+
+[target.'cfg(loom)'.dependencies]
+loom = "0.7"
 
 [dev-dependencies]
 loom = "0.7"

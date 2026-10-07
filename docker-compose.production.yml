@@ -25,13 +25,13 @@ services:
       GHOSTLINK_APPROVALS_PATH: "/tmp/approvals.json"
       GHOSTLINK_DATA_DIR: "/tmp/data"
       GHOSTLINK_JWT_SECRET_PATH: "/tmp/jwt_secret.txt"
-      - LLAMA_ARG_HOST=0.0.0.0
-      - LLAMA_ARG_PORT=8080
-      - LLAMA_ARG_NGL=${LLAMA_ARG_NGL:- -1}
-      - LLAMA_ARG_MODEL=/models/model.gguf
-      - LLAMA_ARG_FLASH_ATTN=${LLAMA_ARG_FLASH_ATTN:-on}
-      - LLAMA_ARG_BATCH=${LLAMA_ARG_BATCH:-2048}
-      - LLAMA_ARG_UBATCH=${LLAMA_ARG_UBATCH:-512}
+      LLAMA_ARG_HOST: 0.0.0.0
+      LLAMA_ARG_PORT: 8080
+      LLAMA_ARG_NGL: ${LLAMA_ARG_NGL:--1}
+      LLAMA_ARG_MODEL: /models/model.gguf
+      LLAMA_ARG_FLASH_ATTN: ${LLAMA_ARG_FLASH_ATTN:-on}
+      LLAMA_ARG_BATCH: ${LLAMA_ARG_BATCH:-2048}
+      LLAMA_ARG_UBATCH: ${LLAMA_ARG_UBATCH:-512}
     volumes:
       - ${GHOSTLINK_MODEL_PATH:-/tmp/ghostlink-models/stories15M-q4_0.gguf}:/models/model.gguf:ro
     healthcheck:
@@ -58,26 +58,28 @@ services:
       - "8003:8003"
     environment:
       GHOSTLINK_SETTINGS_PATH: "/tmp/settings.json"
-      GHOSTLINK_API_KEY_PATH: "/tmp/api_key.txt"
-      GHOSTLINK_API_KEYS_PATH: "/tmp/api_keys.json"
+      GHOSTLINK_API_KEY_PATH: "/shared/api_key.txt"
+      GHOSTLINK_API_KEYS_PATH: "/shared/api_keys.json"
       GHOSTLINK_MODELS_PATH: "/tmp/models.json"
-      GHOSTLINK_SESSIONS_PATH: "/tmp/sessions.json"
-      GHOSTLINK_SESSION_SUMMARIES_PATH: "/tmp/session_summaries.json"
-      GHOSTLINK_SCHEDULES_PATH: "/tmp/schedules.json"
-      GHOSTLINK_APPROVALS_PATH: "/tmp/approvals.json"
+      GHOSTLINK_SESSIONS_PATH: "/state/sessions.json"
+      GHOSTLINK_SESSION_SUMMARIES_PATH: "/state/session_summaries.json"
+      GHOSTLINK_SCHEDULES_PATH: "/state/schedules.json"
+      GHOSTLINK_APPROVALS_PATH: "/state/approvals.json"
       GHOSTLINK_DATA_DIR: "/tmp/data"
       GHOSTLINK_JWT_SECRET_PATH: "/tmp/jwt_secret.txt"
-      - GHOSTLINK_INFERENCE_BACKEND=native
-      - GHOSTLINK_NATIVE_ENGINE=llama_server
-      - GHOSTLINK_LLAMA_SERVER_URL=http://llama-server:8080/completion
-      - GHOSTLINK_HOST=0.0.0.0
-      - GHOSTLINK_PORT=8003
-      - RUST_LOG=debug
+      GHOSTLINK_INFERENCE_BACKEND: native
+      GHOSTLINK_NATIVE_ENGINE: llama_server
+      GHOSTLINK_LLAMA_SERVER_URL: http://llama-server:8080/completion
+      GHOSTLINK_HOST: 0.0.0.0
+      GHOSTLINK_PORT: 8003
+      RUST_LOG: debug
     depends_on:
       llama-server:
         condition: service_healthy
     volumes:
-      - ./models.json:/app/models.json:ro
+      - ./models.json:/tmp/models.json
+      - ghostlink-auth:/shared
+      - ghostlink-state:/state
     command: serve 0.0.0.0 8003
     healthcheck:
       test: ["CMD", "curl", "-fk", "https://localhost:8003/health"]
@@ -111,7 +113,7 @@ services:
       GHOSTLINK_APPROVALS_PATH: "/tmp/approvals.json"
       GHOSTLINK_DATA_DIR: "/tmp/data"
       GHOSTLINK_JWT_SECRET_PATH: "/tmp/jwt_secret.txt"
-      - GHOSTLINK_API_BASE=http://127.0.0.1:8003
+      GHOSTLINK_API_BASE: http://127.0.0.1:8003
     depends_on:
       ghostlink-backend:
         condition: service_healthy
@@ -125,3 +127,7 @@ networks:
   default:
     name: ghostlink-network
     driver: bridge
+
+volumes:
+  ghostlink-auth:
+  ghostlink-state:

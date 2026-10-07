@@ -53,6 +53,7 @@ All notable changes to Ghostlink Studio are documented here.
 
 ### Changed
 - **`docs/LOCAL_INFERENCE_TUNING.md` records the draft-model flags that actually exist**, and notes that the host's CPU topology is not what its name suggests: "Ryzen AI 7 350" reads as uniform-core, but `GetLogicalProcessorInformationEx` reports 8 processor-core records with `EfficiencyClass = [1,0,1,0,1,0,1,0]` -- 4 performance, 4 efficiency. Read, not assumed.
+- **Hardened compose stacks now keep auth/state on writable mounts instead of tmpfs.** `docker-compose.yml`, `docker-compose.launch.yml`, and `docker-compose.production.yml` keep `read_only: true` but move API key/key-store and durable session/schedule/approval paths onto mounted volumes (`/shared`, `/state`) so normal restarts do not rotate credentials or erase runtime state.
 
 
 ### Added

@@ -647,19 +647,20 @@ where
             let mut port = 8003;
             while let Some(arg) = args.next() {
                 if arg == "--port" || arg == "-p" {
-                    if let Some(p) = args.next() {
-                        if let Ok(val) = p.parse::<u16>() {
-                            port = val;
-                        }
-                    }
+                    let p = args
+                        .next()
+                        .ok_or_else(|| anyhow::anyhow!("missing value for {arg}"))?;
+                    port = p
+                        .parse::<u16>()
+                        .map_err(|e| anyhow::anyhow!("invalid {arg} value '{p}': {e}"))?;
                 } else if arg == "--host" {
                     if let Some(h) = args.next() {
                         host = h;
                     }
                 } else if arg.chars().all(|c| c.is_ascii_digit()) {
-                    if let Ok(val) = arg.parse::<u16>() {
-                        port = val;
-                    }
+                    port = arg
+                        .parse::<u16>()
+                        .map_err(|e| anyhow::anyhow!("invalid port '{arg}': {e}"))?;
                 } else if !arg.starts_with('-') {
                     host = arg;
                 }
@@ -16606,6 +16607,8 @@ mod tests {
         assert!(parse_cli(args(&["doctor", "--json"])).is_err());
         assert!(parse_cli(args(&["doctor", "--network-target"])).is_err());
         assert!(parse_cli(args(&["doctor", "--nope"])).is_err());
+        assert!(parse_cli(args(&["serve", "--port"])).is_err());
+        assert!(parse_cli(args(&["serve", "--port", "not-a-port"])).is_err());
     }
 
     #[test]

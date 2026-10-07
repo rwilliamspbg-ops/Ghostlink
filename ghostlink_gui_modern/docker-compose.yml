@@ -25,8 +25,8 @@ services:
       GHOSTLINK_APPROVALS_PATH: "/tmp/approvals.json"
       GHOSTLINK_DATA_DIR: "/tmp/data"
       GHOSTLINK_JWT_SECRET_PATH: "/tmp/jwt_secret.txt"
-      - LOG_LEVEL=info
-      - WORKERS=4
+      LOG_LEVEL: info
+      WORKERS: "4"
     volumes:
       - ghostlink-models:/home/ghostlink/.cache/models
       - ghostlink-data:/home/ghostlink/data
@@ -66,7 +66,7 @@ services:
       GHOSTLINK_APPROVALS_PATH: "/tmp/approvals.json"
       GHOSTLINK_DATA_DIR: "/tmp/data"
       GHOSTLINK_JWT_SECRET_PATH: "/tmp/jwt_secret.txt"
-      - GHOSTLINK_API_BASE=http://127.0.0.1:8003
+      GHOSTLINK_API_BASE: http://127.0.0.1:8003
     depends_on:
       ghostlink-backend:
         condition: service_healthy

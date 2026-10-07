@@ -10,6 +10,9 @@
 
 use std::cell::UnsafeCell;
 use std::mem::MaybeUninit;
+#[cfg(loom)]
+use loom::sync::atomic::{AtomicUsize, Ordering};
+#[cfg(not(loom))]
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// Ring buffer configuration with backpressure thresholds
@@ -31,6 +34,9 @@ impl Default for RingConfig {
 }
 
 /// Fixed capacity used for DMA alignment (power of 2 for fast modulo)
+#[cfg(loom)]
+const RING_CAPACITY: usize = 16;
+#[cfg(not(loom))]
 const RING_CAPACITY: usize = 4096;
 const CACHE_LINE: usize = 128; // 128-byte cache lines on modern x86/ARM
 
