@@ -19,7 +19,7 @@ RUN chmod +x /app/entrypoint.sh && chown -R guiuser:guiuser /app
 
 USER guiuser
 
-ENV GHOSTLINK_API_BASE=http://127.0.0.1:8003
+ENV GHOSTLINK_API_BASE=http://127.0.0.1:8000
 EXPOSE 5173
 
 ENTRYPOINT ["/app/entrypoint.sh"]
