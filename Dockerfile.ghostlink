@@ -26,7 +26,7 @@ RUN apt-get update && apt-get install -y \
 COPY --from=builder /build/target/release/ghost-link /usr/local/bin/
 WORKDIR /app
 COPY . .
-RUN chown -R ghostlink:ghostlink /app
+RUN mkdir -p /shared && chown -R ghostlink:ghostlink /app /shared
 
 USER ghostlink
 
