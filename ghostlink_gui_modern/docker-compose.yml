@@ -15,6 +15,8 @@ services:
     ports:
       - "8003:8003"
     environment:
+      GHOSTLINK_DATA_DIR: "/tmp/data"
+      GHOSTLINK_JWT_SECRET_PATH: "/tmp/jwt_secret.txt"
       - LOG_LEVEL=info
       - WORKERS=4
     volumes:
@@ -46,6 +48,8 @@ services:
     ports:
       - "5173:5173"
     environment:
+      GHOSTLINK_DATA_DIR: "/tmp/data"
+      GHOSTLINK_JWT_SECRET_PATH: "/tmp/jwt_secret.txt"
       - GHOSTLINK_API_BASE=http://127.0.0.1:8003
     depends_on:
       ghostlink-backend:

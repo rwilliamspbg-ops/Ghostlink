@@ -2,6 +2,7 @@
 name = "mcp-vision"
 version = "0.1.0"
 edition = "2021"
+license = "MIT"
 publish = false
 description = "Local stdio MCP server exposing an analyze_image tool backed by a local Ollama vision model, for Ghostlink chat's vision tool."
 readme = "README.md"

@@ -19,6 +19,8 @@ services:
       ghostlink-rpc-fabric-bench:
         ipv4_address: 172.31.0.11
     environment:
+      GHOSTLINK_DATA_DIR: "/tmp/data"
+      GHOSTLINK_JWT_SECRET_PATH: "/tmp/jwt_secret.txt"
       GHOSTLINK_NODE_ID: "rpc-bench-contributor"
       GHOSTLINK_API_HOST: "0.0.0.0"
       GHOSTLINK_API_PORT: "8003"
@@ -61,6 +63,8 @@ services:
       ghostlink-rpc-fabric-bench:
         ipv4_address: 172.31.0.12
     environment:
+      GHOSTLINK_DATA_DIR: "/tmp/data"
+      GHOSTLINK_JWT_SECRET_PATH: "/tmp/jwt_secret.txt"
       GHOSTLINK_NODE_ID: "rpc-bench-coordinator"
       GHOSTLINK_API_HOST: "0.0.0.0"
       GHOSTLINK_API_PORT: "8003"

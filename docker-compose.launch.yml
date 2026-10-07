@@ -15,6 +15,8 @@ services:
     ports:
       - "8080:8080"
     environment:
+      GHOSTLINK_DATA_DIR: "/tmp/data"
+      GHOSTLINK_JWT_SECRET_PATH: "/tmp/jwt_secret.txt"
       LLAMA_ARG_HOST: 0.0.0.0
       LLAMA_ARG_PORT: 8080
       LLAMA_ARG_NGL: ${LLAMA_ARG_NGL:--1}
@@ -49,6 +51,8 @@ services:
     ports:
       - "8003:8003"
     environment:
+      GHOSTLINK_DATA_DIR: "/tmp/data"
+      GHOSTLINK_JWT_SECRET_PATH: "/tmp/jwt_secret.txt"
       RUST_LOG: info
       GHOSTLINK_HOST: 0.0.0.0
       GHOSTLINK_PORT: 8003
@@ -84,6 +88,8 @@ services:
     ports:
       - "5173:5173"
     environment:
+      GHOSTLINK_DATA_DIR: "/tmp/data"
+      GHOSTLINK_JWT_SECRET_PATH: "/tmp/jwt_secret.txt"
       GHOSTLINK_API_BASE: http://127.0.0.1:8003
     networks:
       - ghostlink-network

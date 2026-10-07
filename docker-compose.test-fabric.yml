@@ -19,6 +19,8 @@ services:
       ghostlink-fabric:
         ipv4_address: 172.20.0.2
     environment:
+      GHOSTLINK_DATA_DIR: "/tmp/data"
+      GHOSTLINK_JWT_SECRET_PATH: "/tmp/jwt_secret.txt"
       GHOSTLINK_TCP_AUTH_TOKEN: "fabric-test-token"
       GHOSTLINK_TCP_MAX_INFLIGHT: "512"
       GHOSTLINK_DISTRIBUTED_SMOKE: "true"
@@ -52,6 +54,8 @@ services:
       ghostlink-fabric:
         ipv4_address: 172.20.0.3
     environment:
+      GHOSTLINK_DATA_DIR: "/tmp/data"
+      GHOSTLINK_JWT_SECRET_PATH: "/tmp/jwt_secret.txt"
       GHOSTLINK_TCP_AUTH_TOKEN: "fabric-test-token"
       GHOSTLINK_TCP_MAX_INFLIGHT: "512"
       GHOSTLINK_DISTRIBUTED_SMOKE: "true"
@@ -85,6 +89,8 @@ services:
       ghostlink-fabric:
         ipv4_address: 172.20.0.10
     environment:
+      GHOSTLINK_DATA_DIR: "/tmp/data"
+      GHOSTLINK_JWT_SECRET_PATH: "/tmp/jwt_secret.txt"
       GHOSTLINK_TCP_AUTH_TOKEN: "fabric-test-token"
       GHOSTLINK_TCP_MAX_INFLIGHT: "512"
       GHOSTLINK_DISTRIBUTED_SMOKE: "true"
