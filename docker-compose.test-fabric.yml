@@ -33,7 +33,7 @@ services:
       GHOSTLINK_TCP_MAX_INFLIGHT: "512"
       GHOSTLINK_DISTRIBUTED_SMOKE: "true"
       RUST_LOG: info
-    command: ["serve", "--port", "8001"]
+    command: ["serve", "0.0.0.0", "8001"]
     ports:
       - "8001:8001"
     healthcheck:

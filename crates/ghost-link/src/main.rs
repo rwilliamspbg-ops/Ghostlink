@@ -643,13 +643,27 @@ where
             })
         }
         "serve" => {
-            let host = args.next().unwrap_or_else(|| "127.0.0.1".to_string());
-            let port = args
-                .next()
-                .as_deref()
-                .map(parse_u16_arg)
-                .transpose()?
-                .unwrap_or(8003);
+            let mut host = "127.0.0.1".to_string();
+            let mut port = 8003;
+            while let Some(arg) = args.next() {
+                if arg == "--port" || arg == "-p" {
+                    if let Some(p) = args.next() {
+                        if let Ok(val) = p.parse::<u16>() {
+                            port = val;
+                        }
+                    }
+                } else if arg == "--host" {
+                    if let Some(h) = args.next() {
+                        host = h;
+                    }
+                } else if arg.chars().all(|c| c.is_ascii_digit()) {
+                    if let Ok(val) = arg.parse::<u16>() {
+                        port = val;
+                    }
+                } else if !arg.starts_with('-') {
+                    host = arg;
+                }
+            }
             Ok(CliCommand::Serve { host, port })
         }
         "help" | "--help" | "-h" => Ok(CliCommand::Help),
