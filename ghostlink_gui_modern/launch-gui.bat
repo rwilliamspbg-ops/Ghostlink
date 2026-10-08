@@ -58,14 +58,33 @@ if not exist "node_modules" (
 echo [INFO] Starting development server...
 echo.
 echo ================================================================================
-echo   GUI will open automatically in your default browser
 echo   Server running at: %GUI_URL%
 echo   Backend connected to: %BACKEND_URL%
 echo   Press Ctrl+C to stop
 echo ================================================================================
 echo.
 
-start http://localhost:%GUI_PORT%
-call npm run dev -- --host 127.0.0.1 --port %GUI_PORT%
+:: Start dev server in background process
+start "Ghostlink Studio Dev Server" cmd /c "npm run dev -- --host 127.0.0.1 --port %GUI_PORT%"
+
+echo [INFO] Waiting for dev server at http://127.0.0.1:%GUI_PORT%...
+set SERVER_READY=0
+for /l %%i in (1,1,20) do (
+    powershell -NoProfile -Command "try { $r = Invoke-WebRequest -Uri 'http://127.0.0.1:%GUI_PORT%' -TimeoutSec 1 -UseBasicParsing; if ($r.StatusCode -ge 200) { exit 0 } else { exit 1 } } catch { exit 1 }" >nul 2>&1
+    if !errorlevel! equ 0 (
+        set SERVER_READY=1
+        goto :server_up
+    )
+    timeout /t 1 /nobreak >nul
+)
+
+:server_up
+if !SERVER_READY! equ 1 (
+    echo [INFO] GUI dev server is ready! Opening browser...
+) else (
+    echo [WARNING] Dev server wait timed out. Opening browser...
+)
+
+start %GUI_URL%
 
 pause

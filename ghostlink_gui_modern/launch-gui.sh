@@ -6,11 +6,11 @@
 set -e
 
 # Colors for output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-NC='\033[0m' # No Color
+RED='[0;31m'
+GREEN='[0;32m'
+YELLOW='[1;33m'
+BLUE='[0;34m'
+NC='[0m' # No Color
 
 # Print header
 echo ""
@@ -23,14 +23,14 @@ echo ""
 if ! command -v node &> /dev/null; then
     echo -e "${RED}ERROR: Node.js is not installed${NC}"
     echo "Please install Node.js 18+ from https://nodejs.org/"
-    exit 1
+    return 1 2>/dev/null || exit 1
 fi
 
 # Check Node.js version
 NODE_VERSION=$(node -v | cut -d'v' -f2 | cut -d'.' -f1)
 if [ "$NODE_VERSION" -lt 18 ]; then
     echo -e "${RED}ERROR: Node.js 18+ required, found version $(node -v)${NC}"
-    exit 1
+    return 1 2>/dev/null || exit 1
 fi
 
 # Get script directory
@@ -62,21 +62,40 @@ fi
 echo -e "${BLUE}[INFO]${NC} Starting development server..."
 echo ""
 echo "================================================================================"
-echo -e "  ${GREEN}GUI will open automatically in your default browser${NC}"
 echo "  Server running at: $GUI_URL"
 echo "  Backend connected to: $BACKEND_URL"
 echo -e "  Press ${YELLOW}Ctrl+C${NC} to stop"
 echo "================================================================================"
 echo ""
 
-# Try to open in browser
+# Start the dev server first
+npm run dev -- --host 127.0.0.1 --port "$GUI_PORT" &
+DEV_PID=$!
+
+trap 'kill "$DEV_PID" 2>/dev/null || true' EXIT SIGINT SIGTERM
+
+# Poll until http://127.0.0.1:$GUI_PORT responds (10s max)
+echo -e "${BLUE}[INFO]${NC} Waiting for dev server at http://127.0.0.1:$GUI_PORT..."
+SERVER_READY=0
+for i in $(seq 1 20); do
+    if curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:$GUI_PORT" 2>/dev/null | grep -qE "^(200|304|404)"; then
+        SERVER_READY=1
+        break
+    fi
+    sleep 0.5
+done
+
+if [ "$SERVER_READY" -eq 1 ]; then
+    echo -e "  ${GREEN}GUI dev server is ready! Opening browser at $GUI_URL${NC}"
+else
+    echo -e "  ${YELLOW}Opening browser at $GUI_URL...${NC}"
+fi
+
+# Open browser after server responds or timeout
 if command -v xdg-open &> /dev/null; then
-    # Linux
     xdg-open "$GUI_URL" &
 elif command -v open &> /dev/null; then
-    # macOS
     open "$GUI_URL" &
 fi
 
-# Start the dev server
-npm run dev -- --host 127.0.0.1 --port "$GUI_PORT"
+wait "$DEV_PID"

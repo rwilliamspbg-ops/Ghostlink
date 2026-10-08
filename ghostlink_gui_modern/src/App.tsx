@@ -1,21 +1,22 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, lazy, Suspense } from 'react';
 import { Plus, ChevronRight, Menu, Cpu, Zap, Wifi, Search } from 'lucide-react';
 import { useAppStore } from './store';
 import { GhostlinkAPI } from './api';
-import { ChatTab } from './components/ChatTab';
-import { EditorTab } from './components/EditorTab';
-import { ProjectsTab } from './components/ProjectsTab';
-import { ModelsTab } from './components/ModelsTab';
-import { MetricsTab } from './components/MetricsTab';
-import { SessionsTab } from './components/SessionsTab';
-import { WorkersTab } from './components/WorkersTab';
-import { SecurityTab } from './components/SecurityTab';
-import { SettingsTab } from './components/SettingsTab';
-import { McpTab } from './components/McpTab';
 import { ErrorBoundary, OfflineBanner, useOnlineStatus } from './components/ErrorBoundary';
 import { CommandPalette, NAV_TABS } from './components/CommandPalette';
 import { Toaster } from './components/Toaster';
 import { resolveApiBase } from './config';
+
+const ChatTab = lazy(() => import('./components/ChatTab').then((m) => ({ default: m.ChatTab })));
+const ModelsTab = lazy(() => import('./components/ModelsTab').then((m) => ({ default: m.ModelsTab })));
+const MetricsTab = lazy(() => import('./components/MetricsTab').then((m) => ({ default: m.MetricsTab })));
+const SessionsTab = lazy(() => import('./components/SessionsTab').then((m) => ({ default: m.SessionsTab })));
+const WorkersTab = lazy(() => import('./components/WorkersTab').then((m) => ({ default: m.WorkersTab })));
+const SecurityTab = lazy(() => import('./components/SecurityTab').then((m) => ({ default: m.SecurityTab })));
+const SettingsTab = lazy(() => import('./components/SettingsTab').then((m) => ({ default: m.SettingsTab })));
+const McpTab = lazy(() => import('./components/McpTab').then((m) => ({ default: m.McpTab })));
+const EditorTab = lazy(() => import('./components/EditorTab').then((m) => ({ default: m.EditorTab })));
+const ProjectsTab = lazy(() => import('./components/ProjectsTab').then((m) => ({ default: m.ProjectsTab })));
 
 const LOADING_STEPS = [
   'Connecting to backend...',
@@ -38,14 +39,10 @@ export function SplashScreen({ currentStep = 0, onDismiss }: SplashScreenProps) 
   }, [currentStep]);
 
   useEffect(() => {
-    const stepInterval = setInterval(() => {
-      setStep((s) => (s < LOADING_STEPS.length - 1 ? s + 1 : s));
-    }, 350);
     const dotInterval = setInterval(() => {
       setDots((d) => (d.length >= 3 ? '' : d + '.'));
     }, 250);
     return () => {
-      clearInterval(stepInterval);
       clearInterval(dotInterval);
     };
   }, []);
@@ -139,17 +136,25 @@ export function SplashScreen({ currentStep = 0, onDismiss }: SplashScreenProps) 
   );
 }
 
+function TabSkeleton() {
+  return (
+    <div className="flex-1 p-6 space-y-4 animate-pulse bg-slate-950 h-full" role="status" aria-label="Loading tab content">
+      <div className="h-6 bg-slate-800 rounded w-1/4"></div>
+      <div className="h-32 bg-slate-900 rounded-xl border border-slate-800/50"></div>
+      <div className="space-y-2">
+        <div className="h-4 bg-slate-800/80 rounded w-3/4"></div>
+        <div className="h-4 bg-slate-800/80 rounded w-1/2"></div>
+      </div>
+    </div>
+  );
+}
+
 function App() {
   const { currentModel, activeTab, setActiveTab, setModels, setApiBase, setMetrics, setWorkers, setSessions, setBackendOnline, setChatMessages } = useAppStore();
   const unreadNeedsReviewCount = useAppStore((state) => state.unreadNeedsReviewCount);
   const [api, setApi] = useState<GhostlinkAPI | null>(null);
   const [isInitializing, setIsInitializing] = useState(true);
-  const [bootStep, setBootStep] = useState(0);
-  // Starts collapsed on phone-width viewports — at 375px a permanently
-  // open 256px sidebar left only ~119px for actual content, which is
-  // unusable. Below `md` the sidebar renders as a fixed overlay (see
-  // className below) rather than pushing content, so opening it on mobile
-  // never squeezes the tab content again.
+
   const [sidebarOpen, setSidebarOpen] = useState(() =>
     typeof window === 'undefined' ? true : window.innerWidth >= 768
   );
@@ -160,9 +165,6 @@ function App() {
   const sidebarRef = useRef<HTMLDivElement>(null);
   const sidebarOpenButtonRef = useRef<HTMLButtonElement>(null);
 
-  // On mobile the sidebar renders as a modal-like overlay (see backdrop below),
-  // so opening it moves focus in, Escape closes it, and Tab is trapped inside
-  // until it closes; on desktop it's a persistent panel and none of this applies.
   useEffect(() => {
     if (!sidebarOpen || window.innerWidth >= 768) return;
     const container = sidebarRef.current;
@@ -205,7 +207,16 @@ function App() {
     };
   }, [sidebarOpen]);
 
-  // CRITICAL FIX: Initialize API base on app load
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && isInitializing) {
+        setIsInitializing(false);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isInitializing]);
+
   useEffect(() => {
     const detectedApiBase = resolveApiBase({
       GHOSTLINK_API_BASE: (window as any)._env_?.GHOSTLINK_API_BASE,
@@ -217,10 +228,28 @@ function App() {
     setApi(new GhostlinkAPI(detectedApiBase));
   }, [setApiBase]);
 
-  // Fetch models on app load and setup periodic refresh
   useEffect(() => {
     if (!api) return;
 
+    // Boot critical path: getHealth() raced against 400ms timeout
+    let timedOut = false;
+    const timeoutId = setTimeout(() => {
+      timedOut = true;
+      setIsInitializing(false);
+    }, 400);
+
+    const checkHealth = async () => {
+      const result = await api.getHealth();
+      setBackendOnline(result.success);
+      if (!timedOut) {
+        clearTimeout(timeoutId);
+        setIsInitializing(false);
+      }
+    };
+
+    checkHealth();
+
+    // After shell is visible, fire other fetches without awaiting them before first interactive paint
     const fetchModels = async () => {
       const result = await api.getModels();
       if (!result.error) {
@@ -247,17 +276,6 @@ function App() {
       }
     };
 
-    const checkHealth = async () => {
-      const result = await api.getHealth();
-      setBackendOnline(result.success);
-      setBootStep((s) => Math.max(s, 1));
-    };
-
-    const fetchModelsWithStep = async () => {
-      await fetchModels();
-      setBootStep((s) => Math.max(s, 2));
-    };
-
     const fetchWorkers = async () => {
       const result = await api.getWorkers();
       if (!result.error) {
@@ -265,31 +283,18 @@ function App() {
       }
     };
 
-    const fetchWorkersAndSessions = async () => {
-      await Promise.allSettled([
-        fetchWorkers(),
-        api.getSessions().then((res) => { if (!res.error) setSessions(res.sessions); }),
-      ]);
-      setBootStep((s) => Math.max(s, 3));
+    const fetchSessions = async () => {
+      const res = await api.getSessions();
+      if (!res.error) setSessions(res.sessions);
     };
 
-    // Parallel initial boot load with non-blocking safety timer
-    const bootPromise = Promise.allSettled([
-      checkHealth(),
-      fetchModelsWithStep(),
-      fetchWorkersAndSessions(),
+    Promise.allSettled([
+      fetchModels(),
+      fetchWorkers(),
+      fetchSessions(),
       fetchMetrics(),
       fetchMetricsHistory(),
     ]);
-
-    const maxTimer = setTimeout(() => {
-      setIsInitializing(false);
-    }, 1500);
-
-    bootPromise.finally(() => {
-      clearTimeout(maxTimer);
-      setIsInitializing(false);
-    });
 
     const healthInterval = setInterval(checkHealth, 30000);
 
@@ -300,17 +305,16 @@ function App() {
     };
     window.addEventListener('switch-tab', handleSwitchTab as EventListener);
 
-    // Poll current metrics every 3s for responsive System Performance gauges
     const metricsInterval = setInterval(() => {
       fetchMetrics();
     }, 3000);
 
-    // Poll for workers every 15s
     const workersInterval = setInterval(() => {
       fetchWorkers();
     }, 15000);
 
     return () => {
+      clearTimeout(timeoutId);
       clearInterval(healthInterval);
       window.removeEventListener('switch-tab', handleSwitchTab as EventListener);
       clearInterval(metricsInterval);
@@ -318,10 +322,8 @@ function App() {
     };
   }, [api, setModels, setMetrics, setWorkers, setSessions, setBackendOnline, setActiveTab]);
 
-  const renderTab = () => {
-    if (!api || isInitializing) {
-      return <SplashScreen currentStep={bootStep} onDismiss={() => setIsInitializing(false)} />;
-    }
+  const renderActiveTab = () => {
+    if (!api) return <TabSkeleton />;
 
     switch (activeTab) {
       case 0:
@@ -497,9 +499,32 @@ function App() {
             </button>
         )}
 
+        {/* Status bar if initializing */}
+        {isInitializing && (
+          <div
+            role="status"
+            aria-live="polite"
+            className="bg-blue-900/30 border-b border-blue-500/20 px-4 py-2 flex items-center justify-between text-xs text-blue-300 shrink-0 z-10"
+          >
+            <div className="flex items-center gap-2">
+              <div className="w-2 h-2 rounded-full bg-blue-400 animate-pulse" />
+              <span>Connecting to Ghostlink backend...</span>
+            </div>
+            <button
+              onClick={() => setIsInitializing(false)}
+              className="text-xs text-blue-400 hover:text-blue-200 underline"
+              aria-label="Dismiss boot status indicator"
+            >
+              Dismiss (Esc)
+            </button>
+          </div>
+        )}
+
         {/* Content */}
         <main id="main-content" tabIndex={-1} className="flex-1 overflow-hidden">
-          {renderTab()}
+          <Suspense fallback={<TabSkeleton />}>
+            {renderActiveTab()}
+          </Suspense>
         </main>
       </div>
     </div>

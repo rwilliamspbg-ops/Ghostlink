@@ -34,7 +34,13 @@ vi.mock('@monaco-editor/react', () => {
       </div>
     );
   };
-  return { __esModule: true, default: Editor, DiffEditor };
+  return {
+    __esModule: true,
+    default: Editor,
+    Editor,
+    DiffEditor,
+    loader: { config: vi.fn() },
+  };
 });
 
 // EditorTab's onMount wires up a ResizeObserver (see the comment in

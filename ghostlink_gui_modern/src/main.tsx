@@ -2,7 +2,6 @@ import React from 'react';
 import ReactDOM from 'react-dom/client';
 import App from './App';
 import './index.css';
-import './monacoSetup';
 import { useAppStore } from './store';
 import { resolveApiBase } from './config';
 
