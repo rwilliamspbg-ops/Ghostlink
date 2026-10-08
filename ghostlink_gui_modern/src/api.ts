@@ -262,7 +262,7 @@ export class GhostlinkAPI {
 
   async getHealth() {
     try {
-      const response = await this.http.get('/health');
+      const response = await this.http.get('/health', { timeout: 4000 });
       return { success: true, data: response.data };
     } catch (error: any) {
       return { success: false, error: error?.message ?? String(error) };
@@ -271,7 +271,7 @@ export class GhostlinkAPI {
 
   async getModels(): Promise<{ models: Model[]; current_model: string; error?: string }> {
     try {
-      const response = await this.http.get('/api/models');
+      const response = await this.http.get('/api/models', { timeout: 4000 });
       const models = (response.data.models || []).map((m: any) => {
         const rawStatus = (m.status || 'unknown').toString().trim();
         const normalizedStatus =
@@ -752,7 +752,7 @@ export class GhostlinkAPI {
 
   async getSessions(): Promise<{ sessions: Session[]; error?: string }> {
     try {
-      const response = await this.http.get('/api/sessions');
+      const response = await this.http.get('/api/sessions', { timeout: 4000 });
       return { sessions: response.data.sessions || [] };
     } catch (error: any) {
       return { sessions: [], error: error.message };
@@ -870,7 +870,7 @@ export class GhostlinkAPI {
 
   async getWorkers(): Promise<{ workers: Worker[]; error?: string }> {
     try {
-      const response = await this.http.get('/api/workers');
+      const response = await this.http.get('/api/workers', { timeout: 4000 });
       return { workers: response.data.workers || [] };
     } catch (error: any) {
       return { workers: [], error: error.message };
