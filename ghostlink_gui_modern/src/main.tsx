@@ -4,6 +4,7 @@ import App from './App';
 import './index.css';
 import { useAppStore } from './store';
 import { resolveApiBase } from './config';
+import { dismissSplash } from './splash';
 
 // Check for environment variable for API base
 const envApiBase = resolveApiBase({
@@ -20,3 +21,6 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
     <App />
   </React.StrictMode>,
 );
+
+// Two frames: let React commit and the browser paint the shell before the overlay goes.
+requestAnimationFrame(() => requestAnimationFrame(() => dismissSplash()));
