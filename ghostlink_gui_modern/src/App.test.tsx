@@ -80,4 +80,13 @@ describe('App', () => {
     expect(statusContainer).toBeInTheDocument();
     expect(statusContainer).toHaveAttribute('aria-live', 'polite');
   });
+
+  it('renders SplashScreen skip button when onDismiss is provided and triggers dismissal', () => {
+    const handleDismiss = vi.fn();
+    render(<SplashScreen currentStep={2} onDismiss={handleDismiss} />);
+    const skipBtn = screen.getByRole('button', { name: /Skip loading screen and open Ghostlink Studio/i });
+    expect(skipBtn).toBeInTheDocument();
+    skipBtn.click();
+    expect(handleDismiss).toHaveBeenCalledTimes(1);
+  });
 });

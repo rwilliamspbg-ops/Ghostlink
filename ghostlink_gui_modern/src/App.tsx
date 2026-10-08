@@ -24,22 +24,41 @@ const LOADING_STEPS = [
   'Establishing real-time metrics...',
 ];
 
-export function SplashScreen() {
-  const [step, setStep] = useState(0);
+export interface SplashScreenProps {
+  currentStep?: number;
+  onDismiss?: () => void;
+}
+
+export function SplashScreen({ currentStep = 0, onDismiss }: SplashScreenProps) {
+  const [step, setStep] = useState(currentStep);
   const [dots, setDots] = useState('');
+
+  useEffect(() => {
+    setStep((prev) => Math.max(prev, currentStep));
+  }, [currentStep]);
 
   useEffect(() => {
     const stepInterval = setInterval(() => {
       setStep((s) => (s < LOADING_STEPS.length - 1 ? s + 1 : s));
-    }, 1800);
+    }, 350);
     const dotInterval = setInterval(() => {
       setDots((d) => (d.length >= 3 ? '' : d + '.'));
-    }, 400);
+    }, 250);
     return () => {
       clearInterval(stepInterval);
       clearInterval(dotInterval);
     };
   }, []);
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && onDismiss) {
+        onDismiss();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [onDismiss]);
 
   return (
     <div className="flex items-center justify-center h-screen bg-slate-950">
@@ -96,6 +115,19 @@ export function SplashScreen() {
           ))}
         </div>
 
+        {/* Skip button */}
+        {onDismiss && (
+          <div className="mt-6">
+            <button
+              onClick={onDismiss}
+              className="text-xs text-blue-400 hover:text-blue-300 underline font-medium transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 rounded px-2 py-1"
+              aria-label="Skip loading screen and open Ghostlink Studio"
+            >
+              Skip to Studio &rarr;
+            </button>
+          </div>
+        )}
+
         {/* Footer */}
         <div className="mt-10 flex items-center justify-center gap-4 text-xs text-slate-600">
           <span className="flex items-center gap-1"><Cpu size={12} aria-hidden="true" /> GPU</span>
@@ -111,6 +143,8 @@ function App() {
   const { currentModel, activeTab, setActiveTab, setModels, setApiBase, setMetrics, setWorkers, setSessions, setBackendOnline, setChatMessages } = useAppStore();
   const unreadNeedsReviewCount = useAppStore((state) => state.unreadNeedsReviewCount);
   const [api, setApi] = useState<GhostlinkAPI | null>(null);
+  const [isInitializing, setIsInitializing] = useState(true);
+  const [bootStep, setBootStep] = useState(0);
   // Starts collapsed on phone-width viewports — at 375px a permanently
   // open 256px sidebar left only ~119px for actual content, which is
   // unusable. Below `md` the sidebar renders as a fixed overlay (see
@@ -213,6 +247,17 @@ function App() {
       }
     };
 
+    const checkHealth = async () => {
+      const result = await api.getHealth();
+      setBackendOnline(result.success);
+      setBootStep((s) => Math.max(s, 1));
+    };
+
+    const fetchModelsWithStep = async () => {
+      await fetchModels();
+      setBootStep((s) => Math.max(s, 2));
+    };
+
     const fetchWorkers = async () => {
       const result = await api.getWorkers();
       if (!result.error) {
@@ -220,27 +265,31 @@ function App() {
       }
     };
 
-    const fetchSessions = async () => {
-      const result = await api.getSessions();
-      if (!result.error) {
-        setSessions(result.sessions);
-      }
+    const fetchWorkersAndSessions = async () => {
+      await Promise.allSettled([
+        fetchWorkers(),
+        api.getSessions().then((res) => { if (!res.error) setSessions(res.sessions); }),
+      ]);
+      setBootStep((s) => Math.max(s, 3));
     };
 
-    const checkHealth = async () => {
-      const result = await api.getHealth();
-      setBackendOnline(result.success);
-    };
-
-    // Parallel initial boot load
-    Promise.allSettled([
-      fetchModels(),
+    // Parallel initial boot load with non-blocking safety timer
+    const bootPromise = Promise.allSettled([
+      checkHealth(),
+      fetchModelsWithStep(),
+      fetchWorkersAndSessions(),
       fetchMetrics(),
       fetchMetricsHistory(),
-      fetchWorkers(),
-      fetchSessions(),
-      checkHealth(),
     ]);
+
+    const maxTimer = setTimeout(() => {
+      setIsInitializing(false);
+    }, 1500);
+
+    bootPromise.finally(() => {
+      clearTimeout(maxTimer);
+      setIsInitializing(false);
+    });
 
     const healthInterval = setInterval(checkHealth, 30000);
 
@@ -270,8 +319,8 @@ function App() {
   }, [api, setModels, setMetrics, setWorkers, setSessions, setBackendOnline, setActiveTab]);
 
   const renderTab = () => {
-    if (!api) {
-      return <SplashScreen />;
+    if (!api || isInitializing) {
+      return <SplashScreen currentStep={bootStep} onDismiss={() => setIsInitializing(false)} />;
     }
 
     switch (activeTab) {
