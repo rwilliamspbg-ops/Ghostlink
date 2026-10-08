@@ -16204,10 +16204,23 @@ mod tests {
         let mut sessions = vec![s1, s2, s3];
         save_persistent_sessions(&mut sessions);
 
-        assert_eq!(sessions.len(), 2, "count cap should prune in-place to max_count");
-        assert!(sessions.iter().any(|s| s.id == "sess_newest"), "newest session must be kept");
-        assert!(sessions.iter().any(|s| s.id == "sess_old_2"), "second newest should be kept");
-        assert!(!sessions.iter().any(|s| s.id == "sess_old_1"), "oldest session should be dropped");
+        assert_eq!(
+            sessions.len(),
+            2,
+            "count cap should prune in-place to max_count"
+        );
+        assert!(
+            sessions.iter().any(|s| s.id == "sess_newest"),
+            "newest session must be kept"
+        );
+        assert!(
+            sessions.iter().any(|s| s.id == "sess_old_2"),
+            "second newest should be kept"
+        );
+        assert!(
+            !sessions.iter().any(|s| s.id == "sess_old_1"),
+            "oldest session should be dropped"
+        );
 
         std::env::remove_var("GHOSTLINK_SESSION_MAX_COUNT");
     }
