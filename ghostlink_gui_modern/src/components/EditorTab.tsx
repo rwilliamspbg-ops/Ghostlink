@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
+import '../monacoSetup';
 import Editor, { DiffEditor, type OnMount, type Monaco } from '@monaco-editor/react';
 import type * as monacoEditor from 'monaco-editor';
 import ReactMarkdown from 'react-markdown';

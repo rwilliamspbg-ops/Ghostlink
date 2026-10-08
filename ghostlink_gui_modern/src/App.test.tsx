@@ -2,17 +2,19 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import App, { SplashScreen } from './App';
 import { useAppStore } from './store';
+import fs from 'fs';
+import path from 'path';
 
 vi.mock('./api', () => ({
   GhostlinkAPI: vi.fn().mockImplementation(() => ({
-    getModels: vi.fn().mockResolvedValue({ models: [], current_model: 'none' }),
-    getHealth: vi.fn().mockResolvedValue({ success: true, data: {} }),
-    getMetrics: vi.fn().mockResolvedValue({ metrics: { throughput: 0, cpu: 0, memory: 0, gpu: 0, latency_p50: 0, latency_p95: 0 } }),
-    getSessions: vi.fn().mockResolvedValue({ sessions: [] }),
-    listSessions: vi.fn().mockResolvedValue({ sessions: [] }),
-    getWorkers: vi.fn().mockResolvedValue({ workers: [] }),
-    listMcpServers: vi.fn().mockResolvedValue({ servers: [] }),
-    getSettings: vi.fn().mockResolvedValue({ settings: { conversation_token_limit: 3072 } }),
+    getModels: vi.fn().mockReturnValue(new Promise(() => {})), // pending
+    getHealth: vi.fn().mockReturnValue(new Promise(() => {})), // pending
+    getMetrics: vi.fn().mockReturnValue(new Promise(() => {})), // pending
+    getSessions: vi.fn().mockReturnValue(new Promise(() => {})), // pending
+    listSessions: vi.fn().mockReturnValue(new Promise(() => {})), // pending
+    getWorkers: vi.fn().mockReturnValue(new Promise(() => {})), // pending
+    listMcpServers: vi.fn().mockReturnValue(new Promise(() => {})), // pending
+    getSettings: vi.fn().mockReturnValue(new Promise(() => {})), // pending
   })),
 }));
 
@@ -50,9 +52,13 @@ describe('App', () => {
     expect(mockSetApiBase).toHaveBeenCalledWith('http://127.0.0.1:8000');
   });
 
-  it('renders the app with sidebar', () => {
+  it('renders sidebar and nav tabs while health check is pending', () => {
     render(<App />);
     expect(screen.getByText('Ghostlink')).toBeInTheDocument();
+    expect(screen.getByText('Chat')).toBeInTheDocument();
+    expect(screen.getByText('Models')).toBeInTheDocument();
+    expect(screen.getByText('Editor')).toBeInTheDocument();
+    expect(screen.getByText('Connecting to Ghostlink backend...')).toBeInTheDocument();
   });
 
   it('shows all navigation tabs', () => {
@@ -88,5 +94,12 @@ describe('App', () => {
     expect(skipBtn).toBeInTheDocument();
     skipBtn.click();
     expect(handleDismiss).toHaveBeenCalledTimes(1);
+  });
+
+  it('verifies src/main.tsx does not statically import monacoSetup or EditorTab', () => {
+    const mainPath = path.resolve(__dirname, 'main.tsx');
+    const mainContent = fs.readFileSync(mainPath, 'utf-8');
+    expect(mainContent).not.toContain('monacoSetup');
+    expect(mainContent).not.toContain('EditorTab');
   });
 });
