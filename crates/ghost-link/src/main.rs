@@ -4769,6 +4769,10 @@ fn prune_sessions_for_persistence(sessions: &[SessionRecord]) -> Vec<SessionReco
         .ok()
         .and_then(|v| v.parse::<u64>().ok())
         .unwrap_or(30);
+    let max_count = std::env::var("GHOSTLINK_SESSION_MAX_COUNT")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(50);
     let max_bytes = std::env::var("GHOSTLINK_SESSION_MAX_BYTES")
         .ok()
         .and_then(|v| v.parse::<usize>().ok())
@@ -4799,6 +4803,26 @@ fn prune_sessions_for_persistence(sessions: &[SessionRecord]) -> Vec<SessionReco
         })
         .cloned()
         .collect();
+
+    if max_count > 0 && survivors.len() > max_count {
+        let mut evictable: Vec<usize> = (0..survivors.len())
+            .filter(|&i| !is_protected(&survivors[i]))
+            .collect();
+        evictable.sort_by_key(|&i| session_activity_ts(&survivors[i]));
+
+        let drop_count = survivors.len().saturating_sub(max_count);
+        let mut dropped = std::collections::HashSet::new();
+        for &i in evictable.iter().take(drop_count) {
+            dropped.insert(i);
+        }
+
+        survivors = survivors
+            .into_iter()
+            .enumerate()
+            .filter(|(i, _)| !dropped.contains(i))
+            .map(|(_, s)| s)
+            .collect();
+    }
 
     if max_bytes > 0 {
         let per_session_bytes =
@@ -4831,11 +4855,11 @@ fn prune_sessions_for_persistence(sessions: &[SessionRecord]) -> Vec<SessionReco
     survivors
 }
 
-fn save_persistent_sessions(sessions: &[SessionRecord]) {
-    // Persist a bounded copy; the in-memory list is left untouched so live
-    // sessions stay visible to /api/sessions for this process's lifetime.
-    let pruned = prune_sessions_for_persistence(sessions);
-    if let Ok(data) = serde_json::to_string_pretty(&pruned) {
+fn save_persistent_sessions(sessions: &mut Vec<SessionRecord>) {
+    // Prune the in-memory list in place so RAM usage and GET /api/sessions stay bounded,
+    // and persist using compact JSON for fast file writes.
+    *sessions = prune_sessions_for_persistence(sessions);
+    if let Ok(data) = serde_json::to_string(sessions) {
         let _ = fs::write(sessions_path(), data);
     }
 }
@@ -8456,7 +8480,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             .find(|session| session.id == session_id)
         {
             session.status = "Cancelled".to_string();
-            save_persistent_sessions(&backend.sessions);
+            save_persistent_sessions(&mut backend.sessions);
             Json(serde_json::json!({ "status": "ok", "session_id": session_id, "cancelled": true }))
         } else {
             Json(serde_json::json!({ "status": "error", "error": "session not found" }))
@@ -8541,7 +8565,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         // Remove existing session with same id
         backend.sessions.retain(|s| s.id != session_id);
         backend.sessions.push(session);
-        save_persistent_sessions(&backend.sessions);
+        save_persistent_sessions(&mut backend.sessions);
 
         Json(serde_json::json!({ "status": "ok", "session_id": session_id }))
     }
@@ -8578,7 +8602,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         let len_before = backend.sessions.len();
         backend.sessions.retain(|s| s.id != session_id);
         if backend.sessions.len() < len_before {
-            save_persistent_sessions(&backend.sessions);
+            save_persistent_sessions(&mut backend.sessions);
             Json(serde_json::json!({ "status": "ok", "deleted": true }))
         } else {
             Json(serde_json::json!({ "status": "error", "error": "session not found" }))
@@ -10497,7 +10521,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             }
             session.name = title_text.clone();
         }
-        save_persistent_sessions(&lock_state(&state).sessions);
+        save_persistent_sessions(&mut lock_state(&state).sessions);
         Some(title_text)
     }
 
@@ -11812,7 +11836,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                 });
                 session_id
             };
-            save_persistent_sessions(&backend.sessions);
+            save_persistent_sessions(&mut backend.sessions);
 
             let metrics_json = serde_json::json!({
                 "throughput": snap.tokens_per_sec,
@@ -16164,6 +16188,28 @@ mod tests {
         assert_eq!(kept[0].id, "sess_local_001");
 
         std::env::remove_var("GHOSTLINK_SESSION_MAX_BYTES");
+    }
+
+    #[test]
+    fn prune_sessions_enforces_count_cap_and_in_place_save() {
+        let _guard = env_lock().lock().expect("env lock poisoned");
+        std::env::set_var("GHOSTLINK_SESSION_MAX_AGE_DAYS", "0");
+        std::env::remove_var("GHOSTLINK_SESSION_MAX_BYTES");
+        std::env::set_var("GHOSTLINK_SESSION_MAX_COUNT", "2");
+
+        let s1 = session_with("sess_old_1", 1_000);
+        let s2 = session_with("sess_old_2", 2_000);
+        let s3 = session_with("sess_newest", 3_000);
+
+        let mut sessions = vec![s1, s2, s3];
+        save_persistent_sessions(&mut sessions);
+
+        assert_eq!(sessions.len(), 2, "count cap should prune in-place to max_count");
+        assert!(sessions.iter().any(|s| s.id == "sess_newest"), "newest session must be kept");
+        assert!(sessions.iter().any(|s| s.id == "sess_old_2"), "second newest should be kept");
+        assert!(!sessions.iter().any(|s| s.id == "sess_old_1"), "oldest session should be dropped");
+
+        std::env::remove_var("GHOSTLINK_SESSION_MAX_COUNT");
     }
 
     #[tokio::test]
