@@ -258,9 +258,16 @@ function App() {
       setBootStep((s) => Math.max(s, 2));
     };
 
+    const fetchWorkers = async () => {
+      const result = await api.getWorkers();
+      if (!result.error) {
+        setWorkers(result.workers);
+      }
+    };
+
     const fetchWorkersAndSessions = async () => {
       await Promise.allSettled([
-        api.getWorkers().then((res) => { if (!res.error) setWorkers(res.workers); }),
+        fetchWorkers(),
         api.getSessions().then((res) => { if (!res.error) setSessions(res.sessions); }),
       ]);
       setBootStep((s) => Math.max(s, 3));
