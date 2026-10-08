@@ -196,10 +196,12 @@ impl LoadBalancer {
             return Err("no nodes available".into());
         }
 
-        // Sort references to nodes by VRAM capacity (descending) to avoid copying heap-allocated IDs and strings
+        // OPTIMIZATION: Use `sort_unstable_by` when sorting node references by VRAM capacity.
+        // `sort_unstable_by` avoids allocating scratch memory buffers and executing stability overhead,
+        // reducing sorting latency on node resource references during greedy load distribution.
         let mut sorted_nodes: Vec<&crate::protocol::NodeResources> =
             nodes_snapshot.iter().collect();
-        sorted_nodes.sort_by(|a, b| {
+        sorted_nodes.sort_unstable_by(|a, b| {
             b.vram_gb
                 .partial_cmp(&a.vram_gb)
                 .unwrap_or(std::cmp::Ordering::Equal)

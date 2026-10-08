@@ -1,3 +1,7 @@
+## 2026-10-02 - [Unstable Sorting for Reference Sequences in Load Balancing]
+**Learning:** In greedy layer distribution (`LoadBalancer::distribute_layers_internal`), sorting node references (`Vec<&NodeResources>`) using `sort_by` performed stable sorting, which allocates scratch memory buffers and incurs stability tracking overhead. Replacing `sort_by` with `sort_unstable_by` avoids scratch allocations and stability overhead when order stability for identical values is unimportant, reducing `autotune/load_balance_80_layers_autotuned` latency down to ~480.9 ns.
+**Action:** Use `sort_unstable_by` instead of `sort_by` when sorting slices or vectors of references when relative order stability for equal elements is not required.
+
 ## 2026-10-01 - [Zero-Fill Overhead of Vec::resize in Buffer Serialization]
 **Learning:** Attempting to optimize multi-field `Vec<u8>` payload serialization by replacing `reserve()` + `push`/`extend_from_slice` with `buffer.resize(len, 0)` caused a performance regression. `resize(len, 0)` forces the runtime to zero-initialize the allocated memory region first before payload bytes are copied into it, doubling write passes and adding slice indexing bounds checks. `buffer.reserve(payload_len)` followed by `push`/`extend_from_slice` avoids zero-initialization while guaranteeing zero reallocations.
 **Action:** Use `buffer.reserve(exact_len)` with `push`/`extend_from_slice` when serializing structured binary payloads instead of `buffer.resize(len, 0)` to avoid zero-fill write overhead.
