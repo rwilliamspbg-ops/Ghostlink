@@ -202,6 +202,9 @@ function App() {
       if (!result.error) {
         setMetrics(result.metrics);
       }
+    };
+
+    const fetchMetricsHistory = async () => {
       if (api.getMetricsHistory) {
         const historyResult = await api.getMetricsHistory();
         if (!historyResult.error && historyResult.history) {
@@ -223,18 +226,22 @@ function App() {
         setSessions(result.sessions);
       }
     };
-    
-    fetchModels();
-    fetchMetrics();
-    fetchWorkers();
-    fetchSessions();
-    
-    // Poll for health check every 30s
+
     const checkHealth = async () => {
       const result = await api.getHealth();
       setBackendOnline(result.success);
     };
-    checkHealth();
+
+    // Parallel initial boot load
+    Promise.allSettled([
+      fetchModels(),
+      fetchMetrics(),
+      fetchMetricsHistory(),
+      fetchWorkers(),
+      fetchSessions(),
+      checkHealth(),
+    ]);
+
     const healthInterval = setInterval(checkHealth, 30000);
 
     const handleSwitchTab = (e: CustomEvent) => {
@@ -244,11 +251,9 @@ function App() {
     };
     window.addEventListener('switch-tab', handleSwitchTab as EventListener);
 
-
-    // Poll metrics every 3s for responsive System Performance gauges
+    // Poll current metrics every 3s for responsive System Performance gauges
     const metricsInterval = setInterval(() => {
       fetchMetrics();
-      fetchSessions();
     }, 3000);
 
     // Poll for workers every 15s
