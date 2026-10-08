@@ -21,15 +21,22 @@
         font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
         background: var(--bg);
         color: var(--fg);
-        min-height: 100vh;
+        overflow: hidden;
+      }
+      /* Splash lives in its own fixed overlay so it never shares layout with #root */
+      .splash-overlay {
+        position: fixed;
+        inset: 0;
+        z-index: 9999;
         display: flex;
         align-items: center;
         justify-content: center;
+        background: var(--bg);
         overflow: hidden;
       }
       /* Animated background */
       .bg-grid {
-        position: fixed;
+        position: absolute;
         inset: 0;
         background-image: 
           linear-gradient(rgba(59, 130, 246, 0.03) 1px, transparent 1px),
@@ -42,7 +49,7 @@
         100% { transform: translate(60px, 60px); }
       }
       .bg-glow {
-        position: fixed;
+        position: absolute;
         width: 600px;
         height: 600px;
         border-radius: 50%;
@@ -91,36 +98,40 @@
       /* Status messages */
       .status { font-size: 0.75rem; color: var(--muted); margin-top: 1rem; min-height: 1.2rem; }
       /* Fade out animation for smooth transition */
-      .splash.fade-out { animation: fadeOut 0.5s ease forwards; }
+      .splash-overlay.fade-out { animation: fadeOut 0.25s ease forwards; pointer-events: none; }
       @keyframes fadeOut { to { opacity: 0; visibility: hidden; } }
+      @media (prefers-reduced-motion: reduce) {
+        .bg-grid, .bg-glow, .logo, .dot { animation: none; }
+      }
     </style>
   </head>
   <body>
-    <div class="bg-grid"></div>
-    <div class="bg-glow glow-1"></div>
-    <div class="bg-glow glow-2"></div>
-    
-    <!-- Splash Screen (shown before React hydrates) -->
-    <div class="splash" id="splash">
-      <div class="logo">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M12 2L2 7l10 5 10-5-10-5z"/>
-          <path d="M2 17l10 5 10-5"/>
-          <path d="M2 12l10 5 10-5"/>
-        </svg>
+    <!-- Splash overlay (shown before React hydrates; removed by dismissSplash() in src/splash.ts) -->
+    <div class="splash-overlay" id="splash">
+      <div class="bg-grid"></div>
+      <div class="bg-glow glow-1"></div>
+      <div class="bg-glow glow-2"></div>
+      <div class="splash">
+        <div class="logo">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 2L2 7l10 5 10-5-10-5z"/>
+            <path d="M2 17l10 5 10-5"/>
+            <path d="M2 12l10 5 10-5"/>
+          </svg>
+        </div>
+        <h1 class="title">Ghostlink Studio</h1>
+        <p class="subtitle">Distributed LLM Inference Fabric</p>
+        <div class="progress-container">
+          <div class="progress-bar" id="progressBar"></div>
+        </div>
+        <div class="progress-text" id="progressText">Initializing...</div>
+        <div class="spinner">
+          <div class="dot"></div>
+          <div class="dot"></div>
+          <div class="dot"></div>
+        </div>
+        <div class="status" id="statusText">Connecting to inference fabric...</div>
       </div>
-      <h1 class="title">Ghostlink Studio</h1>
-      <p class="subtitle">Distributed LLM Inference Fabric</p>
-      <div class="progress-container">
-        <div class="progress-bar" id="progressBar"></div>
-      </div>
-      <div class="progress-text" id="progressText">Initializing...</div>
-      <div class="spinner">
-        <div class="dot"></div>
-        <div class="dot"></div>
-        <div class="dot"></div>
-      </div>
-      <div class="status" id="statusText">Connecting to inference fabric...</div>
     </div>
 
     <!-- React App Root -->
@@ -145,32 +156,31 @@
         
         let currentStep = 0;
         const stepDelay = 600;
-        
+
+        // Progress is cosmetic; the real dismissal happens when React has painted
+        // (dismissSplash() in src/splash.ts, called from main.tsx).
         function advanceStep() {
-          if (currentStep >= steps.length) return;
+          if (!document.body.contains(splash) || currentStep >= steps.length) return;
           const step = steps[currentStep];
           progressBar.style.width = step.pct + '%';
           progressText.textContent = step.text;
           statusText.textContent = step.status;
           currentStep++;
-          if (currentStep < steps.length) {
-            setTimeout(advanceStep, stepDelay);
-          } else {
-            // Wait for React to hydrate, then fade out
-            setTimeout(() => {
-              splash.classList.add('fade-out');
-              setTimeout(() => splash.remove(), 500);
-            }, 500);
-          }
+          if (currentStep < steps.length) setTimeout(advanceStep, stepDelay);
         }
-        
-        // Start animation
         setTimeout(advanceStep, 200);
-        
-        // Fallback: remove splash after 10s max
+
+        // Fallback after 10s. If React mounted, drop the splash outright (a merely
+        // faded element still occupies layout). If it never mounted, say so rather
+        // than leaving an endless fake "loading" animation.
         setTimeout(() => {
-          if (document.body.contains(splash)) {
-            splash.classList.add('fade-out');
+          if (!document.body.contains(splash)) return;
+          const root = document.getElementById('root');
+          if (root && root.hasChildNodes()) {
+            splash.remove();
+          } else {
+            progressText.textContent = 'Taking longer than expected';
+            statusText.textContent = 'The app has not started. Check that the dev server is running and look for errors in the browser console.';
           }
         }, 10000);
       })();
