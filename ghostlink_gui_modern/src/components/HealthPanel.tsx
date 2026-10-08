@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { GhostlinkAPI } from '../api';
 import { useAppStore } from '../store';
 import { resolveApiBase } from '../config';
-import { AlertTriangle, CheckCircle2, RefreshCw, Key, Layers, Server, ShieldAlert, Cpu } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, RefreshCw, Key, Layers, Server, ShieldAlert, Cpu, Loader } from 'lucide-react';
 
 interface HealthPanelProps {
   api: GhostlinkAPI;
@@ -235,6 +235,7 @@ export const HealthPanel: React.FC<HealthPanelProps> = ({ api, onNavigateToTab }
             <button
               type="submit"
               disabled={!inputApiKey.trim() || probing}
+              aria-busy={probing}
               aria-label={
                 probing
                   ? 'Applying API key...'
@@ -249,8 +250,9 @@ export const HealthPanel: React.FC<HealthPanelProps> = ({ api, onNavigateToTab }
                   ? 'Enter an API key to apply'
                   : 'Apply recovery API key'
               }
-              className="px-4 py-2 bg-amber-600 hover:bg-amber-500 text-white rounded-lg text-xs font-bold transition disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-amber-500 focus-visible:outline-none"
+              className="flex items-center gap-1.5 px-4 py-2 bg-amber-600 hover:bg-amber-500 text-white rounded-lg text-xs font-bold transition disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-amber-500 focus-visible:outline-none"
             >
+              {probing && <Loader size={12} className="animate-spin" aria-hidden="true" />}
               {probing ? 'Applying...' : 'Apply Key'}
             </button>
           </div>
