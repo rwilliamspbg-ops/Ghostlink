@@ -729,7 +729,7 @@ pub fn execute_pipeline_with_rebalance_and_measured(
     };
 
     let mut sorted = token_latencies.clone();
-    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    sorted.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     let p95_idx = (sorted.len().saturating_sub(1) as f32 * 0.95).round() as usize;
     let p95_token_latency_ms = sorted.get(p95_idx).copied().unwrap_or(0.0);
     let p99_idx = (sorted.len().saturating_sub(1) as f32 * 0.99).round() as usize;
@@ -1006,7 +1006,7 @@ fn _read_transport_batch_inner(
             return Ok(Some(TransportBatch {
                 batch_id,
                 tokens_in_batch,
-                payload: payload_buf.clone(),
+                payload: std::mem::take(payload_buf),
             }));
         }
         0 => {
@@ -1033,7 +1033,7 @@ fn _read_transport_batch_inner(
     Ok(Some(TransportBatch {
         batch_id,
         tokens_in_batch,
-        payload: payload_buf.clone(),
+        payload: std::mem::take(payload_buf),
     }))
 }
 
@@ -1633,7 +1633,7 @@ pub fn execute_pipeline_distributed(
     };
 
     let mut sorted = token_latencies.clone();
-    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    sorted.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     let p95_idx = ((sorted.len().saturating_sub(1)) as f32 * 0.95).round() as usize;
     let p95_token_latency_ms = sorted.get(p95_idx).copied().unwrap_or(0.0);
     let p99_idx = ((sorted.len().saturating_sub(1)) as f32 * 0.99).round() as usize;
@@ -1897,7 +1897,8 @@ pub fn execute_pipeline_tcp_loopback_with_config(
     };
 
     let mut sorted = token_latencies.clone();
-    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    // OPTIMIZATION: Unstable sorting avoids scratch buffer allocations and stability tracking overhead.
+    sorted.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     let p95_idx = ((sorted.len().saturating_sub(1)) as f32 * 0.95).round() as usize;
     let p95_token_latency_ms = sorted.get(p95_idx).copied().unwrap_or(0.0);
     let p99_idx = ((sorted.len().saturating_sub(1)) as f32 * 0.99).round() as usize;
@@ -2208,7 +2209,7 @@ pub fn execute_pipeline_with_remote_stage(
         token_latencies.iter().sum::<f32>() / token_latencies.len() as f32
     };
     let mut sorted = token_latencies.clone();
-    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    sorted.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     let p95_idx = (sorted.len().saturating_sub(1) as f32 * 0.95).round() as usize;
     let p95_token_latency_ms = sorted.get(p95_idx).copied().unwrap_or(0.0);
     let p99_idx = (sorted.len().saturating_sub(1) as f32 * 0.99).round() as usize;
