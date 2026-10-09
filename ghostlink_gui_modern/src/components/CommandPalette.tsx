@@ -182,7 +182,6 @@ export const CommandPalette: React.FC = () => {
         label: 'Index workspace',
         hint: 'Scan and index workspace files in Editor tab',
         icon: FileCode,
-  FolderGit2,
         action: () => {
           setActiveTab(8);
           window.dispatchEvent(new CustomEvent('index-workspace-files'));
@@ -193,7 +192,6 @@ export const CommandPalette: React.FC = () => {
         label: 'Toggle workspace context',
         hint: 'Toggle RAG workspace context in Editor tab',
         icon: FileCode,
-  FolderGit2,
         action: () => {
           setActiveTab(8);
           window.dispatchEvent(new CustomEvent('toggle-workspace-context'));
