@@ -412,6 +412,28 @@ describe('ChatTab', () => {
       expect(useAppStore.getState().setActiveTab).toHaveBeenCalledWith(1);
     });
 
+    it("renders accessible status live region during response generation", async () => {
+      useAppStore.setState({
+        currentModel: "llama-3-8b",
+        chatLoading: true,
+        chatStreamingId: "ast-1",
+        chatMessages: [
+          { role: "user", content: "Hello", id: "u1", timestamp: "12:00 PM" },
+          { role: "assistant", content: "", id: "ast-1", timestamp: "12:00 PM" },
+        ],
+      });
+      const api = createMockApi();
+      render(<ChatTab api={api} />);
+
+      const statusEl = screen.getByRole("status");
+      expect(statusEl).toBeInTheDocument();
+      expect(statusEl).toHaveAttribute("aria-live", "polite");
+      expect(statusEl).toHaveAttribute("aria-busy", "true");
+      expect(screen.getByText(/Generating response.../i)).toBeInTheDocument();
+
+      useAppStore.setState({ chatLoading: false, chatStreamingId: null, chatMessages: [] });
+    });
+
     it("triggers send message and streams tokens", async () => {
       useAppStore.setState({ currentModel: "llama-3-8b" });
       const api = createMockApi();

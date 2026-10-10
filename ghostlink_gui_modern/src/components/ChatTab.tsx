@@ -228,8 +228,8 @@ const TaskChatMessageCard: React.FC<{ taskId: string; api: GhostlinkAPI }> = ({ 
 
   if (!task) {
     return (
-      <div className="p-3 bg-slate-900 border border-slate-800 rounded-xl flex items-center gap-2 text-slate-400 text-xs">
-        <Loader className="animate-spin" size={14} /> Loading Task Agent...
+      <div role="status" aria-live="polite" aria-busy="true" className="p-3 bg-slate-900 border border-slate-800 rounded-xl flex items-center gap-2 text-slate-400 text-xs">
+        <Loader className="animate-spin" size={14} aria-hidden="true" /> Loading Task Agent...
       </div>
     );
   }
@@ -1496,8 +1496,8 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
               })}
 
               {loading && awaitingFirstToken && (
-                <div className="flex items-center gap-3 text-slate-400 text-xs py-2">
-                  <Loader size={16} className="animate-spin text-blue-500" />
+                <div role="status" aria-live="polite" aria-busy="true" className="flex items-center gap-3 text-slate-400 text-xs py-2">
+                  <Loader size={16} className="animate-spin text-blue-500" aria-hidden="true" />
                   <span>Generating response... ({genTokPerSec.toFixed(1)} tok/s)</span>
                 </div>
               )}
