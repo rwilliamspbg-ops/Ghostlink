@@ -729,6 +729,7 @@ pub fn execute_pipeline_with_rebalance_and_measured(
     };
 
     let mut sorted = token_latencies.clone();
+    // OPTIMIZATION: Unstable sorting avoids scratch buffer allocations and stability tracking overhead.
     sorted.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     let p95_idx = (sorted.len().saturating_sub(1) as f32 * 0.95).round() as usize;
     let p95_token_latency_ms = sorted.get(p95_idx).copied().unwrap_or(0.0);
