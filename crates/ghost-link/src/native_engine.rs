@@ -1387,47 +1387,6 @@ impl NativeEngineClient {
     /// Three of four explicit settings were overridden by the model-size branches in
     /// `get_ngl`/`get_ctx_size`/`get_threads`, with nothing logged. A user reading
     /// `settings.json` would have no way to tell. The overrides themselves are
-    /// defensible -- a 12 GB model CPU-bound beats a partial offload that OOMs -- but
-    /// *silently* is not the same as *correctly*.
-    ///
-    /// `load_model_into_slot` now prints one line per overridden value at boot.
-    pub fn describe_tuning(model_size_gb: f32) -> String {
-        let ctx = Self::get_ctx_size(model_size_gb);
-        let ngl = Self::get_ngl(model_size_gb);
-        let threads = Self::get_threads();
-        let mut out = format!(
-            "[perf-tier] effective: -c {ctx} -ngl {ngl} -t {threads} (model {:.2} GB)",
-            model_size_gb
-        );
-        let mut notes: Vec<String> = Vec::new();
-        for (env, label) in [
-            ("GHOSTLINK_CTX_SIZE", "ctx_size"),
-            ("GHOSTLINK_LLAMA_NGL", "ngl"),
-            ("GHOSTLINK_LLAMA_THREADS", "threads"),
-        ] {
-            if let Ok(requested) = std::env::var(env) {
-                let requested = requested.trim().to_string();
-                let effective = match env {
-                    "GHOSTLINK_CTX_SIZE" => ctx.to_string(),
-                    "GHOSTLINK_LLAMA_NGL" => ngl.to_string(),
-                    _ => threads.to_string(),
-                };
-                if requested != effective {
-                    notes.push(format!(
-                        "{label}: settings requested {requested}, using {effective}"
-                    ));
-                }
-            }
-        }
-        if !notes.is_empty() {
-            out.push_str("\n[perf-tier] OVERRIDDEN by model-size/VRAM policy: ");
-            out.push_str(&notes.join("; "));
-            out.push_str(
-                "\n[perf-tier] set the matching *_auto flag to false to force the setting",
-            );
-        }
-        out
-    }
 
     pub fn load_model_into_slot(
         &self,
@@ -1466,11 +1425,6 @@ impl NativeEngineClient {
         // discarded. The existing `[perf-tier]` line covered batch/FA/KV only, so a
         // configured ctx_size or ngl that went unused left no trace at all.
         eprintln!("{}", describe_tuning(model_size_gb));
-        // Report the tuning actually applied, and name anything the model-size policy
-        // overrode. Previously the only clue was the `[perf-tier]` line, which showed the
-        // batch/FA/KV choices but never the ctx/ngl/threads ones -- and never said when a
-        // configured value had been discarded.
-        eprintln!("{}", Self::describe_tuning(model_size_gb));
         let parallel_slots = Self::get_parallel_slots();
         let mlock = Self::get_mlock();
         let no_mmap = Self::get_no_mmap();
@@ -2666,7 +2620,7 @@ fn extract_generation_text(stdout: &str, stderr: &str, prompt: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_prompt_timings, NativeChatEvent, NativeEngineClient, PromptTimings};
+    use super::{describe_tuning, parse_prompt_timings, NativeChatEvent, NativeEngineClient, PromptTimings};
     use std::sync::{Mutex, OnceLock};
 
     fn env_lock() -> &'static Mutex<()> {
@@ -3878,7 +3832,7 @@ mod tests {
         // Setting the env vars directly would *win*, because the getters read them first.
         // So the override only ever happens through the auto path, which is exactly the
         // path that was silent.
-        let line = NativeEngineClient::describe_tuning(12.0);
+        let line = describe_tuning(12.0);
         assert!(
             line.contains("-c 4096"),
             "a 12 GB model must cap ctx at 4096: {line}"
@@ -3891,7 +3845,7 @@ mod tests {
         // Now the explicit case: with the env var set, the getter honours it and there is
         // nothing to report. Both halves of the contract in one test.
         std::env::set_var("GHOSTLINK_CTX_SIZE", "131072");
-        let explicit = NativeEngineClient::describe_tuning(12.0);
+        let explicit = describe_tuning(12.0);
         assert!(
             explicit.contains("-c 131072"),
             "an explicit request must be honoured: {explicit}"
@@ -3914,7 +3868,7 @@ mod tests {
         ] {
             std::env::remove_var(v);
         }
-        let line = NativeEngineClient::describe_tuning(1.7);
+        let line = describe_tuning(1.7);
         assert!(
             line.contains("-c "),
             "must always report effective values: {line}"
