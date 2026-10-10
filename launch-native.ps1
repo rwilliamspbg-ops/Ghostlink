@@ -396,63 +396,6 @@ if ($InferenceBackend -eq "native") {
 $logicalCores = [Environment]::ProcessorCount
 $env:GHOSTLINK_LLAMA_THREADS = [Math]::Max(1, $logicalCores - 1)
 
-# GHOSTLINK_VRAM_GB / GHOSTLINK_LLAMA_NGL: the comment block below these lines
-# documents measured tuning values (VRAM_GB=8, LLAMA_NGL=-1) but the actual
-# assignments were never written. Add them here so the documented tuning
-# actually takes effect on this machine. Only set when unset.
-if (-not $env:GHOSTLINK_VRAM_GB) {
-    $env:GHOSTLINK_VRAM_GB = "8"
-}
-if (-not $env:GHOSTLINK_LLAMA_NGL) {
-    $env:GHOSTLINK_LLAMA_NGL = "-1"
-}
-
-# GHOSTLINK_FIRST_TOKEN_TIMEOUT_SECS: raised from 30s to 120s (see comment
-# block below). Only set when unset.
-if (-not $env:GHOSTLINK_FIRST_TOKEN_TIMEOUT_SECS) {
-    $env:GHOSTLINK_FIRST_TOKEN_TIMEOUT_SECS = "120"
-}
-
-# GHOSTLINK_PARALLEL_SLOTS: enables per-session slot pinning (PR #468).
-# Without this, slot pinning is a no-op. 2 slots for >=16GB VRAM, 4 for >=32GB.
-if (-not $env:GHOSTLINK_PARALLEL_SLOTS) {
-    $vramGb = [int]$env:GHOSTLINK_VRAM_GB
-    if ($vramGb -ge 32) {
-        $env:GHOSTLINK_PARALLEL_SLOTS = "4"
-    } elseif ($vramGb -ge 16) {
-        $env:GHOSTLINK_PARALLEL_SLOTS = "2"
-    } else {
-        $env:GHOSTLINK_PARALLEL_SLOTS = "1"
-    }
-}
-
-# GHOSTLINK_SESSION_MAX_AGE_DAYS: prune sessions older than this (default 30).
-# Without this, sessions.json grows unbounded.
-if (-not $env:GHOSTLINK_SESSION_MAX_AGE_DAYS) {
-    $env:GHOSTLINK_SESSION_MAX_AGE_DAYS = "30"
-}
-
-# GHOSTLINK_SESSION_MAX_BYTES: cap sessions.json size (default 20MB in Rust).
-# Set explicitly for documentation; prevents unbounded growth.
-if (-not $env:GHOSTLINK_SESSION_MAX_BYTES) {
-    $env:GHOSTLINK_SESSION_MAX_BYTES = "20000000"
-}
-
-# GHOSTLINK_TCP_AUTOTUNE_TOKENS: number of tokens to use when auto-tuning
-# TCP max_inflight. Default 64 in Rust; FLOW_PERF_TUNING.json measured
-# 256 as optimal (262k tok/s vs 165k at 128, 188k at 512).
-if (-not $env:GHOSTLINK_TCP_AUTOTUNE_TOKENS) {
-    $env:GHOSTLINK_TCP_AUTOTUNE_TOKENS = "256"
-}
-
-# GHOSTLINK_MLOCK: auto-enable when >= 24GB RAM, matching native_engine.rs.
-if (-not $env:GHOSTLINK_MLOCK) {
-    $totalRam = (Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB
-    if ($totalRam -ge 24) {
-        $env:GHOSTLINK_MLOCK = "1"
-    }
-}
-
 # GHOSTLINK_GPU_NAME / GHOSTLINK_VRAM_GB / GHOSTLINK_COMPUTE_CAPABILITY feed
 # ghostlink-core::system_profile::detect_gpu_from_env(), which takes absolute
 # priority over the platform GPU probes (crates/ghostlink-core/src/system_profile.rs)
@@ -523,7 +466,9 @@ if (-not $env:GHOSTLINK_MLOCK) {
 #
 # Only set when unset, so an explicit override from the caller still wins. This
 # is the first-token budget only; the idle timeout is unaffected.
-# (Assignment moved up with the other env defaults above.)
+if (-not $env:GHOSTLINK_FIRST_TOKEN_TIMEOUT_SECS) {
+    $env:GHOSTLINK_FIRST_TOKEN_TIMEOUT_SECS = "120"
+}
 
 # GPU hardware auto-detection active by default (environment overrides respected if set)
 

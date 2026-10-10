@@ -903,7 +903,6 @@ resolve_model_file() {
         "$PROJECT_ROOT/models/Llama-3.2-1B-Instruct-IQ3_M.gguf" \
         "$PROJECT_ROOT/models/gemma-4-E4B-it-Q4_K_M.gguf" \
         "$PROJECT_ROOT/models/Llama-3.2-3B-Instruct-IQ3_M.gguf" \
-        "$PROJECT_ROOT/models/Qwen3.8-27B-UD-IQ3_S.gguf" \
         "$PROJECT_ROOT/models/tinyllama-1.1b-chat-v1.0.Q2_K.gguf" \
         "$PROJECT_ROOT/models/stories15M-q4_0.gguf"
     do
@@ -1072,48 +1071,6 @@ start_services() {
         if [ "$VRAM_GB" -gt 8 ] 2>/dev/null; then
             VRAM_GB=8
         fi
-    fi
-
-    # --- Inference env defaults (only when unset, so explicit overrides win) ---
-    # GHOSTLINK_FIRST_TOKEN_TIMEOUT_SECS: raised from 30s to 120s. Measured on
-    # the Windows reference host with Qwen3.8-27B-UD-IQ3_S at ngl -1: cold
-    # prompt ~9.2s, via control-plane ~10.1s. The 30s default is not comfortably
-    # above that and fired on a real request during testing (a model swap left
-    # llama-server answering 503 while reloading). 120s leaves ~12x headroom.
-    if [ -z "${GHOSTLINK_FIRST_TOKEN_TIMEOUT_SECS:-}" ]; then
-        export GHOSTLINK_FIRST_TOKEN_TIMEOUT_SECS=120
-    fi
-
-    # GHOSTLINK_PARALLEL_SLOTS: enables per-session slot pinning (PR #468).
-    # Without this, llama-server runs with -np 1 and slot pinning is a no-op.
-    # 2 slots for >=16GB VRAM, 4 for >=32GB, 1 otherwise.
-    if [ -z "${GHOSTLINK_PARALLEL_SLOTS:-}" ]; then
-        if [ "${VRAM_GB:-0}" -ge 32 ] 2>/dev/null; then
-            export GHOSTLINK_PARALLEL_SLOTS=4
-        elif [ "${VRAM_GB:-0}" -ge 16 ] 2>/dev/null; then
-            export GHOSTLINK_PARALLEL_SLOTS=2
-        else
-            export GHOSTLINK_PARALLEL_SLOTS=1
-        fi
-    fi
-
-    # GHOSTLINK_SESSION_MAX_AGE_DAYS: prune sessions older than this (default 30).
-    # Without this, sessions.json grows unbounded.
-    if [ -z "${GHOSTLINK_SESSION_MAX_AGE_DAYS:-}" ]; then
-        export GHOSTLINK_SESSION_MAX_AGE_DAYS=30
-    fi
-
-    # GHOSTLINK_SESSION_MAX_BYTES: cap sessions.json size (default 20MB in Rust).
-    # Set explicitly for documentation; prevents unbounded growth.
-    if [ -z "${GHOSTLINK_SESSION_MAX_BYTES:-}" ]; then
-        export GHOSTLINK_SESSION_MAX_BYTES=20000000
-    fi
-
-    # GHOSTLINK_TCP_AUTOTUNE_TOKENS: number of tokens to use when auto-tuning
-    # TCP max_inflight. Default 64 in Rust; FLOW_PERF_TUNING.json measured
-    # 256 as optimal (262k tok/s vs 165k at 128, 188k at 512).
-    if [ -z "${GHOSTLINK_TCP_AUTOTUNE_TOKENS:-}" ]; then
-        export GHOSTLINK_TCP_AUTOTUNE_TOKENS=256
     fi
 
     local LOGICAL_CORES
@@ -1322,14 +1279,13 @@ start_services() {
         fi
         export GHOSTLINK_LLAMA_SERVER_ARGS="${GHOSTLINK_LLAMA_SERVER_ARGS:-${LLAMA_PERF_ARGS[*]}}"
 
-        # mlock only when RAM is plentiful (avoids thrash on 16–32GB hosts under load).
-        # Auto-enable when >= 24GB, matching native_engine.rs's own heuristic.
+        # mlock only when RAM is plentiful (avoids thrash on 16–32GB hosts under load)
         if [ "${GHOSTLINK_MLOCK:-}" = "1" ]; then
             MLOCK_FLAG="--mlock"
         elif [ "${GHOSTLINK_MLOCK:-}" = "0" ]; then
             MLOCK_FLAG=""
-        elif [ "${TOTAL_RAM_GB:-0}" -ge 24 ] 2>/dev/null; then
-            MLOCK_FLAG="--mlock"
+        elif [ "$TOTAL_RAM_GB" -lt 24 ] 2>/dev/null; then
+            MLOCK_FLAG=""
         fi
 
         echo -e "  ${DIM}Model: ${MODEL_ALIAS}${NC}"
@@ -1350,7 +1306,7 @@ start_services() {
             --host 127.0.0.1 --port "$LLAMA_PORT" \
             -c "$CTX_SIZE" \
             -ngl "$LLAMA_NGL" \
-            -np "${GHOSTLINK_PARALLEL_SLOTS:-1}" \
+            -np 1 \
             -t "$THREADS" \
             "${LLAMA_PERF_ARGS[@]}" \
             $MLOCK_FLAG \
