@@ -305,9 +305,9 @@ pub fn search(
         })
         .collect();
 
-    // Stable ordering: score desc, then most recently updated, then id, so
-    // equal-score results don't reshuffle between identical queries.
-    hits.sort_by(|a, b| {
+    // Total ordering: score desc, then most recently updated, then id.
+    // OPTIMIZATION: Unstable sorting avoids scratch buffer allocations and stability tracking overhead.
+    hits.sort_unstable_by(|a, b| {
         b.score
             .partial_cmp(&a.score)
             .unwrap_or(std::cmp::Ordering::Equal)

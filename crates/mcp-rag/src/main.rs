@@ -255,7 +255,8 @@ fn rank<'a>(
     } else if top_k == 0 {
         scored.clear();
     }
-    scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+    // OPTIMIZATION: Unstable sorting avoids scratch buffer allocations and stability tracking overhead.
+    scored.sort_unstable_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
     scored
 }
 

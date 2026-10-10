@@ -214,7 +214,8 @@ fn percentiles_ms(samples: &VecDeque<f32>) -> (f32, f32) {
         return (0.0, 0.0);
     }
     let mut sorted: Vec<f32> = samples.iter().copied().collect();
-    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    // OPTIMIZATION: Unstable sorting avoids scratch buffer allocations and stability tracking overhead.
+    sorted.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     let p50 = percentile_sorted(&sorted, 0.50);
     let p95 = percentile_sorted(&sorted, 0.95);
     (p50, p95)
