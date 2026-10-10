@@ -6,6 +6,16 @@ All notable changes to Ghostlink Studio are documented here.
 
 ## [Unreleased]
 
+### Added
+- **Launcher env defaults** (`launch.sh`, `launch-native.ps1`): Both launchers now set inference environment variables that were previously documented but never assigned, or never set at all:
+  - `GHOSTLINK_FIRST_TOKEN_TIMEOUT_SECS=120` — raised from the 30s default. Measured on the Windows reference host with Qwen3.8-27B-UD-IQ3_S at ngl -1: cold prompt ~9.2s, via control-plane ~10.1s. The 30s default fired on a real request during testing (a model swap left llama-server answering 503 while reloading). 120s leaves ~12x headroom. Previously only set in `launch-native.ps1`; now also in `launch.sh`.
+  - `GHOSTLINK_PARALLEL_SLOTS` — enables per-session slot pinning (PR #468). Without this, llama-server runs with `-np 1` and slot pinning is a no-op. Set to 2 for ≥16GB VRAM, 4 for ≥32GB, 1 otherwise. `launch.sh` now passes `-np "${GHOSTLINK_PARALLEL_SLOTS:-1}"` to llama-server instead of the hardcoded `-np 1`.
+  - `GHOSTLINK_SESSION_MAX_AGE_DAYS=30` — enables session pruning (PR #468). Without this, `sessions.json` grows unbounded.
+  - `GHOSTLINK_MLOCK` — auto-enabled when ≥24GB RAM in both launchers, matching `native_engine.rs`'s own heuristic. Previously `launch.sh` only read the env var but never set it.
+  - `GHOSTLINK_VRAM_GB=8` and `GHOSTLINK_LLAMA_NGL=-1` in `launch-native.ps1` — these values were documented in a comment block as measured tuning (2.3x throughput improvement from 4GB→8GB VRAM tier, 1.4x from ngl -1) but the actual assignments were never written. Now they are.
+  - `Qwen3.8-27B-UD-IQ3_S.gguf` added to `launch.sh`'s model resolution list — the 27B model the Windows launcher was tuned with was missing from the default candidates.
+  - All env vars are only set when unset, so explicit overrides from the caller always win.
+
 ### Fixed
 - **Tool schemas no longer cost ~3,800 prompt tokens on every request.** `build_tool_instructions` inlined every enabled tool's complete JSON input schema into the prompt prefix, and that prefix is prepended to *every* turn (`format!("{tool_instructions}Question: {user_message}")`). Measured by proxying real request bodies: a five-word question produced a **17,149-character** user message and **3,814 prompt tokens**, of which ~3,700 were the tool catalog — about 13 seconds of prefill at the measured rate before the model read the question.
 
