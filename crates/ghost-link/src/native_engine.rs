@@ -1383,11 +1383,6 @@ impl NativeEngineClient {
     /// ```text
     /// -m models/Qwen3.8-27B-UD-IQ3_S.gguf -c 4096 -np 1 -ngl 0 -t 15
     /// ```
-    ///
-    /// Three of four explicit settings were overridden by the model-size branches in
-    /// `get_ngl`/`get_ctx_size`/`get_threads`, with nothing logged. A user reading
-    /// `settings.json` would have no way to tell. The overrides themselves are
-
     pub fn load_model_into_slot(
         &self,
         model_path: &str,
@@ -2620,7 +2615,9 @@ fn extract_generation_text(stdout: &str, stderr: &str, prompt: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{describe_tuning, parse_prompt_timings, NativeChatEvent, NativeEngineClient, PromptTimings};
+    use super::{
+        describe_tuning, parse_prompt_timings, NativeChatEvent, NativeEngineClient, PromptTimings,
+    };
     use std::sync::{Mutex, OnceLock};
 
     fn env_lock() -> &'static Mutex<()> {
