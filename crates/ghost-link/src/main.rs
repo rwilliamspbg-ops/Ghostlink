@@ -3186,6 +3186,35 @@ struct NativeToolLoopOutcome {
 enum NativeLoopStep {
     Done(NativeToolLoopOutcome),
     NeedsConfirmation(Box<PendingToolCall>),
+    /// The turn was cancelled mid-flight (`POST /api/sessions/:id/cancel`).
+    ///
+    /// Carries the tool results produced before the stop, so the trace and the client
+    /// still see what actually ran -- a cancelled turn is not the same as a turn that
+    /// did nothing, and the difference matters to anyone auditing it.
+    Cancelled {
+        tool_results: Vec<ToolResult>,
+    },
+}
+
+/// Runs `fut`, returning `None` if the session is cancelled first.
+///
+/// The tool loop generates a whole step before it can look at the result, so checking
+/// the token only *between* steps would leave the longest part of the turn -- the
+/// generation itself -- uninterruptible. Racing the future is what makes the stop take
+/// effect during generation rather than after it: dropping the future drops the
+/// underlying request, which closes the connection.
+async fn generate_or_cancel<F, T>(
+    cancel_token: &tokio_util::sync::CancellationToken,
+    fut: F,
+) -> Option<T>
+where
+    F: std::future::Future<Output = T>,
+{
+    tokio::select! {
+        biased;
+        _ = cancel_token.cancelled() => None,
+        out = fut => Some(out),
+    }
 }
 
 /// Model-agnostic tool calling for the Native (llama-server) engine: injects
@@ -3224,6 +3253,7 @@ async fn native_tool_loop_core(
     mut scratchpad: String,
     mut tool_results: Vec<ToolResult>,
     iterations_left: usize,
+    cancel_token: &tokio_util::sync::CancellationToken,
 ) -> NativeLoopStep {
     let tool_map: std::collections::HashMap<&str, &mcp::McpToolSchema> =
         tools.iter().map(|t| (t.name.as_str(), t)).collect();
@@ -3239,6 +3269,11 @@ async fn native_tool_loop_core(
     ));
 
     while budget.begin_step() {
+        // Checked before each step, so a cancel arriving between steps does not start
+        // another generation. The in-flight case is handled by the race below.
+        if cancel_token.is_cancelled() {
+            return NativeLoopStep::Cancelled { tool_results };
+        }
         let prompt = format!("{tool_instructions}Question: {user_message}\n{scratchpad}");
 
         // Wall-clock backstop for the whole turn. The engine layers already have
@@ -3246,28 +3281,32 @@ async fn native_tool_loop_core(
         // of several steps, which those cannot see.
         let gen_result = match agent::turn_timeout() {
             Some(limit) => {
-                match tokio::time::timeout(
-                    limit,
-                    native_engine_client.generate(
-                        model,
-                        &prompt,
-                        exec_tokens,
-                        temp,
-                        top_p,
-                        top_k,
-                        penalty,
-                        native_engine,
-                        history,
-                        None,
-                        None,
-                        false,
-                        None,
+                match generate_or_cancel(
+                    cancel_token,
+                    tokio::time::timeout(
+                        limit,
+                        native_engine_client.generate(
+                            model,
+                            &prompt,
+                            exec_tokens,
+                            temp,
+                            top_p,
+                            top_k,
+                            penalty,
+                            native_engine,
+                            history,
+                            None,
+                            None,
+                            false,
+                            None,
+                        ),
                     ),
                 )
                 .await
                 {
-                    Ok(result) => result,
-                    Err(_) => {
+                    None => return NativeLoopStep::Cancelled { tool_results },
+                    Some(Ok(result)) => result,
+                    Some(Err(_)) => {
                         // Names the wall clock rather than reusing a budget
                         // exhaustion message: the budget may well have room
                         // left, and saying otherwise would misdirect whoever
@@ -3293,8 +3332,9 @@ async fn native_tool_loop_core(
                 }
             }
             None => {
-                native_engine_client
-                    .generate(
+                match generate_or_cancel(
+                    cancel_token,
+                    native_engine_client.generate(
                         model,
                         &prompt,
                         exec_tokens,
@@ -3308,8 +3348,13 @@ async fn native_tool_loop_core(
                         None,
                         false,
                         None,
-                    )
-                    .await
+                    ),
+                )
+                .await
+                {
+                    None => return NativeLoopStep::Cancelled { tool_results },
+                    Some(result) => result,
+                }
             }
         };
 
@@ -3441,6 +3486,7 @@ async fn run_native_tool_loop(
     native_engine: &str,
     tools: &[mcp::McpToolSchema],
     history: &[(String, String)],
+    cancel_token: &tokio_util::sync::CancellationToken,
 ) -> NativeLoopStep {
     // The capability statement goes first, immediately above the tool list, so the
     // model cannot read the tools without also reading what it may claim. When the
@@ -3466,6 +3512,7 @@ async fn run_native_tool_loop(
         String::new(),
         Vec::new(),
         mcp::toolcall::MAX_TOOL_ITERATIONS,
+        cancel_token,
     )
     .await
 }
@@ -3550,6 +3597,11 @@ async fn resume_native_tool_loop(
         observation
     ));
 
+    // Resuming is a separate request (`/api/tool/confirm`) and `PendingToolCall::Native`
+    // carries no session binding, so this leg cannot be cancelled yet. A fresh token
+    // that is never cancelled keeps the behaviour exactly as it was and makes the gap
+    // explicit rather than pretending resume is covered.
+    let uncancellable = tokio_util::sync::CancellationToken::new();
     native_tool_loop_core(
         native_engine_client,
         mcp_registry,
@@ -3567,6 +3619,7 @@ async fn resume_native_tool_loop(
         scratchpad,
         tool_results_so_far,
         iterations_left,
+        &uncancellable,
     )
     .await
 }
@@ -4535,6 +4588,10 @@ async fn run_scheduled_turn(
             "scheduled turn using the read-only tool default"
         );
     }
+    // A scheduled turn has no session to bind to -- nothing can cancel it from the
+    // sessions API -- so it runs with a token that is never cancelled. Passing a real
+    // one here would mean inventing a session id for a cron job.
+    let scheduled_uncancellable = tokio_util::sync::CancellationToken::new();
     let step = run_native_tool_loop(
         &native_client,
         &mcp_registry,
@@ -4548,6 +4605,7 @@ async fn run_scheduled_turn(
         "",
         &schedule_tools,
         &[],
+        &scheduled_uncancellable,
     )
     .await;
 
@@ -4584,6 +4642,19 @@ async fn run_scheduled_turn(
             scheduler::RunStatus::NeedsApproval("awaiting a tool approval".to_string()),
             false,
         ),
+        NativeLoopStep::Cancelled { tool_results } => {
+            // Unreachable today: the scheduled path runs with a token that is never
+            // cancelled, since a cron job has no session to cancel it from. Handled
+            // explicitly so that giving a schedule a session binding later cannot
+            // silently land on the wrong run status.
+            let read_only = tool_results
+                .iter()
+                .all(|r| !r.result.contains("Approval required"));
+            (
+                scheduler::RunStatus::Failed("turn was cancelled".to_string()),
+                read_only,
+            )
+        }
     }
 }
 
@@ -8512,18 +8583,40 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         State(state): State<Arc<Mutex<BackendState>>>,
         Path(session_id): Path<String>,
     ) -> Json<serde_json::Value> {
+        // Cancel first, and independently of the session record.
+        //
+        // The generation registry is what knows whether something is running;
+        // `backend.sessions` is the GUI's persisted metadata, and a request that
+        // never created a record -- any non-GUI API client -- still has a live
+        // generation. Gating the cancel on the record is how this endpoint came to
+        // do nothing at all for those callers, and to answer "session not found"
+        // about work it had just declined to stop.
+        let generation_cancelled = cancel_session_generation(&session_id);
+
         let mut backend = lock_state(&state);
-        if let Some(session) = backend
+        let session_record_updated = if let Some(session) = backend
             .sessions
             .iter_mut()
             .find(|session| session.id == session_id)
         {
             session.status = "Cancelled".to_string();
             save_persistent_sessions(&mut backend.sessions);
-            Json(serde_json::json!({ "status": "ok", "session_id": session_id, "cancelled": true }))
+            true
         } else {
-            Json(serde_json::json!({ "status": "error", "error": "session not found" }))
-        }
+            false
+        };
+
+        // `cancelled` reports that something was actually stopped or relabelled.
+        // It is false when neither happened, so a caller can tell a real stop from
+        // a request that found nothing -- the distinction this endpoint previously
+        // could not express at all.
+        Json(serde_json::json!({
+            "status": "ok",
+            "session_id": session_id,
+            "cancelled": generation_cancelled || session_record_updated,
+            "generation_cancelled": generation_cancelled,
+            "session_record_updated": session_record_updated
+        }))
     }
 
     async fn handle_get_session_stats(
@@ -11080,6 +11173,9 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         let mut prompt_tps: Option<f32> = None;
         let mut tool_results: Vec<ToolResult> = Vec::new();
         let mut pending_tool_call: Option<PendingToolCallInfo> = None;
+        // Set when the turn stopped because the session was cancelled, so the response
+        // can say so instead of looking like an empty answer.
+        let mut turn_cancelled = false;
 
         let (response_text, real_inference, backend_used) = match inference_backend {
             InferenceEngine::Ollama => {
@@ -11209,6 +11305,13 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                                         let (tx, rx) = tokio::sync::mpsc::channel::<
                                             Result<Event, Infallible>,
                                         >(100);
+                                        // Register this turn as the session's live generation so
+                                        // `POST /api/sessions/:id/cancel` can actually stop it. The guard inside
+                                        // the spawned task clears it however that task ends.
+                                        let (session_generation, session_cancel) =
+                                            register_session_generation(&chat_session_id);
+                                        let session_cleanup_id = chat_session_id.clone();
+
                                         let first_token_timeout_secs = std::env::var(
                                             "GHOSTLINK_FIRST_TOKEN_TIMEOUT_SECS",
                                         )
@@ -11224,7 +11327,24 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                                             // (see `grounding`). Bounded so a runaway
                                             // stream cannot grow this without limit.
                                             let mut accumulated_text = String::new();
+                                            // Dropped however this task ends, so the registration cannot leak.
+                                            let _generation_guard = SessionGenerationGuard {
+                                                session_id: session_cleanup_id,
+                                                generation: session_generation,
+                                            };
                                             loop {
+                                                // Checked before pulling each chunk, so a cancel lands within one token
+                                                // rather than after the whole generation. Dropping `stream` closes the
+                                                // upstream connection, which is what actually stops the backend.
+                                                if session_cancel.is_cancelled() {
+                                                    let _ = tx
+                                                        .send(Ok(Event::default().data(format!(
+                                                            r#"{{"token":"","request_id":"{}","cancelled":true}}"#,
+                                                            request_id_str
+                                                        ))))
+                                                        .await;
+                                                    break;
+                                                }
                                                 let next = if first_token_ms.is_none()
                                                     && first_token_timeout_secs > 0
                                                 {
@@ -11495,6 +11615,15 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                 }
             }
             InferenceEngine::Native if !enabled_tools.is_empty() => {
+                // This arm generates each step with a buffered call, so there is no
+                // stream to drop. The token is raced against each generate inside the
+                // loop instead (see `generate_or_cancel`).
+                let (session_generation, session_cancel) =
+                    register_session_generation(&chat_session_id);
+                let _generation_guard = SessionGenerationGuard {
+                    session_id: chat_session_id.clone(),
+                    generation: session_generation,
+                };
                 let step = run_native_tool_loop(
                     &native_engine_client,
                     &mcp_registry,
@@ -11508,6 +11637,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                     &settings.native_engine,
                     &enabled_tools,
                     &history_turns,
+                    &session_cancel,
                 )
                 .await;
                 match step {
@@ -11529,6 +11659,16 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                         pending_tool_call =
                             Some(stash_pending_tool_call(&pending_tool_calls, *pending).await);
                         (String::new(), true, InferenceEngine::Native.as_str())
+                    }
+                    NativeLoopStep::Cancelled {
+                        tool_results: ran_before_stop,
+                    } => {
+                        // Report what actually ran rather than an empty set: a cancelled
+                        // turn may already have executed tools, and discarding that
+                        // would misreport the turn as having done nothing.
+                        tool_results = ran_before_stop;
+                        turn_cancelled = true;
+                        (String::new(), false, InferenceEngine::Native.as_str())
                     }
                 }
             }
@@ -11563,6 +11703,13 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                         // cold/uncached slot is dominated by prompt prefill.
                         // `0` disables it. No automatic retry — a slow prefill
                         // would just burn the same budget again.
+                        // Register this turn as the session's live generation so
+                        // `POST /api/sessions/:id/cancel` can actually stop it. The guard inside
+                        // the spawned task clears it however that task ends.
+                        let (session_generation, session_cancel) =
+                            register_session_generation(&chat_session_id);
+                        let session_cleanup_id = chat_session_id.clone();
+
                         let first_token_timeout_secs = std::env::var("GHOSTLINK_FIRST_TOKEN_TIMEOUT_SECS")
                             .ok()
                             .and_then(|v| v.parse::<u64>().ok())
@@ -11578,7 +11725,24 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                             // Ollama streaming arm. Bounded so a runaway stream
                             // cannot grow this without limit.
                             let mut accumulated_text = String::new();
+                            // Dropped however this task ends, so the registration cannot leak.
+                            let _generation_guard = SessionGenerationGuard {
+                                session_id: session_cleanup_id,
+                                generation: session_generation,
+                            };
                             loop {
+                                // Checked before pulling each chunk, so a cancel lands within one token
+                                // rather than after the whole generation. Dropping `stream` closes the
+                                // upstream connection, which is what actually stops the backend.
+                                if session_cancel.is_cancelled() {
+                                    let _ = tx
+                                        .send(Ok(Event::default().data(format!(
+                                            r#"{{"token":"","request_id":"{}","cancelled":true}}"#,
+                                            request_id_str
+                                        ))))
+                                        .await;
+                                    break;
+                                }
                                 let next_item = if first_token_ms.is_none()
                                     && first_token_timeout_secs > 0
                                 {
@@ -12069,6 +12233,9 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             // True when the model asserted a completed action with no tool
             // behind it and `response` now carries a server-authored correction.
             "action_claim_corrected": claim_audit.unsupported,
+            // True when the turn stopped because the session was cancelled, so the
+            // client can distinguish a deliberate stop from an empty answer.
+            "cancelled": turn_cancelled,
             "tools_run": tools_run,
             "recalled_memories": recall_outcome.memory_hits,
             "recalled_documents": recall_outcome.rag_hits,
@@ -12151,6 +12318,10 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                     "action_claim_corrected": claim_audit.unsupported,
                     "summarized_history": session_summary.is_some(),
                     "session_title": generated_title,
+                    // The tools-enabled path fakes its token stream from an
+                    // already-complete response, so a cancelled turn arrives here with
+                    // no tokens at all. This flag is how the client learns why.
+                    "cancelled": turn_cancelled,
                 });
                 Ok::<Event, Infallible>(Event::default().data(chunk.to_string()))
             });
@@ -12269,6 +12440,16 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                         pending_tool_call =
                             Some(stash_pending_tool_call(&pending_tool_calls, *next_pending).await);
                         (String::new(), InferenceEngine::Native.as_str())
+                    }
+                    NativeLoopStep::Cancelled {
+                        tool_results: ran_before_stop,
+                    } => {
+                        // Unreachable today: resume runs with a token that is never
+                        // cancelled, because `PendingToolCall::Native` carries no session
+                        // binding. Handled rather than `unreachable!()` so that wiring
+                        // resume to a real session cannot become a panic.
+                        tool_results = ran_before_stop;
+                        ("(cancelled)".to_string(), InferenceEngine::Native.as_str())
                     }
                 }
             }
@@ -15634,6 +15815,83 @@ pub(crate) fn active_backend_registry() -> Arc<backend_registry::BackendRegistry
         .clone()
 }
 
+/// In-flight GUI chat generations, keyed by session id.
+///
+/// `POST /api/sessions/:id/cancel` used to only *relabel* the session: it set
+/// `status = "Cancelled"` and persisted that, while the generation it named ran to
+/// completion. On a local backend that is the expensive kind of wrong -- the machine
+/// stays busy producing tokens nobody will ever read.
+///
+/// The value carries the *generation* number beside the token so a finishing turn can
+/// tell "my turn is still the live one" from "a newer turn for this session has already
+/// registered". Without it, a turn ending would evict the token a later turn had just
+/// installed, and cancellation would silently stop working from then on.
+static ACTIVE_SESSION_GENERATIONS: OnceLock<
+    std::sync::Mutex<HashMap<String, (u64, tokio_util::sync::CancellationToken)>>,
+> = OnceLock::new();
+
+/// Monotonic id handed to each registration, so a stale cleanup cannot evict a newer
+/// turn's token (see `ACTIVE_SESSION_GENERATIONS`).
+static NEXT_SESSION_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+fn active_session_generations(
+) -> &'static std::sync::Mutex<HashMap<String, (u64, tokio_util::sync::CancellationToken)>> {
+    ACTIVE_SESSION_GENERATIONS.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
+}
+
+/// Marks `session_id` as generating, returning the generation id and the token the
+/// streaming task must observe. Registering again for the same session replaces the
+/// previous entry, which is what makes a second turn cancel the second turn.
+fn register_session_generation(session_id: &str) -> (u64, tokio_util::sync::CancellationToken) {
+    let generation = NEXT_SESSION_GENERATION.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    let token = tokio_util::sync::CancellationToken::new();
+    if let Ok(mut guard) = active_session_generations().lock() {
+        guard.insert(session_id.to_string(), (generation, token.clone()));
+    }
+    (generation, token)
+}
+
+/// Clears `session_id`'s registration, but only while it is still *our* generation.
+/// A no-op once a newer turn has taken the slot.
+fn finish_session_generation(session_id: &str, generation: u64) {
+    if let Ok(mut guard) = active_session_generations().lock() {
+        if guard.get(session_id).map(|(g, _)| *g) == Some(generation) {
+            guard.remove(session_id);
+        }
+    }
+}
+
+/// Cancels the live generation for `session_id`, reporting whether one was registered.
+fn cancel_session_generation(session_id: &str) -> bool {
+    let taken = active_session_generations()
+        .lock()
+        .ok()
+        .and_then(|mut guard| guard.remove(session_id));
+
+    match taken {
+        Some((_, token)) => {
+            token.cancel();
+            true
+        }
+        None => false,
+    }
+}
+
+/// Deregisters a session's generation when its streaming task ends, however it ends
+/// (normal completion, `break`, early return, or panic). Cleanup on the success path
+/// matters as much as on the cancel path: without it every session ever used would
+/// keep an entry, and `cancel` would report success for turns that finished long ago.
+struct SessionGenerationGuard {
+    session_id: String,
+    generation: u64,
+}
+
+impl Drop for SessionGenerationGuard {
+    fn drop(&mut self) {
+        finish_session_generation(&self.session_id, self.generation);
+    }
+}
+
 pub(crate) fn active_runtime_switcher() -> runtime_switcher::RuntimeSwitcher {
     ACTIVE_RUNTIME_SWITCHER
         .get_or_init(|| {
@@ -15701,6 +15959,119 @@ mod tests {
         static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
         ENV_LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    // The generation registry is a process-global, so every test below uses its own
+    // session id and none of them shares state with another.
+    #[test]
+    fn cancelling_a_registered_session_cancels_its_token() {
+        let session = "test-cancel-registered";
+        let (generation, token) = register_session_generation(session);
+        assert!(!token.is_cancelled());
+
+        assert!(
+            cancel_session_generation(session),
+            "a registered session must report a cancellation"
+        );
+        assert!(
+            token.is_cancelled(),
+            "the token the streaming task polls must actually be cancelled"
+        );
+        assert!(
+            !cancel_session_generation(session),
+            "the entry is consumed by the cancel, so a second one has nothing to stop"
+        );
+
+        finish_session_generation(session, generation);
+    }
+
+    #[test]
+    fn cancelling_an_idle_session_reports_nothing_to_cancel() {
+        assert!(
+            !cancel_session_generation("test-cancel-idle"),
+            "cancelling a session that is not generating must report false rather than \
+             claim a stop it did not perform"
+        );
+    }
+
+    #[test]
+    fn a_finished_turn_does_not_evict_a_newer_turns_token() {
+        let session = "test-generation-supersede";
+
+        // Turn 1 registers, then turn 2 starts for the same session.
+        let (generation_one, token_one) = register_session_generation(session);
+        let (_generation_two, token_two) = register_session_generation(session);
+
+        // Turn 1 ending must not clear the registration turn 2 just installed --
+        // otherwise cancellation silently stops working after the first turn.
+        finish_session_generation(session, generation_one);
+
+        assert!(
+            cancel_session_generation(session),
+            "turn 1's cleanup evicted turn 2's registration"
+        );
+        assert!(
+            token_two.is_cancelled(),
+            "the cancel must reach the live turn"
+        );
+        assert!(
+            !token_one.is_cancelled(),
+            "turn 1 is not the live turn and must not be the one cancelled"
+        );
+    }
+
+    #[test]
+    fn finishing_a_turn_clears_its_registration() {
+        let session = "test-finish-clears";
+        let (generation, _token) = register_session_generation(session);
+
+        finish_session_generation(session, generation);
+
+        assert!(
+            !cancel_session_generation(session),
+            "a finished turn must not leave an entry behind, or cancel would report \
+             success for work that ended long ago"
+        );
+    }
+
+    // `generate_or_cancel` is what makes the tools-enabled path interruptible: that
+    // path generates each step with a buffered call, so there is no stream to drop.
+    #[tokio::test]
+    async fn generate_or_cancel_returns_none_once_the_token_is_cancelled() {
+        let token = tokio_util::sync::CancellationToken::new();
+        token.cancel();
+
+        let out = generate_or_cancel(&token, async { 7 }).await;
+
+        assert!(out.is_none(), "a cancelled token must abandon the future");
+    }
+
+    #[tokio::test]
+    async fn generate_or_cancel_passes_through_when_not_cancelled() {
+        let token = tokio_util::sync::CancellationToken::new();
+
+        let out = generate_or_cancel(&token, async { 7 }).await;
+
+        assert_eq!(out, Some(7), "an uncancelled token must not interfere");
+    }
+
+    #[tokio::test]
+    async fn generate_or_cancel_abandons_a_future_that_never_completes() {
+        // The case that matters: a buffered generation in flight. If this only worked
+        // for already-ready futures, cancelling mid-generation would do nothing.
+        let token = tokio_util::sync::CancellationToken::new();
+        let canceller = token.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            canceller.cancel();
+        });
+
+        let out = generate_or_cancel(&token, std::future::pending::<u8>()).await;
+
+        assert!(
+            out.is_none(),
+            "a pending future must be abandoned on cancel, not waited out"
+        );
     }
 
     #[test]
