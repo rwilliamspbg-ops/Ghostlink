@@ -652,7 +652,8 @@ pub fn execute_pipeline_with_rebalance_and_measured(
             .pop()
             .unwrap_or_else(|| Vec::with_capacity(payload_len));
         payload.clear();
-        payload.extend((0..payload_len).map(|idx| (batch_idx as f32 * 0.01) + (idx as f32 * 0.0001)));
+        payload
+            .extend((0..payload_len).map(|idx| (batch_idx as f32 * 0.01) + (idx as f32 * 0.0001)));
 
         // Evaluate dynamic rebalance trigger during execution
         if let (Some(trigger), Some(cluster_state), Some(placement)) =
