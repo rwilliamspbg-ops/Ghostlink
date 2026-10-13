@@ -529,6 +529,14 @@ impl NativeEngineClient {
     /// unconditional-16384-if-VRAM=8 behavior) left a 27.6GB host with under
     /// 1GB free — one more allocation away from OOM, not a hypothetical.
     ///
+    /// Re-measured 2026-10-13 (`scripts/ctx_memory_sweep.py`, both size tiers, `-np 2`
+    /// as `settings.json` sets): every cap here is conservative by a wide margin,
+    /// because KV is cheap and linear while the model weights dominate. A 5.78 GB
+    /// model served 65536 ctx with 13.8 GB still free; a 12.11 GB model served
+    /// 32768 with 8.1 GB free. Both tiers were therefore doubled. The caps are
+    /// still not set to the measured ceiling — see the comment on `model_cap`,
+    /// and note that a size-only table cannot see a model's KV cost.
+    ///
     /// Public so the chat path can clamp `conversation_token_limit` against the
     /// context the model is actually running with. The two can disagree -- the
     /// setting is a user preference while this is derived from VRAM and model size
@@ -665,12 +673,33 @@ impl NativeEngineClient {
                     4096
                 }
             })
-            .unwrap_or(8192);
+            // 16384 when `GHOSTLINK_VRAM_GB` is unset -- which is the case for a
+            // direct `ghost-link serve`, the way the reference install runs
+            // (`launch.sh` exports the var, `launch-native.ps1` does not). This
+            // default is what actually binds in practice: `min(vram_tier,
+            // model_cap)` below means a flat 8192 here made every `model_cap`
+            // raise a no-op. Doubled from 8192 on the measurements above.
+            .unwrap_or(16384);
 
+        // Measured 2026-10-13 on the reference host (31.1 GB RAM, ~20 GB free
+        // before load, `-np 2 -fa on -ctk/-ctv q8_0`). Context costs KV cache,
+        // and that cost is linear in ctx: 34.0 KiB/cell for a 5.78 GB
+        // 8-KV-layer model, and flat at 6 MiB for a 12.11 GB sliding-window
+        // model. Measured ceilings were 65536 on the former with 13.8 GB still
+        // free, and 32768 on the latter with 8.1 GB free.
+        //
+        // These values sit well below that ceiling on purpose, and by more than
+        // one step. KV cost is architecture-dependent -- it scales with KV-head
+        // count and layer count, neither of which a file-size table can see --
+        // so a cap raised to the ceiling measured for one model is unsafe for a
+        // model whose KV is several times more expensive per cell. The 13.6 GB
+        // + 16384 case in the doc comment above is exactly that failure, which
+        // is why the >=10 GB cap stays *below* 16384 rather than tracking the
+        // measurement, even though the model actually measured here fit 32768.
         let model_cap = if model_size_gb >= 10.0 {
-            4096
-        } else if model_size_gb >= 5.0 {
             8192
+        } else if model_size_gb >= 5.0 {
+            32768
         } else {
             u32::MAX
         };
@@ -890,6 +919,24 @@ impl NativeEngineClient {
     /// modest speed gain, and at 24GB+ of duplicated weights left a 27.6GB
     /// host under 1GB free. So large models are capped toward CPU-only here,
     /// independent of the VRAM tier, unless `GHOSTLINK_LLAMA_NGL` overrides it.
+    ///
+    /// Re-measured 2026-10-13 on the same hardware (memory-guarded probe: free
+    /// RAM sampled every 10 s with an abort below 2 GB),
+    /// gpt-oss-20b 12.11 GB, ctx 4096, offload proven from `-lv 5` rather than
+    /// inferred from the flag). Full offload (`-ngl -1`, `offloaded 25/25 layers`,
+    /// 11027 MiB projected onto the device) gave **2.05x prefill and 0.31x
+    /// decode** -- 84.2 / 4.61 tok/s against 41.1 / 14.65 CPU-only. Partial
+    /// offload (24/25) had the same shape at 1.95x / 0.33x. So the cutoff rests
+    /// on a decode regression, and that is the reason to keep it: an offloaded
+    /// large model looks faster on prefill and is three times slower on the
+    /// token-by-token path a user actually waits on.
+    ///
+    /// The memory profile did not reproduce as a *doubling* on that model: free
+    /// RAM fell 20.9 -> 8.6 GB, i.e. ~12.3 GB for a 12.11 GB model, with a
+    /// 11027 MiB device projection (~0.91x). The 13.6 GB figures above are
+    /// committed rather than free-RAM deltas and were not re-tested here, so this
+    /// does not overturn them -- but "the device buffer doubles the footprint" is
+    /// not what this build did for the model that was measured.
     /// Available system RAM and the rough amount a GPU-offloaded load of this model
     /// needs, or `None` when it cannot be determined.
     ///
@@ -3214,8 +3261,8 @@ mod tests {
         // under 1GB free RAM. Large models must get a much smaller ceiling
         // than the VRAM tier alone would grant, since KV cache and model
         // weights share the same finite memory on a unified-memory iGPU.
-        assert_eq!(NativeEngineClient::get_ctx_size(13.6), 4096);
-        assert_eq!(NativeEngineClient::get_ctx_size(10.0), 4096);
+        assert_eq!(NativeEngineClient::get_ctx_size(13.6), 8192);
+        assert_eq!(NativeEngineClient::get_ctx_size(10.0), 8192);
         // Mid-size: capped, but less aggressively.
         assert_eq!(NativeEngineClient::get_ctx_size(7.0), 8192);
         assert_eq!(NativeEngineClient::get_ctx_size(5.0), 8192);
@@ -3240,13 +3287,16 @@ mod tests {
     }
 
     #[test]
-    fn get_ctx_size_defaults_to_8192_without_vram_env_var() {
+    fn get_ctx_size_defaults_without_vram_env_var() {
         let _guard = env_lock().lock().expect("env lock poisoned");
         std::env::remove_var("GHOSTLINK_CTX_SIZE");
         std::env::remove_var("GHOSTLINK_VRAM_GB");
 
-        assert_eq!(NativeEngineClient::get_ctx_size(0.6), 8192);
-        assert_eq!(NativeEngineClient::get_ctx_size(13.6), 4096);
+        // Unset VRAM falls to the flat 16384 tier, which is what binds for a
+        // direct `ghost-link serve`; a large model is still pulled down by its
+        // own cap, and stays below the 16384 that OOM'd a 13.6 GB model.
+        assert_eq!(NativeEngineClient::get_ctx_size(0.6), 16384);
+        assert_eq!(NativeEngineClient::get_ctx_size(13.6), 8192);
     }
 
     #[test]
@@ -3809,7 +3859,7 @@ mod tests {
     #[test]
     fn describe_tuning_names_a_setting_the_policy_overrode() {
         // The defect this exists for: settings.json asked for ctx 131072 / ngl 100 and
-        // llama-server was launched with -c 4096 -ngl 0, with nothing logged.
+        // llama-server was launched with -c 8192 -ngl 0, with nothing logged.
         let _guard = env_lock().lock().expect("env lock poisoned");
         for v in [
             "GHOSTLINK_CTX_SIZE",
@@ -3824,15 +3874,15 @@ mod tests {
         // `settings.json` carries `ctx_size: 131072` and `ngl: 100` alongside
         // `ctx_size_auto: true` / `ngl_auto: true`, so `apply_native_engine_tuning_env`
         // never exports them and the getters fall through to the model-size policy --
-        // which is how the server was launched with `-c 4096 -ngl 0` and nothing logged.
+        // which is how the server was launched with `-c 8192 -ngl 0` and nothing logged.
         //
         // Setting the env vars directly would *win*, because the getters read them first.
         // So the override only ever happens through the auto path, which is exactly the
         // path that was silent.
         let line = describe_tuning(12.0);
         assert!(
-            line.contains("-c 4096"),
-            "a 12 GB model must cap ctx at 4096: {line}"
+            line.contains("-c 8192"),
+            "a 12 GB model must cap ctx at 8192: {line}"
         );
         assert!(
             line.contains("-ngl 0"),
@@ -3899,7 +3949,7 @@ mod tests {
     #[test]
     fn describe_tuning_reports_the_policy_choice_when_nothing_was_requested() {
         // With the env unset, the model-size policy decides. On this hardware a 12 GB
-        // model is capped at 4096 ctx and forced CPU-only, and that is what must be shown.
+        // model is capped at 8192 ctx and forced CPU-only, and that is what must be shown.
         let _guard = env_lock().lock().expect("env lock poisoned");
         for v in [
             "GHOSTLINK_CTX_SIZE",
@@ -3911,8 +3961,8 @@ mod tests {
         }
         let line = crate::native_engine::describe_tuning(12.0);
         assert!(
-            line.contains("-c 4096"),
-            "a 12 GB model caps ctx at 4096: {line}"
+            line.contains("-c 8192"),
+            "a 12 GB model caps ctx at 8192: {line}"
         );
         assert!(
             line.contains("-ngl 0"),

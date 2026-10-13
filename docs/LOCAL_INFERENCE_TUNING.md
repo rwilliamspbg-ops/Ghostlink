@@ -10,7 +10,7 @@ native engine (`native_engine.rs`) now enable:
 
 | Knob | Flag | Default (VRAM-scaled) |
 |------|------|------------------------|
-| Context size | `-c` | **8192** on 8GB, up to 32768 on 16GB+ (never model default 128k); further capped down for large (≥10GB) models regardless of VRAM tier — see [GPU offload and large models](#gpu-offload-and-large-models--read-this-before-setting--ngl--1-on-an-igpu) below, and `GHOSTLINK_CTX_SIZE`/`GHOSTLINK_VRAM_GB` in `native_engine::get_ctx_size` |
+| Context size | `-c` | **16384** when `GHOSTLINK_VRAM_GB` is unset, else **8192** on 8GB up to 32768 on 16GB+ (never the model default 128k); further capped down for large (≥10GB) models regardless of VRAM tier — see [GPU offload and large models](#gpu-offload-and-large-models--read-this-before-setting--ngl--1-on-an-igpu) below, and `GHOSTLINK_CTX_SIZE`/`GHOSTLINK_VRAM_GB` in `native_engine::get_ctx_size` |
 | KV cache type | `-ctk/-ctv q8_0` | compact KV (~2× less cache memory) |
 | Flash Attention | `-fa on` | always on (requires value on current llama.cpp) |
 | Batch size | `-b` | 2048 (≥12GB) / 1024 (≥8GB) / 512 (else) |
@@ -91,7 +91,7 @@ set.
 ### Context length is capped by the same device-local heap as `-ngl -1`, not just system RAM
 
 Measured directly on the reference hardware (AMD Radeon 860M, Vulkan
-backend, Qwen3-Coder-30B-A3B-Instruct-Q3_K_L, `-ngl -1`): raising `-c`
+backend, Qwen3-Coder-30B-A3B-Instruct-Q3_K_L, **`-ngl -1`**): raising `-c`
 past its auto-tiered default (4096 for this model) fails to load —
 `ggml_vulkan: Device memory allocation ... failed: ErrorOutOfDeviceMemory`
 — even from `+25%` (5120) and even with **9.6GB of general system RAM
@@ -102,6 +102,14 @@ regardless of how much ordinary RAM is free. Tried at three KV cache
 types (`q8_0`, `q4_0`, and the auto-retry's unquantized `f16` fallback)
 — all failed identically, confirming it's the extra allocation itself,
 not which quant it's made of.
+
+Note the `-ngl -1` in that measurement, because it is load-bearing: it is the
+configuration the failure belongs to, and it is *not* the one the policy picks for
+these models — `get_ngl` forces `-ngl 0` for anything ≥10 GB (see the decode
+regression documented in `native_engine::get_ngl`). CPU-only, the constraint is
+system RAM rather than the device heap, and the same 12.11 GB model served 32768
+ctx with 8.1 GB free. So this failure bounds the `-ngl -1` case; it does not
+bound the `-ngl 0` case that actually runs.
 
 Practical takeaway: on this class of hardware, full GPU offload and a
 context window bigger than the auto-tiered default are mutually
@@ -195,64 +203,91 @@ already being computed on every probe and never consulted.
 
 ## 1b. The context ceiling dominates long conversations
 
-`get_ctx_size` caps context by model size, independently of the VRAM tier:
+`get_ctx_size` caps context by model size, independently of the VRAM tier. Note
+that the result is `min(vram_tier, model_cap)`, and when `GHOSTLINK_VRAM_GB` is
+unset — a direct `ghost-link serve`, which is how this install runs — the flat
+tier (16384) is what binds:
 
-| model size | ctx granted | turns of ~500 tokens |
-|---|---|---|
-| under 5 GB | 8192 | ~16 |
-| 5-10 GB | 8192 | ~16 |
-| 10 GB and over | **4096** | **~8** |
+| model size | `model_cap` | ctx granted (VRAM unset) | turns of ~500 tokens |
+|---|---|---|---|
+| under 5 GB | none | 16384 | ~32 |
+| 5-10 GB | 32768 | 16384 | ~32 |
+| 10 GB and over | **8192** | **8192** | **~16** |
 
-Measured on this project's reference hardware, where the configured model is 12 GB and
-therefore gets 4096. That is barely more than the 4 turns the sliding window protects as a
-floor, so long conversations start losing turns quickly **even though the window is
-working correctly** -- the window is bounded by a ceiling it cannot see.
+Measured on this project's reference hardware, where the configured model is
+5.4 GiB and therefore gets 16384 — 4096 per slot at the `-np 2` that
+`settings.json` sets.
 
 This is separate from model choice. A faster model does not help if the context is capped,
 and a larger context does not help if the model cannot be loaded at all (see
 `scripts/model_survey.py`, which records that both models over 10 GB currently fail to
 start on this device).
 
-Unlike `get_ngl`, the `model_cap` table carries no measurement or comment explaining where
-4096 came from. It is a plausible-looking constant. `GHOSTLINK_CTX_SIZE` overrides it, but
-only when `ctx_size_auto` is false -- and a non-default value with `ctx_size_auto: true`
-looks configured while doing nothing, which is what the `[perf-tier] IGNORED` line at model
-load now reports.
+Unlike `get_ngl`, the `model_cap` table used to carry no measurement or comment
+explaining where 4096 came from — a plausible-looking constant. It now does; see
+the re-measurement below. `GHOSTLINK_CTX_SIZE` still overrides it, but only when
+`ctx_size_auto` is false — and a non-default value with `ctx_size_auto: true`
+looks configured while doing nothing, which is what the `[perf-tier] IGNORED`
+line at model load reports.
 
-### Measured: the 4096 cap is stricter than the hardware requires
+### Measured: both caps were stricter than the hardware requires
 
-`scripts/ctx_sweep.py` sweeps context size against the real model on the reference
-hardware (Qwen3.8-27B-UD-IQ3_S, 12.04 GB, `-ngl 0`, 16.4 GB Vulkan, threads=8):
+`scripts/ctx_sweep.py` (throughput) and `scripts/ctx_memory_sweep.py` (memory, the
+axis a context cap actually guards) on the reference hardware, `-np 2` and
+`-fa on -ctk/-ctv q8_0`:
+
+| model | `-ngl` | cap | served | KV cost | free RAM after load |
+|---|---|---|---|---|---|
+| Qwen3.8-9B, 5.78 GB | -1 | 8192 | **65536** | 34.0 KiB/cell, linear | 13.8 GB |
+| gpt-oss-20b, 12.11 GB | 0 | 4096 | **32768** | 6 MiB, **flat** (sliding window) | 8.1 GB |
+
+Throughput barely moves over that range: 10x the context cost ~5-7% on the 9B
+and ~0% on the 12 GB model. So neither cap was protecting throughput.
+
+### The size tier cannot see KV cost, and that is why the caps stay conservative
+
+The same sweep run earlier against a *dense* 12.04 GB model failed outright:
 
 | ctx | outcome |
 |---|---|
 | 4096 | usable -- 124s load, 17.2 prefill, 1.95 decode |
 | 8192 | usable -- 122s load, 17.1 prefill, 1.95 decode (1.00x decode) |
-| 9216 | usable -- 122s load, 17.0 prefill, 1.97 decode |
 | 10240 | usable -- 120s load, 17.3 prefill, 1.97 decode |
 | 12288 | never serves |
 | 14336 | never serves |
-| 16332 | serves requests, then fails in `decode()` when the KV cache fills |
 
-Doubling 4096 to 8192 costs **nothing measurable** -- same load time, 1.00x decode, 0.99x
-prefill. On this hardware the cap discards context that fits.
+Two models of ~12 GB, in the same tier, with ceilings **2.7x apart** — 12288
+versus 32768 — because one is dense and one uses sliding-window attention, so
+their KV costs differ by orders of magnitude. Repeat sweeps also disagreed at the
+same size on the dense model (`8192: 1 of 2 trials usable`), with
+`vk::Device::allocateMemory: ErrorOutOfDeviceMemory` on a shared iGPU.
 
-### But the boundary is not clean, and that is the more useful result
+That is the whole argument for not tracking the measurement: **a file-size table
+cannot see a model's KV cost.** A cap raised to the ceiling measured for one model
+is unsafe for a model whose KV is several times more expensive per cell, and the
+documented OOM — a 13.6 GB model at 16384 ctx leaving a 27.6 GB host under 1 GB
+free — is exactly that case.
 
-Repeat sweeps disagreed at the same size:
+So the caps were doubled rather than maximised, and the `>=10 GB` cap stays
+*below* the 16384 that OOM'd:
 
-```text
-    ctx  8192    1 of 2 trials usable
-    ctx 10240    1 of 2 trials usable
-```
+| tier | before | after | measured ceiling |
+|---|---|---|---|
+| VRAM unset (flat tier) | 8192 | **16384** | — |
+| `model_cap` 5-10 GB | 8192 | **32768** | 65536 |
+| `model_cap` >=10 GB | 4096 | **8192** | 32768 |
 
-Failures are `vk::Device::allocateMemory: ErrorOutOfDeviceMemory` on a 16.4 GB iGPU
-shared with the OS, the GUI and llama.cpp itself. The same context size gives different
-outcomes on different runs, so **a single sweep cannot establish a safe maximum.**
+Raising `model_cap` alone would have changed nothing in practice: the result is
+`min(vram_tier, model_cap)`, so the flat 8192 tier was the binding value for every
+model. Both had to move together.
 
-That is why 4096 may still be the right conservative default even though 8192 fits. What
-the sweep establishes is narrower and more useful: 4096 is not a *hardware* limit, it is a
-policy constant that had never been checked against one.
+### Closing the gap properly needs the model's KV dimensions
+
+The honest fix is to derive ctx from available memory and the model's actual KV
+bytes/token, read from the GGUF header (`n_layer`, `n_head_kv`, head dim) before
+launch — the codebase currently reads only `fs::metadata` file size, so that is
+new machinery, not a constant. Until then the tier is a size proxy, and it is
+deliberately loose rather than tight.
 
 ## 1. Prompt processing / ingestion
 
