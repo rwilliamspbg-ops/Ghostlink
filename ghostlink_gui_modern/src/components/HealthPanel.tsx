@@ -110,7 +110,7 @@ export const HealthPanel: React.FC<HealthPanelProps> = ({ api, onNavigateToTab }
       <div className="flex items-center justify-between border-b border-slate-800 pb-4">
         <div className="flex items-center gap-3">
           <div className={`p-2 rounded-xl ${isAllHealthy ? 'bg-green-500/10 text-green-400' : 'bg-amber-500/10 text-amber-400'}`}>
-            {isAllHealthy ? <CheckCircle2 size={24} /> : <AlertTriangle size={24} />}
+            {isAllHealthy ? <CheckCircle2 size={24} aria-hidden="true" /> : <AlertTriangle size={24} aria-hidden="true" />}
           </div>
           <div>
             <h2 className="text-xl font-bold text-white">System Health & Recovery</h2>
@@ -136,7 +136,7 @@ export const HealthPanel: React.FC<HealthPanelProps> = ({ api, onNavigateToTab }
         <div className="p-4 bg-slate-950/60 rounded-xl border border-slate-800 flex flex-col justify-between">
           <div className="flex items-center justify-between mb-2">
             <div className="flex items-center gap-2 text-slate-300 font-bold text-sm">
-              <Server size={16} className="text-blue-400" /> Control-plane Gateway
+              <Server size={16} className="text-blue-400" aria-hidden="true" /> Control-plane Gateway
             </div>
             <span className="text-[10px] font-mono text-slate-500">:8000</span>
           </div>
@@ -145,15 +145,15 @@ export const HealthPanel: React.FC<HealthPanelProps> = ({ api, onNavigateToTab }
               <span className="text-xs text-slate-400 font-mono">Checking...</span>
             ) : controlPlaneStatus === 'healthy' ? (
               <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-bold bg-green-500/10 text-green-400 border border-green-500/20">
-                <CheckCircle2 size={12} /> Reachable
+                <CheckCircle2 size={12} aria-hidden="true" /> Reachable
               </span>
             ) : controlPlaneStatus === 'unauthorized' ? (
               <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-bold bg-amber-500/10 text-amber-400 border border-amber-500/20">
-                <ShieldAlert size={12} /> 401 Unauthorized
+                <ShieldAlert size={12} aria-hidden="true" /> 401 Unauthorized
               </span>
             ) : (
               <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-bold bg-red-500/10 text-red-400 border border-red-500/20">
-                <AlertTriangle size={12} /> Process Offline / Unreachable
+                <AlertTriangle size={12} aria-hidden="true" /> Process Offline / Unreachable
               </span>
             )}
           </div>
@@ -163,7 +163,7 @@ export const HealthPanel: React.FC<HealthPanelProps> = ({ api, onNavigateToTab }
         <div className="p-4 bg-slate-950/60 rounded-xl border border-slate-800 flex flex-col justify-between">
           <div className="flex items-center justify-between mb-2">
             <div className="flex items-center gap-2 text-slate-300 font-bold text-sm">
-              <Cpu size={16} className="text-purple-400" /> Ghostlink API Engine
+              <Cpu size={16} className="text-purple-400" aria-hidden="true" /> Ghostlink API Engine
             </div>
             <span className="text-[10px] font-mono text-slate-500">:8003</span>
           </div>
@@ -172,15 +172,15 @@ export const HealthPanel: React.FC<HealthPanelProps> = ({ api, onNavigateToTab }
               <span className="text-xs text-slate-400 font-mono">Checking...</span>
             ) : internalApiStatus === 'healthy' ? (
               <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-bold bg-green-500/10 text-green-400 border border-green-500/20">
-                <CheckCircle2 size={12} /> Active
+                <CheckCircle2 size={12} aria-hidden="true" /> Active
               </span>
             ) : internalApiStatus === 'unauthorized' ? (
               <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-bold bg-amber-500/10 text-amber-400 border border-amber-500/20">
-                <ShieldAlert size={12} /> 401 Unauthorized
+                <ShieldAlert size={12} aria-hidden="true" /> 401 Unauthorized
               </span>
             ) : (
               <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-bold bg-red-500/10 text-red-400 border border-red-500/20">
-                <AlertTriangle size={12} /> Offline
+                <AlertTriangle size={12} aria-hidden="true" /> Offline
               </span>
             )}
           </div>
@@ -190,7 +190,7 @@ export const HealthPanel: React.FC<HealthPanelProps> = ({ api, onNavigateToTab }
         <div className="p-4 bg-slate-950/60 rounded-xl border border-slate-800 flex flex-col justify-between">
           <div className="flex items-center justify-between mb-2">
             <div className="flex items-center gap-2 text-slate-300 font-bold text-sm">
-              <Layers size={16} className="text-cyan-400" /> Loaded Model
+              <Layers size={16} className="text-cyan-400" aria-hidden="true" /> Loaded Model
             </div>
             <span className="text-[10px] font-mono text-slate-500">:8080</span>
           </div>
@@ -214,7 +214,7 @@ export const HealthPanel: React.FC<HealthPanelProps> = ({ api, onNavigateToTab }
       {(controlPlaneStatus === 'unauthorized' || internalApiStatus === 'unauthorized') && (
         <form onSubmit={handleApplyApiKey} className="p-4 bg-amber-500/5 border border-amber-500/20 rounded-xl space-y-3">
           <div className="flex items-center gap-2 text-amber-400 text-sm font-bold" id="recovery-auth-title">
-            <Key size={16} /> Authentication Recovery (HTTP 401)
+            <Key size={16} aria-hidden="true" /> Authentication Recovery (HTTP 401)
           </div>
           <p className="text-xs text-slate-400" id="recovery-auth-desc">
             The backend rejected requests with 401 Unauthorized. Provide a valid Admin or Operator API key:

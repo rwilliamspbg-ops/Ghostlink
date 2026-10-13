@@ -507,18 +507,26 @@ describe('ChatTab', () => {
       expect(presetSelect).toHaveValue("concise");
     });
 
-    it("renders keyboard-accessible thread item buttons in sidebar", () => {
+    it("renders keyboard-accessible thread item buttons in sidebar with aria-current and title tooltips", () => {
       useAppStore.setState({
         threads: [
           { id: "thread-1", title: "Project Architecture", messages: [], createdAt: Date.now(), updatedAt: Date.now() },
+          { id: "thread-2", title: "Secondary Thread", messages: [], createdAt: Date.now(), updatedAt: Date.now() },
         ],
         activeThreadId: "thread-1",
       });
       const api = createMockApi();
       render(<ChatTab api={api} />);
 
-      const selectBtn = screen.getByRole("button", { name: "Select thread Project Architecture" });
-      expect(selectBtn).toBeInTheDocument();
+      const activeBtn = screen.getByRole("button", { name: "Select thread Project Architecture" });
+      expect(activeBtn).toBeInTheDocument();
+      expect(activeBtn).toHaveAttribute("aria-current", "true");
+      expect(activeBtn).toHaveAttribute("title", "Project Architecture");
+
+      const inactiveBtn = screen.getByRole("button", { name: "Select thread Secondary Thread" });
+      expect(inactiveBtn).toBeInTheDocument();
+      expect(inactiveBtn).not.toHaveAttribute("aria-current");
+      expect(inactiveBtn).toHaveAttribute("title", "Secondary Thread");
 
       const pinBtn = screen.getByRole("button", { name: "Pin thread Project Architecture" });
       expect(pinBtn).toBeInTheDocument();
