@@ -15704,6 +15704,37 @@ mod tests {
     }
 
     #[test]
+    fn load_persistent_models_seeds_nothing_when_the_file_is_absent() {
+        let _guard = env_lock().lock().expect("env lock poisoned");
+
+        // Point at a path that cannot exist, so this exercises the absent-file branch
+        // rather than whatever models.json happens to sit in the CWD.
+        let missing = std::env::temp_dir().join("ghostlink-models-absent-for-test.json");
+        let _ = std::fs::remove_file(&missing);
+        std::env::set_var("GHOSTLINK_MODELS_PATH", &missing);
+
+        let models = load_persistent_models();
+
+        std::env::remove_var("GHOSTLINK_MODELS_PATH");
+
+        // Regression guard for a decision that had none. This used to seed four
+        // placeholders -- meta-llama/Llama-3-8B-Instruct,
+        // mistralai/Mistral-7B-Instruct-v0.2, google/gemma-7b-it and
+        // ghostlink-30b-v1 -- each claiming "Ready"/"Loaded" with no backing file, and
+        // the GUI's name-exact-match merge never reconciled them against a real model,
+        // so they persisted as confusing near-duplicates.
+        //
+        // The code stopped seeding them, but a *stale data file* under
+        // crates/ghost-link/models.json kept the same four entries alive and shipped
+        // them in the published crate, because models_path() defaults to a
+        // CWD-relative "models.json". The file is gone; this pins the code half.
+        assert!(
+            models.is_empty(),
+            "load_persistent_models must not seed placeholders, got: {models:?}"
+        );
+    }
+
+    #[test]
     fn apply_native_engine_tuning_env_leaves_env_untouched_when_every_field_is_auto() {
         let _guard = env_lock().lock().expect("env lock poisoned");
         for var in [
