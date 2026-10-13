@@ -646,13 +646,13 @@ pub fn execute_pipeline_with_rebalance_and_measured(
         let tokens_in_batch = (token_count - batch_start_token).min(micro_batch);
         let payload_len = (tokens_in_batch.max(1) * 16).max(32);
 
+        // OPTIMIZATION: Clear recycled vector and populate elements in a single pass via iterator extend,
+        // avoiding zero-fill initialization overhead from `payload.resize(payload_len, 0.0)`.
         let mut payload = recycler_ring
             .pop()
             .unwrap_or_else(|| Vec::with_capacity(payload_len));
-        payload.resize(payload_len, 0.0);
-        for (idx, val) in payload.iter_mut().enumerate() {
-            *val = (batch_idx as f32 * 0.01) + (idx as f32 * 0.0001);
-        }
+        payload.clear();
+        payload.extend((0..payload_len).map(|idx| (batch_idx as f32 * 0.01) + (idx as f32 * 0.0001)));
 
         // Evaluate dynamic rebalance trigger during execution
         if let (Some(trigger), Some(cluster_state), Some(placement)) =
@@ -988,7 +988,6 @@ fn _read_transport_batch_inner(
             }
             let mut received_tag = [0u8; 32];
             reader.read_exact(&mut received_tag)?;
-            payload_buf.resize(payload_len, 0.0);
             _read_payload(reader, payload_buf, payload_len)?;
 
             let mac = transport_hmac(
@@ -1028,7 +1027,6 @@ fn _read_transport_batch_inner(
     }
 
     // Common path: read payload after auth verification
-    payload_buf.resize(payload_len, 0.0);
     _read_payload(reader, payload_buf, payload_len)?;
 
     Ok(Some(TransportBatch {
@@ -1040,13 +1038,17 @@ fn _read_transport_batch_inner(
 
 fn _read_payload(
     reader: &mut impl Read,
-    payload_buf: &mut [f32],
+    payload_buf: &mut Vec<f32>,
     payload_len: usize,
 ) -> io::Result<()> {
     if payload_len == 0 {
+        payload_buf.clear();
         return Ok(());
     }
+    payload_buf.resize(payload_len, 0.0);
+
     if cfg!(target_endian = "little") {
+        // SAFETY: `payload_buf.resize` ensures all `payload_len` elements are initialized before taking byte slice reference.
         let payload_bytes = unsafe {
             slice::from_raw_parts_mut(
                 payload_buf.as_mut_ptr() as *mut u8,
