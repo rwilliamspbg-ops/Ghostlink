@@ -6,6 +6,8 @@ All notable changes to Ghostlink Studio are documented here.
 
 ## [Unreleased]
 
+## [2.4.0] - 2026-10-13
+
 ### Changed
 - **The context tiers were doubled, from measurement rather than a plausible constant.** `get_ctx_size` capped a 10 GB+ model at 4096 and everything else at 8192, and the table carried no measurement explaining where either value came from. Two things were wrong with it:
   1. **The cap was not the value that bound.** The result is `min(vram_tier, model_cap)`, and when `GHOSTLINK_VRAM_GB` is unset — a direct `ghost-link serve`, which is how this install runs, since `launch.sh` exports the variable but `launch-native.ps1` does not — the flat tier (8192) was the binding value for *every* model. Raising `model_cap` alone would have changed nothing.
