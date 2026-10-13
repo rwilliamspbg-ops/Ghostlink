@@ -3186,6 +3186,35 @@ struct NativeToolLoopOutcome {
 enum NativeLoopStep {
     Done(NativeToolLoopOutcome),
     NeedsConfirmation(Box<PendingToolCall>),
+    /// The turn was cancelled mid-flight (`POST /api/sessions/:id/cancel`).
+    ///
+    /// Carries the tool results produced before the stop, so the trace and the client
+    /// still see what actually ran -- a cancelled turn is not the same as a turn that
+    /// did nothing, and the difference matters to anyone auditing it.
+    Cancelled {
+        tool_results: Vec<ToolResult>,
+    },
+}
+
+/// Runs `fut`, returning `None` if the session is cancelled first.
+///
+/// The tool loop generates a whole step before it can look at the result, so checking
+/// the token only *between* steps would leave the longest part of the turn -- the
+/// generation itself -- uninterruptible. Racing the future is what makes the stop take
+/// effect during generation rather than after it: dropping the future drops the
+/// underlying request, which closes the connection.
+async fn generate_or_cancel<F, T>(
+    cancel_token: &tokio_util::sync::CancellationToken,
+    fut: F,
+) -> Option<T>
+where
+    F: std::future::Future<Output = T>,
+{
+    tokio::select! {
+        biased;
+        _ = cancel_token.cancelled() => None,
+        out = fut => Some(out),
+    }
 }
 
 /// Model-agnostic tool calling for the Native (llama-server) engine: injects
@@ -3224,6 +3253,7 @@ async fn native_tool_loop_core(
     mut scratchpad: String,
     mut tool_results: Vec<ToolResult>,
     iterations_left: usize,
+    cancel_token: &tokio_util::sync::CancellationToken,
 ) -> NativeLoopStep {
     let tool_map: std::collections::HashMap<&str, &mcp::McpToolSchema> =
         tools.iter().map(|t| (t.name.as_str(), t)).collect();
@@ -3239,6 +3269,11 @@ async fn native_tool_loop_core(
     ));
 
     while budget.begin_step() {
+        // Checked before each step, so a cancel arriving between steps does not start
+        // another generation. The in-flight case is handled by the race below.
+        if cancel_token.is_cancelled() {
+            return NativeLoopStep::Cancelled { tool_results };
+        }
         let prompt = format!("{tool_instructions}Question: {user_message}\n{scratchpad}");
 
         // Wall-clock backstop for the whole turn. The engine layers already have
@@ -3246,28 +3281,32 @@ async fn native_tool_loop_core(
         // of several steps, which those cannot see.
         let gen_result = match agent::turn_timeout() {
             Some(limit) => {
-                match tokio::time::timeout(
-                    limit,
-                    native_engine_client.generate(
-                        model,
-                        &prompt,
-                        exec_tokens,
-                        temp,
-                        top_p,
-                        top_k,
-                        penalty,
-                        native_engine,
-                        history,
-                        None,
-                        None,
-                        false,
-                        None,
+                match generate_or_cancel(
+                    cancel_token,
+                    tokio::time::timeout(
+                        limit,
+                        native_engine_client.generate(
+                            model,
+                            &prompt,
+                            exec_tokens,
+                            temp,
+                            top_p,
+                            top_k,
+                            penalty,
+                            native_engine,
+                            history,
+                            None,
+                            None,
+                            false,
+                            None,
+                        ),
                     ),
                 )
                 .await
                 {
-                    Ok(result) => result,
-                    Err(_) => {
+                    None => return NativeLoopStep::Cancelled { tool_results },
+                    Some(Ok(result)) => result,
+                    Some(Err(_)) => {
                         // Names the wall clock rather than reusing a budget
                         // exhaustion message: the budget may well have room
                         // left, and saying otherwise would misdirect whoever
@@ -3293,8 +3332,9 @@ async fn native_tool_loop_core(
                 }
             }
             None => {
-                native_engine_client
-                    .generate(
+                match generate_or_cancel(
+                    cancel_token,
+                    native_engine_client.generate(
                         model,
                         &prompt,
                         exec_tokens,
@@ -3308,8 +3348,13 @@ async fn native_tool_loop_core(
                         None,
                         false,
                         None,
-                    )
-                    .await
+                    ),
+                )
+                .await
+                {
+                    None => return NativeLoopStep::Cancelled { tool_results },
+                    Some(result) => result,
+                }
             }
         };
 
@@ -3441,6 +3486,7 @@ async fn run_native_tool_loop(
     native_engine: &str,
     tools: &[mcp::McpToolSchema],
     history: &[(String, String)],
+    cancel_token: &tokio_util::sync::CancellationToken,
 ) -> NativeLoopStep {
     // The capability statement goes first, immediately above the tool list, so the
     // model cannot read the tools without also reading what it may claim. When the
@@ -3466,6 +3512,7 @@ async fn run_native_tool_loop(
         String::new(),
         Vec::new(),
         mcp::toolcall::MAX_TOOL_ITERATIONS,
+        cancel_token,
     )
     .await
 }
@@ -3550,6 +3597,11 @@ async fn resume_native_tool_loop(
         observation
     ));
 
+    // Resuming is a separate request (`/api/tool/confirm`) and `PendingToolCall::Native`
+    // carries no session binding, so this leg cannot be cancelled yet. A fresh token
+    // that is never cancelled keeps the behaviour exactly as it was and makes the gap
+    // explicit rather than pretending resume is covered.
+    let uncancellable = tokio_util::sync::CancellationToken::new();
     native_tool_loop_core(
         native_engine_client,
         mcp_registry,
@@ -3567,6 +3619,7 @@ async fn resume_native_tool_loop(
         scratchpad,
         tool_results_so_far,
         iterations_left,
+        &uncancellable,
     )
     .await
 }
@@ -4535,6 +4588,10 @@ async fn run_scheduled_turn(
             "scheduled turn using the read-only tool default"
         );
     }
+    // A scheduled turn has no session to bind to -- nothing can cancel it from the
+    // sessions API -- so it runs with a token that is never cancelled. Passing a real
+    // one here would mean inventing a session id for a cron job.
+    let scheduled_uncancellable = tokio_util::sync::CancellationToken::new();
     let step = run_native_tool_loop(
         &native_client,
         &mcp_registry,
@@ -4548,6 +4605,7 @@ async fn run_scheduled_turn(
         "",
         &schedule_tools,
         &[],
+        &scheduled_uncancellable,
     )
     .await;
 
@@ -4584,6 +4642,19 @@ async fn run_scheduled_turn(
             scheduler::RunStatus::NeedsApproval("awaiting a tool approval".to_string()),
             false,
         ),
+        NativeLoopStep::Cancelled { tool_results } => {
+            // Unreachable today: the scheduled path runs with a token that is never
+            // cancelled, since a cron job has no session to cancel it from. Handled
+            // explicitly so that giving a schedule a session binding later cannot
+            // silently land on the wrong run status.
+            let read_only = tool_results
+                .iter()
+                .all(|r| !r.result.contains("Approval required"));
+            (
+                scheduler::RunStatus::Failed("turn was cancelled".to_string()),
+                read_only,
+            )
+        }
     }
 }
 
@@ -11102,6 +11173,9 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         let mut prompt_tps: Option<f32> = None;
         let mut tool_results: Vec<ToolResult> = Vec::new();
         let mut pending_tool_call: Option<PendingToolCallInfo> = None;
+        // Set when the turn stopped because the session was cancelled, so the response
+        // can say so instead of looking like an empty answer.
+        let mut turn_cancelled = false;
 
         let (response_text, real_inference, backend_used) = match inference_backend {
             InferenceEngine::Ollama => {
@@ -11541,6 +11615,15 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                 }
             }
             InferenceEngine::Native if !enabled_tools.is_empty() => {
+                // This arm generates each step with a buffered call, so there is no
+                // stream to drop. The token is raced against each generate inside the
+                // loop instead (see `generate_or_cancel`).
+                let (session_generation, session_cancel) =
+                    register_session_generation(&chat_session_id);
+                let _generation_guard = SessionGenerationGuard {
+                    session_id: chat_session_id.clone(),
+                    generation: session_generation,
+                };
                 let step = run_native_tool_loop(
                     &native_engine_client,
                     &mcp_registry,
@@ -11554,6 +11637,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                     &settings.native_engine,
                     &enabled_tools,
                     &history_turns,
+                    &session_cancel,
                 )
                 .await;
                 match step {
@@ -11575,6 +11659,16 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                         pending_tool_call =
                             Some(stash_pending_tool_call(&pending_tool_calls, *pending).await);
                         (String::new(), true, InferenceEngine::Native.as_str())
+                    }
+                    NativeLoopStep::Cancelled {
+                        tool_results: ran_before_stop,
+                    } => {
+                        // Report what actually ran rather than an empty set: a cancelled
+                        // turn may already have executed tools, and discarding that
+                        // would misreport the turn as having done nothing.
+                        tool_results = ran_before_stop;
+                        turn_cancelled = true;
+                        (String::new(), false, InferenceEngine::Native.as_str())
                     }
                 }
             }
@@ -12139,6 +12233,9 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             // True when the model asserted a completed action with no tool
             // behind it and `response` now carries a server-authored correction.
             "action_claim_corrected": claim_audit.unsupported,
+            // True when the turn stopped because the session was cancelled, so the
+            // client can distinguish a deliberate stop from an empty answer.
+            "cancelled": turn_cancelled,
             "tools_run": tools_run,
             "recalled_memories": recall_outcome.memory_hits,
             "recalled_documents": recall_outcome.rag_hits,
@@ -12221,6 +12318,10 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                     "action_claim_corrected": claim_audit.unsupported,
                     "summarized_history": session_summary.is_some(),
                     "session_title": generated_title,
+                    // The tools-enabled path fakes its token stream from an
+                    // already-complete response, so a cancelled turn arrives here with
+                    // no tokens at all. This flag is how the client learns why.
+                    "cancelled": turn_cancelled,
                 });
                 Ok::<Event, Infallible>(Event::default().data(chunk.to_string()))
             });
@@ -12339,6 +12440,16 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                         pending_tool_call =
                             Some(stash_pending_tool_call(&pending_tool_calls, *next_pending).await);
                         (String::new(), InferenceEngine::Native.as_str())
+                    }
+                    NativeLoopStep::Cancelled {
+                        tool_results: ran_before_stop,
+                    } => {
+                        // Unreachable today: resume runs with a token that is never
+                        // cancelled, because `PendingToolCall::Native` carries no session
+                        // binding. Handled rather than `unreachable!()` so that wiring
+                        // resume to a real session cannot become a panic.
+                        tool_results = ran_before_stop;
+                        ("(cancelled)".to_string(), InferenceEngine::Native.as_str())
                     }
                 }
             }
@@ -15920,6 +16031,46 @@ mod tests {
             !cancel_session_generation(session),
             "a finished turn must not leave an entry behind, or cancel would report \
              success for work that ended long ago"
+        );
+    }
+
+    // `generate_or_cancel` is what makes the tools-enabled path interruptible: that
+    // path generates each step with a buffered call, so there is no stream to drop.
+    #[tokio::test]
+    async fn generate_or_cancel_returns_none_once_the_token_is_cancelled() {
+        let token = tokio_util::sync::CancellationToken::new();
+        token.cancel();
+
+        let out = generate_or_cancel(&token, async { 7 }).await;
+
+        assert!(out.is_none(), "a cancelled token must abandon the future");
+    }
+
+    #[tokio::test]
+    async fn generate_or_cancel_passes_through_when_not_cancelled() {
+        let token = tokio_util::sync::CancellationToken::new();
+
+        let out = generate_or_cancel(&token, async { 7 }).await;
+
+        assert_eq!(out, Some(7), "an uncancelled token must not interfere");
+    }
+
+    #[tokio::test]
+    async fn generate_or_cancel_abandons_a_future_that_never_completes() {
+        // The case that matters: a buffered generation in flight. If this only worked
+        // for already-ready futures, cancelling mid-generation would do nothing.
+        let token = tokio_util::sync::CancellationToken::new();
+        let canceller = token.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            canceller.cancel();
+        });
+
+        let out = generate_or_cancel(&token, std::future::pending::<u8>()).await;
+
+        assert!(
+            out.is_none(),
+            "a pending future must be abandoned on cancel, not waited out"
         );
     }
 
