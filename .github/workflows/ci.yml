@@ -154,7 +154,12 @@ jobs:
         run: cargo publish -p ghostlink-core --dry-run
 
       - name: Dry-run publish ghost-link
-        run: cargo publish -p ghost-link --dry-run
+        # ghost-link depends on ghostlink-core via versioned path dependency.
+        # During normal CI (especially immediately after a release bump), the
+        # matching ghostlink-core crate version may not be available in crates.io
+        # yet, so full publish verification here can fail for reasons unrelated
+        # to manifest correctness.
+        run: cargo publish -p ghost-link --dry-run --no-verify
 
   cargo-deny:
     name: Cargo Deny Check
