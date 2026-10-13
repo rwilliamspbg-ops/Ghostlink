@@ -2869,6 +2869,45 @@ async fn recall_for_turn(
     (block, outcome)
 }
 
+/// The terminal SSE `done` frame for a streamed chat turn.
+///
+/// Carries the same per-turn signal the buffered JSON body returns. The GUI
+/// streams by default (`useStreaming = enabledTools.length === 0`), so without
+/// this the common path cannot tell a recall-backed answer from a plain one, or
+/// a corrected action-claim from a clean reply -- the server computes all of it
+/// and the client has nothing to read.
+///
+/// `session_title` is `None` on every streamed turn by design: title generation
+/// is detached from the response so a 32-token title cannot queue ahead of the
+/// answer on the single llama-server slot. The GUI reads the title from
+/// `GET /api/sessions` or a later turn.
+#[allow(clippy::too_many_arguments)]
+fn stream_done_frame(
+    request_id: &str,
+    session_id: &str,
+    truncated: bool,
+    tools_run: usize,
+    recalled_memories: usize,
+    recalled_documents: usize,
+    action_claim_corrected: bool,
+    summarized_history: bool,
+    session_title: Option<&str>,
+) -> String {
+    serde_json::json!({
+        "done": true,
+        "request_id": request_id,
+        "session_id": session_id,
+        "truncated": truncated,
+        "tools_run": tools_run,
+        "recalled_memories": recalled_memories,
+        "recalled_documents": recalled_documents,
+        "action_claim_corrected": action_claim_corrected,
+        "summarized_history": summarized_history,
+        "session_title": session_title,
+    })
+    .to_string()
+}
+
 /// Merges a recall block into the session summary string handed to the backends.
 ///
 /// Done here rather than as a new parameter on every `generate` call because the
@@ -11281,13 +11320,6 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                                                     }
                                                 }
                                             }
-                                            let _ = tx
-                                                .send(Ok(Event::default().data(format!(
-                                                    r#"{{"done":true,"request_id":"{}","truncated":false}}"#,
-                                                    request_id_str
-                                                ))))
-                                                .await;
-
                                             let elapsed_ms = (stream_started
                                                 .elapsed()
                                                 .as_secs_f32()
@@ -11325,6 +11357,35 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                                                     "streamed reply claimed an action that never ran; correction appended"
                                                 );
                                             }
+
+                                            // The terminal done-chunk is sent
+                                            // *after* the audit above, not
+                                            // before it: a correction frame
+                                            // arriving after `done` would be
+                                            // metadata the client had already
+                                            // stopped collecting.
+                                            //
+                                            // `truncated` is hard `false` on
+                                            // this arm -- Ollama's streaming
+                                            // chunk type carries no
+                                            // finish_reason here, so a length
+                                            // cutoff is not observable on this
+                                            // path. Recorded rather than
+                                            // guessed.
+                                            let done_str = stream_done_frame(
+                                                &request_id_str,
+                                                &chat_session_id,
+                                                false,
+                                                0,
+                                                recall_outcome.memory_hits,
+                                                recall_outcome.rag_hits,
+                                                audit.unsupported,
+                                                session_summary.is_some(),
+                                                None,
+                                            );
+                                            let _ = tx
+                                                .send(Ok(Event::default().data(done_str)))
+                                                .await;
 
                                             let mut backend = lock_state(&state_clone);
                                             if let Some(ttft_ms) = first_token_ms {
@@ -11512,6 +11573,11 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                             let mut accumulated_tokens: u32 = 0;
                             let mut first_token_ms: Option<f32> = None;
                             let mut truncated = false;
+                            // Held so the finalizer can audit the reply (see
+                            // `grounding`), matching the buffered path and the
+                            // Ollama streaming arm. Bounded so a runaway stream
+                            // cannot grow this without limit.
+                            let mut accumulated_text = String::new();
                             loop {
                                 let next_item = if first_token_ms.is_none()
                                     && first_token_timeout_secs > 0
@@ -11555,6 +11621,13 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                                                     .max(0.1),
                                             );
                                         }
+                                        // Only model-generated deltas are
+                                        // accumulated: the `Err` arm below
+                                        // produces our own error text, which
+                                        // must not be audited as a claim.
+                                        if accumulated_text.len() < GROUNDING_AUDIT_MAX_CHARS {
+                                            accumulated_text.push_str(&text);
+                                        }
                                         text
                                     }
                                     Ok(native_engine::NativeChatEvent::Truncated) => {
@@ -11579,12 +11652,53 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                                     break;
                                 }
                             }
+                            // Ground the streamed reply against what actually
+                            // ran, exactly as the buffered path and the Ollama
+                            // streaming arm do. The GUI streams by default
+                            // (`useStreaming = enabledTools.length === 0`), so
+                            // this is the common path -- and it was the one
+                            // path that never ran the audit at all, leaving a
+                            // fabricated action claim on a streamed turn
+                            // uncorrected.
+                            //
+                            // Deliberately before the state lock: the
+                            // `tx.send().await` below would otherwise hold a
+                            // std MutexGuard across an await and make the whole
+                            // task non-Send.
+                            let (_corrected, audit) =
+                                grounding::apply_grounding(&accumulated_text, 0);
+                            if audit.unsupported {
+                                let escaped =
+                                    serde_json::to_string(&grounding::correction_notice(0))
+                                        .unwrap_or_else(|_| String::from("\"\""));
+                                let _ = tx
+                                    .send(Ok(Event::default().data(format!(
+                                        r#"{{"token":{escaped},"request_id":"{}","correction":true}}"#,
+                                        request_id_str
+                                    ))))
+                                    .await;
+                                tracing::warn!(
+                                    target: "assistant_trace",
+                                    session_id = %chat_session_id,
+                                    "streamed reply claimed an action that never ran; correction appended"
+                                );
+                            }
+
                             // Always send a terminal done-chunk so the client
                             // can flush its token buffer and learn the final
                             // truncation state without waiting for a timeout.
-                            let done_str = format!(
-                                r#"{{"done":true,"request_id":"{}","truncated":{}}}"#,
-                                request_id_str, truncated
+                            // `tools_run` is 0 by construction on this arm: it
+                            // is only reached when no tools are enabled.
+                            let done_str = stream_done_frame(
+                                &request_id_str,
+                                &chat_session_id,
+                                truncated,
+                                0,
+                                recall_outcome.memory_hits,
+                                recall_outcome.rag_hits,
+                                audit.unsupported,
+                                session_summary.is_some(),
+                                None,
                             );
                             let _ = tx.send(Ok(Event::default().data(done_str))).await;
                             let elapsed_ms = (stream_started.elapsed().as_secs_f32() * 1000.0).max(0.1);
@@ -17177,5 +17291,77 @@ mod tests {
     fn merge_treats_blank_inputs_as_absent() {
         assert!(merge_recall_into_summary(Some("   "), None).is_none());
         assert!(merge_recall_into_summary(None, Some("  \n ")).is_none());
+    }
+
+    #[test]
+    fn stream_done_frame_carries_the_per_turn_signal() {
+        let frame = stream_done_frame("req-1", "sess-1", true, 3, 2, 1, true, true, None);
+        let v: serde_json::Value = serde_json::from_str(&frame).expect("valid JSON");
+        assert_eq!(v["done"], serde_json::json!(true));
+        assert_eq!(v["request_id"], "req-1");
+        assert_eq!(v["session_id"], "sess-1");
+        assert_eq!(v["truncated"], serde_json::json!(true));
+        assert_eq!(v["tools_run"], serde_json::json!(3));
+        assert_eq!(v["recalled_memories"], serde_json::json!(2));
+        assert_eq!(v["recalled_documents"], serde_json::json!(1));
+        assert_eq!(v["action_claim_corrected"], serde_json::json!(true));
+        assert_eq!(v["summarized_history"], serde_json::json!(true));
+    }
+
+    #[test]
+    fn stream_done_frame_emits_a_null_title_and_false_flags_by_default() {
+        // The GUI reads `session_title` off this frame, so the key must be
+        // present and null -- absent would be indistinguishable from a build
+        // that never sends one.
+        let frame = stream_done_frame("req-2", "sess-2", false, 0, 0, 0, false, false, None);
+        let v: serde_json::Value = serde_json::from_str(&frame).expect("valid JSON");
+        assert!(
+            v.get("session_title").is_some(),
+            "title key must be present"
+        );
+        assert!(v["session_title"].is_null());
+        assert_eq!(v["tools_run"], serde_json::json!(0));
+        assert_eq!(v["truncated"], serde_json::json!(false));
+        assert_eq!(v["action_claim_corrected"], serde_json::json!(false));
+        assert_eq!(v["summarized_history"], serde_json::json!(false));
+    }
+
+    #[test]
+    fn stream_done_frame_carries_a_title_when_one_is_supplied() {
+        let frame = stream_done_frame("r", "s", false, 0, 0, 0, false, false, Some("Auth flow"));
+        let v: serde_json::Value = serde_json::from_str(&frame).expect("valid JSON");
+        assert_eq!(v["session_title"], "Auth flow");
+    }
+
+    #[test]
+    fn stream_done_frame_keys_match_the_buffered_json_body() {
+        // The client spreads this chunk's metadata over the same shape the
+        // buffered body returns (`api.ts` -> `doneMeta`). A field on one path
+        // and not the other is exactly the bug this frame exists to prevent,
+        // so assert the key set rather than field by field.
+        let frame = stream_done_frame("r", "s", false, 0, 0, 0, false, false, None);
+        let v: serde_json::Value = serde_json::from_str(&frame).expect("valid JSON");
+        let mut keys: Vec<&str> = v
+            .as_object()
+            .expect("object")
+            .keys()
+            .map(|k| k.as_str())
+            .collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            vec![
+                "action_claim_corrected",
+                "done",
+                "recalled_documents",
+                "recalled_memories",
+                "request_id",
+                "session_id",
+                "session_title",
+                "summarized_history",
+                "tools_run",
+                "truncated",
+            ]
+        );
     }
 }
