@@ -344,15 +344,17 @@ impl NodeResources {
             .to_string();
         cursor = id_end;
 
-        let vram_end = cursor + 8;
-        if vram_end > len {
-            return Err("payload truncated".into());
-        }
-        // Optimize: Direct slice conversion for primitive float fields without redundant bounds checks or error mapping.
-        let vram_gb = f32::from_le_bytes(payload[cursor..cursor + 4].try_into().unwrap());
+        // Optimize: Extract 8-byte float array in a single bounds check, eliminating separate slice conversions and unwrap branching.
+        let vram_bytes: &[u8; 8] = payload
+            .get(cursor..cursor + 8)
+            .ok_or_else(|| "payload truncated".to_string())?
+            .try_into()
+            .map_err(|_| "payload truncated".to_string())?;
+        let vram_gb =
+            f32::from_le_bytes([vram_bytes[0], vram_bytes[1], vram_bytes[2], vram_bytes[3]]);
         let system_memory_gb =
-            f32::from_le_bytes(payload[cursor + 4..cursor + 8].try_into().unwrap());
-        cursor = vram_end;
+            f32::from_le_bytes([vram_bytes[4], vram_bytes[5], vram_bytes[6], vram_bytes[7]]);
+        cursor += 8;
 
         if cursor >= len {
             return Err("payload truncated".into());
@@ -403,13 +405,9 @@ impl NodeResources {
         // payload from an older peer simply won't have these 2 bytes, which
         // correctly decodes as "no RPC contribution advertised" rather than
         // an error.
-        // Optimize: Use slice try_into for u16 decoding to trigger unaligned single-instruction loads.
+        // Optimize: Direct array indexing avoids Result creation and try_into error mapping on verified bounds.
         let rpc_port = if cursor + 2 <= len {
-            let port = u16::from_le_bytes(
-                payload[cursor..cursor + 2]
-                    .try_into()
-                    .map_err(|_| "rpc_port parsing failed")?,
-            );
+            let port = u16::from_le_bytes([payload[cursor], payload[cursor + 1]]);
             cursor += 2;
             if port == 0 {
                 None
@@ -492,9 +490,9 @@ impl DiscoveryFrame {
                 version: PROTOCOL_VERSION,
                 crc,
             };
-            if let Ok(header_buf) = (&mut buf[..8]).try_into() {
-                header.encode_into(header_buf);
-            }
+            // Optimize: Direct array conversion on guaranteed 8-byte slice avoids Result checking on hot path.
+            let header_buf: &mut [u8; 8] = (&mut buf[..8]).try_into().unwrap();
+            header.encode_into(header_buf);
 
             buf.len()
         } else {
@@ -506,9 +504,8 @@ impl DiscoveryFrame {
                 version: PROTOCOL_VERSION,
                 crc: crc32(&[]),
             };
-            if let Ok(header_buf) = (&mut buf[..8]).try_into() {
-                header.encode_into(header_buf);
-            }
+            let header_buf: &mut [u8; 8] = (&mut buf[..8]).try_into().unwrap();
+            header.encode_into(header_buf);
             buf.len()
         }
     }
