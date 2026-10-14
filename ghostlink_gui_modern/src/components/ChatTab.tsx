@@ -1922,6 +1922,8 @@ const ThreadSidebarItem: React.FC<ThreadItemProps> = ({
       <button
         type="button"
         onClick={onSelect}
+        aria-current={isActive ? "true" : undefined}
+        title={thread.title}
         aria-label={`Select thread ${thread.title}`}
         className={`flex items-center gap-2 min-w-0 flex-1 text-left rounded-lg transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none ${
           isActive ? "text-blue-400 font-semibold" : "text-slate-400 hover:text-slate-200"
