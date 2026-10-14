@@ -111,7 +111,7 @@ name = "duckduckgo"
 # class is still Read, so a rate-limited response is an observation, not an
 # action needing approval.
 slot = "web_search"
-enabled = false
+enabled = true
 transport = "stdio"
 command = "npx"
 args = ["-y", "duckduckgo-mcp-server"]
@@ -138,7 +138,7 @@ name = "playwright"
 # Passing --user-data-dir pointing at a real profile changes that -- see the
 # capability.rs comment before doing so.
 slot = "browser"
-enabled = false
+enabled = true
 transport = "stdio"
 command = "npx"
 args = [
@@ -150,40 +150,6 @@ timeout_secs = 60
 
 [mcp_servers.env]
 
-
-[[mcp_servers]]
-name = "docker-code-execution"
-slot = "code_execution"
-enabled = false
-transport = "stdio"
-command = "docker"
-args = [
-    "mcp",
-    "gateway",
-    "run",
-]
-requires_confirmation = true
-timeout_secs = 30
-
-[mcp_servers.env]
-
-[[mcp_servers]]
-name = "docker-terminal"
-slot = "terminal"
-enabled = false
-transport = "stdio"
-command = "docker"
-args = [
-    "mcp",
-    "gateway",
-    "run",
-]
-requires_confirmation = true
-timeout_secs = 30
-
-[mcp_servers.env]
-
-# --- Standalone additions (no legacy tool slot; addressed by server name) ---
 
 [[mcp_servers]]
 name = "sequential-thinking"
@@ -208,7 +174,7 @@ slot = "vision"
 # Wraps Ghostlink's own local Ollama connection to call a vision-capable model
 # (llava, moondream, bakllava, ...) instead of adding a cloud dependency.
 # Disabled by default: enable once you've `ollama pull`ed a vision model.
-enabled = false
+enabled = true
 transport = "stdio"
 command = "target/release/mcp-vision.exe"
 args = []
@@ -222,7 +188,7 @@ OLLAMA_VISION_MODEL = "llava"
 [[mcp_servers]]
 name = "rag"
 slot = "rag"
-enabled = false
+enabled = true
 transport = "stdio"
 command = "target/release/mcp-rag.exe"
 args = []
@@ -255,7 +221,7 @@ name = "docker-mcp-gateway"
 # a Tools-panel checkbox instead — same pattern as docker-code-execution/
 # docker-terminal above. Disabled by default: requires Docker Desktop running.
 slot = "docker_gateway"
-enabled = false
+enabled = true
 transport = "stdio"
 command = "docker"
 args = ["mcp", "gateway", "run"]
