@@ -120,6 +120,36 @@ timeout_secs = 60
 
 [mcp_servers.env]
 
+[[mcp_servers]]
+name = "playwright"
+# A real local browser -- the keyless way to read pages that need JavaScript, which
+# `duckduckgo` above cannot do. Verified live: 25 tools, no API key, and Chromium is
+# already installed under %LOCALAPPDATA%\ms-playwright.
+#
+# The 25 browser_* tools are classified in capability.rs by what they can reach, not
+# by whether they look like a read: observation (snapshot, find, navigate, network,
+# console, screenshot) is Read; interaction (click, type, fill_form, tabs, ...) is
+# Write; code execution and file exfiltration (evaluate, run_code_unsafe,
+# file_upload, drop) are Exec. So browsing a page needs no approval, while running
+# JavaScript in it does.
+#
+# Runs with an ISOLATED browser profile by default, which is what makes
+# `browser_navigate` a Read: the page carries none of the user's real session cookies.
+# Passing --user-data-dir pointing at a real profile changes that -- see the
+# capability.rs comment before doing so.
+slot = "browser"
+enabled = false
+transport = "stdio"
+command = "npx"
+args = [
+    "-y",
+    "@playwright/mcp@latest",
+]
+requires_confirmation = false
+timeout_secs = 60
+
+[mcp_servers.env]
+
 
 [[mcp_servers]]
 name = "docker-code-execution"
