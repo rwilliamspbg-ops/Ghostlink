@@ -20,6 +20,7 @@ function sessionStatusClasses(status: string): string {
 export const SessionsTab: React.FC<{ api: any }> = ({ api }) => {
   const { sessions, setSessions, addToast, setActiveTab, createThread, renameThread, setCurrentModel } = useAppStore();
   const [loading, setLoading] = useState(false);
+  const [isRetrying, setIsRetrying] = useState(false);
   const [actionSessionId, setActionSessionId] = useState<string | null>(null);
   const [error, setError] = useState('');
 
@@ -34,6 +35,15 @@ export const SessionsTab: React.FC<{ api: any }> = ({ api }) => {
     }
     setLoading(false);
   }, [api, setSessions]);
+
+  const handleRetry = async () => {
+    setIsRetrying(true);
+    try {
+      await refreshSessions();
+    } finally {
+      setIsRetrying(false);
+    }
+  };
 
   useEffect(() => {
     refreshSessions();
@@ -117,7 +127,7 @@ export const SessionsTab: React.FC<{ api: any }> = ({ api }) => {
       <div className="flex-1 overflow-y-auto p-6" tabIndex={0} role="region" aria-label="Sessions">
         <div className="max-w-5xl mx-auto">
           {error ? (
-            <ErrorPanel icon={XCircle} title="Connection Error" message={error} onRetry={refreshSessions} />
+            <ErrorPanel icon={XCircle} title="Connection Error" message={error} onRetry={handleRetry} isRetrying={isRetrying} />
           ) : sessions.length === 0 ? (
             <EmptyState
               variant="card"
