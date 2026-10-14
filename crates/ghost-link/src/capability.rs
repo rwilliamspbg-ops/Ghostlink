@@ -168,6 +168,72 @@ fn build_table() -> ClassTable {
         CapabilityClass::Read,
     );
 
+    // --- Browser (Playwright): the tools are split by what they can reach, not by
+    // whether they look like a "read".
+    //
+    // The server name is `playwright` and the tool set is the live one from
+    // `npx -y @playwright/mcp@latest` (25 tools), not a guess.
+    //
+    // Reads are the observation tools: taking the page apart (snapshot, find,
+    // console, network, screenshot) and navigating. `browser_navigate` is Read on
+    // the same basis as `fetch` -- it retrieves a page. The distinction that
+    // matters is that the default launch uses an ISOLATED browser profile, so the
+    // navigated page carries none of the user's real session cookies. Pointing the
+    // server at a real profile (`--user-data-dir`) changes that: a page the user is
+    // logged into would then be reachable with their session, and navigation stops
+    // being a pure observation.
+    for tool in [
+        "browser_snapshot",
+        "browser_find",
+        "browser_console_messages",
+        "browser_network_requests",
+        "browser_network_request",
+        "browser_take_screenshot",
+        "browser_wait_for",
+        "browser_navigate",
+        "browser_navigate_back",
+    ] {
+        t.insert(("playwright".into(), tool.into()), CapabilityClass::Read);
+    }
+
+    // Writes are the interactions: anything that acts on the page rather than
+    // reading it. These are the approvals that matter -- a click can submit a form,
+    // `browser_fill_form` exists to submit one, and `browser_type` can fill a
+    // credential field. Nothing here runs code or moves local files.
+    for tool in [
+        "browser_click",
+        "browser_hover",
+        "browser_type",
+        "browser_press_key",
+        "browser_fill_form",
+        "browser_select_option",
+        "browser_drag",
+        "browser_tabs",
+        "browser_close",
+        "browser_resize",
+        "browser_emulate_media",
+        "browser_handle_dialog",
+    ] {
+        t.insert(("playwright".into(), tool.into()), CapabilityClass::Write);
+    }
+
+    // Exec: code execution and exfiltration primitives, which are the two things a
+    // browser is genuinely dangerous for.
+    //
+    // `browser_evaluate` and `browser_run_code_unsafe` run arbitrary JavaScript in
+    // the page -- the latter is explicitly labelled unsafe by the server itself.
+    // `browser_file_upload` and `browser_drop` take local file paths and push their
+    // contents into the page, which makes them an exfiltration channel: reading a
+    // local file is a Read, but sending it to whatever origin is loaded is not.
+    for tool in [
+        "browser_evaluate",
+        "browser_run_code_unsafe",
+        "browser_file_upload",
+        "browser_drop",
+    ] {
+        t.insert(("playwright".into(), tool.into()), CapabilityClass::Exec);
+    }
+
     // Vision analyzes an image; it does not write anything durable.
     t.insert(
         ("vision".into(), "analyze_image".into()),
@@ -798,6 +864,64 @@ mod tests {
         // duckduckgo (live-verified single tool; replaces brave-search, which
         // needed BRAVE_API_KEY and a paid account)
         ("duckduckgo", "duckduckgo_web_search", CapabilityClass::Read),
+        // playwright (25 advertised -- all listed, see every_browser_tool_is_classified)
+        ("playwright", "browser_snapshot", CapabilityClass::Read),
+        ("playwright", "browser_find", CapabilityClass::Read),
+        (
+            "playwright",
+            "browser_console_messages",
+            CapabilityClass::Read,
+        ),
+        (
+            "playwright",
+            "browser_network_requests",
+            CapabilityClass::Read,
+        ),
+        (
+            "playwright",
+            "browser_network_request",
+            CapabilityClass::Read,
+        ),
+        (
+            "playwright",
+            "browser_take_screenshot",
+            CapabilityClass::Read,
+        ),
+        ("playwright", "browser_wait_for", CapabilityClass::Read),
+        ("playwright", "browser_navigate", CapabilityClass::Read),
+        ("playwright", "browser_navigate_back", CapabilityClass::Read),
+        ("playwright", "browser_click", CapabilityClass::Write),
+        ("playwright", "browser_hover", CapabilityClass::Write),
+        ("playwright", "browser_type", CapabilityClass::Write),
+        ("playwright", "browser_press_key", CapabilityClass::Write),
+        ("playwright", "browser_fill_form", CapabilityClass::Write),
+        (
+            "playwright",
+            "browser_select_option",
+            CapabilityClass::Write,
+        ),
+        ("playwright", "browser_drag", CapabilityClass::Write),
+        ("playwright", "browser_tabs", CapabilityClass::Write),
+        ("playwright", "browser_close", CapabilityClass::Write),
+        ("playwright", "browser_resize", CapabilityClass::Write),
+        (
+            "playwright",
+            "browser_emulate_media",
+            CapabilityClass::Write,
+        ),
+        (
+            "playwright",
+            "browser_handle_dialog",
+            CapabilityClass::Write,
+        ),
+        ("playwright", "browser_evaluate", CapabilityClass::Exec),
+        (
+            "playwright",
+            "browser_run_code_unsafe",
+            CapabilityClass::Exec,
+        ),
+        ("playwright", "browser_file_upload", CapabilityClass::Exec),
+        ("playwright", "browser_drop", CapabilityClass::Exec),
     ];
 
     #[test]
@@ -816,6 +940,100 @@ mod tests {
             "capability table disagrees with the real tool set:\n  {}",
             wrong.join("\n  ")
         );
+    }
+
+    /// Every tool `npx -y @playwright/mcp@latest` actually advertises must be in the
+    /// table. An unlisted browser tool silently becomes Exec, and with 25 of them that
+    /// means an approval prompt on every page read -- the false gate that teaches
+    /// people to approve without reading.
+    #[test]
+    fn every_browser_tool_is_classified() {
+        let live = [
+            "browser_close",
+            "browser_resize",
+            "browser_console_messages",
+            "browser_handle_dialog",
+            "browser_emulate_media",
+            "browser_evaluate",
+            "browser_file_upload",
+            "browser_drop",
+            "browser_find",
+            "browser_fill_form",
+            "browser_press_key",
+            "browser_type",
+            "browser_navigate",
+            "browser_navigate_back",
+            "browser_network_requests",
+            "browser_network_request",
+            "browser_run_code_unsafe",
+            "browser_take_screenshot",
+            "browser_snapshot",
+            "browser_click",
+            "browser_drag",
+            "browser_hover",
+            "browser_select_option",
+            "browser_tabs",
+            "browser_wait_for",
+        ];
+        let mut unclassified = Vec::new();
+        for tool in live {
+            // A tool absent from the table is exactly what this checks, so classify()
+            // returning Exec is indistinguishable from a vetted Exec entry -- read the
+            // table directly.
+            if !table().contains_key(&("playwright".to_string(), tool.to_string())) {
+                unclassified.push(tool);
+            }
+        }
+        assert!(
+            unclassified.is_empty(),
+            "browser tools missing from the capability table (they would all fall \
+             through to Exec): {unclassified:?}"
+        );
+    }
+
+    /// The security-relevant half: the tools that run code or move local files must
+    /// never be downgraded to Write, because Write is session-grantable and Exec is
+    /// not. A session grant would then survive across turns.
+    #[test]
+    fn browser_code_and_exfil_tools_stay_exec() {
+        for tool in [
+            "browser_evaluate",
+            "browser_run_code_unsafe",
+            "browser_file_upload",
+            "browser_drop",
+        ] {
+            assert_eq!(
+                classify("playwright", tool),
+                CapabilityClass::Exec,
+                "{tool} must stay Exec: it executes code or ships local files off-box"
+            );
+            assert!(
+                !classify("playwright", tool).session_grant_allowed(),
+                "{tool} must not be session-grantable"
+            );
+        }
+    }
+
+    /// Reading a page must not need an approval, or the browser is unusable.
+    #[test]
+    fn browser_observation_tools_are_reads() {
+        for tool in [
+            "browser_snapshot",
+            "browser_find",
+            "browser_navigate",
+            "browser_navigate_back",
+            "browser_console_messages",
+            "browser_network_requests",
+            "browser_network_request",
+            "browser_take_screenshot",
+            "browser_wait_for",
+        ] {
+            assert_eq!(
+                classify("playwright", tool),
+                CapabilityClass::Read,
+                "{tool} is observation and must not demand approval"
+            );
+        }
     }
 
     #[test]
