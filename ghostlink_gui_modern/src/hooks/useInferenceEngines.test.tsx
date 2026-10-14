@@ -81,4 +81,26 @@ describe('useInferenceEngines', () => {
     expect(result.current.currentEngine).toBe('native');
     expect(result.current.selectedEngine).toEqual(nativeDescriptor);
   });
+
+  it('does not set health state after unmount when async health refresh resolves later', async () => {
+    let resolveHealth: ((value: { reachable: boolean; model_count: number }) => void) | undefined;
+    const api = {
+      getOllamaHealth: vi.fn().mockImplementation(
+        () =>
+          new Promise<{ reachable: boolean; model_count: number }>((resolve) => {
+            resolveHealth = resolve;
+          })
+      ),
+    };
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const { unmount } = renderHook(() => useInferenceEngines(api, 'ollama'));
+    unmount();
+
+    resolveHealth?.({ reachable: true, model_count: 2 });
+    await Promise.resolve();
+
+    expect(consoleErrorSpy).not.toHaveBeenCalled();
+    consoleErrorSpy.mockRestore();
+  });
 });

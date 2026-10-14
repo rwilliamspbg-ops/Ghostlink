@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { GhostlinkAPI } from '../api';
 import { InferenceEngineDescriptor, InferenceEngineName } from '../types/engines';
 
@@ -25,11 +25,19 @@ export function useInferenceEngines(api: Partial<InferenceEngineApi>, activeEngi
   const [engines, setEngines] = useState<InferenceEngineDescriptor[]>([]);
   const [currentEngine, setCurrentEngine] = useState<InferenceEngineName | null>(null);
   const [engineHealth, setEngineHealth] = useState<EngineHealth>(null);
+  const isMountedRef = useRef(true);
+
+  useEffect(() => {
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
 
   const refreshEngines = useCallback(async () => {
     try {
       const result = api.getInferenceEngines ? await api.getInferenceEngines() : null;
       if (result && !result.error && result.engines?.length && result.current) {
+        if (!isMountedRef.current) return;
         setEngines(result.engines);
         setCurrentEngine(result.current as InferenceEngineName);
       }
@@ -54,20 +62,24 @@ export function useInferenceEngines(api: Partial<InferenceEngineApi>, activeEngi
       try {
         if (engineName === 'vllm') {
           const result = api.getVllmHealth ? await api.getVllmHealth() : { reachable: false, model_count: 0 };
+          if (!isMountedRef.current) return result;
           setEngineHealth(result);
           return result;
         }
 
         if (engineName === 'ollama') {
           const result = api.getOllamaHealth ? await api.getOllamaHealth() : { reachable: false, model_count: 0 };
+          if (!isMountedRef.current) return result;
           setEngineHealth(result);
           return result;
         }
 
+        if (!isMountedRef.current) return null;
         setEngineHealth(null);
         return null;
       } catch (error) {
         console.error('Failed to refresh engine health:', error);
+        if (!isMountedRef.current) return { reachable: false, model_count: 0 };
         setEngineHealth({ reachable: false, model_count: 0 });
         return { reachable: false, model_count: 0 };
       }
