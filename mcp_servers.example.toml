@@ -51,7 +51,9 @@ command = "uvx"
 # built against and fail to import. Pin a known-compatible version with `==`,
 # not `<`/`>` — this command runs via `cmd /C` on Windows (see client.rs
 # build_command) and cmd.exe reads a bare `<` as stdin redirection.
-args = ["--with", "mcp==1.9.4", "--with", "pywin32", "mcp-server-fetch"]
+args = ["--python", "3.12", "--with", "mcp==1.13.0",
+    "--with",
+    "pydantic==2.11.7", "--with", "pywin32", "mcp-server-fetch"]
 requires_confirmation = false
 timeout_secs = 30
 
@@ -80,8 +82,12 @@ transport = "stdio"
 # which is not present in uvx's ephemeral environment by default.
 command = "uvx"
 args = [
+    "--python",
+    "3.12",
     "--with",
-    "mcp==1.9.4",
+    "mcp==1.13.0",
+    "--with",
+    "pydantic==2.11.7",
     "--with",
     "pywin32",
     "mcp-server-sqlite",
@@ -241,8 +247,12 @@ enabled = true
 transport = "stdio"
 command = "uvx"
 args = [
+    "--python",
+    "3.12",
     "--with",
-    "mcp==1.9.4",
+    "mcp==1.13.0",
+    "--with",
+    "pydantic==2.11.7",
     "--with",
     "pywin32",
     "mcp-server-git",
