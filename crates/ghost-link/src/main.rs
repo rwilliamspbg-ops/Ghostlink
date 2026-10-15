@@ -8820,10 +8820,12 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                 size: metadata.len(),
             });
         }
-        entries.sort_by(|a, b| {
+        // OPTIMIZATION: Unstable sorting avoids scratch buffer allocations, and `.then_with` defers
+        // string lowercasing heap allocations until `is_dir` ties occur.
+        entries.sort_unstable_by(|a, b| {
             b.is_dir
                 .cmp(&a.is_dir)
-                .then(a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+                .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
         });
         Json(serde_json::json!({ "path": rel, "entries": entries }))
     }
