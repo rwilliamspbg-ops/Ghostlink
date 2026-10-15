@@ -178,4 +178,36 @@ describe('SessionsTab', () => {
       expect(screen.getByRole('button', { name: /refresh sessions/i })).not.toBeDisabled();
     });
   });
+
+  it('shows retrying state and disables retry button when retrying on error panel', async () => {
+    let resolveRetrySessions: (val: any) => void = () => {};
+    const retryPromise = new Promise((resolve) => {
+      resolveRetrySessions = resolve;
+    });
+
+    const api = {
+      getSessions: vi.fn()
+        .mockResolvedValueOnce({ error: 'Network error' })
+        .mockImplementationOnce(() => retryPromise),
+    };
+
+    render(<SessionsTab api={api} />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Connection Error')).toBeInTheDocument();
+    });
+
+    const retryBtn = screen.getByRole('button', { name: /try again/i });
+    fireEvent.click(retryBtn);
+
+    await waitFor(() => {
+      expect(api.getSessions).toHaveBeenCalledTimes(2);
+    });
+
+    resolveRetrySessions({ sessions: [] });
+
+    await waitFor(() => {
+      expect(screen.getByText('No active inference sessions')).toBeInTheDocument();
+    });
+  });
 });
