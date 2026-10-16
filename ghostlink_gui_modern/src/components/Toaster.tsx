@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useRef } from 'react';
 import { CheckCircle2, XCircle, Info, X } from 'lucide-react';
 import { useAppStore, Toast } from '../store';
 
@@ -13,10 +13,31 @@ const AUTO_DISMISS_MS = 5000;
 
 const ToastItem: React.FC<Toast> = ({ id, type, message }) => {
   const removeToast = useAppStore((s) => s.removeToast);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const remainingTimeRef = useRef<number>(AUTO_DISMISS_MS);
+  const startTimeRef = useRef<number>(Date.now());
+
+  const startTimer = () => {
+    startTimeRef.current = Date.now();
+    timerRef.current = setTimeout(() => {
+      removeToast(id);
+    }, remainingTimeRef.current);
+  };
+
+  const pauseTimer = () => {
+    if (timerRef.current) {
+      clearTimeout(timerRef.current);
+      timerRef.current = null;
+      const elapsed = Date.now() - startTimeRef.current;
+      remainingTimeRef.current = Math.max(0, remainingTimeRef.current - elapsed);
+    }
+  };
 
   useEffect(() => {
-    const timer = setTimeout(() => removeToast(id), AUTO_DISMISS_MS);
-    return () => clearTimeout(timer);
+    startTimer();
+    return () => {
+      if (timerRef.current) clearTimeout(timerRef.current);
+    };
   }, [id, removeToast]);
 
   const Icon = ICONS[type];
@@ -24,6 +45,10 @@ const ToastItem: React.FC<Toast> = ({ id, type, message }) => {
   return (
     <div
       role="alert"
+      onMouseEnter={pauseTimer}
+      onMouseLeave={startTimer}
+      onFocus={pauseTimer}
+      onBlur={startTimer}
       className={`flex items-start gap-3 px-4 py-3 rounded-2xl border shadow-2xl animate-in fade-in slide-in-from-right-4 duration-200 ${STYLES[type]}`}
     >
       <Icon size={18} className="flex-shrink-0 mt-0.5" aria-hidden="true" />
@@ -48,6 +73,7 @@ export const Toaster: React.FC = () => {
     <div
       className="fixed bottom-24 right-4 z-[90] flex flex-col gap-2 w-full max-w-sm px-4 sm:px-0"
       aria-live="polite"
+      aria-atomic="true"
       aria-label="Notifications"
     >
       {toasts.map((t) => (
