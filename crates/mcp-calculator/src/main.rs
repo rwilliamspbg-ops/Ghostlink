@@ -7,6 +7,15 @@ use rmcp::{
     handler::server::wrapper::Parameters, schemars, tool, tool_router, transport::stdio, ServiceExt,
 };
 
+/// Evaluate a math expression and return the result as a string.
+/// This function is extracted from the tool handler to enable unit testing.
+pub fn evaluate_expression(expression: &str) -> String {
+    match evalexpr::eval(expression) {
+        Ok(value) => value.to_string(),
+        Err(err) => format!("error: {err}"),
+    }
+}
+
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 struct CalculateRequest {
     #[schemars(description = "A math expression to evaluate, e.g. \"17 * 23\" or \"(4 + 5) / 3\"")]
@@ -23,10 +32,7 @@ impl Calculator {
         &self,
         Parameters(CalculateRequest { expression }): Parameters<CalculateRequest>,
     ) -> String {
-        match evalexpr::eval(&expression) {
-            Ok(value) => value.to_string(),
-            Err(err) => format!("error: {err}"),
-        }
+        evaluate_expression(&expression)
     }
 }
 
@@ -47,4 +53,98 @@ async fn main() -> anyhow::Result<()> {
 
     service.waiting().await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::evaluate_expression;
+
+    #[test]
+    fn simple_addition() {
+        assert_eq!(evaluate_expression("1 + 2"), "3");
+    }
+
+    #[test]
+    fn simple_subtraction() {
+        assert_eq!(evaluate_expression("10 - 3"), "7");
+    }
+
+    #[test]
+    fn simple_multiplication() {
+        assert_eq!(evaluate_expression("17 * 23"), "391");
+    }
+
+    #[test]
+    fn simple_division() {
+        assert_eq!(evaluate_expression("(4 + 5) / 3"), "3");
+    }
+
+    #[test]
+    fn division_with_remainder() {
+        // evalexpr does integer division when both operands are integers
+        let result = evaluate_expression("10 / 3");
+        assert_eq!(result, "3");
+    }
+
+    #[test]
+    fn operator_precedence() {
+        assert_eq!(evaluate_expression("2 + 3 * 4"), "14");
+    }
+
+    #[test]
+    fn parentheses_override_precedence() {
+        assert_eq!(evaluate_expression("(2 + 3) * 4"), "20");
+    }
+
+    #[test]
+    fn negative_numbers() {
+        assert_eq!(evaluate_expression("-5 + 3"), "-2");
+    }
+
+    #[test]
+    fn zero_result() {
+        assert_eq!(evaluate_expression("0 + 0"), "0");
+    }
+
+    #[test]
+    fn large_number() {
+        assert_eq!(evaluate_expression("1000000 * 1000000"), "1000000000000");
+    }
+
+    #[test]
+    fn invalid_syntax_returns_error() {
+        let result = evaluate_expression("1 +");
+        assert!(
+            result.starts_with("error:"),
+            "Expected error, got: {result}"
+        );
+    }
+
+    #[test]
+    fn empty_expression_returns_unit() {
+        // evalexpr returns () (unit) for empty string, not an error
+        let result = evaluate_expression("");
+        assert_eq!(result, "()");
+    }
+
+    #[test]
+    fn division_by_zero_returns_error_or_infinity() {
+        let result = evaluate_expression("1 / 0");
+        // evalexpr may return inf or error depending on version
+        assert!(
+            result.starts_with("error:") || result.contains("inf") || result.contains("NaN"),
+            "Expected error or infinity, got: {result}"
+        );
+    }
+
+    #[test]
+    fn whitespace_handling() {
+        assert_eq!(evaluate_expression("  1  +  2  "), "3");
+    }
+
+    #[test]
+    fn decimal_result() {
+        let result = evaluate_expression("1.5 + 2.5");
+        assert_eq!(result, "4");
+    }
 }

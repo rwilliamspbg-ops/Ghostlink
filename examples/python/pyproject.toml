@@ -1,0 +1,10 @@
+[project]
+name = "ghostlink-python-example"
+version = "1.0.0"
+dependencies = [
+    "ghostlink-client@file://../../sdks/python",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

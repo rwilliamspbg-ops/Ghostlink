@@ -48,6 +48,10 @@ npx eslint .
 npx vitest run
 ```
 
+CI enforces: cargo fmt, clippy, miri, loom, fuzzing, cargo-deny, govulncheck (Go),
+SDK tests (JS + Python), ESLint, and benchmark regression (on PRs touching
+transport/ring-buffer code).
+
 If you changed transport, ring buffer, or pipeline code, also run
 `cargo bench --package ghostlink-core` and report before/after numbers — this
 is performance-sensitive code with documented microbenchmark baselines (see

@@ -51,6 +51,20 @@ jobs:
       - name: Run cargo audit
         run: cargo audit
 
+  go-vulncheck:
+    name: Go Vulnerability Check
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: control-plane
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: stable
+      - name: Run govulncheck
+        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+
   python-audit:
     name: Python Dependency Audit
     runs-on: ubuntu-latest

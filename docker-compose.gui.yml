@@ -1,0 +1,40 @@
+version: "3.8"
+
+services:
+  ghost-link:
+    build:
+      context: .
+      dockerfile: Dockerfile.ghostlink
+    ports:
+      - "8003:8003"
+    volumes:
+      - ghostlink-data:/data
+    environment:
+      - GHOSTLINK_API_KEY=${GHOSTLINK_API_KEY:-}
+    restart: unless-stopped
+
+  control-plane:
+    build:
+      context: .
+      dockerfile: Dockerfile.control-plane
+    ports:
+      - "8000:8000"
+    depends_on:
+      - ghost-link
+    environment:
+      - GHOSTLINK_API_URL=http://ghost-link:8003
+      - GHOSTLINK_API_KEY=${GHOSTLINK_API_KEY:-}
+    restart: unless-stopped
+
+  gui:
+    build:
+      context: .
+      dockerfile: Dockerfile.gui
+    ports:
+      - "3000:80"
+    depends_on:
+      - control-plane
+    restart: unless-stopped
+
+volumes:
+  ghostlink-data:
