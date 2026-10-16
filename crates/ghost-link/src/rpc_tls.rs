@@ -118,7 +118,10 @@ pub fn build_tls_client_config(cert_path: &Path) -> rustls::ClientConfig {
 
 /// Builds a TLS server config from the cert/key pair.
 /// Used by the contributor's TLS proxy to terminate TLS connections.
-fn build_tls_server_config(cert_path: &Path, key_path: &Path) -> Result<rustls::ServerConfig, String> {
+fn build_tls_server_config(
+    cert_path: &Path,
+    key_path: &Path,
+) -> Result<rustls::ServerConfig, String> {
     let cert_pem = std::fs::read(cert_path).map_err(|e| format!("read cert: {e}"))?;
     let key_pem = std::fs::read(key_path).map_err(|e| format!("read key: {e}"))?;
 
@@ -139,7 +142,8 @@ fn build_tls_server_config(cert_path: &Path, key_path: &Path) -> Result<rustls::
 
 /// Converts PEM-encoded data to raw DER bytes.
 fn pem_to_der(pem: &[u8]) -> Result<Vec<u8>, String> {
-    let pem_str = String::from_utf8(pem.to_vec()).map_err(|e| format!("PEM is not valid UTF-8: {e}"))?;
+    let pem_str =
+        String::from_utf8(pem.to_vec()).map_err(|e| format!("PEM is not valid UTF-8: {e}"))?;
     let pem = pem::parse(&pem_str).map_err(|e| format!("parse PEM: {e}"))?;
     Ok(pem.contents().to_vec())
 }
@@ -165,7 +169,10 @@ pub async fn run_tls_proxy(
 
     tracing::info!(
         "rpc_tls: TLS proxy listening on {}, forwarding to backend {}",
-        listener.local_addr().map(|a| a.to_string()).unwrap_or_else(|_| "unknown".to_string()),
+        listener
+            .local_addr()
+            .map(|a| a.to_string())
+            .unwrap_or_else(|_| "unknown".to_string()),
         backend_addr
     );
 
@@ -183,9 +190,7 @@ pub async fn run_tls_proxy(
             // The TLS acceptor itself rejects plaintext connections during
             // the handshake (the first bytes must be a valid TLS ClientHello).
             let tls_stream = match acceptor.accept(stream).await {
-                Ok(s) => {
-                    s
-                },
+                Ok(s) => s,
                 Err(_err) => {
                     return;
                 }
@@ -193,9 +198,7 @@ pub async fn run_tls_proxy(
 
             // Connect to backend
             let mut backend = match TcpStream::connect(backend_addr).await {
-                Ok(s) => {
-                    s
-                },
+                Ok(s) => s,
                 Err(_err) => {
                     return;
                 }
@@ -273,13 +276,19 @@ mod tests {
         let cert_path = dir.join("cert.pem");
         let key_path = dir.join("key.pem");
 
-        let result = generate_self_signed_cert(&cert_path, &key_path, vec!["localhost".to_string()]);
-        assert!(result.is_ok(), "cert generation should succeed: {:?}", result.err());
+        let result =
+            generate_self_signed_cert(&cert_path, &key_path, vec!["localhost".to_string()]);
+        assert!(
+            result.is_ok(),
+            "cert generation should succeed: {:?}",
+            result.err()
+        );
         assert!(cert_path.exists());
         assert!(key_path.exists());
 
         let cert_bytes_before = std::fs::read(&cert_path).expect("read cert");
-        let result2 = generate_self_signed_cert(&cert_path, &key_path, vec!["localhost".to_string()]);
+        let result2 =
+            generate_self_signed_cert(&cert_path, &key_path, vec!["localhost".to_string()]);
         assert!(result2.is_ok());
         let cert_bytes_after = std::fs::read(&cert_path).expect("read cert again");
         assert_eq!(cert_bytes_before, cert_bytes_after);
@@ -335,7 +344,13 @@ mod tests {
         let key_path_clone = key_path.clone();
         let backend_addr_clone = backend_addr;
         let proxy_handle = tokio::spawn(async move {
-            run_tls_proxy(proxy_listener, cert_path_clone, key_path_clone, backend_addr_clone).await
+            run_tls_proxy(
+                proxy_listener,
+                cert_path_clone,
+                key_path_clone,
+                backend_addr_clone,
+            )
+            .await
         });
 
         // Test 1: Plaintext connection should be rejected.
@@ -345,7 +360,8 @@ mod tests {
         let result = tokio::time::timeout(
             std::time::Duration::from_secs(3),
             plaintext_stream.read(&mut buf),
-        ).await;
+        )
+        .await;
         match result {
             Ok(Ok(0)) => {} // connection closed — rejected
             Ok(Ok(_)) => {
@@ -353,7 +369,7 @@ mod tests {
                 let _ = plaintext_stream.read(&mut buf).await;
             }
             Ok(Err(_)) => {} // connection reset — rejected
-            Err(_) => {} // timeout — also acceptable (connection dropped)
+            Err(_) => {}     // timeout — also acceptable (connection dropped)
         }
 
         // Test 2: TLS connection should work
@@ -366,10 +382,10 @@ mod tests {
         tls_stream.write_all(b"hello over tls").await.unwrap();
 
         let mut buf = [0u8; 1024];
-        let n = tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            tls_stream.read(&mut buf),
-        ).await.unwrap().unwrap();
+        let n = tokio::time::timeout(std::time::Duration::from_secs(5), tls_stream.read(&mut buf))
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(&buf[..n], b"hello over tls");
 
         drop(tls_stream);

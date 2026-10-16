@@ -29,6 +29,12 @@ RUN if [ "$TARGETARCH" = "arm64" ]; then \
     cargo build --release -p ghost-link -p ghostlink-core; \
     fi
 
+# Copy the built binary to a stable location so the runtime COPY below works
+# for both the native target (target/release/ghost-link) and the cross-compiled
+# target (target/*/release/ghost-link).
+RUN cp /build/target/release/ghost-link /build/target/ghost-link 2>/dev/null || \
+    cp /build/target/*/release/ghost-link /build/target/ghost-link
+
 # Runtime stage
 FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y \
@@ -40,7 +46,7 @@ RUN apt-get update && apt-get install -y \
     && groupadd -g 10001 ghostlink \
     && useradd -u 10001 -g ghostlink -m -s /bin/false ghostlink
 
-COPY --from=builder /build/target/*/release/ghost-link /usr/local/bin/
+COPY --from=builder /build/target/ghost-link /usr/local/bin/
 WORKDIR /app
 COPY . .
 RUN mkdir -p /shared && chown -R ghostlink:ghostlink /app /shared

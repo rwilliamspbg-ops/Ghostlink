@@ -506,6 +506,7 @@ pub fn ensure_contributing(
     allowed_peers: &[String],
     shared_secret: &str,
     rt_handle: &Handle,
+    enable_rpc_tls: bool,
 ) {
     let handle = supervisor_handle();
     let mut sup = match handle.lock() {
@@ -537,6 +538,7 @@ pub fn ensure_contributing(
             allowed_peers,
             trimmed_secret,
             rt_handle,
+            enable_rpc_tls,
         );
         ("127.0.0.1".to_string(), internal_port)
     };
@@ -704,8 +706,13 @@ fn maybe_start_allowlist_proxy(
     allowed_peers: &[String],
     shared_secret: &str,
     rt_handle: &Handle,
+    enable_rpc_tls: bool,
 ) {
-    if RPC_ALLOWLIST_PROXY_STARTED.get().is_some() {
+    // The RPC TLS terminator (see `rpc_tls`) terminates TLS on the public port
+    // and forwards decrypted traffic to the loopback `ggml-rpc-server`, so it
+    // owns the public-facing port when `enable_rpc_tls` is on. Skip the
+    // allowlist proxy in that case to avoid a bind conflict.
+    if enable_rpc_tls || RPC_ALLOWLIST_PROXY_STARTED.get().is_some() {
         return;
     }
 
