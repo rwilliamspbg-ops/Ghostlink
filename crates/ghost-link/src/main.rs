@@ -15765,6 +15765,7 @@ mod ollama;
 mod otel;
 mod recall;
 mod rpc_cluster;
+mod rpc_tls;
 mod runtime;
 mod runtime_switcher;
 mod scheduler;

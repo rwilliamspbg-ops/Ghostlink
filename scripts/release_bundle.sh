@@ -8,8 +8,11 @@ SIGN_MODE="${2:-signed}"
 # one release (e.g. "ubuntu-latest"). Left empty, filenames are unsuffixed —
 # matches this script's original single-platform behavior.
 PLATFORM_SUFFIX="${3:-}"
+# Optional: Rust target triple for cross-compilation (e.g.
+# "aarch64-unknown-linux-gnu"). Empty means native build.
+CARGO_TARGET="${4:-}"
 if [[ "${SIGN_MODE}" != "signed" && "${SIGN_MODE}" != "unsigned" ]]; then
-  echo "usage: scripts/release_bundle.sh [out_dir] [signed|unsigned] [platform_suffix]" >&2
+  echo "usage: scripts/release_bundle.sh [out_dir] [signed|unsigned] [platform_suffix] [cargo_target]" >&2
   exit 1
 fi
 
@@ -24,7 +27,11 @@ if [[ -z "$NODE_BIN" || -z "$NPM_BIN" ]]; then
 fi
 
 echo "[release] build ghost-link release binary"
-cargo build --release -p ghost-link
+if [[ -n "$CARGO_TARGET" ]]; then
+  cargo build --release --target "$CARGO_TARGET" -p ghost-link
+else
+  cargo build --release -p ghost-link
+fi
 
 SRC_BIN="$ROOT_DIR/target/release/ghost-link"
 SRC_EXT=""
@@ -32,6 +39,11 @@ if [[ ! -f "$SRC_BIN" ]]; then
   # Windows produces a .exe; try that before giving up.
   if [[ -f "$ROOT_DIR/target/release/ghost-link.exe" ]]; then
     SRC_BIN="$ROOT_DIR/target/release/ghost-link.exe"
+    SRC_EXT=".exe"
+  elif [[ -n "$CARGO_TARGET" && -f "$ROOT_DIR/target/$CARGO_TARGET/release/ghost-link" ]]; then
+    SRC_BIN="$ROOT_DIR/target/$CARGO_TARGET/release/ghost-link"
+  elif [[ -n "$CARGO_TARGET" && -f "$ROOT_DIR/target/$CARGO_TARGET/release/ghost-link.exe" ]]; then
+    SRC_BIN="$ROOT_DIR/target/$CARGO_TARGET/release/ghost-link.exe"
     SRC_EXT=".exe"
   else
     echo "Release binary missing: $SRC_BIN" >&2
@@ -59,7 +71,11 @@ fi
 
 echo "[release] build control-plane release binary"
 pushd "$ROOT_DIR/control-plane" >/dev/null
-"$GO_BIN" build -o "$OUT_DIR/$CP_BIN_NAME" .
+if [[ -n "${GOARCH:-}" ]]; then
+  "$GO_BIN" build -o "$OUT_DIR/$CP_BIN_NAME" -ldflags "-s -w" .
+else
+  "$GO_BIN" build -o "$OUT_DIR/$CP_BIN_NAME" .
+fi
 popd >/dev/null
 
 echo "[release] build ghostlink_gui_modern frontend"

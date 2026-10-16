@@ -41,6 +41,14 @@ This document summarizes current security assumptions for Ghost-Link runtime and
   dev, forced on when the server binds a non-loopback address. Off by
   default; enable via `POST /api/security/pqc/enable` (takes effect on next
   restart) and confirm with `GET /api/security/pqc/state`.
+- **Encrypted RPC transport** (`rpc_tls`): a dual TCP proxy that terminates
+  TLS on the contributor side and forwards decrypted traffic to the local
+  `ggml-rpc-server` over plaintext loopback. Uses the same PQC-hybrid key
+  exchange as the HTTP API TLS. Opt-in via `enable_rpc_tls` setting; when
+  enabled and the bind address is non-loopback, the contributor runs a TLS
+  terminator and the coordinator connects to the TLS port instead of the raw
+  ggml-rpc port. Plaintext connections are rejected during the TLS handshake.
+  This closes the gap where `ggml-rpc`'s byte stream was previously plain TCP.
 - **ggml-rpc Build Fingerprint Matching & Default Unknown Exclusion**:
   `rpc_cluster::discover_rpc_peers` and `evaluate_peer` enforce matching `llama.cpp`
   build fingerprints (`rpc_build_id`). By default, peers with unknown or missing build

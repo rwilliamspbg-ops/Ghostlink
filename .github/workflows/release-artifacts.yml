@@ -14,11 +14,26 @@ name: Release Artifacts
 
 jobs:
   build-release-artifacts:
-    name: Build Release Artifacts (${{ matrix.os }})
+    name: Build Release Artifacts (${{ matrix.os }}${{ matrix.target != '' && format(' [{0}]', matrix.target) || '' }})
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        include:
+          - os: ubuntu-latest
+            target: ''
+            artifact_suffix: ubuntu-latest
+          - os: windows-latest
+            target: ''
+            artifact_suffix: windows-latest
+          - os: macos-latest
+            target: ''
+            artifact_suffix: macos-latest
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            artifact_suffix: ubuntu-latest-arm64
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            artifact_suffix: macos-latest-arm64
     runs-on: ${{ matrix.os }}
     permissions:
       contents: write
@@ -54,6 +69,14 @@ jobs:
           set -euo pipefail
           cd ghostlink_gui_modern
           npm ci
+
+      - name: Install cross-compilation tools (aarch64 Linux)
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
 
       - name: Validate release tag format
         if: startsWith(github.ref, 'refs/tags/')
@@ -118,31 +141,39 @@ jobs:
         shell: bash
         env:
           GPG_PASSPHRASE: ${{ secrets.RELEASE_GPG_PASSPHRASE }}
+          CARGO_TARGET: ${{ matrix.target }}
+          GOARCH: ${{ matrix.target == 'aarch64-unknown-linux-gnu' && 'arm64' || matrix.target == 'aarch64-apple-darwin' && 'arm64' || '' }}
         run: |
+          set -euo pipefail
+          if [[ "${CARGO_TARGET}" == "aarch64-unknown-linux-gnu" ]]; then
+            export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc
+            export CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc
+            export CXX_aarch64_unknown_linux_gnu=aarch64-linux-gnu-g++
+          fi
           if [[ "${GITHUB_REF}" == refs/tags/* ]] && [[ "${{ steps.gpg-check.outputs.has_key }}" == "true" ]]; then
-            bash scripts/release_bundle.sh ./artifacts/release signed "${{ matrix.os }}"
+            bash scripts/release_bundle.sh ./artifacts/release signed "${{ matrix.artifact_suffix }}" "${{ matrix.target }}"
           else
-            bash scripts/release_bundle.sh ./artifacts/release unsigned "${{ matrix.os }}"
+            bash scripts/release_bundle.sh ./artifacts/release unsigned "${{ matrix.artifact_suffix }}" "${{ matrix.target }}"
           fi
 
       - name: Generate SBOM
-        if: matrix.os == 'ubuntu-latest'
+        if: matrix.os == 'ubuntu-latest' && matrix.target == ''
         uses: anchore/sbom-action@v0
         with:
-          file: ./artifacts/release/ghost-link-${{ matrix.os }}
+          file: ./artifacts/release/ghost-link-${{ matrix.artifact_suffix }}
           format: spdx-json
           output-file: ./artifacts/release/sbom.spdx.json
 
       - name: Attest release artifact provenance
-        if: matrix.os == 'ubuntu-latest'
+        if: matrix.os == 'ubuntu-latest' && matrix.target == ''
         uses: actions/attest-build-provenance@v4
         with:
-          subject-path: ./artifacts/release/ghost-link-${{ matrix.os }}
+          subject-path: ./artifacts/release/ghost-link-${{ matrix.artifact_suffix }}
 
       - name: Upload release artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: ghost-link-release-${{ matrix.os }}
+          name: ghost-link-release-${{ matrix.artifact_suffix }}
           path: artifacts/release/
           retention-days: 30
 
@@ -173,7 +204,7 @@ jobs:
           name: Ghostlink ${{ github.ref_name }}
           body_path: ./artifacts/release/release-notes.md
           files: |
-            ./artifacts/release/ghost-link-${{ matrix.os }}*
-            ./artifacts/release/SHA256SUMS-${{ matrix.os }}*
+            ./artifacts/release/ghost-link-${{ matrix.artifact_suffix }}*
+            ./artifacts/release/SHA256SUMS-${{ matrix.artifact_suffix }}*
             ./artifacts/release/sbom.spdx.json
           fail_on_unmatched_files: false
