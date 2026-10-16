@@ -116,7 +116,7 @@ jobs:
       - name: Test Python SDK
         working-directory: sdks/python
         run: |
-          pip install -e . pytest
+          pip install -e . pytest responses
           pytest
 
   repo-hygiene:
