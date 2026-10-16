@@ -222,17 +222,22 @@ impl LayerKvCache {
         }
 
         let width = self.config.token_width();
+        let mut max_token_idx = 0;
 
-        // Validate all entries upfront before taking write lock
-        for (token_idx, keys, values) in entries {
+        // OPTIMIZATION: Validate entries and compute max_token_idx upfront before acquiring
+        // the write lock. This eliminates conditional branch tracking inside the lock-holding loop.
+        for &(token_idx, keys, values) in entries {
             if keys.len() != values.len() {
                 return Err("keys/values length mismatch".to_string());
             }
             if keys.len() != width {
                 return Err(format!("expected {width} elements, got {}", keys.len()));
             }
-            if *token_idx >= self.config.max_tokens_per_seq {
+            if token_idx >= self.config.max_tokens_per_seq {
                 return Err(format!("token index {token_idx} out of bounds"));
+            }
+            if token_idx > max_token_idx {
+                max_token_idx = token_idx;
             }
         }
 
@@ -245,17 +250,12 @@ impl LayerKvCache {
             return Err("cache not initialized".to_string());
         }
 
-        let mut max_token_idx = 0;
-        // Direct reference destructuring and upfront slice range calculation
-        // avoid redundant arithmetic and pointer dereferences in the hot loop.
+        // Copy batch entries into backing slice buffer
         for &(token_idx, keys, values) in entries {
             let start = token_idx * width;
             let end = start + width;
             state.keys[start..end].copy_from_slice(keys);
             state.values[start..end].copy_from_slice(values);
-            if token_idx > max_token_idx {
-                max_token_idx = token_idx;
-            }
         }
 
         state.current_len = state.current_len.max(max_token_idx + 1);
