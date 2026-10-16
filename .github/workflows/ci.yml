@@ -182,7 +182,9 @@ jobs:
         # During normal CI (especially immediately after a release bump), the
         # matching ghostlink-core crate version may not be available in crates.io
         # yet, so full publish verification here can fail for reasons unrelated
-        # to manifest correctness.
+        # to manifest correctness. The real publish happens post-merge via
+        # publish-crates.yml, which publishes ghostlink-core first.
+        continue-on-error: true
         run: cargo publish -p ghost-link --dry-run --no-verify
 
   cargo-deny:
