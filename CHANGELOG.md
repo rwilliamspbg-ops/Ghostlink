@@ -5,20 +5,7 @@ All notable changes to Ghostlink Studio are documented here.
 ---
 
 
-## [Unreleased]
-
-### Added
-- mcp-calculator: 15 unit tests (expression evaluation, error handling, edge cases)
-- mcp-vision: 5 unit tests (base64 encoding, URL building, error paths)
-- CI: SDK test job (JS + Python), ESLint enforcement, cargo fmt check, govulncheck, benchmark regression gate
-- DevEx: justfile, .editorconfig, .nvmrc, examples/ directory
-- GUI: Dockerfile.gui, docker-compose.gui.yml, deploy/nginx.gui.conf
-
-### Changed
-- mcp-calculator: extracted `evaluate_expression()` for testability
-- mcp-vision: extracted `encode_image_to_base64()` and `build_ollama_url()` for testability
-
-## [Unreleased]
+## [2.5.0] - 2026-10-16
 
 ### Added
 - **arm64 release binaries** (`.github/workflows/release-artifacts.yml`, `scripts/release_bundle.sh`, `scripts/install.sh`, `Dockerfile.ghostlink`): the release workflow now builds for `aarch64-unknown-linux-gnu` and `aarch64-apple-darwin` in addition to x86_64, producing `ghost-link-ubuntu-latest-arm64` and `ghost-link-macos-latest-arm64` artifacts. `release_bundle.sh` accepts a `--target` flag for cross-compilation. `install.sh` detects arm64/aarch64 and downloads the matching release tarball instead of refusing. `Dockerfile.ghostlink` supports multi-arch builds via `docker buildx --platform linux/amd64,linux/arm64`.
@@ -28,13 +15,20 @@ All notable changes to Ghostlink Studio are documented here.
   - **The 25 tools are classified by what they can reach, not by whether they look like a read** (`capability.rs`, all 25 listed): observation (`browser_snapshot`, `browser_find`, `browser_navigate`, `browser_navigate_back`, `browser_console_messages`, `browser_network_requests`, `browser_network_request`, `browser_take_screenshot`, `browser_wait_for`) is **Read**; interaction (`browser_click`, `browser_hover`, `browser_type`, `browser_press_key`, `browser_fill_form`, `browser_select_option`, `browser_drag`, `browser_tabs`, `browser_close`, `browser_resize`, `browser_emulate_media`, `browser_handle_dialog`) is **Write**; code execution and exfiltration (`browser_evaluate`, `browser_run_code_unsafe`, `browser_file_upload`, `browser_drop`) is **Exec**. Without this, all 25 would hit the unknown-tool Exec default — an approval prompt on every page read, which is the false gate that teaches people to approve without reading.
   - `browser_navigate` is Read on the same basis as `fetch`, and that basis is **profile isolation**: the default launch uses an isolated browser profile, so a navigated page carries none of the user's real session cookies. Pointing the server at a real profile with `--user-data-dir` changes that — a page the user is logged into would become reachable with their session — so the capability comment names it before anyone tries.
   - The four Exec tools stay Exec for a specific reason: `Write` is session-grantable and `Exec` is not, so a session grant must not be able to authorise running JavaScript in a page or shipping local files off-box.
+- **`scripts/mcp_server_probe.py`**: speaks the real protocol over stdio (`initialize` → `notifications/initialized` → `tools/list`) against every server in `mcp_servers.toml`, reporting handshake latency, tool count and names, or captured stderr on failure. Two things it caught that inspection would not: **`uvx <server> --help` cannot detect an import-time failure** (it exits before the server registers its tool decorators, so it exits 0 while the real handshake dies — this produced one wrong conclusion in this session's own diagnosis), and **on Windows `npx` is a `.cmd` shim**, so spawning it bare fails with WinError 2 even though `npx` works typed into a terminal — the probe mirrors ghost-link's own `mcp::client::build_command` (`cmd /C`) for exactly that reason.
+- **mcp-calculator: 15 unit tests** (expression evaluation, error handling, edge cases)
+- **mcp-vision: 5 unit tests** (base64 encoding, URL building, error paths)
+- **CI: SDK test job (JS + Python), ESLint enforcement, cargo fmt check, govulncheck, benchmark regression gate**
+- **DevEx: justfile, .editorconfig, .nvmrc, examples/ directory**
+- **GUI: Dockerfile.gui, docker-compose.gui.yml, deploy/nginx.gui.conf**
+
+### Changed
+- **MCP startup is concurrent** (`crates/ghost-link/src/mcp/registry.rs`): `connect_enabled` awaited each server before starting the next, so N servers cost the sum of N handshakes. Measured with 8 enabled servers, **3.29s → 1.19s** for 41 tools to become available. API readiness is unaffected either way — `connect_enabled` already runs from a background task, so what improves is the window where the assistant is up but has only some of its tools.
+- mcp-calculator: extracted `evaluate_expression()` for testability
+- mcp-vision: extracted `encode_image_to_base64()` and `build_ollama_url()` for testability
 
 ### Fixed
 - **Every MCP server in `mcp_servers.toml` now starts** (`mcp_servers.example.toml`, `scripts/mcp_server_probe.py`): 7/13 → **14/14**. The `uvx` servers (`fetch`, `sqlite`, `git`) died at import on a stale pin, and the pin's problem was not `mcp` — those releases import `eval_type_backport` from `pydantic._internal._typing_extra`, which pydantic 2.14 removed. Bumping `mcp` alone trades that for `AttributeError: 'Server' has no attribute 'list_tools'` (2.x dropped the decorator API these servers use); pinning `pydantic` back alone trades it for `Failed to build pydantic-core` (no wheel for Python 3.14). The pin now covers all three constraints: `--python 3.12 --with mcp==1.13.0 --with pydantic==2.11.7`.
-- **MCP startup is concurrent** (`crates/ghost-link/src/mcp/registry.rs`): `connect_enabled` awaited each server before starting the next, so N servers cost the sum of N handshakes. Measured with 8 enabled servers, **3.29s → 1.19s** for 41 tools to become available. API readiness is unaffected either way — `connect_enabled` already runs from a background task, so what improves is the window where the assistant is up but has only some of its tools.
-
-### Added
-- **`scripts/mcp_server_probe.py`**: speaks the real protocol over stdio (`initialize` → `notifications/initialized` → `tools/list`) against every server in `mcp_servers.toml`, reporting handshake latency, tool count and names, or captured stderr on failure. Two things it caught that inspection would not: **`uvx <server> --help` cannot detect an import-time failure** (it exits before the server registers its tool decorators, so it exits 0 while the real handshake dies — this produced one wrong conclusion in this session's own diagnosis), and **on Windows `npx` is a `.cmd` shim**, so spawning it bare fails with WinError 2 even though `npx` works typed into a terminal — the probe mirrors ghost-link's own `mcp::client::build_command` (`cmd /C`) for exactly that reason.
 
 ## [2.4.0] - 2026-10-13
 
