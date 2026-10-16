@@ -74,6 +74,9 @@ mcp-reqwest = { package = "reqwest", version = "0.13", default-features = false,
     "rustls",
 ] }
 rustls = { version = "0.23.42", features = ["prefer-post-quantum"] }
+tokio-rustls = "0.26"
+rustls-pki-types = "1"
+pem = "3"
 axum-server = { version = "0.8.0", features = ["tls-rustls"] }
 jsonwebtoken = { version = "10.3.0", features = ["aws_lc_rs"] }
 rcgen = "0.14.7"

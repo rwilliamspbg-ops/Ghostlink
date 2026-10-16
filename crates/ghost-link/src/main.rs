@@ -1689,6 +1689,16 @@ struct BackendState {
     /// setting and only takes effect on next restart; this field is what
     /// `/api/security/pqc/state` actually reports.
     enable_tls_active: bool,
+    /// Whether the *currently running* RPC byte stream is served through a
+    /// TLS terminator (the `rpc_tls` proxy) instead of the raw `ggml-rpc`
+    /// loopback socket — set once at startup from the same `use_rpc_tls`
+    /// decision that starts the proxy. Distinct from `settings.enable_rpc_tls`
+    /// (the persisted setting, taken effect on next restart); this field is
+    /// what `/api/security/rpctls/state` reports.
+    /// Read at runtime through JSON serialization by the security state
+    /// endpoint handler; not accessed directly in this module.
+    #[allow(dead_code)]
+    use_rpc_tls: bool,
     /// Real security-relevant events (failed auth, tool-call approvals,
     /// PQC/JWT actions) for `/api/security/audit-log` — was previously
     /// hardcoded to always return an empty list. In-memory only (resets on
@@ -2170,6 +2180,19 @@ struct RuntimeSettings {
     /// this field existed still deserialize.
     #[serde(default)]
     enable_tls: bool,
+    /// When true, this node runs a TLS terminator in front of its
+    /// `ggml-rpc-server` for wire encryption. The proxy terminates TLS on the
+    /// contributor side and forwards decrypted traffic to the local
+    /// `ggml-rpc-server` over plaintext loopback, using the same
+    /// `aws-lc-rs` crypto provider with ML-KEM-768 hybrid key exchange
+    /// preference as the HTTP API TLS. Opt-in; only takes effect (and only
+    /// requires a cert to be generated) when `enable_rpc_tls` is true and the
+    /// bind address is non-loopback. Plaintext connections are rejected
+    /// during the TLS handshake. This is separate from `enable_tls` (the
+    /// HTTPS API listener) and from `rpc_allowed_peers` (the TCP-level
+    /// allowlist proxy): `enable_rpc_tls` encrypts the RPC byte stream.
+    #[serde(default)]
+    enable_rpc_tls: bool,
     /// When true and the cluster has other nodes advertising
     /// `contribute_compute`, the native engine launches with `--rpc`/`-ts`
     /// so llama.cpp's own RPC backend splits the model across them — real
@@ -2412,6 +2435,7 @@ impl Default for RuntimeSettings {
             xdp_interface: "eth0".to_string(),
             conversation_token_limit: default_conversation_token_limit(),
             enable_tls: false,
+            enable_rpc_tls: false,
             distributed_inference: false,
             contribute_compute: false,
             rpc_port: default_rpc_port(),
@@ -13089,6 +13113,12 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
     // contributor — see `rpc_cluster` module docs.
     let mut settings = load_settings();
 
+    // RPC TLS proxy decision (captured here so the proxy start happens
+    // BEFORE `ensure_contributing` binds the public port, taking precedence
+    // over the allowlist proxy; the settings are also captured below in
+    // `BackendState` for the `/api/security/rpctls/state` read).
+    let use_rpc_tls = rpc_tls::should_use_tls_proxy(settings.enable_rpc_tls, host);
+
     if settings.contribute_compute {
         rpc_cluster::ensure_contributing(
             host,
@@ -13096,6 +13126,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             &settings.rpc_allowed_peers,
             &settings.rpc_shared_secret,
             &rt_handle,
+            settings.enable_rpc_tls,
         );
 
         // `ensure_contributing` is already idempotent and already checks
@@ -13122,6 +13153,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                 &contribute_allowed_peers,
                 &contribute_shared_secret,
                 &contribute_rt_handle,
+                settings.enable_rpc_tls,
             );
         });
     }
@@ -13263,7 +13295,6 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
     // choice below and `BackendState.enable_tls_active` (read by
     // `/api/security/pqc/state`) share one source of truth.
     let use_tls = settings.enable_tls || !tls::is_loopback_host(host);
-    // Eagerly load (and, on first run, print) the API key store here —
     // `load_api_keys()` is otherwise only reached from `BackendState`
     // construction below, which would mean the one-time "here's your key"
     // banner (fired the first time `auth::active_api_key()` runs, inside
@@ -13350,7 +13381,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         ollama_client,
         vllm_client,
         ollama_available,
-        settings,
+        settings: settings.clone(),
         mcp_registry: Arc::clone(&mcp_registry),
         pending_tool_calls: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
         download_progress: HashMap::new(),
@@ -13368,6 +13399,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         model_lifecycle_lock: Arc::new(tokio::sync::RwLock::new(())),
         plugin_registry: backend_plugin::BackendPluginRegistry::from_env(),
         enable_tls_active: use_tls,
+        use_rpc_tls,
         audit_log: std::collections::VecDeque::new(),
         trace_events: std::collections::VecDeque::new(),
         api_keys,
@@ -13388,6 +13420,39 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
     let scheduler_state = Arc::clone(&state);
 
     rt.block_on(async {
+        if use_rpc_tls {
+            let (internal_port, _) = rpc_cluster::validate_derived_ports(settings.rpc_port)
+                .unwrap_or((settings.rpc_port, 0));
+            let backend_addr = SocketAddr::from(([127, 0, 0, 1], internal_port));
+
+            let san_names = vec![host.to_string(), "localhost".to_string()];
+            if let Err(err) = rpc_tls::generate_self_signed_cert(
+                &std::path::PathBuf::from("rpc_tls_cert.pem"),
+                &std::path::PathBuf::from("rpc_tls_key.pem"),
+                san_names,
+            ) {
+                tracing::error!("rpc_tls: failed to generate self-signed certificate: {err}");
+            }
+
+            let listener = tokio::net::TcpListener::bind(format!("{}:{}", host, settings.rpc_port))
+                .await
+                .expect("rpc_tls: failed to bind TLS listener on public port");
+
+            tracing::info!(
+                "rpc_tls: TLS proxy listening on {}/{} forwarding to loopback {}",
+                host,
+                settings.rpc_port,
+                backend_addr
+            );
+
+            let cert_path = std::path::PathBuf::from("rpc_tls_cert.pem");
+            let key_path = std::path::PathBuf::from("rpc_tls_key.pem");
+            let backend_addr_clone = backend_addr;
+            tokio::spawn(async move {
+                rpc_tls::run_tls_proxy(listener, cert_path, key_path, backend_addr_clone).await
+            });
+        }
+
         // The scheduler driver. Each run is a real agent turn through the native
         // path, so a scheduled run gets the same capability gate, approval
         // queue, and workspace scoping as interactive chat -- a schedule is not
@@ -15765,6 +15830,7 @@ mod ollama;
 mod otel;
 mod recall;
 mod rpc_cluster;
+mod rpc_tls;
 mod runtime;
 mod runtime_switcher;
 mod scheduler;
@@ -16326,6 +16392,7 @@ mod tests {
                 .with_mcp_registry(test_mcp_registry.clone()),
             ),
             model_lifecycle_lock: Arc::new(tokio::sync::RwLock::new(())),
+            use_rpc_tls: false,
             enable_tls_active: false,
             plugin_registry: backend_plugin::BackendPluginRegistry::from_env(),
             audit_log: std::collections::VecDeque::new(),

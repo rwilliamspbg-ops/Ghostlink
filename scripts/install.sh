@@ -23,11 +23,9 @@
 #     ubuntu-latest GitHub Actions runner." There is no distro-specific
 #     testing or guarantee beyond that (e.g. it may not run on musl-based
 #     distros like Alpine).
-#   - Tagged release installers are x86_64/amd64-only (arm64 artifact may
-#     exist on CI; release installers are still x86_64 until tagged).
-#     This script refuses to install on non-x86_64 hosts rather than
-#     silently handing you a binary that won't run.
-#
+#   - Supports x86_64/amd64 and arm64/aarch64 on Linux and macOS.
+#     Windows users should use scripts/install.ps1 instead.
+
 # Written in POSIX sh on purpose (no bashisms) so `curl | sh` works
 # regardless of which shell `sh` happens to be on the target machine.
 
@@ -75,19 +73,23 @@ case "$os_name" in
 esac
 
 # --- Arch detection ----------------------------------------------------------
-# Tagged release installers are x86_64/amd64-only today (arm64 artifact may
-# exist on CI; release installers are still x86_64 until tagged). Warn clearly
-# and refuse rather than install a binary that will not execute.
+# Supports x86_64/amd64 and arm64/aarch64. The arm64 suffix is appended to
+# the asset name (e.g. "ghost-link-ubuntu-latest-arm64").
 arch_name="$(uname -m)"
 case "$arch_name" in
-  x86_64 | amd64) : ;;
+  x86_64 | amd64)
+    arch_suffix=""
+    ;;
+  arm64 | aarch64)
+    arch_suffix="-arm64"
+    ;;
   *)
-    die "unsupported architecture '${arch_name}'. Ghostlink release binaries are x86_64/amd64-only as of this writing (arm64 artifact may exist on CI; release installers are still x86_64 until tagged). Refusing to install a binary that won't run on this machine. On Apple Silicon you may be able to run the x86_64 binary under Rosetta 2 if you have it installed, or build from source: ${GITHUB}#quick-start"
+    die "unsupported architecture '${arch_name}'. Ghostlink release binaries are published for x86_64/amd64 and arm64/aarch64 on Linux and macOS. On Windows, use scripts/install.ps1 instead, or build from source: ${GITHUB}#quick-start"
     ;;
 esac
 
-bin_asset="ghost-link-${asset_os}"
-sums_asset="SHA256SUMS-${asset_os}"
+bin_asset="ghost-link-${asset_os}${arch_suffix}"
+sums_asset="SHA256SUMS-${asset_os}${arch_suffix}"
 
 # --- Resolve version ---------------------------------------------------------
 if [ "$VERSION" = "latest" ]; then
@@ -105,7 +107,7 @@ download_base="${GITHUB}/releases/download/${tag}"
 bin_url="${download_base}/${bin_asset}"
 sums_url="${download_base}/${sums_asset}"
 
-# --- Download ------------------------------------------------------------
+# --- Download ---------------------------------------------------------------
 tmp_dir="$(mktemp -d)"
 cleanup() { rm -rf "$tmp_dir"; }
 trap cleanup EXIT INT TERM
@@ -115,7 +117,7 @@ tmp_sums="${tmp_dir}/${sums_asset}"
 
 info "Downloading ${bin_asset}..."
 curl -fsSL -o "$tmp_bin" "$bin_url" \
-  || die "failed to download ${bin_url} -- does release ${tag} exist and include a ${asset_os} build?"
+  || die "failed to download ${bin_url} -- does release ${tag} exist and include a ${asset_os}${arch_suffix} build?"
 
 info "Downloading ${sums_asset} for verification..."
 curl -fsSL -o "$tmp_sums" "$sums_url" \
@@ -131,6 +133,8 @@ curl -fsSL -o "$tmp_sums" "$sums_url" \
 expected_hash="$(awk -v want="./${bin_asset}" '
   { name = $NF; sub(/^\*/, "", name); if (name == want) print $1 }
 ' "$tmp_sums" | head -1)"
+
+
 
 [ -n "$expected_hash" ] \
   || die "could not find a checksum entry for ${bin_asset} in ${sums_asset} -- refusing to install an unverified binary"

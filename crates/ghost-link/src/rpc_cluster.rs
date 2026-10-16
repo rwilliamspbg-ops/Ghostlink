@@ -60,13 +60,13 @@
 //! Scope, honestly stated: this proves the connecting node held the secret
 //! *at admission time* and temporarily authorizes its current source IP —
 //! it does **not** encrypt or authenticate the actual `ggml-rpc` byte stream
-//! itself (still plain TCP, the same upstream limitation as above), and an
-//! on-path attacker able to inject traffic from the same source IP during
-//! the admission window isn't stopped by it. True wire-level confidentiality
-//! would need a dual-proxy TLS tunnel on both ends (reusing `tls.rs`'s
-//! existing cert infra) — a larger follow-up, not attempted here. Empty (the
-//! default), no auth port is started and the allowlist proxy's behavior is
-//! completely unchanged from before this existed.
+//! itself. For wire-level confidentiality, use the RPC TLS proxy (`rpc_tls`):
+//! when `enable_rpc_tls` is set and the bind address is non-loopback, the
+//! contributor runs a TLS terminator (reusing `tls.rs`'s cert infra) in front
+//! of its `ggml-rpc-server`, and the coordinator connects to the TLS port
+//! instead of the raw ggml-rpc port. Empty (the default), no auth port is
+//! started and the allowlist proxy's behavior is completely unchanged from
+//! before this existed.
 
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
@@ -506,6 +506,7 @@ pub fn ensure_contributing(
     allowed_peers: &[String],
     shared_secret: &str,
     rt_handle: &Handle,
+    enable_rpc_tls: bool,
 ) {
     let handle = supervisor_handle();
     let mut sup = match handle.lock() {
@@ -537,6 +538,7 @@ pub fn ensure_contributing(
             allowed_peers,
             trimmed_secret,
             rt_handle,
+            enable_rpc_tls,
         );
         ("127.0.0.1".to_string(), internal_port)
     };
@@ -704,8 +706,13 @@ fn maybe_start_allowlist_proxy(
     allowed_peers: &[String],
     shared_secret: &str,
     rt_handle: &Handle,
+    enable_rpc_tls: bool,
 ) {
-    if RPC_ALLOWLIST_PROXY_STARTED.get().is_some() {
+    // The RPC TLS terminator (see `rpc_tls`) terminates TLS on the public port
+    // and forwards decrypted traffic to the loopback `ggml-rpc-server`, so it
+    // owns the public-facing port when `enable_rpc_tls` is on. Skip the
+    // allowlist proxy in that case to avoid a bind conflict.
+    if enable_rpc_tls || RPC_ALLOWLIST_PROXY_STARTED.get().is_some() {
         return;
     }
 

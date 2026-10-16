@@ -1,16 +1,39 @@
 # Multi-stage Ghostlink production-ready build
 # Optimized for layer caching and minimal final image size
+# Supports multi-arch builds via docker buildx --platform linux/amd64,linux/arm64
 
 # Build stage
-FROM rust:1.89-bookworm as builder
+FROM --platform=$BUILDPLATFORM rust:1.89-bookworm as builder
+ARG TARGETARCH
+ARG TARGETPLATFORM
 WORKDIR /build
 
 # Copy workspace manifests and source
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
 
+# Install cross-compilation toolchain if needed
+RUN if [ "$TARGETARCH" = "arm64" ]; then \
+    apt-get update && \
+    apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu && \
+    rm -rf /var/lib/apt/lists/*; \
+    fi
+
 # Build application
-RUN cargo build --release -p ghost-link -p ghostlink-core
+RUN if [ "$TARGETARCH" = "arm64" ]; then \
+    export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc && \
+    export CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc && \
+    export CXX_aarch64_unknown_linux_gnu=aarch64-linux-gnu-g++ && \
+    cargo build --release --target aarch64-unknown-linux-gnu -p ghost-link -p ghostlink-core; \
+    else \
+    cargo build --release -p ghost-link -p ghostlink-core; \
+    fi
+
+# Copy the built binary to a stable location so the runtime COPY below works
+# for both the native target (target/release/ghost-link) and the cross-compiled
+# target (target/*/release/ghost-link).
+RUN cp /build/target/release/ghost-link /build/target/ghost-link 2>/dev/null || \
+    cp /build/target/*/release/ghost-link /build/target/ghost-link
 
 # Runtime stage
 FROM debian:bookworm-slim
@@ -23,11 +46,10 @@ RUN apt-get update && apt-get install -y \
     && groupadd -g 10001 ghostlink \
     && useradd -u 10001 -g ghostlink -m -s /bin/false ghostlink
 
-COPY --from=builder /build/target/release/ghost-link /usr/local/bin/
+COPY --from=builder /build/target/ghost-link /usr/local/bin/
 WORKDIR /app
 COPY . .
 RUN mkdir -p /shared && chown -R ghostlink:ghostlink /app /shared
-
 ENV GHOSTLINK_TLS_CERT_PATH="/tmp/tls_cert.pem"
 ENV GHOSTLINK_TLS_KEY_PATH="/tmp/tls_key.pem"
 
