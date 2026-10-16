@@ -17,6 +17,10 @@ cargo build --workspace
 ## Before Opening a PR
 
 ```bash
+# Quick verification (recommended)
+just verify
+
+# Or run individually:
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace

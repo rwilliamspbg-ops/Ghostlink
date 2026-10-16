@@ -29,6 +29,7 @@ jobs:
       - run: cargo build --release -p ghost-link -p ghostlink-core
       - run: cargo test --release -p ghost-link -p ghostlink-core
       - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo fmt --all --check
 
   rust-aarch64:
     name: Rust (aarch64) - ${{ matrix.target }}
@@ -94,6 +95,29 @@ jobs:
       - run: npm ci --legacy-peer-deps
       - run: npm run type-check
       - run: npm test
+      - run: npx eslint .
+
+  sdk:
+    name: SDK (JS + Python)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 20
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.11'
+      - name: Test JS SDK
+        working-directory: sdks/js
+        run: |
+          npm ci
+          npm test
+      - name: Test Python SDK
+        working-directory: sdks/python
+        run: |
+          pip install -e . pytest
+          pytest
 
   repo-hygiene:
     name: Repo Hygiene (case collisions)

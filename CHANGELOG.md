@@ -4,6 +4,20 @@ All notable changes to Ghostlink Studio are documented here.
 
 ---
 
+
+## [Unreleased]
+
+### Added
+- mcp-calculator: 15 unit tests (expression evaluation, error handling, edge cases)
+- mcp-vision: 5 unit tests (base64 encoding, URL building, error paths)
+- CI: SDK test job (JS + Python), ESLint enforcement, cargo fmt check, govulncheck, benchmark regression gate
+- DevEx: justfile, .editorconfig, .nvmrc, examples/ directory
+- GUI: Dockerfile.gui, docker-compose.gui.yml, deploy/nginx.gui.conf
+
+### Changed
+- mcp-calculator: extracted `evaluate_expression()` for testability
+- mcp-vision: extracted `encode_image_to_base64()` and `build_ollama_url()` for testability
+
 ## [Unreleased]
 
 ### Added

@@ -69,3 +69,56 @@ Ghostlink includes a two-container Docker Compose setup (`docker-compose.rpc-fab
    ```bash
    docker compose -f docker-compose.rpc-fabric.yml down -v
    ```
+
+
+---
+
+## 3. MCP Crate Tests
+
+All MCP crates now have unit tests:
+
+```bash
+cargo test -p mcp-calculator   # 15 tests (expression eval, errors, edge cases)
+cargo test -p mcp-vision      # 5 tests (base64 encoding, URL building, error paths)
+cargo test -p mcp-memory      # 17 tests (tokenizer, workspace isolation, search)
+cargo test -p mcp-rag         # 18 tests (cosine similarity, chunking, floor scoring)
+```
+
+## 4. CI Gates
+
+| Gate | What it catches |
+|---|---|
+| `cargo fmt --all --check` | Formatting drift |
+| `cargo clippy --all-targets -- -D warnings` | Lint warnings |
+| `cargo test --workspace` | Test failures (910+ tests) |
+| `cargo miri test` | Undefined behavior in ring buffer |
+| `cargo loom test` | SPSC ordering violations |
+| `cargo fuzz build` | Fuzz target breakage |
+| `cargo deny check` | License/advisory violations |
+| `govulncheck` (Go) | Go dependency vulnerabilities |
+| `pip-audit` | Python dependency vulnerabilities |
+| ESLint | GUI lint issues |
+| vitest | GUI unit tests |
+| SDK tests (JS + Python) | Client library regressions |
+| Benchmark regression | Performance regressions (>10% threshold) |
+
+## 5. GUI E2E Tests
+
+GUI E2E tests use Playwright (configured in `.playwright-mcp/`):
+
+```bash
+# Run E2E locally (requires ghost-link + control-plane running)
+npx playwright test
+```
+
+## 6. SDK Examples
+
+Minimal SDK usage examples live in `examples/`:
+
+```bash
+# JavaScript
+cd examples/js && npm install && npm start
+
+# Python
+cd examples/python && pip install -e . && python main.py
+```

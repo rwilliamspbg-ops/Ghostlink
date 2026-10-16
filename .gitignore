@@ -170,3 +170,6 @@ ghostlink_memory.db-*
 session_summaries.json
 # Ad-hoc audit/PR scratch notes; the durable record is CHANGELOG.md
 docs/PR_NOTE_*.md
+
+# Playwright local test artifacts
+.playwright-mcp/
