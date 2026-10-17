@@ -85,10 +85,11 @@ describe('MetricsTab', () => {
     expect(screen.getByText('System Performance')).toBeInTheDocument();
   });
 
-  it('provides aria-valuetext and title attributes on GaugeCard progressbars', () => {
+  it('provides aria-valuetext and title attributes on GaugeCard progressbars', async () => {
     const api = createMockApi();
     render(<MetricsTab api={api} />);
 
+    await waitFor(() => expect(screen.getByRole('progressbar', { name: 'CPU Utilization' })).toBeInTheDocument());
     const cpuGauge = screen.getByRole('progressbar', { name: 'CPU Utilization' });
     expect(cpuGauge).toHaveAttribute('aria-valuetext', '42.0%');
     expect(cpuGauge).toHaveAttribute('title', 'CPU Utilization: 42.0%');
@@ -107,7 +108,7 @@ describe('MetricsTab', () => {
     expect(screen.queryByText('Cluster Load')).not.toBeInTheDocument();
   });
 
-  it('shows the Cluster Load gauge averaging worker load with 2+ workers', () => {
+  it('shows the Cluster Load gauge averaging worker load with 2+ workers', async () => {
     useAppStore.setState({
       workers: [
         { id: 'w1', host: '127.0.0.1', port: 8003, status: 'Connected', model: 'x', threads: 4, load: 40 },
@@ -116,7 +117,7 @@ describe('MetricsTab', () => {
     });
     const api = createMockApi();
     render(<MetricsTab api={api} />);
-    expect(screen.getByText('Cluster Load')).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText('Cluster Load')).toBeInTheDocument());
     expect(screen.getByText('50.0%')).toBeInTheDocument();
     expect(screen.getByText('avg across 2 workers')).toBeInTheDocument();
   });
@@ -158,9 +159,10 @@ describe('MetricsTab', () => {
     expect(screen.getByText('not available')).toBeInTheDocument();
   });
 
-  it('disables CSV export with no history and enables it once samples exist', () => {
+  it('disables CSV export with no history and enables it once samples exist', async () => {
     const api = createMockApi();
     const { rerender } = render(<MetricsTab api={api} />);
+    await waitFor(() => expect(screen.getByLabelText('Export metrics history as CSV')).toBeInTheDocument());
     const enabledBtn = screen.getByLabelText('Export metrics history as CSV');
     expect(enabledBtn).not.toBeDisabled();
     expect(enabledBtn).toHaveAttribute('title', 'Export metrics history as CSV');
@@ -174,7 +176,7 @@ describe('MetricsTab', () => {
     expect(disabledBtn).toHaveAttribute('title', 'Export metrics history as CSV (no metrics history available)');
   });
 
-  it('triggers a toast notification upon CSV export', () => {
+  it('triggers a toast notification upon CSV export', async () => {
     const addToastSpy = vi.fn();
     useAppStore.setState({
       addToast: addToastSpy,
@@ -186,6 +188,7 @@ describe('MetricsTab', () => {
     window.URL.createObjectURL = vi.fn().mockReturnValue('blob:mock-url');
     window.URL.revokeObjectURL = vi.fn();
 
+    await waitFor(() => expect(screen.getByLabelText('Export metrics history as CSV')).toBeInTheDocument());
     const exportBtn = screen.getByLabelText('Export metrics history as CSV');
     fireEvent.click(exportBtn);
 
@@ -207,6 +210,7 @@ describe('MetricsTab', () => {
 
     render(<MetricsTab api={api} />);
 
+    await waitFor(() => expect(screen.getByLabelText('Refresh metrics')).toBeInTheDocument());
     const refreshBtn = screen.getByLabelText('Refresh metrics');
     expect(refreshBtn).not.toBeDisabled();
     expect(refreshBtn).toHaveAttribute('aria-busy', 'false');
