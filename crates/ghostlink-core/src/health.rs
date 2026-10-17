@@ -233,7 +233,7 @@ impl NetworkHealthMonitor {
             // OPTIMIZATION: Store recent check results in O(1) ring buffer (keep last 10).
             // Look up or initialize ring buffer for this node first so we can pop and reuse
             // an existing HealthCheckResult's heap-allocated node_id String buffer when full.
-            let node_checks = if let Some(node_checks) = checks.get_mut(&node.id) {
+            let node_checks = if let Some(node_checks) = checks.get_mut(node.id.as_str()) {
                 node_checks
             } else {
                 checks.entry(node.id.clone()).or_default()
@@ -252,7 +252,7 @@ impl NetworkHealthMonitor {
                 }
             };
 
-            if let Some(m) = metrics_guard.get_mut(&node.id) {
+            if let Some(m) = metrics_guard.get_mut(node.id.as_str()) {
                 let timeout =
                     now.saturating_duration_since(m.last_heartbeat) >= m.heartbeat_timeout;
                 let latency_us = if m.latency_samples > 0 {
