@@ -16,6 +16,7 @@ import {
 import { ClusterTopology, ClusterTopologyNode } from '../api';
 import { useAppStore, Settings } from '../store';
 import { EmptyState } from './StatusViews';
+import { TopologyMap } from './TopologyMap';
 
 export const WorkersTab: React.FC<{ api: any }> = ({ api }) => {
   const { setWorkers, addToast } = useAppStore();
@@ -565,6 +566,11 @@ export const WorkersTab: React.FC<{ api: any }> = ({ api }) => {
             {topology?.summary?.node_count || 1} Total Nodes ({topology?.summary?.active_nodes || 1} Active)
           </span>
         </h2>
+
+        {/* Topology Map */}
+        {topology && topology.nodes && topology.nodes.length > 0 && (
+          <TopologyMap topology={topology} />
+        )}
 
         {/* This Machine Card */}
         {thisMachineNode && (

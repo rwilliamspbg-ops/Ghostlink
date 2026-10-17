@@ -18,101 +18,28 @@ const McpTab = lazy(() => import('./components/McpTab').then((m) => ({ default: 
 const EditorTab = lazy(() => import('./components/EditorTab').then((m) => ({ default: m.EditorTab })));
 const ProjectsTab = lazy(() => import('./components/ProjectsTab').then((m) => ({ default: m.ProjectsTab })));
 
-const LOADING_STEPS = [
-  'Connecting to backend...',
-  'Scanning available models...',
-  'Initializing inference engine...',
-  'Establishing real-time metrics...',
-];
-
 export interface SplashScreenProps {
   currentStep?: number;
   onDismiss?: () => void;
 }
 
-export function SplashScreen({ currentStep = 0, onDismiss }: SplashScreenProps) {
-  const [step, setStep] = useState(currentStep);
-  const [dots, setDots] = useState('');
-
-  useEffect(() => {
-    setStep((prev) => Math.max(prev, currentStep));
-  }, [currentStep]);
-
-  useEffect(() => {
-    const dotInterval = setInterval(() => {
-      setDots((d) => (d.length >= 3 ? '' : d + '.'));
-    }, 250);
-    return () => {
-      clearInterval(dotInterval);
-    };
-  }, []);
-
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && onDismiss) {
-        onDismiss();
-      }
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [onDismiss]);
-
+export function SplashScreen({ onDismiss }: SplashScreenProps) {
   return (
     <div className="flex items-center justify-center h-screen bg-slate-950">
       <div className="text-center max-w-md">
-        {/* Logo */}
         <div className="mb-8 flex justify-center">
           <div className="w-16 h-16 bg-gradient-to-br from-blue-600 to-blue-800 rounded-2xl flex items-center justify-center shadow-lg shadow-blue-600/20">
             <span className="text-3xl font-bold text-white">G</span>
           </div>
         </div>
-
-        {/* Title */}
         <h1 className="text-2xl font-bold text-white mb-2">Ghostlink Studio</h1>
         <p className="text-sm text-slate-500 mb-8">Distributed LLM Inference Fabric</p>
-
-        {/* Loading animation */}
         <div className="relative mb-8 flex justify-center" aria-label="Loading Ghostlink Studio">
           <div className="w-12 h-12 border-[3px] border-slate-800 border-t-blue-500 rounded-full animate-spin" aria-hidden="true" />
         </div>
-
-        {/* Connection status */}
-        <div className="space-y-3" role="status" aria-live="polite">
-          {LOADING_STEPS.map((s, i) => (
-            <div key={i} className="flex items-center gap-3 text-sm">
-              <div
-                className={`w-5 h-5 rounded-full border-2 flex items-center justify-center shrink-0 transition-all duration-500 ${
-                  i < step
-                    ? 'bg-green-500/20 border-green-500 text-green-400'
-                    : i === step
-                    ? 'border-blue-500 text-blue-400'
-                    : 'border-slate-700 text-slate-600'
-                }`}
-                aria-hidden="true"
-              >
-                {i < step ? (
-                  <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-                  </svg>
-                ) : i === step ? (
-                  <div className="w-1.5 h-1.5 bg-blue-400 rounded-full animate-pulse" />
-                ) : null}
-              </div>
-              <span
-                className={`transition-colors duration-500 ${
-                  i < step ? 'text-slate-400' : i === step ? 'text-slate-300' : 'text-slate-600'
-                }`}
-              >
-                {s}
-                {i === step && (
-                  <span className="inline-block w-4 text-left text-blue-400" aria-hidden="true">{dots}</span>
-                )}
-              </span>
-            </div>
-          ))}
+        <div role="status" aria-live="polite" className="text-sm text-slate-400">
+          Loading...
         </div>
-
-        {/* Skip button */}
         {onDismiss && (
           <div className="mt-6">
             <button
@@ -124,8 +51,6 @@ export function SplashScreen({ currentStep = 0, onDismiss }: SplashScreenProps) 
             </button>
           </div>
         )}
-
-        {/* Footer */}
         <div className="mt-10 flex items-center justify-center gap-4 text-xs text-slate-600">
           <span className="flex items-center gap-1"><Cpu size={12} aria-hidden="true" /> GPU</span>
           <span className="flex items-center gap-1"><Zap size={12} aria-hidden="true" /> NPU</span>
@@ -150,8 +75,17 @@ function TabSkeleton() {
 }
 
 function App() {
-  const { currentModel, activeTab, setActiveTab, setModels, setApiBase, setMetrics, setWorkers, setSessions, setBackendOnline, setChatMessages } = useAppStore();
-  const unreadNeedsReviewCount = useAppStore((state) => state.unreadNeedsReviewCount);
+  const currentModel = useAppStore((s) => s.currentModel);
+  const activeTab = useAppStore((s) => s.activeTab);
+  const unreadNeedsReviewCount = useAppStore((s) => s.unreadNeedsReviewCount);
+  const setActiveTab = useAppStore((s) => s.setActiveTab);
+  const setModels = useAppStore((s) => s.setModels);
+  const setApiBase = useAppStore((s) => s.setApiBase);
+  const setMetrics = useAppStore((s) => s.setMetrics);
+  const setWorkers = useAppStore((s) => s.setWorkers);
+  const setSessions = useAppStore((s) => s.setSessions);
+  const setBackendOnline = useAppStore((s) => s.setBackendOnline);
+  const setChatMessages = useAppStore((s) => s.setChatMessages);
   const [api, setApi] = useState<GhostlinkAPI | null>(null);
   const [isInitializing, setIsInitializing] = useState(true);
 
@@ -296,7 +230,7 @@ function App() {
       fetchMetricsHistory(),
     ]);
 
-    const healthInterval = setInterval(checkHealth, 30000);
+
 
     const handleSwitchTab = (e: CustomEvent) => {
       if (typeof e.detail === 'number') {
@@ -311,11 +245,11 @@ function App() {
 
     const workersInterval = setInterval(() => {
       fetchWorkers();
+      checkHealth();
     }, 15000);
 
     return () => {
       clearTimeout(timeoutId);
-      clearInterval(healthInterval);
       window.removeEventListener('switch-tab', handleSwitchTab as EventListener);
       clearInterval(metricsInterval);
       clearInterval(workersInterval);

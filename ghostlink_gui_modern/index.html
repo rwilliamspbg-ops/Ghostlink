@@ -108,9 +108,6 @@
   <body>
     <!-- Splash overlay (shown before React hydrates; removed by dismissSplash() in src/splash.ts) -->
     <div class="splash-overlay" id="splash">
-      <div class="bg-grid"></div>
-      <div class="bg-glow glow-1"></div>
-      <div class="bg-glow glow-2"></div>
       <div class="splash">
         <div class="logo">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -121,16 +118,12 @@
         </div>
         <h1 class="title">Ghostlink Studio</h1>
         <p class="subtitle">Distributed LLM Inference Fabric</p>
-        <div class="progress-container">
-          <div class="progress-bar" id="progressBar"></div>
-        </div>
-        <div class="progress-text" id="progressText">Initializing...</div>
         <div class="spinner">
           <div class="dot"></div>
           <div class="dot"></div>
           <div class="dot"></div>
         </div>
-        <div class="status" id="statusText">Connecting to inference fabric...</div>
+        <div class="status" id="statusText">Loading...</div>
       </div>
     </div>
 
@@ -141,45 +134,15 @@
       // Splash screen controller
       (function() {
         const splash = document.getElementById('splash');
-        const progressBar = document.getElementById('progressBar');
-        const progressText = document.getElementById('progressText');
         const statusText = document.getElementById('statusText');
-        
-        const steps = [
-          { pct: 10, text: 'Initializing neural pathways...', status: 'Loading core modules...' },
-          { pct: 30, text: 'Loading tensor cores...', status: 'Initializing inference engine...' },
-          { pct: 50, text: 'Calibrating distributed fabric...', status: 'Connecting to backend...' },
-          { pct: 70, text: 'Establishing model registry...', status: 'Fetching available models...' },
-          { pct: 85, text: 'Finalizing inference pipeline...', status: 'Almost ready...' },
-          { pct: 100, text: 'Ghostlink Studio ready!', status: 'Launching interface...' }
-        ];
-        
-        let currentStep = 0;
-        const stepDelay = 600;
 
-        // Progress is cosmetic; the real dismissal happens when React has painted
-        // (dismissSplash() in src/splash.ts, called from main.tsx).
-        function advanceStep() {
-          if (!document.body.contains(splash) || currentStep >= steps.length) return;
-          const step = steps[currentStep];
-          progressBar.style.width = step.pct + '%';
-          progressText.textContent = step.text;
-          statusText.textContent = step.status;
-          currentStep++;
-          if (currentStep < steps.length) setTimeout(advanceStep, stepDelay);
-        }
-        setTimeout(advanceStep, 200);
-
-        // Fallback after 10s. If React mounted, drop the splash outright (a merely
-        // faded element still occupies layout). If it never mounted, say so rather
-        // than leaving an endless fake "loading" animation.
+        // Fallback after 10s. If React mounted, drop the splash outright.
         setTimeout(() => {
           if (!document.body.contains(splash)) return;
           const root = document.getElementById('root');
           if (root && root.hasChildNodes()) {
             splash.remove();
           } else {
-            progressText.textContent = 'Taking longer than expected';
             statusText.textContent = 'The app has not started. Check that the dev server is running and look for errors in the browser console.';
           }
         }, 10000);

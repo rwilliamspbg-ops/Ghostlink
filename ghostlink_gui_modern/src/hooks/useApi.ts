@@ -23,6 +23,7 @@ export function useApi(api: GhostlinkAPI) {
     sendMessage: (payload: any, onToken?: (token: string) => void) => 
       executeWithRetry<{ success: boolean; data?: any; error?: string }>('sendMessage', payload, onToken),
     getMetrics: () => executeWithRetry<{ metrics: Metric; error?: string }>('getMetrics'),
+    getMetricsHistory: () => executeWithRetry<{ history: import('../api').MetricsHistoryPoint[]; error?: string }>('getMetricsHistory'),
     getSessions: () => executeWithRetry<{ sessions: Session[]; error?: string }>('getSessions'),
     cancelSession: (sessionId: string) => executeWithRetry<{ success: boolean; data?: any; error?: string }>('cancelSession', sessionId),
     getRuntimes: () => executeWithRetry<{ available_runtimes: any[]; error?: string }>('getRuntimes'),

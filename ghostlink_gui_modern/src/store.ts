@@ -33,6 +33,10 @@ export interface Metric {
   last_tokens?: number;
   uptime_s?: number;
   inference_backend?: string;
+  ttft_p50_ms?: number;
+  ttft_p95_ms?: number;
+  last_ttft_ms?: number;
+  ttft_samples?: number;
 }
 
 export interface Session {
@@ -469,12 +473,33 @@ function loadStoredPrompts(): PromptTemplate[] {
   return BUILTIN_USER_PROMPTS;
 }
 
+let threadsSaveTimer: ReturnType<typeof setTimeout> | null = null;
+
 function saveThreadsToStorage(threads: Thread[]) {
-  try {
-    localStorage.setItem(THREADS_STORAGE_KEY, JSON.stringify(threads.slice(0, 50)));
-  } catch {
-    /* quota */
-  }
+  if (threadsSaveTimer) clearTimeout(threadsSaveTimer);
+  threadsSaveTimer = setTimeout(() => {
+    try {
+      localStorage.setItem(THREADS_STORAGE_KEY, JSON.stringify(threads.slice(0, 50)));
+    } catch {
+      /* quota */
+    }
+    threadsSaveTimer = null;
+  }, 500);
+}
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('beforeunload', () => {
+    if (threadsSaveTimer) {
+      clearTimeout(threadsSaveTimer);
+      threadsSaveTimer = null;
+      const threads = useAppStore.getState().threads;
+      try {
+        localStorage.setItem(THREADS_STORAGE_KEY, JSON.stringify(threads.slice(0, 50)));
+      } catch {
+        /* quota */
+      }
+    }
+  });
 }
 
 function savePresetsToStorage(presets: SystemPromptPreset[]) {

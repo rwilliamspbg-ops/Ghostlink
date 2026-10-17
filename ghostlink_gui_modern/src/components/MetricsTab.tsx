@@ -27,21 +27,27 @@ interface BackendStatus {
 export const MetricsTab: React.FC<{ api: any }> = React.memo(({ api }) => {
   const { metrics, setMetrics, metricsHistory, workers, addToast } = useAppStore();
   const [loading, setLoading] = React.useState(false);
-  const [history, setHistory] = React.useState<MetricsHistoryPoint[]>([]);
-
-  const refreshHistory = React.useCallback(async () => {
-    const result = api.getMetricsHistory ? await api.getMetricsHistory() : { history: [] };
-    if (!result.error && result.history) {
-      setHistory(result.history);
-    }
-  }, [api]);
+  const [initialLoading, setInitialLoading] = React.useState(true);
 
   React.useEffect(() => {
-    refreshHistory();
-  }, [refreshHistory]);
+    const loadHistory = async () => {
+      const result = await api.getMetricsHistory();
+      if (!result.error && result.history) {
+        // Map backend timestamp_ms to frontend t field for consistency
+        const mapped = result.history.map((m: any) => ({
+          ...m,
+          t: m.t ?? m.timestamp_ms ?? 0,
+        }));
+        useAppStore.getState().setMetricsHistory(mapped);
+      }
+      setInitialLoading(false);
+    };
+    loadHistory();
+  }, [api]);
   const [backendStatus, setBackendStatus] = useState<BackendStatus | null>(null);
+  const [backendStatusError, setBackendStatusError] = useState<string | null>(null);
 
-  // App.tsx already polls metrics every 5s — only manual refresh here.
+  // App.tsx already polls metrics every 3s — only manual refresh here.
   const refreshMetrics = async () => {
     setLoading(true);
     try {
@@ -49,7 +55,10 @@ export const MetricsTab: React.FC<{ api: any }> = React.memo(({ api }) => {
       if (!result.error && result.metrics) {
         setMetrics(result.metrics);
       }
-      await refreshHistory();
+      const historyResult = await api.getMetricsHistory();
+      if (!historyResult.error && historyResult.history) {
+        useAppStore.getState().setMetricsHistory(historyResult.history);
+      }
     } finally {
       setLoading(false);
     }
@@ -62,10 +71,17 @@ export const MetricsTab: React.FC<{ api: any }> = React.memo(({ api }) => {
     let cancelled = false;
     const refreshBackendStatus = async () => {
       const backends = await api.getBackends();
-      if (cancelled || backends.error || !backends.current) return;
+      if (cancelled || backends.error || !backends.current) {
+        if (!cancelled && backends.error) setBackendStatusError(backends.error);
+        return;
+      }
       const statusResult = await api.getBackendStatus(backends.current);
-      if (!cancelled && !statusResult.error && statusResult.status) {
+      if (cancelled) return;
+      if (!statusResult.error && statusResult.status) {
         setBackendStatus(statusResult.status);
+        setBackendStatusError(null);
+      } else if (statusResult.error) {
+        setBackendStatusError(statusResult.error);
       }
     };
     refreshBackendStatus();
@@ -115,7 +131,7 @@ export const MetricsTab: React.FC<{ api: any }> = React.memo(({ api }) => {
 
   const throughputScale = useMemo(() => {
     const t = metrics?.throughput ?? 0;
-    // Dynamic bar: 0–100 mapped against a soft ceiling near recent peak.
+    // Dynamic bar: 0-100 mapped against a soft ceiling near recent peak.
     const ceiling = Math.max(50, t * 1.25, 10);
     return Math.min(100, (t / ceiling) * 100);
   }, [metrics?.throughput]);
@@ -130,6 +146,16 @@ export const MetricsTab: React.FC<{ api: any }> = React.memo(({ api }) => {
     const v = metrics?.latency_p95 ?? 0;
     return Math.min(100, (v / 1000) * 100);
   }, [metrics?.latency_p95]);
+
+  const ttftP50Scale = useMemo(() => {
+    const v = metrics?.ttft_p50_ms ?? 0;
+    return Math.min(100, (v / 2000) * 100);
+  }, [metrics?.ttft_p50_ms]);
+
+  const ttftP95Scale = useMemo(() => {
+    const v = metrics?.ttft_p95_ms ?? 0;
+    return Math.min(100, (v / 5000) * 100);
+  }, [metrics?.ttft_p95_ms]);
 
   const gpuLabel = metrics?.gpu_available
     ? `${(metrics?.gpu ?? 0).toFixed(0)}% utilized`
@@ -158,10 +184,10 @@ export const MetricsTab: React.FC<{ api: any }> = React.memo(({ api }) => {
     prevGpuAvailableRef.current = gpuAvailable;
   }, [metrics]);
 
-  const throughputSparkline = useMemo(() => buildSparkline(history, 'throughput', 220, 56), [history]);
-  const latencySparkline = useMemo(() => buildSparkline(history, 'latency_p95', 220, 56), [history]);
-  const historySummary = history.length > 0
-    ? `${history.length} recent samples`
+  const throughputSparkline = useMemo(() => buildSparkline(metricsHistory, 'throughput', 220, 56), [metricsHistory]);
+  const latencySparkline = useMemo(() => buildSparkline(metricsHistory, 'latency_p95', 220, 56), [metricsHistory]);
+  const historySummary = metricsHistory.length > 0
+    ? `${metricsHistory.length} recent samples`
     : 'History will appear after metrics polling';
   const utilizationHistory = useMemo(
     () =>
@@ -173,6 +199,39 @@ export const MetricsTab: React.FC<{ api: any }> = React.memo(({ api }) => {
       })),
     [metricsHistory]
   );
+
+  if (initialLoading) {
+    return (
+      <div className="flex flex-col h-full bg-slate-950">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-900">
+          <div>
+            <h2 className="text-xl font-bold text-white">System Performance</h2>
+            <p className="text-xs text-slate-500 mt-0.5">Loading metrics…</p>
+          </div>
+        </div>
+        <div className="flex-1 overflow-y-auto p-6">
+          <div className="max-w-5xl mx-auto space-y-6 animate-pulse">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+              <div className="h-32 bg-slate-900/50 rounded-3xl"></div>
+              <div className="h-32 bg-slate-900/50 rounded-3xl"></div>
+              <div className="h-32 bg-slate-900/50 rounded-3xl"></div>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+              <div className="h-40 bg-slate-900/50 rounded-3xl"></div>
+              <div className="h-40 bg-slate-900/50 rounded-3xl"></div>
+              <div className="h-40 bg-slate-900/50 rounded-3xl"></div>
+            </div>
+            <div className="h-64 bg-slate-900/50 rounded-3xl"></div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              <div className="h-40 bg-slate-900/50 rounded-3xl"></div>
+              <div className="h-40 bg-slate-900/50 rounded-3xl"></div>
+            </div>
+            <div className="h-64 bg-slate-900/50 rounded-3xl"></div>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="flex flex-col h-full bg-slate-950">
@@ -260,6 +319,47 @@ export const MetricsTab: React.FC<{ api: any }> = React.memo(({ api }) => {
             />
           </div>
 
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+            <StatCard
+              label="TTFT p50"
+              value={metrics?.ttft_p50_ms ?? 0}
+              unit="ms"
+              icon={Zap}
+              color="text-violet-400"
+              bg="bg-violet-500/10"
+              progress={ttftP50Scale}
+              inverse
+              history={[]}
+              sparkColor="#a78bfa"
+              hasSamples={(metrics?.ttft_samples ?? 0) > 0}
+            />
+            <StatCard
+              label="TTFT p95"
+              value={metrics?.ttft_p95_ms ?? 0}
+              unit="ms"
+              icon={Clock}
+              color="text-fuchsia-400"
+              bg="bg-fuchsia-500/10"
+              progress={ttftP95Scale}
+              inverse
+              history={[]}
+              sparkColor="#e879f9"
+              hasSamples={(metrics?.ttft_samples ?? 0) > 0}
+            />
+            <StatCard
+              label="Last TTFT"
+              value={metrics?.last_ttft_ms ?? 0}
+              unit="ms"
+              icon={Activity}
+              color="text-pink-400"
+              bg="bg-pink-500/10"
+              progress={0}
+              history={[]}
+              sparkColor="#f472b6"
+              hasSamples={(metrics?.ttft_samples ?? 0) > 0}
+            />
+          </div>
+
           <div className={`grid grid-cols-1 md:grid-cols-3 ${clusterLoad !== null ? 'lg:grid-cols-4' : ''} gap-6`}>
             <GaugeCard label="CPU Utilization" value={metrics?.cpu ?? 0} icon={Cpu} color="text-emerald-400" />
             <GaugeCard label="Memory Usage" value={metrics?.memory ?? 0} icon={Database} color="text-purple-400" />
@@ -281,12 +381,12 @@ export const MetricsTab: React.FC<{ api: any }> = React.memo(({ api }) => {
             )}
           </div>
 
-          {backendStatus && (
-            <div className="bg-slate-900/50 border border-slate-800 rounded-3xl p-6">
-              <h3 className="text-lg font-bold text-white mb-4 flex items-center gap-2">
-                <HeartPulse size={20} className="text-pink-500" aria-hidden="true" />
-                Backend Health
-              </h3>
+          <div className="bg-slate-900/50 border border-slate-800 rounded-3xl p-6">
+            <h3 className="text-lg font-bold text-white mb-4 flex items-center gap-2">
+              <HeartPulse size={20} className="text-pink-500" aria-hidden="true" />
+              Backend Health
+            </h3>
+            {backendStatus ? (
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
                 <div>
                   <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1">Device</p>
@@ -315,8 +415,14 @@ export const MetricsTab: React.FC<{ api: any }> = React.memo(({ api }) => {
                   </p>
                 </div>
               </div>
-            </div>
-          )}
+            ) : (
+              <div className="text-sm text-slate-500">
+                {backendStatusError
+                  ? `Backend health unavailable: ${backendStatusError}`
+                  : 'Waiting for backend status…'}
+              </div>
+            )}
+          </div>
 
           <div className="bg-slate-900/50 border border-slate-800 rounded-3xl p-6">
             <div className="flex items-baseline justify-between mb-4">
@@ -605,7 +711,7 @@ const StatCard = ({
       <div className="text-right">
         <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">{label}</p>
         <p className={`text-2xl font-black ${color}`}>
-          {hasSamples ? Number(value).toFixed(1) : "—"}{' '}
+          {hasSamples ? Number(value).toFixed(1) : "\u2014"}{' '}
           <span className="text-xs font-medium opacity-50">{hasSamples ? unit : "no samples yet"}</span>
         </p>
       </div>

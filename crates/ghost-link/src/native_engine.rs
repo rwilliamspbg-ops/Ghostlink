@@ -228,8 +228,9 @@ impl NativeEngineClient {
     pub fn new() -> Self {
         Self {
             http: reqwest::Client::builder()
-                .pool_max_idle_per_host(10)
-                .tcp_keepalive(std::time::Duration::from_secs(15))
+                .pool_max_idle_per_host(20)
+                .pool_idle_timeout(std::time::Duration::from_secs(60))
+                .tcp_keepalive(std::time::Duration::from_secs(30))
                 .build()
                 .unwrap_or_else(|_| reqwest::Client::new()),
         }
@@ -2142,12 +2143,12 @@ impl NativeEngineClient {
 
         if let Ok(response) = chat_response {
             if response.status().is_success() {
-                let parsed: serde_json::Value = response
+                let parsed: LlamaServerResponse = response
                     .json()
                     .await
                     .map_err(|e| format!("invalid llama_server JSON response: {}", e))?;
 
-                if let Some(gen) = generation_from_llama_json(&parsed) {
+                if let Some(gen) = generation_from_llama_response(&parsed) {
                     return Ok(gen);
                 }
             } else if response.status().as_u16() == 400 {
@@ -2216,12 +2217,12 @@ impl NativeEngineClient {
             ));
         }
 
-        let parsed: serde_json::Value = response
+        let parsed: LlamaServerResponse = response
             .json()
             .await
             .map_err(|e| format!("invalid llama_server JSON response: {}", e))?;
 
-        if let Some(gen) = generation_from_llama_json(&parsed) {
+        if let Some(gen) = generation_from_llama_response(&parsed) {
             return Ok(gen);
         }
 
@@ -2376,7 +2377,11 @@ impl NativeEngineClient {
         let (tx, rx) = mpsc::channel::<Result<NativeChatEvent, String>>(100);
         tokio::spawn(async move {
             let mut byte_stream = response.bytes_stream();
-            let mut buf = String::new();
+            // Zero-copy SSE parser: accumulate raw bytes in a Vec<u8>, parse JSON
+            // directly from byte slices with serde_json::from_slice, and only
+            // compact the buffer when it grows large. This avoids per-chunk
+            // String::from_utf8_lossy allocations and the O(n²) drain pattern.
+            let mut buf: Vec<u8> = Vec::with_capacity(4096);
             loop {
                 let chunk = match tokio::time::timeout(idle_timeout, byte_stream.next()).await {
                     Ok(Some(Ok(c))) => c,
@@ -2394,21 +2399,28 @@ impl NativeEngineClient {
                         return;
                     }
                 };
-                buf.push_str(&String::from_utf8_lossy(&chunk));
-                while let Some(pos) = buf.find('\n') {
-                    let line = buf[..pos].trim().to_string();
-                    buf.drain(..=pos);
-                    if line.is_empty() {
+                buf.extend_from_slice(&chunk);
+                // Parse complete lines from the buffer without per-line allocation.
+                loop {
+                    let newline_pos = buf.iter().position(|&b| b == b'\n');
+                    let Some(pos) = newline_pos else { break };
+                    // Split the buffer: line_buf owns the line bytes, buf owns the rest.
+                    // This avoids the borrow checker conflict of slicing buf then reassigning it.
+                    let rest = buf.split_off(pos + 1);
+                    let line_buf = std::mem::replace(&mut buf, rest);
+                    // Process line_buf (owns its data, no borrow conflict).
+                    let line_bytes = trim_ascii(&line_buf);
+                    if line_bytes.is_empty() {
                         continue;
                     }
-                    let payload = match line.strip_prefix("data: ") {
+                    let payload = match strip_prefix_bytes(line_bytes, b"data: ") {
                         Some(p) => p,
                         None => continue,
                     };
-                    if payload == "[DONE]" {
+                    if payload == b"[DONE]" {
                         return;
                     }
-                    let data: LlamaStreamChunk = match serde_json::from_str(payload) {
+                    let data: LlamaStreamChunk = match serde_json::from_slice(payload) {
                         Ok(v) => v,
                         Err(_) => continue,
                     };
@@ -2440,10 +2452,44 @@ impl NativeEngineClient {
                         }
                     }
                 }
+                // Compact the buffer if it has grown large to prevent unbounded growth.
+                if buf.len() > 64 * 1024 && buf.capacity() > 128 * 1024 {
+                    buf = buf.split_off(0);
+                }
             }
         });
 
         Ok(Box::pin(tokio_stream::wrappers::ReceiverStream::new(rx)))
+    }
+}
+
+/// Trim ASCII whitespace from both ends of a byte slice without allocation.
+#[inline]
+fn trim_ascii(mut s: &[u8]) -> &[u8] {
+    while let Some((&first, rest)) = s.split_first() {
+        if first.is_ascii_whitespace() {
+            s = rest;
+        } else {
+            break;
+        }
+    }
+    while let Some((&last, rest)) = s.split_last() {
+        if last.is_ascii_whitespace() {
+            s = rest;
+        } else {
+            break;
+        }
+    }
+    s
+}
+
+/// Strip a byte prefix without allocation.
+#[inline]
+fn strip_prefix_bytes<'a>(s: &'a [u8], prefix: &[u8]) -> Option<&'a [u8]> {
+    if s.len() >= prefix.len() && &s[..prefix.len()] == prefix {
+        Some(&s[prefix.len()..])
+    } else {
+        None
     }
 }
 
@@ -2467,29 +2513,72 @@ struct LlamaStreamDelta {
     content: Option<String>,
 }
 
-fn generation_from_llama_json(parsed: &serde_json::Value) -> Option<NativeGeneration> {
-    let mut text = parsed
-        .get("content")
-        .and_then(|v| v.as_str())
+/// Typed deserialization target for llama-server responses. Avoids intermediate
+/// `serde_json::Value` parsing — fields are extracted directly from the wire
+/// format with zero heap allocation for the JSON tree.
+#[derive(Debug, serde::Deserialize)]
+struct LlamaServerResponse {
+    #[serde(default)]
+    content: Option<String>,
+    #[serde(default)]
+    choices: Vec<LlamaServerChoice>,
+    #[serde(default)]
+    timings: Option<LlamaTimings>,
+    #[serde(default)]
+    tokens_predicted: Option<u64>,
+    #[serde(default)]
+    tokens_evaluated: Option<u64>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct LlamaServerChoice {
+    #[serde(default)]
+    text: Option<String>,
+    #[serde(default)]
+    message: Option<LlamaServerMessage>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct LlamaServerMessage {
+    #[serde(default)]
+    content: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct LlamaTimings {
+    #[serde(default)]
+    predicted_n: Option<u64>,
+    #[serde(default)]
+    predicted_ms: Option<f64>,
+    #[serde(default)]
+    predicted_per_second: Option<f64>,
+    #[serde(default)]
+    prompt_n: Option<u64>,
+    #[serde(default)]
+    prompt_ms: Option<f64>,
+    #[serde(default)]
+    prompt_per_second: Option<f64>,
+}
+
+fn generation_from_llama_response(resp: &LlamaServerResponse) -> Option<NativeGeneration> {
+    let mut text = resp
+        .content
+        .as_ref()
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty());
 
     if text.is_none() {
-        text = parsed
-            .get("choices")
-            .and_then(|choices| choices.get(0))
-            .and_then(|c| {
-                c.get("text")
-                    .or_else(|| c.get("message").and_then(|m| m.get("content")))
-            })
-            .and_then(|v| v.as_str())
+        text = resp
+            .choices
+            .first()
+            .and_then(|c| c.text.as_ref().or_else(|| c.message.as_ref().and_then(|m| m.content.as_ref())))
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty());
     }
 
     let text = text?;
-    let (tokens_generated, tokens_per_sec, latency_ms) = parse_llama_timings(parsed, &text);
-    let prompt = parse_prompt_timings(parsed);
+    let (tokens_generated, tokens_per_sec, latency_ms) = parse_llama_timings_typed(resp, &text);
+    let prompt = parse_prompt_timings_typed(resp);
     Some(NativeGeneration {
         text,
         real_inference: true,
@@ -2601,6 +2690,74 @@ fn parse_llama_timings(
     let tokens_per_sec = timings
         .and_then(|t| t.get("predicted_per_second"))
         .and_then(|v| v.as_f64())
+        .map(|v| v as f32)
+        .or_else(|| match (predicted_n, predicted_ms) {
+            (Some(n), Some(ms)) if ms > 0.0 && n > 0 => Some(n as f32 / (ms / 1000.0)),
+            _ => None,
+        });
+
+    (predicted_n, tokens_per_sec, predicted_ms)
+}
+
+/// Typed version: reads prompt timings directly from the deserialized struct.
+fn parse_prompt_timings_typed(resp: &LlamaServerResponse) -> PromptTimings {
+    let timings = resp.timings.as_ref();
+    let prompt_n = timings.and_then(|t| t.prompt_n).map(|n| n as u32);
+    let prompt_ms = timings.and_then(|t| t.prompt_ms).map(|ms| ms as f32);
+    let prompt_tokens_per_sec = timings
+        .and_then(|t| t.prompt_per_second)
+        .filter(|v| *v > 0.0)
+        .map(|v| v as f32)
+        .or_else(|| match (prompt_n, prompt_ms) {
+            (Some(n), Some(ms)) if n > 0 && ms > 0.0 => Some(n as f32 / (ms / 1000.0)),
+            _ => None,
+        });
+    PromptTimings {
+        prompt_tokens: prompt_n,
+        prompt_ms,
+        prompt_tokens_per_sec,
+    }
+}
+
+/// Typed version: reads decode timings directly from the deserialized struct.
+fn parse_llama_timings_typed(
+    resp: &LlamaServerResponse,
+    text: &str,
+) -> (Option<u32>, Option<f32>, Option<f32>) {
+    let timings = resp.timings.as_ref();
+    let predicted_n = timings
+        .and_then(|t| t.predicted_n)
+        .or(resp.tokens_predicted)
+        .or(resp.tokens_evaluated)
+        .map(|n| n as u32)
+        .or_else(|| {
+            let words = text.split_whitespace().count() as u32;
+            if words > 0 {
+                Some(words)
+            } else {
+                None
+            }
+        });
+
+    let predicted_ms = timings
+        .and_then(|t| t.predicted_ms)
+        .map(|ms| ms as f32)
+        .or_else(|| {
+            timings
+                .and_then(|t| t.predicted_per_second)
+                .and_then(|tps| {
+                    predicted_n.map(|n| {
+                        if tps > 0.0 {
+                            (n as f32) / (tps as f32) * 1000.0
+                        } else {
+                            0.0
+                        }
+                    })
+                })
+        });
+
+    let tokens_per_sec = timings
+        .and_then(|t| t.predicted_per_second)
         .map(|v| v as f32)
         .or_else(|| match (predicted_n, predicted_ms) {
             (Some(n), Some(ms)) if ms > 0.0 && n > 0 => Some(n as f32 / (ms / 1000.0)),

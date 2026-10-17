@@ -786,6 +786,10 @@ export class GhostlinkAPI {
         last_tokens: Number(raw.last_tokens) || 0,
         uptime_s: Number(raw.uptime_s) || 0,
         inference_backend: raw.inference_backend ? String(raw.inference_backend) : undefined,
+        ttft_p50_ms: Number(raw.ttft_p50_ms) || 0,
+        ttft_p95_ms: Number(raw.ttft_p95_ms) || 0,
+        last_ttft_ms: Number(raw.last_ttft_ms) || 0,
+        ttft_samples: Number(raw.ttft_samples) || 0,
       };
       return { metrics };
     } catch (error: any) {
