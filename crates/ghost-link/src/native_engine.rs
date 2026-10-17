@@ -2571,7 +2571,11 @@ fn generation_from_llama_response(resp: &LlamaServerResponse) -> Option<NativeGe
         text = resp
             .choices
             .first()
-            .and_then(|c| c.text.as_ref().or_else(|| c.message.as_ref().and_then(|m| m.content.as_ref())))
+            .and_then(|c| {
+                c.text
+                    .as_ref()
+                    .or_else(|| c.message.as_ref().and_then(|m| m.content.as_ref()))
+            })
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty());
     }
