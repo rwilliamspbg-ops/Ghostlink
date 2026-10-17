@@ -163,6 +163,10 @@ impl<T> SpscRingBuffer<T> {
         // Write the value at tail position
         unsafe {
             let buf_ptr = self.buffer.get() as *mut std::mem::MaybeUninit<T>;
+            // OPTIMIZATION: Prefetch the next write location to reduce cache misses
+            // on the subsequent push call. This hides memory latency behind the
+            // current write and atomic store.
+            prefetch_write(buf_ptr.add(next_tail));
             (*buf_ptr.add(tail)).write(value);
 
             // Release store to make write visible to consumer
@@ -199,9 +203,14 @@ impl<T> SpscRingBuffer<T> {
             let buf_ptr = self.buffer.get() as *const std::mem::MaybeUninit<T>;
             let val = (*buf_ptr.add(head)).assume_init_read();
 
+            let next_head = (head + 1) & (Self::CAPACITY - 1);
+            // OPTIMIZATION: Prefetch the next read location to reduce cache misses
+            // on the subsequent pop call. This hides memory latency behind the
+            // current read and atomic store.
+            prefetch_read(buf_ptr.add(next_head));
+
             // Release store to make read visible to producer
-            self.head
-                .store((head + 1) & (Self::CAPACITY - 1), Ordering::Release);
+            self.head.store(next_head, Ordering::Release);
 
             val
         };
