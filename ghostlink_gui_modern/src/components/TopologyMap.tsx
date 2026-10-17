@@ -1,4 +1,4 @@
-import React, { useMemo, useState, useCallback } from 'react';
+import React, { useMemo, useState, useCallback, useEffect } from 'react';
 import { Server, Cpu, HardDrive, Zap, X } from 'lucide-react';
 import { ClusterTopology, ClusterTopologyNode, ClusterTopologyEdge } from '../api';
 
@@ -117,6 +117,17 @@ export const TopologyMap: React.FC<TopologyMapProps> = ({ topology, className = 
     setSelectedNodeId(null);
   }, []);
 
+  useEffect(() => {
+    if (!selectedNodeId) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setSelectedNodeId(null);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [selectedNodeId]);
+
   if (!topology || !nodes.length) {
     return (
       <div
@@ -200,13 +211,18 @@ export const TopologyMap: React.FC<TopologyMapProps> = ({ topology, className = 
           const isSelected = selectedNodeId === node.id;
           const isCoordinator = role === 'coordinator';
 
+          const titleText = `${node.label} (${role}) — ${
+            node.vram_gb > 0 ? `${node.vram_gb} GB VRAM` : `${node.system_memory_gb} GB System RAM`
+          }. Click or press Enter to toggle details.`;
+
           return (
             <g
               key={node.id}
               onClick={() => handleNodeClick(node.id)}
               style={{ cursor: 'pointer' }}
               role="button"
-              aria-label={`Node ${node.label}`}
+              aria-label={`Node ${node.label} (${role})`}
+              aria-expanded={isSelected}
               tabIndex={0}
               onKeyDown={(e) => {
                 if (e.key === 'Enter' || e.key === ' ') {
@@ -214,7 +230,10 @@ export const TopologyMap: React.FC<TopologyMapProps> = ({ topology, className = 
                   handleNodeClick(node.id);
                 }
               }}
+              className="focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 rounded-full"
             >
+              <title>{titleText}</title>
+
               {/* Pulse ring for active contributors */}
               {role === 'contributor' && (
                 <circle
@@ -320,8 +339,9 @@ export const TopologyMap: React.FC<TopologyMapProps> = ({ topology, className = 
             </h3>
             <button
               onClick={handleClose}
-              className="text-slate-400 hover:text-slate-200 transition"
+              className="text-slate-400 hover:text-slate-200 hover:bg-slate-800 p-1 rounded-lg transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
               aria-label="Close details"
+              title="Close details (Esc)"
             >
               <X size={16} />
             </button>
