@@ -85,6 +85,19 @@ describe('MetricsTab', () => {
     expect(screen.getByText('System Performance')).toBeInTheDocument();
   });
 
+  it('provides aria-valuetext and title attributes on GaugeCard progressbars', () => {
+    const api = createMockApi();
+    render(<MetricsTab api={api} />);
+
+    const cpuGauge = screen.getByRole('progressbar', { name: 'CPU Utilization' });
+    expect(cpuGauge).toHaveAttribute('aria-valuetext', '42.0%');
+    expect(cpuGauge).toHaveAttribute('title', 'CPU Utilization: 42.0%');
+
+    const gpuGauge = screen.getByRole('progressbar', { name: 'GPU Core Load' });
+    expect(gpuGauge).toHaveAttribute('aria-valuetext', '71.0%');
+    expect(gpuGauge).toHaveAttribute('title', 'GPU Core Load: 71.0% (71% utilized)');
+  });
+
   it('does not show the Cluster Load gauge with 0 or 1 workers', () => {
     useAppStore.setState({
       workers: [{ id: 'w1', host: '127.0.0.1', port: 8003, status: 'Connected', model: 'x', threads: 4, load: 50 }],

@@ -655,44 +655,50 @@ const GaugeCard = ({
   icon: any;
   color: string;
   subtitle?: string;
-}) => (
-  <div
-    className="bg-slate-900/50 border border-slate-800 rounded-3xl p-6 flex flex-col items-center text-center"
-    role="progressbar"
-    aria-label={label}
-    aria-valuenow={Math.round(value)}
-    aria-valuemin={0}
-    aria-valuemax={100}
-  >
-    <div className="relative w-24 h-24 mb-4" aria-hidden="true">
-      <svg className="w-full h-full transform -rotate-90">
-        <circle
-          cx="48"
-          cy="48"
-          r="42"
-          stroke="currentColor"
-          strokeWidth="6"
-          fill="transparent"
-          className="text-slate-800"
-        />
-        <circle
-          cx="48"
-          cy="48"
-          r="42"
-          stroke="currentColor"
-          strokeWidth="6"
-          fill="transparent"
-          strokeDasharray={263.8}
-          strokeDashoffset={263.8 - (263.8 * Math.min(100, Math.max(0, value))) / 100}
-          className={`${color} transition-all duration-1000 ease-out`}
-        />
-      </svg>
-      <div className="absolute inset-0 flex items-center justify-center">
-        <Icon size={20} className={color} />
+}) => {
+  const formattedValue = `${Number(value).toFixed(1)}%`;
+  const titleText = `${label}: ${formattedValue}${subtitle ? ` (${subtitle})` : ''}`;
+  return (
+    <div
+      className="bg-slate-900/50 border border-slate-800 rounded-3xl p-6 flex flex-col items-center text-center"
+      role="progressbar"
+      aria-label={label}
+      aria-valuenow={Math.round(value)}
+      aria-valuemin={0}
+      aria-valuemax={100}
+      aria-valuetext={formattedValue}
+      title={titleText}
+    >
+      <div className="relative w-24 h-24 mb-4" aria-hidden="true">
+        <svg className="w-full h-full transform -rotate-90">
+          <circle
+            cx="48"
+            cy="48"
+            r="42"
+            stroke="currentColor"
+            strokeWidth="6"
+            fill="transparent"
+            className="text-slate-800"
+          />
+          <circle
+            cx="48"
+            cy="48"
+            r="42"
+            stroke="currentColor"
+            strokeWidth="6"
+            fill="transparent"
+            strokeDasharray={263.8}
+            strokeDashoffset={263.8 - (263.8 * Math.min(100, Math.max(0, value))) / 100}
+            className={`${color} transition-all duration-1000 ease-out`}
+          />
+        </svg>
+        <div className="absolute inset-0 flex items-center justify-center">
+          <Icon size={20} className={color} />
+        </div>
       </div>
+      <p className="text-xs font-bold text-slate-300 mb-1">{label}</p>
+      <p className="text-xl font-black text-white">{formattedValue}</p>
+      {subtitle && <p className="text-[10px] text-slate-500 mt-1">{subtitle}</p>}
     </div>
-    <p className="text-xs font-bold text-slate-300 mb-1">{label}</p>
-    <p className="text-xl font-black text-white">{Number(value).toFixed(1)}%</p>
-    {subtitle && <p className="text-[10px] text-slate-500 mt-1">{subtitle}</p>}
-  </div>
-);
+  );
+};
