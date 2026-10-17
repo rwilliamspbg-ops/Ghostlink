@@ -5,6 +5,14 @@ All notable changes to Ghostlink Studio are documented here.
 ---
 
 
+## [Unreleased]
+
+### Performance
+
+- **Ring buffer SPSC hot path** (`crates/ghostlink-core/src/ring.rs`): added `prefetch_write`/`prefetch_read` hints for the next buffer location in `push`/`pop`, reducing cache misses on subsequent operations. Benchmark: SPSC cross-thread (10k items) 39.92 → 30.46 ns/op (**23.7% faster**), batch (10k, bs=64) 28.90 → 21.80 ns/op (**24.6% faster**).
+- **Protocol decode** (`crates/ghostlink-core/src/protocol.rs`): replaced `std::str::from_utf8` + `to_string()` with `String::from_utf8` directly on slices in `decode_payload`, combining validation and allocation into a single step for all four string fields (id, compute_capability, gpu_name, rpc_build_id).
+- **Control-plane proxy** (`control-plane/pkg/proxy/proxy.go`): added `sync.Pool` for 4KB forwarding buffers to eliminate per-request heap allocations; forward request body directly via `http.NewRequest(r.Method, url, r.Body)` instead of `io.ReadAll` + `bytes.NewReader`, avoiding a full body copy.
+
 ## [2.5.0] - 2026-10-16
 
 ### Added
