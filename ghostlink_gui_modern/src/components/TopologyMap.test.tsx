@@ -111,13 +111,27 @@ describe('TopologyMap', () => {
   it('shows detail popover when a node is clicked', () => {
     render(<TopologyMap topology={mockTopology} />);
     const nodeButton = screen.getByRole('button', { name: /gpu worker 1/i });
+    expect(nodeButton).toHaveAttribute('aria-expanded', 'false');
     fireEvent.click(nodeButton);
 
+    expect(nodeButton).toHaveAttribute('aria-expanded', 'true');
     // Popover heading shows the node name (SVG label also matches)
     expect(screen.getAllByText('GPU Worker 1').length).toBeGreaterThan(0);
     expect(screen.getByText('192.168.1.20:50052')).toBeInTheDocument();
     expect(screen.getByText('24 GB')).toBeInTheDocument();
     expect(screen.getByText('180 µs')).toBeInTheDocument();
+  });
+
+  it('closes detail popover on Escape key press', () => {
+    render(<TopologyMap topology={mockTopology} />);
+    const nodeButton = screen.getByRole('button', { name: /main server/i });
+    fireEvent.click(nodeButton);
+
+    expect(screen.getByText('127.0.0.1')).toBeInTheDocument();
+
+    fireEvent.keyDown(window, { key: 'Escape' });
+
+    expect(screen.queryByText('127.0.0.1')).not.toBeInTheDocument();
   });
 
   it('hides detail popover when close button is clicked', () => {

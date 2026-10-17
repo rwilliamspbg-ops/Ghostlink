@@ -135,3 +135,7 @@
 ## 2026-10-16 - [GaugeCard Accessible Values & Tooltips]
 **Learning:** Gauge progressbars with only `aria-valuenow` integers lack exact precision in screen readers when floating-point percentages are displayed visually; adding `aria-valuetext` ensures clear audible percentage reading while `title` provides hover tooltips.
 **Action:** When creating radial or linear progressbars with decimal values or subtitles, provide both `aria-valuetext` and a contextual native `title` attribute.
+
+## 2026-10-22 - [Interactive SVG Visualization Nodes Accessibility & Popover Dismissal]
+**Learning:** SVG `<g>` elements representing interactive node items in topology maps or node graphs need native SVG `<title>` children for hover tooltips, `aria-expanded` attributes to reflect popover open states to assistive technology, explicit focus-visible rings (`focus-visible:ring-2`), and `Escape` key listeners to dismiss detail popovers cleanly.
+**Action:** When making SVG graph elements interactive with `role="button"`, include SVG `<title>` tooltips, set `aria-expanded={isOpen}`, add focus-visible rings, and register an `Escape` keydown handler when popovers are open.
