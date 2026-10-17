@@ -1,17 +1,26 @@
 package proxy
 
 import (
-	"bytes"
 	"crypto/tls"
 	"crypto/x509"
-	"io"
 	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 )
+
+// bufferPool reuses 4KB forwarding buffers to eliminate per-request heap
+// allocations on the hot path. Without this, every proxied request allocates
+// a fresh 4KB buffer that becomes garbage immediately after the response
+// body is drained.
+var bufferPool = sync.Pool{
+	New: func() interface{} {
+		return make([]byte, 4096)
+	},
+}
 
 // backendCertPath is ghost-link's self-signed certificate, resolved the same way
 // crates/ghost-link/src/tls.rs::cert_path does so both sides agree on the file.
@@ -107,14 +116,8 @@ func (p *ChatProxy) forward(w http.ResponseWriter, r *http.Request, path string)
 		path = "/" + path
 	}
 
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
-		http.Error(w, "Failed to read request body", http.StatusBadRequest)
-		return
-	}
-
 	url := p.BackendURL + path
-	req, err := http.NewRequest(r.Method, url, bytes.NewReader(body))
+	req, err := http.NewRequest(r.Method, url, r.Body)
 	if err != nil {
 		http.Error(w, "Failed to create backend request", http.StatusInternalServerError)
 		return
@@ -156,7 +159,8 @@ func (p *ChatProxy) forward(w http.ResponseWriter, r *http.Request, path string)
 	// response ended — silently turning real-time streaming back into a
 	// long wait-then-dump for anything routed through this proxy.
 	flusher, canFlush := w.(http.Flusher)
-	buf := make([]byte, 4096)
+	buf := bufferPool.Get().([]byte)
+	defer bufferPool.Put(buf)
 	for {
 		n, readErr := resp.Body.Read(buf)
 		if n > 0 {
