@@ -769,6 +769,8 @@ const GaugeCard = ({
     aria-valuenow={Math.round(value)}
     aria-valuemin={0}
     aria-valuemax={100}
+    aria-valuetext={`${label}: ${Number(value).toFixed(1)}%`}
+    title={`${label}: ${Number(value).toFixed(1)}%`}
   >
     <div className="relative w-24 h-24 mb-4" aria-hidden="true">
       <svg className="w-full h-full transform -rotate-90">
