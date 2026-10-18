@@ -249,4 +249,22 @@ describe('SettingsTab', () => {
     const backendSelect = screen.getByLabelText('Backend');
     expect(backendSelect).toHaveAttribute('aria-describedby', 'backend-desc');
   });
+
+  it('sets aria-valuetext and title tooltips on range sliders', async () => {
+    const api = createMockApi();
+
+    render(<SettingsTab api={api} />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Sampling Parameters')).toBeInTheDocument();
+    });
+
+    const tempSlider = screen.getByLabelText('Temperature');
+    expect(tempSlider).toHaveAttribute('aria-valuetext', '0.70');
+    expect(tempSlider).toHaveAttribute('title', 'Temperature: 0.70');
+
+    const topPSlider = screen.getByLabelText('Top P');
+    expect(topPSlider).toHaveAttribute('aria-valuetext', '0.90');
+    expect(topPSlider).toHaveAttribute('title', 'Top P: 0.90');
+  });
 });
