@@ -716,7 +716,8 @@ impl TaskRuntimeStore {
                 }
             }
         }
-        projects.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        // OPTIMIZATION: Unstable sorting avoids scratch buffer allocations and stability tracking overhead.
+        projects.sort_unstable_by(|a, b| b.created_at.cmp(&a.created_at));
         Ok(projects)
     }
 
@@ -819,7 +820,8 @@ impl TaskRuntimeStore {
                 }
             }
         }
-        tasks.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        // OPTIMIZATION: Unstable sorting avoids scratch buffer allocations and stability tracking overhead.
+        tasks.sort_unstable_by(|a, b| b.created_at.cmp(&a.created_at));
         Ok(tasks)
     }
 
