@@ -715,7 +715,8 @@ pub fn execute_pipeline_with_rebalance_and_measured(
             });
         }
     }
-    stage_stats.sort_by_key(|s| s.stage_idx);
+    // OPTIMIZATION: Unstable sorting avoids scratch buffer allocations and stability tracking overhead.
+    stage_stats.sort_unstable_by_key(|s| s.stage_idx);
 
     let throughput_tokens_per_sec = if total_time_ms > 0.0 {
         token_count as f32 / (total_time_ms / 1000.0)
@@ -1622,7 +1623,8 @@ pub fn execute_pipeline_distributed(
         }
     }
 
-    stage_stats.sort_by_key(|s| s.stage_idx);
+    // OPTIMIZATION: Unstable sorting avoids scratch buffer allocations and stability tracking overhead.
+    stage_stats.sort_unstable_by_key(|s| s.stage_idx);
 
     let throughput_tokens_per_sec = if total_time_ms > 0.0 {
         token_count as f32 / (total_time_ms / 1000.0)
@@ -1886,7 +1888,8 @@ pub fn execute_pipeline_tcp_loopback_with_config(
         }
     }
 
-    stage_stats.sort_by_key(|s| s.stage_idx);
+    // OPTIMIZATION: Unstable sorting avoids scratch buffer allocations and stability tracking overhead.
+    stage_stats.sort_unstable_by_key(|s| s.stage_idx);
 
     let throughput_tokens_per_sec = if total_time_ms > 0.0 {
         token_count as f32 / (total_time_ms / 1000.0)

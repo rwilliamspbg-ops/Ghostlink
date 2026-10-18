@@ -4470,7 +4470,8 @@ fn load_persistent_summaries() -> HashMap<String, SessionSummary> {
     // silently discard the most recent work on load -- the exact opposite of what
     // the cap is for. `None` timestamps (rows from a build that predates the
     // field) sort first, so they are the ones dropped.
-    parsed.sort_by_key(|(_, _, when)| *when);
+    // OPTIMIZATION: Unstable sorting avoids scratch buffer allocations and stability tracking overhead.
+    parsed.sort_unstable_by_key(|(_, _, when)| *when);
     let excess = parsed.len().saturating_sub(SUMMARY_MAX_SESSIONS);
     if excess > 0 {
         parsed.drain(..excess);
@@ -4942,7 +4943,8 @@ fn prune_sessions_for_persistence(sessions: &[SessionRecord]) -> Vec<SessionReco
         let mut evictable: Vec<usize> = (0..survivors.len())
             .filter(|&i| !is_protected(&survivors[i]))
             .collect();
-        evictable.sort_by_key(|&i| session_activity_ts(&survivors[i]));
+        // OPTIMIZATION: Unstable sorting avoids scratch buffer allocations and stability tracking overhead.
+        evictable.sort_unstable_by_key(|&i| session_activity_ts(&survivors[i]));
 
         let drop_count = survivors.len().saturating_sub(max_count);
         let mut dropped = std::collections::HashSet::new();
@@ -4967,7 +4969,8 @@ fn prune_sessions_for_persistence(sessions: &[SessionRecord]) -> Vec<SessionReco
         let mut evictable: Vec<usize> = (0..survivors.len())
             .filter(|&i| !is_protected(&survivors[i]))
             .collect();
-        evictable.sort_by_key(|&i| session_activity_ts(&survivors[i]));
+        // OPTIMIZATION: Unstable sorting avoids scratch buffer allocations and stability tracking overhead.
+        evictable.sort_unstable_by_key(|&i| session_activity_ts(&survivors[i]));
 
         let mut dropped = std::collections::HashSet::new();
         for &i in &evictable {
@@ -5661,7 +5664,8 @@ fn group_gguf_shards(files: &[String]) -> Vec<Vec<String>> {
     groups
         .into_values()
         .map(|mut shards| {
-            shards.sort_by_key(|(idx, _)| *idx);
+            // OPTIMIZATION: Unstable sorting avoids scratch buffer allocations and stability tracking overhead.
+            shards.sort_unstable_by_key(|(idx, _)| *idx);
             shards.into_iter().map(|(_, name)| name).collect()
         })
         .collect()
@@ -5964,7 +5968,8 @@ fn put_session_summary(
             .iter()
             .map(|(k, v)| (k.clone(), v.updated_at))
             .collect();
-        by_age.sort_by_key(|(_, ts)| *ts);
+        // OPTIMIZATION: Unstable sorting avoids scratch buffer allocations and stability tracking overhead.
+        by_age.sort_unstable_by_key(|(_, ts)| *ts);
         let excess = summaries.len() - SUMMARY_MAX_SESSIONS;
         for (key, _) in by_age.into_iter().take(excess) {
             summaries.remove(&key);

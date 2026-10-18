@@ -1423,7 +1423,8 @@ pub fn discover_rpc_peers_with_policy(
                 })
             })
             .collect();
-        peers.sort_by(|a, b| a.node_id.cmp(&b.node_id));
+        // OPTIMIZATION: Unstable sorting avoids scratch buffer allocations and stability tracking overhead.
+        peers.sort_unstable_by(|a, b| a.node_id.cmp(&b.node_id));
         peers
     })
 }
