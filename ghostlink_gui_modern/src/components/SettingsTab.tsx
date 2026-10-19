@@ -229,6 +229,7 @@ export const SettingsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
       : (!step || step >= 1
         ? Math.round(value).toString()
         : value.toFixed(Math.max(0, -Math.floor(Math.log10(step)))));
+    const formattedValue = `${displayValue}${unit || ''}`;
     return (
       <div className="space-y-1.5">
         <div className="flex items-center justify-between gap-2">
@@ -270,11 +271,13 @@ export const SettingsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
               value={value ?? 0}
               onChange={(e) => onChange(parseFloat(e.target.value))}
               aria-describedby={desc ? descId : undefined}
+              aria-valuetext={formattedValue}
+              title={`${label}: ${formattedValue}`}
               className="w-full h-1.5 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-blue-500 focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
             />
             <div className="flex justify-between text-[10px] text-slate-600">
-              <span>{min}</span>
-              <span>{max}</span>
+              <span>{min}{unit || ''}</span>
+              <span>{max}{unit || ''}</span>
             </div>
           </>
         )}
@@ -399,6 +402,7 @@ export const SettingsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
           onChange={(e) => onChange(e.target.value)}
           placeholder={placeholder}
           aria-describedby={desc ? descId : undefined}
+          title={label}
           className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2.5 text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500/50 font-mono focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
         />
       </div>
