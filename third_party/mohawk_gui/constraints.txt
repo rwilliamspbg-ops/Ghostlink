@@ -1,7 +1,7 @@
 PyJWT==2.15.1
 PyQt6==6.11.0
 bandit==1.9.4
-black==26.10.0
+black==26.10.1
 certifi==2026.7.22
 cryptography==50.0.2
 fastapi==0.143.0
