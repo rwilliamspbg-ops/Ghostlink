@@ -51,6 +51,18 @@ describe('SecurityTab', () => {
     expect(screen.getByText('Saved')).toBeInTheDocument();
   });
 
+  it('saves the entered API key when submitting the form via Enter keypress', async () => {
+    const api = createMockApi();
+    render(<SecurityTab api={api} />);
+
+    const input = screen.getByLabelText('API key');
+    fireEvent.change(input, { target: { value: 'enter-key-789' } });
+    fireEvent.submit(input);
+
+    expect(api.setApiKey).toHaveBeenCalledWith('enter-key-789');
+    expect(await screen.findByRole('button', { name: /api key saved/i })).toBeInTheDocument();
+  });
+
   it('handles audit log refresh button loading state and aria-busy attribute', async () => {
     let resolveAudit: any;
     const auditPromise = new Promise((resolve) => { resolveAudit = resolve; });
