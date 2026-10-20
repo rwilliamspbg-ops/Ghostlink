@@ -244,18 +244,36 @@ fn placeholders(n: usize) -> String {
 /// few hundred rows, and a keyword score is explainable, needs no model pull, and
 /// can't leak the query to a network service. Weighted so an exact title hit
 /// outranks a body mention, and a pinned memory outranks an equal-textual one.
+/// Case-insensitive substring search helper. For ASCII strings (the vast majority of titles/bodies),
+/// scans bytes in-place using `eq_ignore_ascii_case` to completely avoid heap string allocations.
+#[inline]
+fn contains_ic(haystack: &str, needle: &str) -> bool {
+    if needle.is_empty() {
+        return true;
+    }
+    if haystack.len() < needle.len() {
+        return false;
+    }
+    if haystack.is_ascii() && needle.is_ascii() {
+        haystack
+            .as_bytes()
+            .windows(needle.len())
+            .any(|window| window.eq_ignore_ascii_case(needle.as_bytes()))
+    } else {
+        haystack.to_lowercase().contains(needle)
+    }
+}
+
 pub fn score(memory: &Memory, query_terms: &[String]) -> f64 {
     if query_terms.is_empty() {
         return 0.0;
     }
-    let title = memory.title.to_lowercase();
-    let body = memory.body.to_lowercase();
     let mut total = 0.0;
     for term in query_terms {
-        if title.contains(term.as_str()) {
+        if contains_ic(&memory.title, term) {
             total += 3.0;
         }
-        if body.contains(term.as_str()) {
+        if contains_ic(&memory.body, term) {
             total += 1.0;
         }
     }
@@ -464,6 +482,25 @@ mod tests {
         assert!(cat.is_empty());
         let hits = search(&conn, "ws_b", &[], "secret", &[], 10).unwrap();
         assert!(hits.is_empty());
+    }
+
+    #[test]
+    fn score_case_insensitive_matching() {
+        let memory = Memory {
+            id: "m1".to_string(),
+            workspace_id: "ws1".to_string(),
+            kind: MemoryKind::ProjectFact,
+            title: "PostgreSQL Database Migration".to_string(),
+            body: "Upgraded to PostgreSQL 16 on Linux server".to_string(),
+            source: MemorySource::User,
+            created_at: 0,
+            updated_at: 0,
+            pinned: false,
+            shared: false,
+        };
+        let terms = vec!["postgresql".to_string(), "migration".to_string()];
+        let s = score(&memory, &terms);
+        assert_eq!(s, 7.0);
     }
 
     #[test]
