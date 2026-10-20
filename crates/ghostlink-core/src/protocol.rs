@@ -71,15 +71,10 @@ impl FrameHeader {
     pub fn decode(buf: &[u8]) -> Option<Self> {
         // Optimize: Extract fixed 8-byte slice in a single bounds check to allow unaligned single-instruction loads.
         let header_bytes: &[u8; 8] = buf.get(..Self::HEADER_SIZE)?.try_into().ok()?;
-        let ether_type = u16::from_le_bytes([header_bytes[0], header_bytes[1]]);
+        let ether_type = u16::from_le_bytes(header_bytes[0..2].try_into().unwrap());
         let kind = header_bytes[2];
         let version = header_bytes[3];
-        let crc = u32::from_le_bytes([
-            header_bytes[4],
-            header_bytes[5],
-            header_bytes[6],
-            header_bytes[7],
-        ]);
+        let crc = u32::from_le_bytes(header_bytes[4..8].try_into().unwrap());
         Some(Self {
             ether_type,
             kind,
@@ -337,23 +332,21 @@ impl NodeResources {
         if id_end > len {
             return Err("payload truncated".into());
         }
-        // OPTIMIZATION: Use String::from_utf8 directly on the slice to combine
-        // validation and allocation into a single step, avoiding the intermediate
-        // &str allocation from std::str::from_utf8 followed by to_string().
-        let id = String::from_utf8(payload[cursor..id_end].to_vec())
-            .map_err(|_| "invalid UTF-8 in ID".to_string())?;
+        // OPTIMIZATION: Validate UTF-8 on the payload slice directly using std::str::from_utf8
+        // before allocating a String, avoiding intermediate Vec<u8> allocations from .to_vec().
+        let id = std::str::from_utf8(&payload[cursor..id_end])
+            .map_err(|_| "invalid UTF-8 in ID".to_string())?
+            .to_string();
         cursor = id_end;
 
-        // Optimize: Extract 8-byte float array in a single bounds check, eliminating separate slice conversions and unwrap branching.
+        // Optimize: Extract 8-byte float array in a single bounds check, using try_into for unaligned primitive loads.
         let vram_bytes: &[u8; 8] = payload
             .get(cursor..cursor + 8)
             .ok_or_else(|| "payload truncated".to_string())?
             .try_into()
             .map_err(|_| "payload truncated".to_string())?;
-        let vram_gb =
-            f32::from_le_bytes([vram_bytes[0], vram_bytes[1], vram_bytes[2], vram_bytes[3]]);
-        let system_memory_gb =
-            f32::from_le_bytes([vram_bytes[4], vram_bytes[5], vram_bytes[6], vram_bytes[7]]);
+        let vram_gb = f32::from_le_bytes(vram_bytes[0..4].try_into().unwrap());
+        let system_memory_gb = f32::from_le_bytes(vram_bytes[4..8].try_into().unwrap());
         cursor += 8;
 
         if cursor >= len {
@@ -365,9 +358,10 @@ impl NodeResources {
         if cc_end > len {
             return Err("payload truncated".into());
         }
-        // OPTIMIZATION: Use String::from_utf8 directly to combine validation and allocation.
-        let compute_capability = String::from_utf8(payload[cursor..cc_end].to_vec())
-            .map_err(|_| "invalid UTF-8 in CC".to_string())?;
+        // OPTIMIZATION: Validate UTF-8 directly on the payload slice before String allocation.
+        let compute_capability = std::str::from_utf8(&payload[cursor..cc_end])
+            .map_err(|_| "invalid UTF-8 in CC".to_string())?
+            .to_string();
         cursor = cc_end;
 
         if cursor >= len {
@@ -386,9 +380,10 @@ impl NodeResources {
             if gpu_end > len {
                 return Err("payload truncated".into());
             }
-            // OPTIMIZATION: Use String::from_utf8 directly to combine validation and allocation.
-            let name = String::from_utf8(payload[cursor..gpu_end].to_vec())
-                .map_err(|_| "invalid UTF-8 in GPU name".to_string())?;
+            // OPTIMIZATION: Validate UTF-8 directly on the payload slice before String allocation.
+            let name = std::str::from_utf8(&payload[cursor..gpu_end])
+                .map_err(|_| "invalid UTF-8 in GPU name".to_string())?
+                .to_string();
             // Was previously left unset here — harmless before this field
             // existed (cursor was never read again), but the rpc_port read
             // below now depends on this pointing past the GPU name bytes
@@ -403,9 +398,9 @@ impl NodeResources {
         // payload from an older peer simply won't have these 2 bytes, which
         // correctly decodes as "no RPC contribution advertised" rather than
         // an error.
-        // Optimize: Direct array indexing avoids Result creation and try_into error mapping on verified bounds.
+        // Optimize: Direct slice try_into conversion enables unaligned 16-bit integer load.
         let rpc_port = if cursor + 2 <= len {
-            let port = u16::from_le_bytes([payload[cursor], payload[cursor + 1]]);
+            let port = u16::from_le_bytes(payload[cursor..cursor + 2].try_into().unwrap());
             cursor += 2;
             if port == 0 {
                 None
@@ -430,9 +425,10 @@ impl NodeResources {
             if build_id_len == 0 {
                 None
             } else {
-                // OPTIMIZATION: Use String::from_utf8 directly to combine validation and allocation.
-                let id = String::from_utf8(payload[cursor..build_id_end].to_vec())
-                    .map_err(|_| "invalid UTF-8 in rpc_build_id".to_string())?;
+                // OPTIMIZATION: Validate UTF-8 directly on the payload slice before String allocation.
+                let id = std::str::from_utf8(&payload[cursor..build_id_end])
+                    .map_err(|_| "invalid UTF-8 in rpc_build_id".to_string())?
+                    .to_string();
                 Some(id)
             }
         } else {

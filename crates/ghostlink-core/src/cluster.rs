@@ -320,8 +320,8 @@ impl ClusterState {
         // Optimization: Zero-allocation, single-pass node registration path.
         // Updates metrics and resources in-place using zero-cost ownership moves (no node.clone()),
         // eliminating secondary HashMap lookups while avoiding atomic cache invalidations
-        // when resource capabilities remain unchanged.
-        if let Some(existing_metrics) = metrics.get_mut(&node.id) {
+        // when resource capabilities remain unchanged. Borrowing node.id.as_str() directly avoids String conversions.
+        if let Some(existing_metrics) = metrics.get_mut(node.id.as_str()) {
             existing_metrics.vram_gb = vram_gb;
             existing_metrics.total_vram_gb = vram_gb;
             existing_metrics.system_memory_gb = system_memory_gb;
@@ -351,7 +351,7 @@ impl ClusterState {
             metrics.insert(node_id, node_metrics);
         }
 
-        if let Some(existing) = nodes.get_mut(&node.id) {
+        if let Some(existing) = nodes.get_mut(node.id.as_str()) {
             vram_delta = vram_gb - existing.vram_gb;
             system_memory_delta = system_memory_gb - existing.system_memory_gb;
 
