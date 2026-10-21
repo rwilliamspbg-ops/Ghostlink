@@ -102,7 +102,9 @@ impl SkillSet {
             })
             .collect();
         // Stable order so a prompt doesn't reshuffle between identical turns.
-        out.sort_by(|a, b| a.name.cmp(&b.name));
+        // OPTIMIZATION: Unstable sorting avoids scratch buffer allocations and stability tracking overhead.
+        // Skill names are unique keys in the map, so relative order stability for duplicate keys is irrelevant.
+        out.sort_unstable_by(|a, b| a.name.cmp(&b.name));
         out
     }
 
