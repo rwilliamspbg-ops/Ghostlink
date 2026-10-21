@@ -147,7 +147,7 @@ export const SecurityTab: React.FC<{ api: any }> = ({ api }) => {
                 </p>
               </div>
             </div>
-            <div className="flex gap-2">
+            <form onSubmit={(e) => { e.preventDefault(); handleSaveApiKey(); }} className="flex gap-2">
               <input
                 type={showApiKey ? 'text' : 'password'}
                 value={apiKeyInput}
@@ -157,6 +157,7 @@ export const SecurityTab: React.FC<{ api: any }> = ({ api }) => {
                 className="flex-1 bg-slate-950 border border-slate-800 rounded-xl px-4 py-2.5 text-sm font-mono text-slate-200 placeholder:text-slate-600 focus:outline-none focus:border-blue-500 focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
               />
               <button
+                type="button"
                 onClick={() => setShowApiKey(!showApiKey)}
                 className="px-3 text-slate-500 hover:text-white transition rounded-xl focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
                 aria-label={showApiKey ? 'Hide API key' : 'Show API key'}
@@ -166,7 +167,7 @@ export const SecurityTab: React.FC<{ api: any }> = ({ api }) => {
                 {showApiKey ? <EyeOff size={16} aria-hidden="true" /> : <Eye size={16} aria-hidden="true" />}
               </button>
               <button
-                onClick={handleSaveApiKey}
+                type="submit"
                 aria-label={apiKeySaved ? 'API key saved' : 'Save API key'}
                 title={apiKeySaved ? 'API key saved' : 'Save API key'}
                 className={`px-5 py-2.5 rounded-xl text-sm font-bold transition flex items-center gap-1.5 focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none ${
@@ -182,7 +183,7 @@ export const SecurityTab: React.FC<{ api: any }> = ({ api }) => {
                   'Save'
                 )}
               </button>
-            </div>
+            </form>
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
