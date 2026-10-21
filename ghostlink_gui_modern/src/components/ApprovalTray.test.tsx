@@ -53,15 +53,19 @@ describe('ApprovalTray', () => {
     const approveBtn = screen.getByRole('button', { name: 'Approve write_file' });
     expect(approveBtn).toHaveAttribute('title', 'Approve write_file execution');
     expect(approveBtn).toHaveAttribute('aria-busy', 'false');
+    expect(approveBtn.className).toContain('focus-visible:ring-2');
 
     const approveSessionBtn = screen.getByRole('button', { name: 'Approve write_file for session' });
     expect(approveSessionBtn).toHaveAttribute('title', 'Approve write_file for current session');
+    expect(approveSessionBtn.className).toContain('focus-visible:ring-2');
 
     const denyBtn = screen.getByRole('button', { name: 'Deny write_file' });
     expect(denyBtn).toHaveAttribute('title', 'Deny write_file execution');
+    expect(denyBtn.className).toContain('focus-visible:ring-2');
 
     const showResolvedCheckbox = screen.getByRole('checkbox', { name: 'Show resolved approvals' });
     expect(showResolvedCheckbox).toHaveAttribute('title', 'Toggle showing resolved approvals');
+    expect(showResolvedCheckbox.className).toContain('focus-visible:ring-2');
   });
 
   it('never offers a session grant for an exec-class tool', async () => {
