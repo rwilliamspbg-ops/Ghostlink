@@ -547,6 +547,7 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
           className="flex items-center gap-4"
           role="tablist"
           aria-label="Model source"
+          tabIndex={-1}
           onKeyDown={handleTabKeyDown}
         >
           <button
