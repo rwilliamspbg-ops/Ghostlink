@@ -71,10 +71,15 @@ impl FrameHeader {
     pub fn decode(buf: &[u8]) -> Option<Self> {
         // Optimize: Extract fixed 8-byte slice in a single bounds check to allow unaligned single-instruction loads.
         let header_bytes: &[u8; 8] = buf.get(..Self::HEADER_SIZE)?.try_into().ok()?;
-        let ether_type = u16::from_le_bytes(header_bytes[0..2].try_into().unwrap());
+        let ether_type = u16::from_le_bytes([header_bytes[0], header_bytes[1]]);
         let kind = header_bytes[2];
         let version = header_bytes[3];
-        let crc = u32::from_le_bytes(header_bytes[4..8].try_into().unwrap());
+        let crc = u32::from_le_bytes([
+            header_bytes[4],
+            header_bytes[5],
+            header_bytes[6],
+            header_bytes[7],
+        ]);
         Some(Self {
             ether_type,
             kind,
@@ -339,14 +344,14 @@ impl NodeResources {
             .to_string();
         cursor = id_end;
 
-        // Optimize: Extract 8-byte float array in a single bounds check, using try_into for unaligned primitive loads.
+        // Optimize: Extract 8-byte float array in a single bounds check and index array elements directly to avoid try_into/Result branching.
         let vram_bytes: &[u8; 8] = payload
             .get(cursor..cursor + 8)
             .ok_or_else(|| "payload truncated".to_string())?
             .try_into()
             .map_err(|_| "payload truncated".to_string())?;
-        let vram_gb = f32::from_le_bytes(vram_bytes[0..4].try_into().unwrap());
-        let system_memory_gb = f32::from_le_bytes(vram_bytes[4..8].try_into().unwrap());
+        let vram_gb = f32::from_le_bytes([vram_bytes[0], vram_bytes[1], vram_bytes[2], vram_bytes[3]]);
+        let system_memory_gb = f32::from_le_bytes([vram_bytes[4], vram_bytes[5], vram_bytes[6], vram_bytes[7]]);
         cursor += 8;
 
         if cursor >= len {
@@ -398,9 +403,9 @@ impl NodeResources {
         // payload from an older peer simply won't have these 2 bytes, which
         // correctly decodes as "no RPC contribution advertised" rather than
         // an error.
-        // Optimize: Direct slice try_into conversion enables unaligned 16-bit integer load.
+        // Optimize: Direct array indexing avoids try_into and unwrap overhead on bounds-checked byte slice.
         let rpc_port = if cursor + 2 <= len {
-            let port = u16::from_le_bytes(payload[cursor..cursor + 2].try_into().unwrap());
+            let port = u16::from_le_bytes([payload[cursor], payload[cursor + 1]]);
             cursor += 2;
             if port == 0 {
                 None
