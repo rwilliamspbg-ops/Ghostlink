@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
+import { Loader } from 'lucide-react';
 import { GhostlinkAPI } from '../api';
 import { PendingApproval } from '../store';
 
@@ -99,6 +100,7 @@ export const ApprovalTray: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
             onChange={(e) => setShowResolved(e.target.checked)}
             aria-label="Show resolved approvals"
             title="Toggle showing resolved approvals"
+            className="focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
           />
           Show resolved
         </label>
@@ -137,9 +139,17 @@ export const ApprovalTray: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                     aria-busy={busy}
                     aria-label={busy ? `Approving ${a.tool}...` : `Approve ${a.tool}`}
                     title={busy ? `Approving ${a.tool}...` : `Approve ${a.tool} execution`}
+                    className="focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
                     onClick={() => void decide(a, true)}
                   >
-                    {busy ? 'Approving...' : 'Approve'}
+                    {busy ? (
+                      <span className="inline-flex items-center gap-1">
+                        <Loader size={14} className="animate-spin" aria-hidden="true" />
+                        Approving...
+                      </span>
+                    ) : (
+                      'Approve'
+                    )}
                   </button>
                   {/* Session grants are never offered for exec: an "always allow"
                       on a command runner is a standing shell. The backend refuses
@@ -151,9 +161,17 @@ export const ApprovalTray: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                       aria-busy={busy}
                       aria-label={busy ? `Approving ${a.tool} for session...` : `Approve ${a.tool} for session`}
                       title={busy ? `Approving ${a.tool} for session...` : `Approve ${a.tool} for current session`}
+                      className="focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
                       onClick={() => void decide(a, true, true)}
                     >
-                      {busy ? 'Approving...' : 'Approve for session'}
+                      {busy ? (
+                        <span className="inline-flex items-center gap-1">
+                          <Loader size={14} className="animate-spin" aria-hidden="true" />
+                          Approving...
+                        </span>
+                      ) : (
+                        'Approve for session'
+                      )}
                     </button>
                   )}
                   <button
@@ -162,10 +180,17 @@ export const ApprovalTray: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                     aria-busy={busy}
                     aria-label={busy ? `Denying ${a.tool}...` : `Deny ${a.tool}`}
                     title={busy ? `Denying ${a.tool}...` : `Deny ${a.tool} execution`}
-                    className="approval-tray__deny"
+                    className="approval-tray__deny focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
                     onClick={() => void decide(a, false)}
                   >
-                    {busy ? 'Denying...' : 'Deny'}
+                    {busy ? (
+                      <span className="inline-flex items-center gap-1">
+                        <Loader size={14} className="animate-spin" aria-hidden="true" />
+                        Denying...
+                      </span>
+                    ) : (
+                      'Deny'
+                    )}
                   </button>
                 </div>
               ) : (
