@@ -350,8 +350,10 @@ impl NodeResources {
             .ok_or_else(|| "payload truncated".to_string())?
             .try_into()
             .map_err(|_| "payload truncated".to_string())?;
-        let vram_gb = f32::from_le_bytes([vram_bytes[0], vram_bytes[1], vram_bytes[2], vram_bytes[3]]);
-        let system_memory_gb = f32::from_le_bytes([vram_bytes[4], vram_bytes[5], vram_bytes[6], vram_bytes[7]]);
+        let vram_gb =
+            f32::from_le_bytes([vram_bytes[0], vram_bytes[1], vram_bytes[2], vram_bytes[3]]);
+        let system_memory_gb =
+            f32::from_le_bytes([vram_bytes[4], vram_bytes[5], vram_bytes[6], vram_bytes[7]]);
         cursor += 8;
 
         if cursor >= len {
