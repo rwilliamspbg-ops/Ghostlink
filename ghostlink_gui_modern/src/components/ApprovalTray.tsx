@@ -36,6 +36,7 @@ export const ApprovalTray: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
   const [approvals, setApprovals] = useState<PendingApproval[]>([]);
   const [showResolved, setShowResolved] = useState(false);
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [busyAction, setBusyAction] = useState<ApprovalAction | null>(null);
   const [results, setResults] = useState<Record<string, { ok: boolean; text: string }>>({});
   const [error, setError] = useState<string | null>(null);
 
@@ -56,11 +57,18 @@ export const ApprovalTray: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
   }, [refresh]);
 
   const decide = useCallback(
-    async (approval: PendingApproval, approve: boolean, approveForSession = false) => {
+    async (
+      approval: PendingApproval,
+      approve: boolean,
+      approveForSession = false,
+      action: ApprovalAction = 'approve'
+    ) => {
       setBusyId(approval.id);
+      setBusyAction(action);
       setError(null);
       const res = await api.decideApproval(approval.id, approve, { approveForSession });
       setBusyId(null);
+      setBusyAction(null);
       if (!res.success) {
         setError(res.error ?? 'approval failed');
         return;
@@ -114,7 +122,10 @@ export const ApprovalTray: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
 
       <ul className="approval-tray__list">
         {approvals.map((a) => {
-          const busy = busyId === a.id;
+          const isItemBusy = busyId === a.id;
+          const isApproveBusy = isItemBusy && busyAction === 'approve';
+          const isSessionBusy = isItemBusy && busyAction === 'approve_session';
+          const isDenyBusy = isItemBusy && busyAction === 'deny';
           const result = results[a.id];
           return (
             <li key={a.id} className={`approval-tray__item approval-tray__item--${a.status}`}>
@@ -135,14 +146,14 @@ export const ApprovalTray: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                 <div className="approval-tray__actions">
                   <button
                     type="button"
-                    disabled={busy}
-                    aria-busy={busy}
-                    aria-label={busy ? `Approving ${a.tool}...` : `Approve ${a.tool}`}
-                    title={busy ? `Approving ${a.tool}...` : `Approve ${a.tool} execution`}
+                    disabled={isItemBusy}
+                    aria-busy={isApproveBusy}
+                    aria-label={isApproveBusy ? `Approving ${a.tool}...` : `Approve ${a.tool}`}
+                    title={isApproveBusy ? `Approving ${a.tool}...` : `Approve ${a.tool} execution`}
                     className="focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
-                    onClick={() => void decide(a, true)}
+                    onClick={() => void decide(a, true, false, 'approve')}
                   >
-                    {busy ? (
+                    {isApproveBusy ? (
                       <span className="inline-flex items-center gap-1">
                         <Loader size={14} className="animate-spin" aria-hidden="true" />
                         Approving...
@@ -157,14 +168,14 @@ export const ApprovalTray: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                   {a.class !== 'exec' && (
                     <button
                       type="button"
-                      disabled={busy}
-                      aria-busy={busy}
-                      aria-label={busy ? `Approving ${a.tool} for session...` : `Approve ${a.tool} for session`}
-                      title={busy ? `Approving ${a.tool} for session...` : `Approve ${a.tool} for current session`}
+                      disabled={isItemBusy}
+                      aria-busy={isSessionBusy}
+                      aria-label={isSessionBusy ? `Approving ${a.tool} for session...` : `Approve ${a.tool} for session`}
+                      title={isSessionBusy ? `Approving ${a.tool} for session...` : `Approve ${a.tool} for current session`}
                       className="focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
-                      onClick={() => void decide(a, true, true)}
+                      onClick={() => void decide(a, true, true, 'approve_session')}
                     >
-                      {busy ? (
+                      {isSessionBusy ? (
                         <span className="inline-flex items-center gap-1">
                           <Loader size={14} className="animate-spin" aria-hidden="true" />
                           Approving...
@@ -176,14 +187,14 @@ export const ApprovalTray: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                   )}
                   <button
                     type="button"
-                    disabled={busy}
-                    aria-busy={busy}
-                    aria-label={busy ? `Denying ${a.tool}...` : `Deny ${a.tool}`}
-                    title={busy ? `Denying ${a.tool}...` : `Deny ${a.tool} execution`}
+                    disabled={isItemBusy}
+                    aria-busy={isDenyBusy}
+                    aria-label={isDenyBusy ? `Denying ${a.tool}...` : `Deny ${a.tool}`}
+                    title={isDenyBusy ? `Denying ${a.tool}...` : `Deny ${a.tool} execution`}
                     className="approval-tray__deny focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
-                    onClick={() => void decide(a, false)}
+                    onClick={() => void decide(a, false, false, 'deny')}
                   >
-                    {busy ? (
+                    {isDenyBusy ? (
                       <span className="inline-flex items-center gap-1">
                         <Loader size={14} className="animate-spin" aria-hidden="true" />
                         Denying...

@@ -151,6 +151,40 @@ describe('ApprovalTray', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent('server exploded');
   });
 
+  it('tracks targeted action busy state so only the triggered decision button shows spinner and aria-busy', async () => {
+    let resolveDecide!: (value: any) => void;
+    const decidePromise = new Promise((resolve) => {
+      resolveDecide = resolve;
+    });
+
+    const api = makeApi({
+      listApprovals: vi.fn().mockResolvedValue({ approvals: [approval()] }),
+      decideApproval: vi.fn().mockReturnValue(decidePromise),
+    } as unknown as Partial<GhostlinkAPI>);
+
+    render(<ApprovalTray api={api} />);
+
+    const approveBtn = await screen.findByRole('button', { name: 'Approve write_file' });
+    const approveSessionBtn = screen.getByRole('button', { name: 'Approve write_file for session' });
+    const denyBtn = screen.getByRole('button', { name: 'Deny write_file' });
+
+    fireEvent.click(approveBtn);
+
+    // Approve button becomes aria-busy="true" and shows loading text
+    expect(screen.getByRole('button', { name: 'Approving write_file...' })).toHaveAttribute('aria-busy', 'true');
+    expect(approveSessionBtn).toHaveAttribute('aria-busy', 'false');
+    expect(denyBtn).toHaveAttribute('aria-busy', 'false');
+
+    // All buttons for this approval item should be disabled
+    expect(screen.getByRole('button', { name: 'Approving write_file...' })).toBeDisabled();
+    expect(approveSessionBtn).toBeDisabled();
+    expect(denyBtn).toBeDisabled();
+
+    // Resolve promise
+    resolveDecide({ success: true, status: 'approved' });
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Approving write_file...' })).toBeNull());
+  });
+
   it('shows resolved approvals without decision buttons', async () => {
     const api = makeApi({
       listApprovals: vi
