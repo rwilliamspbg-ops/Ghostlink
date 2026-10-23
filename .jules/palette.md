@@ -139,3 +139,7 @@
 ## 2026-10-22 - [Interactive SVG Visualization Nodes Accessibility & Popover Dismissal]
 **Learning:** SVG `<g>` elements representing interactive node items in topology maps or node graphs need native SVG `<title>` children for hover tooltips, `aria-expanded` attributes to reflect popover open states to assistive technology, explicit focus-visible rings (`focus-visible:ring-2`), and `Escape` key listeners to dismiss detail popovers cleanly.
 **Action:** When making SVG graph elements interactive with `role="button"`, include SVG `<title>` tooltips, set `aria-expanded={isOpen}`, add focus-visible rings, and register an `Escape` keydown handler when popovers are open.
+
+## 2026-10-22 - WAI-ARIA Roving `tabIndex` and Keyboard Navigation on Custom Tablists
+**Learning:** Custom tab buttons within `role="tablist"` containers without roving `tabIndex` (`0` for selected, `-1` for unselected) force keyboard users to Tab through every tab item sequentially rather than tabbing smoothly into the active tabpanel. Intercepting `ArrowRight`/`ArrowLeft`/`Home`/`End` keydown events on the `role="tablist"` container and dynamically shifting focus and active selection creates a standard, intuitive WAI-ARIA tab navigation experience.
+**Action:** Always complement custom tab lists (`role="tablist"`) with roving `tabIndex={isActive ? 0 : -1}`, native `title` tooltips, and container keydown handlers for arrow key navigation.

@@ -502,6 +502,33 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
     }
   };
 
+  const handleTabKeyDown = (e: React.KeyboardEvent) => {
+    const tabs: ('local' | 'recommended' | 'huggingface')[] = ['local', 'recommended', 'huggingface'];
+    const currentIndex = tabs.indexOf(activeTab);
+    if (currentIndex === -1) return;
+
+    let nextIndex = currentIndex;
+    if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
+      e.preventDefault();
+      nextIndex = (currentIndex + 1) % tabs.length;
+    } else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      nextIndex = (currentIndex - 1 + tabs.length) % tabs.length;
+    } else if (e.key === 'Home') {
+      e.preventDefault();
+      nextIndex = 0;
+    } else if (e.key === 'End') {
+      e.preventDefault();
+      nextIndex = tabs.length - 1;
+    }
+
+    if (nextIndex !== currentIndex) {
+      const nextTab = tabs[nextIndex];
+      setActiveTab(nextTab);
+      document.getElementById(`models-tab-${nextTab}`)?.focus();
+    }
+  };
+
   const modelfileCloseRef = React.useRef<HTMLButtonElement>(null);
   useEffect(() => {
     if (!showModelfile) return;
@@ -516,12 +543,20 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
   return (
     <div className="flex flex-col h-full bg-slate-950">
       <div className="flex items-center justify-between px-6 py-4 border-b border-slate-900 sticky top-0 bg-slate-950/50 backdrop-blur-md z-10">
-        <div className="flex items-center gap-4" role="tablist" aria-label="Model source">
+        <div
+          className="flex items-center gap-4"
+          role="tablist"
+          aria-label="Model source"
+          tabIndex={-1}
+          onKeyDown={handleTabKeyDown}
+        >
           <button
             id="models-tab-local"
             role="tab"
             aria-selected={activeTab === 'local'}
             aria-controls="models-tabpanel"
+            tabIndex={activeTab === 'local' ? 0 : -1}
+            title="View local and engine models"
             onClick={() => setActiveTab('local')}
             className={`px-3 py-1.5 rounded-lg text-sm font-bold transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none ${
               activeTab === 'local' ? 'bg-blue-600 text-white shadow-lg shadow-blue-500/20' : 'text-slate-400 hover:bg-slate-900'
@@ -534,6 +569,8 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
             role="tab"
             aria-selected={activeTab === 'recommended'}
             aria-controls="models-tabpanel"
+            tabIndex={activeTab === 'recommended' ? 0 : -1}
+            title="View hardware-recommended models"
             onClick={() => setActiveTab('recommended')}
             className={`px-3 py-1.5 rounded-lg text-sm font-bold transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none ${
               activeTab === 'recommended' ? 'bg-blue-600 text-white shadow-lg shadow-blue-500/20' : 'text-slate-400 hover:bg-slate-900'
@@ -546,6 +583,8 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
             role="tab"
             aria-selected={activeTab === 'huggingface'}
             aria-controls="models-tabpanel"
+            tabIndex={activeTab === 'huggingface' ? 0 : -1}
+            title="Search and download models from Hugging Face"
             onClick={() => setActiveTab('huggingface')}
             className={`px-3 py-1.5 rounded-lg text-sm font-bold transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none ${
               activeTab === 'huggingface' ? 'bg-blue-600 text-white shadow-lg shadow-blue-500/20' : 'text-slate-400 hover:bg-slate-900'
@@ -564,6 +603,7 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                 value={hfSearch}
                 onChange={(e) => setHfSearch(e.target.value)}
                 placeholder="Search models..."
+                title="Search Hugging Face models by keyword"
                 name="hf-search"
                 id="hf-search"
                 className="pl-8 pr-4 py-2 bg-slate-800 border border-slate-700 rounded-lg text-slate-200 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
@@ -1010,7 +1050,13 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
           >
             <div className="flex items-center justify-between p-4 border-b border-slate-800">
               <h3 id="modelfile-modal-title" className="text-lg font-bold text-white">Modelfile</h3>
-              <button ref={modelfileCloseRef} onClick={() => setShowModelfile(null)} className="text-slate-400 hover:text-white focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none" aria-label="Close">
+              <button
+                ref={modelfileCloseRef}
+                onClick={() => setShowModelfile(null)}
+                className="text-slate-400 hover:text-white focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
+                aria-label="Close Modelfile preview dialog"
+                title="Close Modelfile preview dialog"
+              >
                 <X size={20} aria-hidden="true" />
               </button>
             </div>

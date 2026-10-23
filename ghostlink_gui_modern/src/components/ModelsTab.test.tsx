@@ -251,4 +251,45 @@ describe('ModelsTab', () => {
       expect(pullBtn).toHaveAttribute('aria-busy', 'false');
     });
   });
+
+  it('supports roving tabIndex and keyboard arrow navigation across tabs', async () => {
+    const api = createMockApi();
+    render(<ModelsTab api={api} />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('tab', { name: 'My Models' })).toBeInTheDocument();
+    });
+
+    const localTab = screen.getByRole('tab', { name: 'My Models' });
+    const recTab = screen.getByRole('tab', { name: 'Recommended' });
+    const hfTab = screen.getByRole('tab', { name: 'Hugging Face' });
+
+    // Active tab has tabIndex="0", inactive tabs have tabIndex="-1"
+    expect(localTab).toHaveAttribute('tabIndex', '0');
+    expect(recTab).toHaveAttribute('tabIndex', '-1');
+    expect(hfTab).toHaveAttribute('tabIndex', '-1');
+
+    // Title tooltips
+    expect(localTab).toHaveAttribute('title', 'View local and engine models');
+    expect(recTab).toHaveAttribute('title', 'View hardware-recommended models');
+    expect(hfTab).toHaveAttribute('title', 'Search and download models from Hugging Face');
+
+    // Keyboard ArrowRight on tablist switches active tab
+    const tablist = screen.getByRole('tablist', { name: 'Model source' });
+    fireEvent.keyDown(tablist, { key: 'ArrowRight' });
+
+    await waitFor(() => {
+      expect(recTab).toHaveAttribute('tabIndex', '0');
+      expect(localTab).toHaveAttribute('tabIndex', '-1');
+      expect(screen.getByText('Recommended for Your Hardware')).toBeInTheDocument();
+    });
+
+    // Keyboard ArrowLeft wraps or moves back
+    fireEvent.keyDown(tablist, { key: 'ArrowLeft' });
+
+    await waitFor(() => {
+      expect(localTab).toHaveAttribute('tabIndex', '0');
+      expect(recTab).toHaveAttribute('tabIndex', '-1');
+    });
+  });
 });
