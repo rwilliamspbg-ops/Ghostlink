@@ -403,9 +403,11 @@ pub fn tokenize(query: &str) -> Vec<String> {
     const STOPWORDS: [&str; 9] = ["the", "a", "an", "is", "are", "was", "of", "to", "and"];
     query
         .split(|c: char| !c.is_alphanumeric())
-        .filter(|t| !t.is_empty())
+        // OPTIMIZATION: Filter token length on borrowed `&str` slices before `to_lowercase()`
+        // to avoid allocating short-lived heap `String`s for empty, 1-char, and 2-char tokens.
+        .filter(|t| t.len() > 2)
         .map(|t| t.to_lowercase())
-        .filter(|t| t.len() > 2 && !STOPWORDS.contains(&t.as_str()))
+        .filter(|t| !STOPWORDS.contains(&t.as_str()))
         .collect()
 }
 
