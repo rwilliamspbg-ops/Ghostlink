@@ -25,6 +25,8 @@ const STATUS_LABEL: Record<string, string> = {
  *  runs, and the endpoint is a cheap read of a bounded in-memory list. */
 const POLL_MS = 5000;
 
+type ApprovalAction = 'approve' | 'approve_session' | 'deny';
+
 /**
  * Review tray for tool calls the capability gate held back.
  *
