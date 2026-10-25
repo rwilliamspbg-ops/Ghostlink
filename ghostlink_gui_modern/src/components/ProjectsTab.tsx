@@ -67,6 +67,18 @@ export const ProjectsTab: React.FC<ProjectsTabProps> = ({ api }) => {
     }
   }, [activeProject, fetchTasks]);
 
+  useEffect(() => {
+    if (!showNewProjModal && !showNewTaskModal) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        if (showNewProjModal && !isCreatingProj) setShowNewProjModal(false);
+        if (showNewTaskModal && !isCreatingTask) setShowNewTaskModal(false);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [showNewProjModal, showNewTaskModal, isCreatingProj, isCreatingTask]);
+
   const handleCreateProject = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!projName.trim() || !projRootPath.trim() || isCreatingProj) return;
@@ -268,7 +280,9 @@ export const ProjectsTab: React.FC<ProjectsTabProps> = ({ api }) => {
                 type="button"
                 onClick={() => setShowNewProjModal(false)}
                 disabled={isCreatingProj}
-                className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs rounded-lg font-bold disabled:opacity-50"
+                aria-label="Cancel project creation"
+                title="Cancel project creation"
+                className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs rounded-lg font-bold disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:outline-none"
               >
                 Cancel
               </button>
@@ -278,7 +292,7 @@ export const ProjectsTab: React.FC<ProjectsTabProps> = ({ api }) => {
                 aria-busy={isCreatingProj}
                 aria-label={isCreatingProj ? 'Creating project...' : 'Create project'}
                 title={isCreatingProj ? 'Creating project...' : 'Create project'}
-                className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-xs rounded-lg font-bold flex items-center gap-1.5 disabled:opacity-50"
+                className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-xs rounded-lg font-bold flex items-center gap-1.5 disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:outline-none"
               >
                 {isCreatingProj && <Loader2 size={14} className="animate-spin" aria-hidden="true" />}
                 {isCreatingProj ? 'Creating...' : 'Create Project'}
@@ -327,7 +341,9 @@ export const ProjectsTab: React.FC<ProjectsTabProps> = ({ api }) => {
                 type="button"
                 onClick={() => setShowNewTaskModal(false)}
                 disabled={isCreatingTask}
-                className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs rounded-lg font-bold disabled:opacity-50"
+                aria-label="Cancel task creation"
+                title="Cancel task creation"
+                className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs rounded-lg font-bold disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:outline-none"
               >
                 Cancel
               </button>
@@ -337,7 +353,7 @@ export const ProjectsTab: React.FC<ProjectsTabProps> = ({ api }) => {
                 aria-busy={isCreatingTask}
                 aria-label={isCreatingTask ? 'Creating task...' : 'Create task'}
                 title={isCreatingTask ? 'Creating task...' : 'Create task'}
-                className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-xs rounded-lg font-bold flex items-center gap-1.5 disabled:opacity-50"
+                className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-xs rounded-lg font-bold flex items-center gap-1.5 disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:outline-none"
               >
                 {isCreatingTask && <Loader2 size={14} className="animate-spin" aria-hidden="true" />}
                 {isCreatingTask ? 'Creating...' : 'Create Task'}

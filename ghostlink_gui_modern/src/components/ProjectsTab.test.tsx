@@ -128,4 +128,37 @@ describe('ProjectsTab', () => {
       });
     });
   });
+
+  it('dismisses creation modal on Escape key press and supports accessible cancel controls', async () => {
+    render(<ProjectsTab api={mockApi} />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Core System')).toBeInTheDocument();
+    });
+
+    // Open project creation modal
+    fireEvent.click(screen.getByRole('button', { name: 'New Project' }));
+    expect(screen.getByRole('dialog', { name: 'Create New Project' })).toBeInTheDocument();
+
+    // Verify cancel button accessibility attributes
+    const cancelProjBtn = screen.getByRole('button', { name: 'Cancel project creation' });
+    expect(cancelProjBtn).toBeInTheDocument();
+    expect(cancelProjBtn).toHaveAttribute('title', 'Cancel project creation');
+
+    // Press Escape to dismiss modal
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(screen.queryByRole('dialog', { name: 'Create New Project' })).not.toBeInTheDocument();
+
+    // Open task creation modal
+    fireEvent.click(screen.getByRole('button', { name: 'New Task' }));
+    expect(screen.getByRole('dialog', { name: /Create Task for/ })).toBeInTheDocument();
+
+    const cancelTaskBtn = screen.getByRole('button', { name: 'Cancel task creation' });
+    expect(cancelTaskBtn).toBeInTheDocument();
+    expect(cancelTaskBtn).toHaveAttribute('title', 'Cancel task creation');
+
+    // Press Escape to dismiss task creation modal
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(screen.queryByRole('dialog', { name: /Create Task for/ })).not.toBeInTheDocument();
+  });
 });
