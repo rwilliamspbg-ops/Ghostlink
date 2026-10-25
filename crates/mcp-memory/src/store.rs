@@ -194,8 +194,10 @@ pub fn catalog(
     workspace_id: &str,
     workspace_shared: &[String],
 ) -> Result<Vec<CatalogEntry>, String> {
+    // OPTIMIZATION: Select only catalog entry fields directly from SQLite instead of
+    // fetching `body` text and unused columns, avoiding unnecessary heap string allocations.
     let sql = format!(
-        "SELECT {SELECT_COLS} FROM memories
+        "SELECT id, kind, title, pinned, shared, updated_at FROM memories
          WHERE workspace_id = ? OR (shared = 1 AND workspace_id IN ({}))
          ORDER BY pinned DESC, updated_at DESC",
         placeholders(workspace_shared.len())
@@ -212,14 +214,14 @@ pub fn catalog(
 
     let rows = stmt
         .query_map(args.as_slice(), |row| {
-            let m = row_to_memory(row)?;
+            let kind_raw: String = row.get(1)?;
             Ok(CatalogEntry {
-                id: m.id,
-                kind: m.kind,
-                title: m.title,
-                pinned: m.pinned,
-                shared: m.shared,
-                updated_at: m.updated_at,
+                id: row.get(0)?,
+                kind: MemoryKind::parse(&kind_raw).unwrap_or(MemoryKind::ProjectFact),
+                title: row.get(2)?,
+                pinned: row.get(3)?,
+                shared: row.get(4)?,
+                updated_at: row.get(5)?,
             })
         })
         .map_err(|e| format!("reading catalog: {e}"))?;
@@ -231,11 +233,21 @@ pub fn catalog(
     Ok(out)
 }
 
+/// OPTIMIZATION: Pre-allocate String capacity (`n * 2 - 1`) and push `?` markers directly,
+/// eliminating N+1 intermediate heap String allocations from `.map("?").collect().join(",")`.
 fn placeholders(n: usize) -> String {
-    (0..n)
-        .map(|_| "?".to_string())
-        .collect::<Vec<_>>()
-        .join(",")
+    match n {
+        0 => String::new(),
+        1 => "?".to_string(),
+        _ => {
+            let mut s = String::with_capacity(n * 2 - 1);
+            s.push('?');
+            for _ in 1..n {
+                s.push_str(",?");
+            }
+            s
+        }
+    }
 }
 
 /// Scores a candidate against the query terms.
