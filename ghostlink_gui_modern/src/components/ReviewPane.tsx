@@ -140,7 +140,7 @@ export const ReviewPane: React.FC<ReviewPaneProps> = ({ packet, api: propApi, on
               aria-label="Note for requested changes"
               value={note}
               onChange={(e) => setNote(e.target.value)}
-              className="px-3 py-1.5 bg-slate-900 border border-slate-700 rounded-lg text-xs text-slate-200 focus:outline-none focus:ring-2 focus:ring-amber-500"
+              className="px-3 py-1.5 bg-slate-900 border border-slate-700 rounded-lg text-xs text-slate-200 focus:outline-none focus:ring-2 focus:ring-amber-500 focus-visible:ring-2 focus-visible:ring-amber-500 focus-visible:outline-none"
             />
           )}
           <button
@@ -153,7 +153,7 @@ export const ReviewPane: React.FC<ReviewPaneProps> = ({ packet, api: propApi, on
                 ? 'Accepting proposed changes...'
                 : 'Accept proposed changes and apply to project root'
             }
-            className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-bold bg-green-600 hover:bg-green-500 text-white transition disabled:opacity-50"
+            className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-bold bg-green-600 hover:bg-green-500 text-white transition disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-green-500 focus-visible:outline-none"
           >
             {activeAction === 'accept' ? (
               <RefreshCw size={14} className="animate-spin" aria-hidden="true" />
@@ -180,7 +180,7 @@ export const ReviewPane: React.FC<ReviewPaneProps> = ({ packet, api: propApi, on
                 ? 'Requesting changes...'
                 : 'Request changes and requeue task with note'
             }
-            className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-bold bg-amber-600 hover:bg-amber-500 text-white transition disabled:opacity-50"
+            className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-bold bg-amber-600 hover:bg-amber-500 text-white transition disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-amber-500 focus-visible:outline-none"
           >
             <RefreshCw
               size={14}
@@ -199,7 +199,7 @@ export const ReviewPane: React.FC<ReviewPaneProps> = ({ packet, api: propApi, on
                 ? 'Rejecting proposed changes...'
                 : 'Reject proposed changes and delete staging tree'
             }
-            className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-bold bg-rose-700 hover:bg-rose-600 text-white transition disabled:opacity-50"
+            className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-bold bg-rose-700 hover:bg-rose-600 text-white transition disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-rose-500 focus-visible:outline-none"
           >
             {activeAction === 'reject' ? (
               <RefreshCw size={14} className="animate-spin" aria-hidden="true" />
@@ -228,9 +228,10 @@ export const ReviewPane: React.FC<ReviewPaneProps> = ({ packet, api: propApi, on
                   <button
                     key={diff.path}
                     onClick={() => setSelectedDiffIndex(idx)}
+                    aria-current={selectedDiffIndex === idx ? 'true' : undefined}
                     aria-label={`View diff for ${diff.path}`}
                     title={`View diff for ${diff.path}`}
-                    className={`w-full text-left px-3 py-2 rounded-lg text-xs font-mono transition flex items-center justify-between ${
+                    className={`w-full text-left px-3 py-2 rounded-lg text-xs font-mono transition flex items-center justify-between focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:outline-none ${
                       selectedDiffIndex === idx
                         ? 'bg-indigo-600/20 text-indigo-300 border border-indigo-500/30'
                         : 'text-slate-300 hover:bg-slate-900'

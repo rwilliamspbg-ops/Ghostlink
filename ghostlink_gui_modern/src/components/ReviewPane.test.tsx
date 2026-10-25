@@ -230,12 +230,13 @@ describe('ReviewPane', () => {
     });
   });
 
-  it('renders diff file selection button with accessible aria-label and title', () => {
+  it('renders diff file selection button with accessible aria-label, title, and aria-current', () => {
     render(<ReviewPane packet={mockPacket} api={mockApi} />);
 
     const diffBtn = screen.getByRole('button', { name: /view diff for src\/lib.rs/i });
     expect(diffBtn).toBeInTheDocument();
     expect(diffBtn).toHaveAttribute('title', 'View diff for src/lib.rs');
+    expect(diffBtn).toHaveAttribute('aria-current', 'true');
   });
 
   it('renders commands list with judge status badges', () => {
