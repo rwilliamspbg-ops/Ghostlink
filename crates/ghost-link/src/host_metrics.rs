@@ -209,27 +209,53 @@ impl InferenceMetrics {
     }
 }
 
+/// OPTIMIZATION: Zero-allocation $O(N)$ quickselect percentile extraction.
+/// Uses a stack-allocated buffer for bounded samples (`samples.len() <= LATENCY_SAMPLES_CAP`)
+/// and linear-time `select_nth_unstable_by` partitioning to locate p50 and p95 without heap
+/// allocations or full $O(N \log N)$ sorting.
 fn percentiles_ms(samples: &VecDeque<f32>) -> (f32, f32) {
-    if samples.is_empty() {
+    let len = samples.len();
+    if len == 0 {
         return (0.0, 0.0);
     }
-    let mut sorted: Vec<f32> = samples.iter().copied().collect();
-    // OPTIMIZATION: Unstable sorting avoids scratch buffer allocations and stability tracking overhead.
-    sorted.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    let p50 = percentile_sorted(&sorted, 0.50);
-    let p95 = percentile_sorted(&sorted, 0.95);
-    (p50, p95)
-}
+    if len == 1 {
+        let val = samples[0];
+        return (val, val);
+    }
 
-fn percentile_sorted(sorted: &[f32], q: f32) -> f32 {
-    if sorted.is_empty() {
-        return 0.0;
+    let p50_idx = ((len - 1) as f32 * 0.50).round() as usize;
+    let p95_idx = ((len - 1) as f32 * 0.95).round() as usize;
+
+    let p50_p95_select = |slice: &mut [f32]| {
+        let p95 = if p50_idx == p95_idx {
+            let (_, elem, _) = slice.select_nth_unstable_by(p50_idx, |a, b| {
+                a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)
+            });
+            return (*elem, *elem);
+        } else {
+            let (_, elem, _) = slice.select_nth_unstable_by(p95_idx, |a, b| {
+                a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)
+            });
+            *elem
+        };
+
+        let (_, p50_elem, _) = slice[..p95_idx].select_nth_unstable_by(p50_idx, |a, b| {
+            a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)
+        });
+        (*p50_elem, p95)
+    };
+
+    if len <= LATENCY_SAMPLES_CAP {
+        let mut stack_buf = [0.0_f32; LATENCY_SAMPLES_CAP];
+        let slice = &mut stack_buf[..len];
+        let (s1, s2) = samples.as_slices();
+        slice[..s1.len()].copy_from_slice(s1);
+        slice[s1.len()..].copy_from_slice(s2);
+        p50_p95_select(slice)
+    } else {
+        let mut heap_buf: Vec<f32> = samples.iter().copied().collect();
+        p50_p95_select(&mut heap_buf)
     }
-    if sorted.len() == 1 {
-        return sorted[0];
-    }
-    let idx = ((sorted.len() as f32 - 1.0) * q.clamp(0.0, 1.0)).round() as usize;
-    sorted[idx.min(sorted.len() - 1)]
 }
 
 struct HostSamplerState {
