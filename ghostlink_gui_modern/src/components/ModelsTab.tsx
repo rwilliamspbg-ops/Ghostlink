@@ -706,6 +706,7 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                                 disabled={pendingActions[model.name] === 'unloading' || loading}
                                 aria-busy={pendingActions[model.name] === 'unloading'}
                                 aria-label={pendingActions[model.name] === 'unloading' ? `Unloading ${model.name}...` : `Unload ${model.name}`}
+                                title={pendingActions[model.name] === 'unloading' ? `Unloading ${model.name}...` : `Unload active model ${model.name}`}
                                 className="flex items-center gap-2 px-3 py-1 bg-slate-800 hover:bg-slate-700 text-xs font-medium rounded-full transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
                               >
                                 {pendingActions[model.name] === 'unloading' ? (
@@ -723,7 +724,13 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                             disabled={pendingActions[model.name] === 'setting' || loading}
                             aria-busy={pendingActions[model.name] === 'setting'}
                             aria-label={pendingActions[model.name] === 'setting' ? `Switching to ${model.name}...` : `Use ${model.name}`}
-                            title={model.usable ? undefined : 'Not downloaded yet — selecting will show an error until it is'}
+                            title={
+                              pendingActions[model.name] === 'setting'
+                                ? `Switching to ${model.name}...`
+                                : model.usable
+                                ? `Select ${model.name} as active model`
+                                : 'Not downloaded yet — selecting will show an error until it is'
+                            }
                             className="flex items-center gap-2 px-3 py-1 bg-slate-800 hover:bg-blue-600 text-xs font-medium rounded-full transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
                           >
                             {pendingActions[model.name] === 'setting' ? (
@@ -798,8 +805,10 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                       <button
                         onClick={() => handleDiscardPartial(p.filename)}
                         disabled={discardingPartial === p.filename}
+                        aria-busy={discardingPartial === p.filename}
                         className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-red-600 text-slate-300 hover:text-white text-xs font-bold rounded-lg transition disabled:opacity-50 shrink-0 focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
-                        aria-label={`Discard interrupted download ${p.filename}`}
+                        aria-label={discardingPartial === p.filename ? `Discarding ${p.filename}...` : `Discard interrupted download ${p.filename}`}
+                        title={discardingPartial === p.filename ? `Discarding ${p.filename}...` : `Discard interrupted download ${p.filename}`}
                       >
                         {discardingPartial === p.filename ? (
                           <Loader size={12} className="animate-spin" aria-hidden="true" />
@@ -1082,7 +1091,12 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                   </>
                 )}
               </button>
-              <button onClick={() => setShowModelfile(null)} className="px-4 py-2 bg-slate-800 text-white rounded-lg font-medium hover:bg-slate-700 focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none transition">
+              <button
+                onClick={() => setShowModelfile(null)}
+                aria-label="Close Modelfile preview dialog"
+                title="Close Modelfile preview dialog"
+                className="px-4 py-2 bg-slate-800 text-white rounded-lg font-medium hover:bg-slate-700 focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none transition"
+              >
                 Close
               </button>
             </div>

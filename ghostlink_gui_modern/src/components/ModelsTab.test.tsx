@@ -292,4 +292,70 @@ describe('ModelsTab', () => {
       expect(recTab).toHaveAttribute('tabIndex', '-1');
     });
   });
+
+  it('renders Modelfile preview modal with accessible Close buttons in header and footer', async () => {
+    const api = createMockApi('ollama');
+    vi.spyOn(api, 'showOllamaModel').mockResolvedValue({ info: { modelfile: 'FROM llama3\nPARAMETER temperature 0.7' } });
+
+    render(<ModelsTab api={api} />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'View Modelfile for mistral-7b' })).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'View Modelfile for mistral-7b' }));
+
+    await waitFor(() => {
+      expect(screen.getByRole('dialog', { name: 'Modelfile' })).toBeInTheDocument();
+    });
+
+    const closeButtons = screen.getAllByRole('button', { name: 'Close Modelfile preview dialog' });
+    expect(closeButtons.length).toBe(2);
+    expect(closeButtons[0]).toHaveAttribute('title', 'Close Modelfile preview dialog');
+    expect(closeButtons[1]).toHaveAttribute('title', 'Close Modelfile preview dialog');
+
+    fireEvent.click(closeButtons[1]);
+
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog', { name: 'Modelfile' })).not.toBeInTheDocument();
+    });
+  });
+
+  it('tracks aria-busy, aria-label, and title tooltips during interrupted download discard', async () => {
+    const api = createMockApi();
+    vi.spyOn(api, 'listPartialDownloads').mockResolvedValue({
+      partials: [{ filename: 'model-part.gguf', size_bytes: 1024 * 1024 * 500, age_secs: 120 }],
+    });
+    let resolveDiscard: (val: any) => void;
+    vi.spyOn(api, 'discardPartialDownload').mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveDiscard = resolve;
+        })
+    );
+
+    render(<ModelsTab api={api} />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Interrupted Downloads')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Discard interrupted download model-part.gguf' })).toBeInTheDocument();
+    });
+
+    const discardBtn = screen.getByRole('button', { name: 'Discard interrupted download model-part.gguf' });
+    expect(discardBtn).toHaveAttribute('aria-busy', 'false');
+    expect(discardBtn).toHaveAttribute('title', 'Discard interrupted download model-part.gguf');
+
+    fireEvent.click(discardBtn);
+
+    expect(screen.getByRole('button', { name: 'Discarding model-part.gguf...' })).toBeInTheDocument();
+    const busyBtn = screen.getByRole('button', { name: 'Discarding model-part.gguf...' });
+    expect(busyBtn).toHaveAttribute('aria-busy', 'true');
+    expect(busyBtn).toHaveAttribute('title', 'Discarding model-part.gguf...');
+
+    resolveDiscard!({ success: true });
+
+    await waitFor(() => {
+      expect(screen.queryByText('model-part.gguf')).not.toBeInTheDocument();
+    });
+  });
 });
