@@ -143,3 +143,7 @@
 ## 2026-10-22 - WAI-ARIA Roving `tabIndex` and Keyboard Navigation on Custom Tablists
 **Learning:** Custom tab buttons within `role="tablist"` containers without roving `tabIndex` (`0` for selected, `-1` for unselected) force keyboard users to Tab through every tab item sequentially rather than tabbing smoothly into the active tabpanel. Intercepting `ArrowRight`/`ArrowLeft`/`Home`/`End` keydown events on the `role="tablist"` container and dynamically shifting focus and active selection creates a standard, intuitive WAI-ARIA tab navigation experience.
 **Action:** Always complement custom tab lists (`role="tablist"`) with roving `tabIndex={isActive ? 0 : -1}`, native `title` tooltips, and container keydown handlers for arrow key navigation.
+
+## 2026-10-23 - Modal Dialog Keyboard Escape Dismissal and Cancel Control Ergonomics
+**Learning:** Creation modal overlays (such as Project and Task creation forms) trap keyboard navigators if pressing `Escape` fails to dismiss the modal, and secondary controls like "Cancel" can be overlooked during keyboard navigation if they lack distinct `focus-visible:` focus rings and contextual `aria-label`/`title` tooltips.
+**Action:** Always register an `Escape` key listener on active modal dialogs to allow clean dismissal, and equip all modal action controls (both Submit and Cancel) with explicit `focus-visible:ring-2`, `aria-label`, and `title` attributes.
