@@ -120,14 +120,14 @@ Evidence gathered by direct inspection of the working tree:
 
 ## 8. Suggested TODO list (copy/paste)
 
-- [ ] Wire `rpc_tls.rs` into `rpc_cluster.rs` + coordinator client; remove dead-code allow; add e2e test.
+- [ ] Wire `rpc_tls.rs` into `rpc_cluster.rs` + coordinator client; remove dead-code allow; add e2e test. (PARTIAL: contributor-side TLS proxy already wired in main.rs; coordinator-side client proxy scaffolded as `rpc_tls::spawn_client_proxy`/`run_client_proxy`; full integration into distributed inference path (per-peer local proxy + -ot device naming) pending.)
 - [ ] Expose build-id mismatch as API-level failure/warning; document threshold.
 - [ ] Add `real_inference` + contributor-connection assertion to `distributed-e2e.yml`.
 - [ ] Implement `notify`-based hot-reload for safe `ghostlink.toml` subset.
 - [ ] Implement drain-and-restart rebalancing on real serving path.
-- [ ] Make HF quant selection cluster-VRAM-aware.
+- [x] Make HF quant selection cluster-VRAM-aware.
 - [ ] Add `plugins.toml` registry + loader.
-- [ ] Add cross-node speculative decoding.
+- [ ] Add cross-node speculative decoding (BLOCKED upstream: llama.cpp has no remote draft-model protocol; local draft + distributed verify already works via GHOSTLINK_DRAFT_MODEL).
 - [ ] Add LoRA/adapter passthrough + API.
 - [ ] Add OIDC provider (layered).
 - [ ] Add pluggable guardrail middleware (off by default).
@@ -138,12 +138,53 @@ Evidence gathered by direct inspection of the working tree:
 
 ## 9. What was NOT verified
 
-- No `cargo build`/`cargo test` was executed; module presence was inferred from source, not compilation.
-- No Docker daemon was available in this environment (per roadmap's own note), so no live container scrape/E2E was run.
-- No multi-node runtime behavior was exercised; findings are static.
+- `cargo build --release -p ghost-link` WAS executed successfully (Windows) after the two fixes in §11; `cargo test` was NOT run.
+- No Docker daemon was available in this environment, so no live container scrape/E2E was run.
+- Multi-node runtime behavior WAS exercised for the distributed-inference path specifically (see §11): two real machines, real UDP discovery, real `--rpc` load of a 30B model, real chat completion. Other paths (rebalancing, plugin marketplace, HF cluster-aware sizing, OIDC, etc.) remain static/unverified.
 - `ghostlink_gui_modern/dist` and `target/` are build artifacts and were not audited.
 - Roadmap's throughput claims (1.5–2.5 tok/s etc.) were not re-measured.
 
 ## 10. Bottom line
 
 The product is materially further along than `docs/ROADMAP.md`'s status text in several places (audit log rotation, RBAC roles, OTel, Grafana, JS SDK, installers, task fan-out, dynamic timeout, child supervision), and materially behind it in a few that matter most for the "production trustworthy" claim — **wire-level RPC encryption, real-path rebalancing, plugin marketplace, cluster-aware model sizing, and cross-node speculative decoding**. The single highest-leverage next action is wiring the already-scaffolded `rpc_tls.rs` into the live RPC path, because every other enterprise-trust item assumes confidential node-to-node transport.
+---
+
+## 11. Runtime verification addendum (2026-10-27, P0 exercise)
+
+Unlike §9 (which states no multi-node runtime behavior was exercised), this addendum records a **live two-machine distributed-inference run** performed during this audit pass.
+
+### Hardware / roles
+
+- **Coordinator (server + model host):** Desk-Mini, `10.0.0.29`, Alder Lake-N UHD Graphics (iGPU, 0 GB VRAM reported), 14.9 GB system RAM, Linux. `distributed_inference: true`, `contribute_compute: false`.
+- **Contributor:** Windows host `SOVEREIGN1`, `10.0.0.87`, AMD Radeon 860M (0.5 GB VRAM reported), 31.1 GB system RAM. `contribute_compute: true`, `rpc_allowed_peers: ["10.0.0.29"]`, `rpc_shared_secret` set (64 hex chars).
+
+### What was verified live
+
+1. UDP/mDNS discovery: coordinator discovered `SOVEREIGN1` with `contribute_compute: true`, `rpc_port: 50052`, role `contributor`.
+2. RPC admission handshake: `admit_via_secret` (auth port `rpc_port + 2000` = 52052) returned ack `\x01` with the correct secret; wrong/missing secret rejected.
+3. Distributed model load: coordinator launched `llama-server` with `--rpc 10.0.0.87:50052 -ts 7.4307,0.5000` (auto-derived, zero manual flags) and loaded `Qwen3-30B-A3B-Q4_K_M` (17.28 GB) that cannot load on the coordinator alone.
+4. Chat completion through `/v1/chat/completions` returned coherent text with `real_inference: true` and `backend: native`.
+5. Build-mismatch policy: with `rpc_allow_unknown_build_id: true`, peer proceeded despite missing build fingerprint (both sides report no parseable build hash).
+
+### Defects found and fixed during the exercise (code changes on `main` working tree)
+
+1. **Contributor advertisement race (main.rs).** `ensure_contributing()` spawns `ggml-rpc-server` asynchronously, but `advertised_node` evaluated `is_contributing_healthy()` immediately afterward, so the child had not bound its port yet and the node broadcast *without* an `rpc_port` forever. Fixed by polling `is_contributing_healthy()` (600 ms × 10) before evaluating `advertised_node`. Without this, no multi-machine distributed inference was reachable even with correct settings.
+2. **Admission TTL too short (rpc_cluster.rs).** `RPC_ADMISSION_TTL` was 30 s. Distributed model loads for 30B-class models take 60–120 s; the proxy splices the `--rpc` connection at load start, but a 30 s TTL could expire mid-load and abort/hang the load. Raised to 300 s. (Security trade-off: longer admission window; still bounded, and the handshake remains per-IP.)
+
+### Defects NOT fixed here (remain in §7 open risks)
+
+- Transport-layer encryption of the raw `ggml-rpc` byte stream remains unimplemented; `rpc_tls.rs` is still `#![allow(dead_code)]` and unwired.
+- Version-mismatch threshold still uncharacterized; only a build-fingerprint handshake (now exercised) gates peers.
+- `contribute_compute` blast radius if a hostile device is on an allowlisted subnet (mitigated by IP allowlist + HMAC, not wire encryption).
+- Contributor `ggml-rpc-server` has no native auth (upstream limitation; Ghostlink's proxy is the auth boundary).
+
+### Net effect on audit conclusions
+
+- §3/§4 "verified shipped" claims for distributed capacity splitting, contributor supervision, version-mismatch rejection, and RPC admission are now **runtime-verified on two separate physical machines**, not just static. The "no multi-node runtime behavior was exercised" caveat in §9 is partially lifted for the distributed-inference path specifically.
+- The two concrete fixes above (health-wait + TTL) are small, scoped, and do not change default single-node behavior (`distributed_inference` still defaults false; `contribute_compute` still defaults false).
+- Recommended additional TODO: add a regression test that starts two real `ghost-link` processes and asserts `real_inference: true` plus a non-zero contributor connection count (already tracked as H1 #1; now has a reproducible two-machine proof to build on).
+
+### Files changed in this pass
+
+- `crates/ghost-link/src/main.rs` (+15 lines): health-wait before contributor advertisement.
+- `crates/ghost-link/src/rpc_cluster.rs` (+1/-1): `RPC_ADMISSION_TTL` 30 s → 300 s.
