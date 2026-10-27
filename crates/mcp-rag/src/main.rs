@@ -97,7 +97,9 @@ fn replace_document_entries(
 ) {
     // OPTIMIZATION: Zero-allocation prefix check avoids allocating a temporary `format!("{doc_id}#")` String on the heap.
     entries.retain(|e| {
-        !e.id.strip_prefix(doc_id).map_or(false, |rest| rest.starts_with('#'))
+        !e.id
+            .strip_prefix(doc_id)
+            .is_some_and(|rest| rest.starts_with('#'))
     });
     entries.extend(new_entries);
 }
