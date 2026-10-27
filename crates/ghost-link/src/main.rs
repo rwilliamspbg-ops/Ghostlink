@@ -6984,6 +6984,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
     async fn download_hf_model(
         model_id: &str,
         models_dir: &std::path::Path,
+        vram_gb: f32,
         mut on_progress: impl FnMut(u64, u64) + Send,
     ) -> Result<String, String> {
         let client = reqwest::Client::builder()
@@ -7023,10 +7024,11 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             return Err("No GGUF files found in this repository. Try a GGUF-quantized variant (e.g. lmstudio-community/Meta-Llama-3-8B-Instruct-GGUF).".to_string());
         }
 
-        // Pick a quantization that fits this machine's VRAM instead of
-        // blindly taking whatever file the repo listed first, and pull every
-        // shard of a split GGUF instead of just one.
-        let vram_gb = detect_runtime_profile("hf-download").node_resources.vram_gb;
+        // Pick a quantization that fits this machine's (or cluster's) VRAM
+        // instead of blindly taking whatever file the repo listed first, and
+        // pull every shard of a split GGUF instead of just one.
+        // `vram_gb` is passed in by the caller so it can reflect the aggregate
+        // VRAM of the whole discovered cluster, not just this single node.
         let groups = group_gguf_shards(&gguf_files);
         let chosen_files = select_best_gguf_group(&groups, vram_gb)
             .ok_or_else(|| "No usable GGUF file found in this repository".to_string())?;
@@ -7392,6 +7394,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                 shared_secret,
                 effective_ngl,
                 require_offload,
+                _use_rpc_tls,
             ) = {
                 let backend = lock_state(&state);
                 if backend.settings.distributed_inference {
@@ -7432,9 +7435,10 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                         backend.settings.rpc_shared_secret.clone(),
                         effective_ngl,
                         require_offload,
+                        backend.use_rpc_tls,
                     )
                 } else {
-                    (Vec::new(), 0.0, 0.0, String::new(), -1, false)
+                    (Vec::new(), 0.0, 0.0, String::new(), -1, false, false)
                 }
             }; // <-- short-lived discovery lock dropped here, before any .await
 
@@ -7760,6 +7764,34 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         let models_path = std::path::PathBuf::from(&models_dir);
         fs::create_dir_all(&models_path).ok();
 
+        // Aggregate cluster VRAM so quant selection can target a model that
+        // fits the whole distributed topology, not just this single node.
+        let aggregate_vram_gb = {
+            let backend = lock_state(&state);
+            let local_vram = detect_runtime_profile("hf-download").node_resources.vram_gb;
+            if !backend.settings.distributed_inference {
+                local_vram
+            } else {
+                let local_build_id = native_engine::NativeEngineClient::get_llama_build_id();
+                let allow_unknown = backend.settings.rpc_allow_unknown_build_id;
+                let peers = if allow_unknown {
+                    rpc_cluster::discover_rpc_peers_with_policy(
+                        &backend.cluster,
+                        &backend.local_node_id,
+                        local_build_id.as_deref(),
+                        true,
+                    )
+                } else {
+                    rpc_cluster::discover_rpc_peers(
+                        &backend.cluster,
+                        &backend.local_node_id,
+                        local_build_id.as_deref(),
+                    )
+                };
+                local_vram + peers.iter().map(|p| p.vram_gb).sum::<f32>()
+            }
+        };
+
         {
             let mut backend = lock_state(&state);
             // A download already running for this model — don't start a second
@@ -7807,15 +7839,19 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         tokio::spawn(async move {
             let progress_state = Arc::clone(&spawn_state);
             let progress_model_id = spawn_model_id.clone();
-            let result =
-                download_hf_model(&spawn_model_id, &models_path, move |downloaded, total| {
+            let result = download_hf_model(
+                &spawn_model_id,
+                &models_path,
+                aggregate_vram_gb,
+                move |downloaded, total| {
                     let mut backend = lock_state(&progress_state);
                     if let Some(p) = backend.download_progress.get_mut(&progress_model_id) {
                         p.bytes_downloaded = downloaded;
                         p.total_bytes = total;
                     }
-                })
-                .await;
+                },
+            )
+            .await;
 
             match result {
                 Ok(local_path) => {
@@ -13162,6 +13198,21 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             );
         });
     }
+    // Wait for the contributor child to become healthy before deciding whether to
+    // advertise this node as an RPC contributor. `ensure_contributing` spawns the
+    // child asynchronously above; evaluating `is_contributing_healthy()` immediately
+    // afterwards almost always returns false because the child has not bound its
+    // port yet, which would cause this node to broadcast without an rpc_port and
+    // never be used for distributed inference.
+    if settings.contribute_compute {
+        for _ in 0..10 {
+            if rpc_cluster::is_contributing_healthy() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(600));
+        }
+    }
+
     let advertised_node = if settings.contribute_compute && rpc_cluster::is_contributing_healthy() {
         let mut node = profile
             .node_resources

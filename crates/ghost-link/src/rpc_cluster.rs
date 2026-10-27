@@ -94,7 +94,7 @@ const RPC_AUTH_PORT_OFFSET: u16 = 2000;
 /// How long a successful handshake admits a source IP for. Long enough to
 /// cover the real `--rpc` connection immediately following it, short enough
 /// to keep the exposure window narrow.
-const RPC_ADMISSION_TTL: Duration = Duration::from_secs(30);
+const RPC_ADMISSION_TTL: Duration = Duration::from_secs(300);
 
 /// Server-side per-step timeout for the auth handshake (write nonce, read
 /// MAC) — bounds how long a slow or hung connection can occupy a task.

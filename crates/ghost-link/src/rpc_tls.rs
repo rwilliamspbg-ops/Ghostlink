@@ -253,6 +253,116 @@ pub async fn connect_rpc_tls(
     Ok(tls_stream)
 }
 
+/// Client-side verifier that accepts any certificate. Used for the RPC TLS
+/// proxy: the contributor's cert is self-signed and not distributed out of
+/// band, so we rely on the HMAC admission handshake (rpc_shared_secret) for
+/// authentication and use TLS only for confidentiality against passive
+/// eavesdroppers. Matches the existing trust-the-LAN posture.
+#[derive(Debug)]
+struct InsecureVerifier;
+
+impl rustls::client::danger::ServerCertVerifier for InsecureVerifier {
+    fn verify_server_cert(
+        &self,
+        _end_entity: &rustls::pki_types::CertificateDer<'_>,
+        _intermediates: &[rustls::pki_types::CertificateDer<'_>],
+        _server_name: &rustls::pki_types::ServerName<'_>,
+        _ocsp_response: &[u8],
+        _now: rustls::pki_types::UnixTime,
+    ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+        Ok(rustls::client::danger::ServerCertVerified::assertion())
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        _message: &[u8],
+        _cert: &rustls::pki_types::CertificateDer<'_>,
+        _dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        _message: &[u8],
+        _cert: &rustls::pki_types::CertificateDer<'_>,
+        _dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+        rustls::crypto::ring::default_provider()
+            .signature_verification_algorithms
+            .supported_schemes()
+    }
+}
+
+/// Runs a client-side TLS proxy: accepts plaintext connections on
+/// `listener` (from the local `llama-server`'s `--rpc`), wraps each in TLS,
+/// and forwards to `contributor_addr` (the contributor's TLS proxy). Returns
+/// only on a bind/accept failure.
+pub async fn run_client_proxy(listener: TcpListener, contributor_addr: SocketAddr) {
+    let config = rustls::ClientConfig::builder()
+        .dangerous()
+        .with_custom_certificate_verifier(Arc::new(InsecureVerifier))
+        .with_no_client_auth();
+
+    let connector = TlsConnector::from(Arc::new(config));
+
+    loop {
+        let (stream, _peer) = match listener.accept().await {
+            Ok(p) => p,
+            Err(err) => {
+                tracing::warn!("rpc_tls: client proxy accept() failed: {err}");
+                continue;
+            }
+        };
+
+        let connector = connector.clone();
+        let domain = rustls::pki_types::ServerName::try_from("localhost").expect("server name");
+        tokio::spawn(async move {
+            let tcp = match TcpStream::connect(contributor_addr).await {
+                Ok(s) => s,
+                Err(_) => return,
+            };
+            let tls_stream = match connector.connect(domain, tcp).await {
+                Ok(s) => s,
+                Err(_) => return,
+            };
+
+            let (mut local_read, mut local_write) = tokio::io::split(stream);
+            let (mut tls_read, mut tls_write) = tokio::io::split(tls_stream);
+
+            let c2s = async {
+                let _ = tokio::io::copy(&mut local_read, &mut tls_write).await;
+                let _ = tls_write.shutdown().await;
+            };
+            let s2c = async {
+                let _ = tokio::io::copy(&mut tls_read, &mut local_write).await;
+                let _ = local_write.shutdown().await;
+            };
+            tokio::join!(c2s, s2c);
+        });
+    }
+}
+
+/// Binds a local plaintext listener on 127.0.0.1:0 and spawns a client proxy
+/// to `contributor_addr`, returning the assigned local port. The caller passes
+/// that port to `llama-server --rpc`.
+pub async fn spawn_client_proxy(contributor_addr: SocketAddr) -> Result<u16, String> {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .map_err(|e| format!("bind client proxy: {e}"))?;
+    let port = listener
+        .local_addr()
+        .map_err(|e| format!("local addr: {e}"))?
+        .port();
+    tokio::spawn(async move {
+        run_client_proxy(listener, contributor_addr).await;
+    });
+    Ok(port)
+}
 #[cfg(test)]
 mod tests {
     use super::*;
