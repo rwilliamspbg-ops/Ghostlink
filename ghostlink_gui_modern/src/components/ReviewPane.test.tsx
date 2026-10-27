@@ -192,7 +192,7 @@ describe('ReviewPane', () => {
     });
   });
 
-  it('shows note input and calls decideReview with request_changes and note', async () => {
+  it('shows note input with title tooltip and calls decideReview with request_changes and note', async () => {
     const onDecided = vi.fn();
     render(<ReviewPane packet={mockPacket} api={mockApi} onDecided={onDecided} />);
 
@@ -201,6 +201,10 @@ describe('ReviewPane', () => {
 
     const noteInput = screen.getByRole('textbox', { name: /note for requested changes/i });
     expect(noteInput).toBeInTheDocument();
+    expect(noteInput).toHaveAttribute(
+      'title',
+      'Enter note for requested changes (Press Enter to submit, Esc to cancel)'
+    );
 
     fireEvent.change(noteInput, { target: { value: 'Please update comments' } });
     fireEvent.click(reqBtn);
@@ -212,6 +216,39 @@ describe('ReviewPane', () => {
       });
       expect(onDecided).toHaveBeenCalled();
     });
+  });
+
+  it('submits request_changes decision on Enter keypress in note input', async () => {
+    const onDecided = vi.fn();
+    render(<ReviewPane packet={mockPacket} api={mockApi} onDecided={onDecided} />);
+
+    const reqBtn = screen.getByRole('button', { name: /request changes/i });
+    fireEvent.click(reqBtn);
+
+    const noteInput = screen.getByRole('textbox', { name: /note for requested changes/i });
+    fireEvent.change(noteInput, { target: { value: 'Add tests for edge cases' } });
+    fireEvent.keyDown(noteInput, { key: 'Enter', code: 'Enter' });
+
+    await waitFor(() => {
+      expect(mockApi.decideReview).toHaveBeenCalledWith('rev_1234567890', {
+        decision: 'request_changes',
+        note: 'Add tests for edge cases',
+      });
+      expect(onDecided).toHaveBeenCalled();
+    });
+  });
+
+  it('dismisses note input on Escape keypress', () => {
+    render(<ReviewPane packet={mockPacket} api={mockApi} />);
+
+    const reqBtn = screen.getByRole('button', { name: /request changes/i });
+    fireEvent.click(reqBtn);
+
+    const noteInput = screen.getByRole('textbox', { name: /note for requested changes/i });
+    expect(noteInput).toBeInTheDocument();
+
+    fireEvent.keyDown(noteInput, { key: 'Escape', code: 'Escape' });
+    expect(screen.queryByRole('textbox', { name: /note for requested changes/i })).not.toBeInTheDocument();
   });
 
   it('calls decideReview with reject when Reject button is clicked', async () => {
