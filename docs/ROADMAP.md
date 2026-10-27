@@ -2,6 +2,7 @@
 
 > [!NOTE]
 > **Current truth (Verified: 2026-09-03)**
+> - **Last audited against codebase:** 2026-10-27 @ commit `6587719` (v2.5.0) — see `docs/ROADMAP_AUDIT_2026-10-27.md`.
 > - **Proven & Shipped on `main`:**
 >   - **Distributed Capacity Splitting**: Heterogeneous VRAM/RAM splitting via `ggml-rpc` (loading and running 30B-class MoE models split across nodes that individual machines cannot hold alone).
 >   - **Contributor Supervision & Drain-and-Restart**: Active process supervision (`RpcSupervisor`) revokes advertisements on worker crash; mid-request contributor loss drains non-viable topology and fails requests cleanly without output corruption.
@@ -9,7 +10,7 @@
 >   - **Scoped Role-Based Access Control**: 4-role API key authorization (`owner`, `operator`, `inference`, `viewer`) with persisted hashed key storage (`api_keys.json`).
 >   - **Task Runtime & Human-in-the-Loop Review (v2.3)**: Durable Projects, Tasks, AgentRuns, ReviewPackets, deterministic shell Judge policy, and Studio review UI shipped on  (v2.4 child fan-out in progress).
   - **RPC Admission & Audit Rotation**: `rpc_shared_secret` HMAC challenge handshake, `rpc_allowed_peers` IP allowlisting, and bounded audit log rotation/retention (`audit_log.jsonl.N`).
-> - **Unproven / In Progress:** High usable tokens-per-second (tok/s) throughput on network-bound split layers, live mid-generation token state migration, and transport-layer encryption for raw RPC byte streams.
+> - **Unproven / In Progress:** High usable tokens-per-second (tok/s) throughput on network-bound split layers, live mid-generation token state migration, and transport-layer encryption for raw RPC byte streams. (2026-10-27: `crates/ghost-link/src/rpc_tls.rs` is a scaffold only — `#![allow(dead_code)]`, "not yet wired into the application entry points"; `enable_rpc_tls` currently just skips the allowlist proxy. Not implemented.)
 
 
 This is a competitive strategy document, not a task backlog. It answers one
@@ -385,7 +386,7 @@ Once Priority Zero is real and provable, these make it hard to copy.
    without corrupting output is a real research-adjacent problem... a
    simpler 'drain and restart the affected request' fallback is an
    acceptable first cut" — and that first cut hasn't been attempted either.
-    **Status update:** First-cut drain+restart continuous rebalancing shipped on the real serving path, automatically detecting contributor loss/unhealthiness, draining non-viable topology, and failing in-flight requests cleanly without output corruption. Live mid-token stage migration remains open.
+    **Status update (2026-10-27): corrected.** The first-cut drain+restart described above is **not** present on the real serving path (`handle_gui_model_load` → `llama-server --rpc`): `load_balance::rebalance()` has zero callers in `ghost-link`, and the real path launches one `llama-server` process per model load with no rebalancing concept. `RpcSupervisor` (contributor-child respawn) and contributor-loss handling at discovery time exist, but mid-request drain-and-restart on the real path does not. Live mid-token stage migration remains open.
    scoping, not a fast-follow bolted onto an unrelated feature.
 2. **Speculative decoding across heterogeneous nodes** — a small/fast node
    (or NPU) drafts, a large/slow node verifies. This is a genuinely novel
@@ -474,7 +475,7 @@ from the outside without reading the code:
 | "Optional PQC-hybrid TLS" | Undersold, not overstated — ML-KEM-768 hybrid TLS is real and implemented (`tls.rs`), not a stub |
 | "Prometheus metrics" | Real — `/metrics` in Prometheus text-exposition format exists (`handle_metrics_prometheus` in `main.rs`), Grafana already referenced in `.env.example`/compose files |
 | "Populate the real audit endpoint" | Already done as of the 2026-08-08 status check above — proposal was written against a stale picture |
-| RBAC / scoped multi-user keys | **Confirmed genuinely absent** — correctly identified as the top gap |
+| RBAC / scoped multi-user keys | **Partially shipped** — 4-role single-operator RBAC exists (`auth.rs`); multi-user/tenancy/namespacing still absent |
 | mTLS / authenticated node-to-node RPC | **Confirmed genuinely absent** — `ggml-rpc` has an IP allowlist and a build-version-mismatch check (see Risks below) but no protocol-level auth |
 | OpenTelemetry tracing | Not found anywhere in the crates — correctly identified as missing |
 | SSO/OIDC/SAML | Not found — correctly identified as missing |
@@ -491,9 +492,9 @@ speculative gold-plating.
 1. **Scoped API keys / RBAC** — teams/projects namespacing, least-privilege
    MCP tool access, model-level permissions. This *is* Horizon 2 item 5's
    remaining piece, not a new item; sequencing note below. **Status check
-   (2026-08-15): the core 3-role API key access control shipped.** `auth.rs` now persists a
+   (2026-08-15): the core 4-role API key access control shipped (Owner/Operator/Inference/Viewer).** `auth.rs` now persists a
    hashed, multi-key store (`api_keys.json`) instead of one shared global
-   key — each key carries a role (`Admin`/`Operator`/`Viewer`), checked by
+   key — each key carries a role (`Owner`/`Operator`/`Inference`/`Viewer`), checked by
    `main.rs`'s `required_role()` against every route (GET/HEAD default to
    `Viewer`, mutations to `Operator`, key management and
    `POST /api/security/pqc/enable` to `Admin`). `/api/security/keys`
