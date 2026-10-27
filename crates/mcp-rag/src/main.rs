@@ -95,8 +95,12 @@ fn replace_document_entries(
     doc_id: &str,
     new_entries: Vec<IndexEntry>,
 ) {
-    let prefix = format!("{doc_id}#");
-    entries.retain(|e| !e.id.starts_with(&prefix));
+    // OPTIMIZATION: Zero-allocation prefix check avoids allocating a temporary `format!("{doc_id}#")` String on the heap.
+    entries.retain(|e| {
+        !e.id
+            .strip_prefix(doc_id)
+            .is_some_and(|rest| rest.starts_with('#'))
+    });
     entries.extend(new_entries);
 }
 
