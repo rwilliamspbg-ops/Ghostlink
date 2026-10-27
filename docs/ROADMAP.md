@@ -342,11 +342,10 @@ make the Priority Zero fix land on solid ground.
 5. **One-line install script** (`curl | sh` / PowerShell installer per
    platform) using multi-OS release artifacts. **Shipped**: `scripts/install.sh` and
    `scripts/install.ps1` are available and download SHA256-verified prebuilt release binaries.
-6. **Config hot-reload for the settings that are safe to change live**
-   (already flagged as a gap in the earlier review pass) — `/api/settings`
-   exists for runtime changes; add a file-watch path for
-   `ghostlink.toml`'s safe subset so a headless/server deployment doesn't
-   need a restart for routine tuning.
+6. **Config hot-reload for the settings that are safe to change live** (shipped 2026-10-27, PR `feat/config-hot-reload`): `/api/settings`
+   exists for runtime changes; a background watcher now polls `ghostlink.toml`
+   every 2s and applies the safe subset live (`preferred_backend`,
+   `request_drain_timeout_secs`). Other keys still require a restart.
 
 ## Horizon 2 (3–9 months): Build the moat
 
