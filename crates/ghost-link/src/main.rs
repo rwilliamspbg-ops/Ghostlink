@@ -13344,6 +13344,74 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
     let _ = ACTIVE_BACKEND_REGISTRY.set(Arc::clone(&backend_registry));
     let _ = ACTIVE_RUNTIME_SWITCHER.set(runtime_switcher.clone());
 
+    // Config hot-reload (Horizon 1 item 6): watch ghostlink.toml for the safe
+    // subset (preferred backend, request-drain timeout) and apply changes live
+    // without a restart. Unsafe/unknown keys are ignored; parse errors are
+    // logged and the previous config is retained.
+    {
+        let watcher_backend_registry = Arc::clone(&backend_registry);
+        let watcher_runtime_switcher = runtime_switcher.clone();
+        let watcher_manager = compute_config_manager.clone();
+        let watcher_path = std::path::PathBuf::from("ghostlink.toml");
+        thread::spawn(move || {
+            let mut last_mtime = std::fs::metadata(&watcher_path)
+                .and_then(|m| m.modified())
+                .ok();
+            let mut last_preferred: Option<backend_registry::ComputeBackend> =
+                watcher_manager.load_preferred_backend().ok().flatten();
+            loop {
+                thread::sleep(std::time::Duration::from_secs(2));
+                let current_mtime = std::fs::metadata(&watcher_path)
+                    .and_then(|m| m.modified())
+                    .ok();
+                if current_mtime == last_mtime {
+                    continue;
+                }
+                last_mtime = current_mtime;
+                let new_config = match watcher_manager.load_compute_config() {
+                    Ok(c) => c,
+                    Err(err) => {
+                        tracing::warn!("config hot-reload: failed to parse ghostlink.toml: {err}");
+                        continue;
+                    }
+                };
+                // Safe subset: request-drain timeout.
+                let new_timeout =
+                    std::time::Duration::from_secs(new_config.request_drain_timeout_secs.max(1));
+                watcher_runtime_switcher.set_request_drain_timeout(new_timeout);
+
+                // Safe subset: preferred backend.
+                let new_preferred = watcher_manager.load_preferred_backend().ok().flatten();
+                if new_preferred != last_preferred {
+                    if let Some(backend) = new_preferred {
+                        if watcher_backend_registry.get_backend(&backend).is_some() {
+                            match watcher_backend_registry.switch_backend(backend) {
+                                Ok(()) => {
+                                    tracing::info!(
+                                        "config hot-reload: switched backend to {}",
+                                        backend.as_str()
+                                    );
+                                }
+                                Err(err) => {
+                                    tracing::warn!(
+                                        "config hot-reload: backend switch failed: {err}"
+                                    );
+                                }
+                            }
+                        } else {
+                            tracing::warn!(
+                                "config hot-reload: preferred backend {} not available",
+                                backend.as_str()
+                            );
+                        }
+                    }
+                    last_preferred = new_preferred;
+                }
+                tracing::info!("config hot-reload: applied safe subset from ghostlink.toml");
+            }
+        });
+    }
+
     println!(
         "Inference backend selected: {} (set GHOSTLINK_INFERENCE_BACKEND=native|ollama|vllm)",
         inference_backend.as_str()

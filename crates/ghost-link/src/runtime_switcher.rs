@@ -2,7 +2,7 @@
 //! Implements graceful backend switching with request draining, environment updates, and process restart
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
@@ -258,6 +258,7 @@ pub struct RuntimeSwitcher {
     request_tracker: RequestTracker,
     env_manager: EnvironmentManager,
     config: SwitchingConfig,
+    request_drain_timeout: Arc<AtomicU64>,
 }
 
 impl RuntimeSwitcher {
@@ -266,13 +267,25 @@ impl RuntimeSwitcher {
         Self {
             request_tracker: RequestTracker::new(),
             env_manager: EnvironmentManager::new(config.clone()),
-            config,
+            config: config.clone(),
+            request_drain_timeout: Arc::new(AtomicU64::new(config.request_drain_timeout.as_secs())),
         }
     }
 
     /// Get the request tracker (for incrementing/decrementing on requests)
     pub fn request_tracker(&self) -> &RequestTracker {
         &self.request_tracker
+    }
+
+    /// Current request-drain timeout (hot-reloadable).
+    pub fn request_drain_timeout(&self) -> Duration {
+        Duration::from_secs(self.request_drain_timeout.load(Ordering::Relaxed))
+    }
+
+    /// Hot-reload the request-drain timeout from a new config value.
+    pub fn set_request_drain_timeout(&self, timeout: Duration) {
+        self.request_drain_timeout
+            .store(timeout.as_secs().max(1), Ordering::Relaxed);
     }
 
     /// Perform graceful backend switch
@@ -292,10 +305,10 @@ impl RuntimeSwitcher {
         // Step 1: Drain in-flight requests
         tracing::info!(
             "Phase3: Draining in-flight requests (timeout: {:?})",
-            self.config.request_drain_timeout
+            self.request_drain_timeout()
         );
         self.request_tracker
-            .drain(self.config.request_drain_timeout)
+            .drain(self.request_drain_timeout())
             .await?;
 
         // Step 2: Clear stale backend-specific environment variables
