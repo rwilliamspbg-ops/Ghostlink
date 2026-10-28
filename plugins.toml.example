@@ -1,0 +1,12 @@
+# plugins.toml — optional custom inference backend plugins (marketplace-lite).
+#
+# Each [[plugin]] entry registers an OpenAI-compatible backend under the
+# given name. Select it by setting `inference_backend` in ghostlink.toml /
+# settings to the plugin's name. See crates/ghost-link/src/backend_plugin.rs.
+#
+# Copy to plugins.toml (gitignored) to enable.
+
+# [[plugin]]
+# name = "vllm_remote"
+# base_url = "http://10.0.0.5:8000"
+# api_key = "sk-..."   # optional

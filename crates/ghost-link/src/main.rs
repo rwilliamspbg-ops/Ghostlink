@@ -13438,13 +13438,24 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
         let watcher_manager = compute_config_manager.clone();
         let watcher_path = std::path::PathBuf::from("ghostlink.toml");
         thread::spawn(move || {
+            use notify::Watcher;
+            // Filesystem notification via the `notify` crate (P1). Falls back
+            // to a 2s poll if the watcher cannot be installed (e.g. a
+            // platform without a backend, or a missing file at startup).
+            let (tx, rx) = std::sync::mpsc::channel();
+            let mut watcher = notify::recommended_watcher(tx).ok();
+            if let Some(w) = watcher.as_mut() {
+                let _ = w.watch(&watcher_path, notify::RecursiveMode::NonRecursive);
+            }
             let mut last_mtime = std::fs::metadata(&watcher_path)
                 .and_then(|m| m.modified())
                 .ok();
             let mut last_preferred: Option<backend_registry::ComputeBackend> =
                 watcher_manager.load_preferred_backend().ok().flatten();
             loop {
-                thread::sleep(std::time::Duration::from_secs(2));
+                // Wait for a filesystem event, but re-check on a 2s cadence
+                // so a missed event can't stall reloads indefinitely.
+                let _ = rx.recv_timeout(std::time::Duration::from_secs(2));
                 let current_mtime = std::fs::metadata(&watcher_path)
                     .and_then(|m| m.modified())
                     .ok();
@@ -13554,7 +13565,9 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             .with_mcp_registry(Arc::clone(&mcp_registry)),
         ),
         model_lifecycle_lock: Arc::new(tokio::sync::RwLock::new(())),
-        plugin_registry: backend_plugin::BackendPluginRegistry::from_env(),
+        plugin_registry: backend_plugin::BackendPluginRegistry::from_env_and_plugins_file(
+            "plugins.toml",
+        ),
         enable_tls_active: use_tls,
         use_rpc_tls,
         audit_log: std::collections::VecDeque::new(),
@@ -16551,7 +16564,9 @@ mod tests {
             model_lifecycle_lock: Arc::new(tokio::sync::RwLock::new(())),
             use_rpc_tls: false,
             enable_tls_active: false,
-            plugin_registry: backend_plugin::BackendPluginRegistry::from_env(),
+            plugin_registry: backend_plugin::BackendPluginRegistry::from_env_and_plugins_file(
+                "plugins.toml",
+            ),
             audit_log: std::collections::VecDeque::new(),
             trace_events: std::collections::VecDeque::new(),
             api_keys: vec![auth::create_key("test-admin".to_string(), auth::Role::Owner).0],
