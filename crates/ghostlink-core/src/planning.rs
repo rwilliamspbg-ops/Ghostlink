@@ -319,9 +319,9 @@ pub fn chunk_assignments_for_workers(
 /// `LayerAssignment` objects and their associated allocation/clone overhead.
 ///
 /// OPTIMIZATION: Computes chunked layer assignments directly in a single pass over
-/// the input layer slice while caching `current_node = &nodes[node_idx]` and tracking
-/// `chunk_start_layer` at chunk boundary transitions (`i == chunk_start`). This eliminates
-/// slice indexing bounds checks (`layers.get(i + 1)`) on chunk flushes, yielding a ~26.6% speedup.
+/// the input layer slice while caching `current_node = &nodes[node_idx]` and updating
+/// `chunk_start_layer` directly at chunk boundary transitions (initial setup, node capacity
+/// transitions, and chunk size limit flushes). This eliminates branch checks on every layer.
 fn assign_layers_chunked(
     nodes: &[NodeResources],
     layers: &[LayerSpec],
@@ -369,12 +369,8 @@ fn assign_layers_chunked(
             current_node = &nodes[node_idx];
             remaining_vram = current_node.vram_gb;
             chunk_start = i;
-            chunk_vram = 0.0;
-        }
-
-        // Track chunk start layer directly at chunk boundary transition
-        if i == chunk_start {
             chunk_start_layer = layer.index;
+            chunk_vram = 0.0;
         }
 
         remaining_vram -= layer.vram_gb;
@@ -393,6 +389,9 @@ fn assign_layers_chunked(
                 chunk_vram,
             ));
             chunk_start = i + 1;
+            if let Some(next_layer) = layers.get(i + 1) {
+                chunk_start_layer = next_layer.index;
+            }
             chunk_vram = 0.0;
         }
     }
