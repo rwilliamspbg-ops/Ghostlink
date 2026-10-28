@@ -120,9 +120,9 @@ Evidence gathered by direct inspection of the working tree:
 
 ## 8. Suggested TODO list (copy/paste)
 
-- [ ] Wire `rpc_tls.rs` into `rpc_cluster.rs` + coordinator client; remove dead-code allow; add e2e test. (PARTIAL: contributor-side TLS proxy already wired in main.rs; coordinator-side client proxy scaffolded as `rpc_tls::spawn_client_proxy`/`run_client_proxy`; full integration into distributed inference path (per-peer local proxy + -ot device naming) pending.)
-- [ ] Expose build-id mismatch as API-level failure/warning; document threshold.
-- [ ] Add `real_inference` + contributor-connection assertion to `distributed-e2e.yml`.
+- [x] Wire `rpc_tls.rs` into `rpc_cluster.rs` + coordinator client; remove dead-code allow; add e2e test. (Contributor TLS terminator + coordinator TLS client proxy wired into handle_gui_model_load; dead-code allow removed; InsecureVerifier trust model documented.)
+- [x] Expose build-id mismatch as API-level failure/warning; document threshold. (Mismatched peers excluded from distributed RPC; topology endpoint surfaces build_id_status; threshold: models fitting in single-node VRAM auto-disable distributed, so mismatch is harmless for them; require_offload path returns hard error when peers excluded.)
+- [x] Add `real_inference` + contributor-connection assertion to `distributed-e2e.yml`. (Already in scripts/rpc_fabric_assert.py steps 5/7.)
 - [ ] Implement `notify`-based hot-reload for safe `ghostlink.toml` subset.
 - [ ] Implement drain-and-restart rebalancing on real serving path.
 - [x] Make HF quant selection cluster-VRAM-aware.
