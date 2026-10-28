@@ -7,6 +7,24 @@ All notable changes to Ghostlink Studio are documented here.
 
 ## [Unreleased]
 
+### Added
+
+- **Cluster-aware HF quant selection** (`crates/ghost-link/src/main.rs`): `download_hf_model` now accepts an aggregate cluster VRAM budget; `handle_gui_model_download` sums local + discovered peer VRAM when `distributed_inference` is on, so quant selection targets a model that fits the whole topology instead of a single node.
+- **Coordinator-side RPC TLS client proxy** (`crates/ghost-link/src/rpc_tls.rs`): `spawn_client_proxy`/`run_client_proxy` bind a local plaintext listener and wrap each connection in TLS (`InsecureVerifier`; authentication remains the HMAC admission handshake) so `llama-server --rpc` can talk to a TLS-enabled contributor. Wired into `handle_gui_model_load`.
+- **Contributor advertising race fix** (`crates/ghost-link/src/main.rs`): poll `is_contributing_healthy()` (10×600ms) before advertising the node, so `rpc_port` is broadcast only once the child has bound.
+- **RPC admission TTL 30s → 300s** (`crates/ghost-link/src/rpc_cluster.rs`): covers 30B-class model load times.
+- **Config hot-reload** (`crates/ghost-link/src/runtime_switcher.rs`, `main.rs`): `RuntimeSwitcher` drain timeout moved to `Arc<AtomicU64>` and a 2s polling watcher applies the safe subset of `ghostlink.toml`.
+
+### Changed
+
+- **RPC TLS trust model documented**: TLS provides confidentiality only against passive eavesdroppers; authentication is the `rpc_shared_secret` HMAC admission handshake (trust-LAN posture). `#![allow(dead_code)]` removed from `rpc_tls.rs`.
+- **Build-id mismatch surfaced**: mismatched peers are excluded from distributed RPC; `/api/cluster/topology` reports `build_id_status`; threshold documented (models that fit in a single node's VRAM auto-disable distributed, so mismatch is harmless for them).
+- **Roadmap/audit**: `docs/ROADMAP_AUDIT_2026-10-27.md` and `docs/ROADMAP.md` corrected for stale status (4-role RBAC, rpc_tls scaffold, rebalancing not on real path); cross-node speculative decoding marked blocked-upstream (llama.cpp has no remote-draft protocol).
+
+### Fixed
+
+- **Distributed E2E assertions** (`scripts/rpc_fabric_assert.py`): `real_inference: true` and contributor connection evidence already asserted; CI gate runs on PRs touching rpc_cluster/native_engine/main.
+
 ### Performance
 
 - **Ring buffer SPSC hot path** (`crates/ghostlink-core/src/ring.rs`): added `prefetch_write`/`prefetch_read` hints for the next buffer location in `push`/`pop`, reducing cache misses on subsequent operations. Benchmark: SPSC cross-thread (10k items) 39.92 → 30.46 ns/op (**23.7% faster**), batch (10k, bs=64) 28.90 → 21.80 ns/op (**24.6% faster**).
