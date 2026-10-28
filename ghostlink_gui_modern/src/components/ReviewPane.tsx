@@ -1,5 +1,5 @@
 import { resolveApiBase } from '../config';
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { DiffEditor } from '@monaco-editor/react';
 import { Check, X, RefreshCw, AlertTriangle, Terminal, Shield, FileText, Cpu, Layers } from 'lucide-react';
 import { ReviewPacket, ReviewDiff, VerificationResult, GhostlinkAPI } from '../api';
@@ -53,6 +53,13 @@ export const ReviewPane: React.FC<ReviewPaneProps> = ({ packet, api: propApi, on
   const [activeAction, setActiveAction] = useState<'accept' | 'request_changes' | 'reject' | null>(null);
   const [note, setNote] = useState<string>('');
   const [showNoteInput, setShowNoteInput] = useState<boolean>(false);
+  const noteInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (showNoteInput) {
+      noteInputRef.current?.focus();
+    }
+  }, [showNoteInput]);
 
   const addToast = useAppStore((state) => state.addToast);
   const currentDiff: ReviewDiff | undefined = packet.diffs[selectedDiffIndex];
@@ -135,11 +142,22 @@ export const ReviewPane: React.FC<ReviewPaneProps> = ({ packet, api: propApi, on
         <div className="flex items-center gap-2">
           {showNoteInput && (
             <input
+              ref={noteInputRef}
               type="text"
               placeholder="Note for request changes..."
               aria-label="Note for requested changes"
+              title="Enter note for requested changes (Press Enter to submit, Esc to cancel)"
               value={note}
               onChange={(e) => setNote(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  void handleDecide('request_changes');
+                } else if (e.key === 'Escape') {
+                  e.preventDefault();
+                  setShowNoteInput(false);
+                }
+              }}
               className="px-3 py-1.5 bg-slate-900 border border-slate-700 rounded-lg text-xs text-slate-200 focus:outline-none focus:ring-2 focus:ring-amber-500 focus-visible:ring-2 focus-visible:ring-amber-500 focus-visible:outline-none"
             />
           )}
