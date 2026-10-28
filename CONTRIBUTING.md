@@ -135,6 +135,14 @@ For release-oriented PRs, include a checklist based on:
 3. **Final recommendation**
    - GO / Conditional GO / NO-GO
 
+## Plugin marketplace-lite
+
+Custom inference backends can be registered via `plugins.toml` (mirroring
+`mcp_servers.toml`). Each `[[plugin]]` entry registers an OpenAI-compatible
+backend (`OpenAiCompatPlugin`) by name/base_url (api_key optional). Copy
+`plugins.toml.example` to `plugins.toml` and edit. See
+`crates/ghost-link/src/backend_plugin.rs`.
+
 ## Code of Conduct
 
 This project follows the Contributor Covenant. See [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) for the full pledge, standards, and enforcement process.

@@ -89,6 +89,60 @@ impl BackendPluginRegistry {
     /// is set — an easy way to point Ghostlink at any OpenAI-compatible
     /// server (vLLM, LM Studio, a hosted API, ...) as a "custom" backend
     /// without writing any Rust.
+    /// Loads additional plugins from a TOML file (marketplace-lite). Mirrors
+    /// `mcp_servers.toml`: each `[[plugin]]` entry registers an
+    /// `OpenAiCompatPlugin` by name/base_url (api_key optional).
+    pub fn load_from_plugins_file(&self, path: &str) -> Result<usize, String> {
+        let content = std::fs::read_to_string(path).map_err(|e| format!("read {path}: {e}"))?;
+        let doc: toml::Value =
+            toml::from_str(&content).map_err(|e| format!("parse {path}: {e}"))?;
+        let entries = doc
+            .get("plugin")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+        let mut count = 0usize;
+        for entry in entries {
+            let name = entry
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            let base_url = entry
+                .get("base_url")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            if name.is_empty() || base_url.is_empty() {
+                continue;
+            }
+            let api_key = entry
+                .get("api_key")
+                .and_then(|v| v.as_str())
+                .map(String::from);
+            self.register(Arc::new(OpenAiCompatPlugin::new(name, base_url, api_key)));
+            count += 1;
+        }
+        Ok(count)
+    }
+
+    /// Builds a registry from the environment and, if present, `plugins.toml`.
+    pub fn from_env_and_plugins_file(path: &str) -> Self {
+        let registry = Self::from_env();
+        match registry.load_from_plugins_file(path) {
+            Ok(n) if n > 0 => {
+                tracing::info!("backend_plugin: loaded {n} plugin(s) from {path}");
+            }
+            Ok(_) => {}
+            Err(err) => {
+                tracing::debug!("backend_plugin: no plugins loaded from {path}: {err}");
+            }
+        }
+        registry
+    }
+
     pub fn from_env() -> Self {
         let registry = Self::new();
         if let Ok(base_url) = std::env::var("GHOSTLINK_OPENAI_COMPAT_BASE_URL") {
