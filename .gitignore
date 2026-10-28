@@ -173,3 +173,13 @@ docs/PR_NOTE_*.md
 
 # Playwright local test artifacts
 .playwright-mcp/
+
+# Runtime log (this session's)
+ghostlink.log
+
+# In-progress FEC crate (not yet wired into workspace)
+/crates/ghostlink-fec/
+
+
+# Archived local artifacts (machine-specific, large binaries/venvs)
+docs/archive/local-artifacts/
