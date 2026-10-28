@@ -7394,7 +7394,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                 shared_secret,
                 effective_ngl,
                 require_offload,
-                _use_rpc_tls,
+                use_rpc_tls,
             ) = {
                 let backend = lock_state(&state);
                 if backend.settings.distributed_inference {
@@ -7527,7 +7527,40 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                         // ggml-rpc names a remote device `RPC0[endpoint]` (ggml-rpc.cpp:1092).
                         // The bare word "RPC" is rejected by llama-server, so the peer
                         // address has to go in the value.
-                        let buffer_type = tensor_plan::rpc_buffer_type(&peers[0].addr.to_string());
+                        let (rpc_servers_str, buffer_endpoint) = if use_rpc_tls {
+                            let mut local_ports: Vec<u16> = Vec::with_capacity(peers.len());
+                            for peer in &peers {
+                                match rpc_tls::spawn_client_proxy(peer.addr).await {
+                                    Ok(port) => local_ports.push(port),
+                                    Err(err) => {
+                                        tracing::warn!(
+                                            "rpc_tls: failed to spawn client proxy to {}: {}",
+                                            peer.addr,
+                                            err
+                                        );
+                                    }
+                                }
+                            }
+                            if local_ports.len() != peers.len() {
+                                (
+                                    rpc_cluster::rpc_flag_value(&peers),
+                                    peers[0].addr.to_string(),
+                                )
+                            } else {
+                                let s = local_ports
+                                    .iter()
+                                    .map(|p| format!("127.0.0.1:{p}"))
+                                    .collect::<Vec<_>>()
+                                    .join(",");
+                                (s, format!("127.0.0.1:{}", local_ports[0]))
+                            }
+                        } else {
+                            (
+                                rpc_cluster::rpc_flag_value(&peers),
+                                peers[0].addr.to_string(),
+                            )
+                        };
+                        let buffer_type = tensor_plan::rpc_buffer_type(&buffer_endpoint);
                         let override_value = tensor_plan::override_flag_value(&plan, &buffer_type);
                         if override_value.is_empty() {
                             tracing::info!(
@@ -7545,7 +7578,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                             );
                         }
                         (
-                            Some(rpc_cluster::rpc_flag_value(&peers)),
+                            Some(rpc_servers_str),
                             Some(rpc_cluster::tensor_split_flag_value(&split)),
                             Some(override_value).filter(|s| !s.is_empty()),
                             None,

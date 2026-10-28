@@ -18,7 +18,6 @@
 // The module is new and not yet wired into the application entry points.
 // The public API (run_tls_proxy, connect_rpc_tls, etc.) will be integrated
 // into rpc_cluster.rs in a follow-up change.
-#![allow(dead_code)]
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -27,33 +26,6 @@ use std::sync::Arc;
 use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream};
 use tokio_rustls::TlsConnector;
-
-/// Configuration for the RPC TLS proxy.
-#[derive(Debug, Clone)]
-pub struct RpcTlsConfig {
-    /// Whether TLS is enabled for RPC connections.
-    pub enabled: bool,
-    /// The bind address for the TLS proxy (contributor side).
-    pub bind_host: String,
-    /// The port for the TLS proxy (contributor side).
-    pub port: u16,
-    /// Path to the self-signed cert PEM file.
-    pub cert_path: PathBuf,
-    /// Path to the self-signed key PEM file.
-    pub key_path: PathBuf,
-}
-
-impl Default for RpcTlsConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            bind_host: "0.0.0.0".to_string(),
-            port: 50053,
-            cert_path: PathBuf::from("rpc_tls_cert.pem"),
-            key_path: PathBuf::from("rpc_tls_key.pem"),
-        }
-    }
-}
 
 /// Decision logic: should this node run a TLS proxy for its ggml-rpc?
 ///
@@ -103,6 +75,7 @@ pub fn generate_self_signed_cert(
 
 /// Builds a TLS client config that trusts the given self-signed cert.
 /// Used by the coordinator to connect to a contributor's TLS proxy.
+#[cfg(test)]
 pub fn build_tls_client_config(cert_path: &Path) -> rustls::ClientConfig {
     let cert_pem = std::fs::read(cert_path).expect("read cert PEM");
     let cert_der_bytes = pem_to_der(&cert_pem).expect("parse cert PEM");
@@ -231,28 +204,6 @@ pub async fn run_tls_proxy(
 /// Client-side: connects to a contributor's TLS proxy and returns a
 /// TLS stream that can be used to send ggml-rpc protocol data.
 /// The coordinator uses this instead of a raw TCP connection.
-pub async fn connect_rpc_tls(
-    coordinator_addr: SocketAddr,
-    contributor_cert_path: &Path,
-) -> Result<tokio_rustls::client::TlsStream<TcpStream>, String> {
-    let config = build_tls_client_config(contributor_cert_path);
-    let connector = TlsConnector::from(Arc::new(config));
-
-    let tcp_stream = TcpStream::connect(coordinator_addr)
-        .await
-        .map_err(|e| format!("connect to {coordinator_addr}: {e}"))?;
-
-    let domain = rustls::pki_types::ServerName::try_from("localhost")
-        .map_err(|e| format!("server name: {e}"))?;
-
-    let tls_stream = connector
-        .connect(domain, tcp_stream)
-        .await
-        .map_err(|e| format!("TLS handshake: {e}"))?;
-
-    Ok(tls_stream)
-}
-
 /// Client-side verifier that accepts any certificate. Used for the RPC TLS
 /// proxy: the contributor's cert is self-signed and not distributed out of
 /// band, so we rely on the HMAC admission handshake (rpc_shared_secret) for
