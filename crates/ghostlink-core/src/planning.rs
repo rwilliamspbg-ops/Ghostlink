@@ -119,6 +119,10 @@ impl PlacementPlan {
             }
         }
 
+        // OPTIMIZATION: Reclaim unused vector capacity (assignments.len() is an upper bound,
+        // but the actual participating node count is typically far smaller).
+        participating_nodes.shrink_to_fit();
+
         Self {
             assignments,
             quantization_mode,
