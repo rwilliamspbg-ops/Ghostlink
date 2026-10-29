@@ -1437,6 +1437,7 @@ impl NativeEngineClient {
         rpc_servers: Option<&str>,
         tensor_split: Option<&str>,
         tensor_override: Option<&str>,
+        lora_path: Option<&str>,
     ) -> Result<(), String> {
         let resolved = Self::resolve_model_path(model_path)?;
         let normalized_path = resolved.to_string_lossy().replace('\\', "/");
@@ -1503,6 +1504,15 @@ impl NativeEngineClient {
                 eprintln!("[model-load] Tensor class override: -ot {ot}");
                 extra_args.push("-ot".to_string());
                 extra_args.push(ot.to_string());
+            }
+        }
+        // LoRA / adapter passthrough: GHOSTLINK_LORA_PATH (or settings.lora_path)
+        // comma-separated list of adapter GGUF paths -> --lora <path> each.
+        if let Some(paths) = lora_path.filter(|s| !s.trim().is_empty()) {
+            for p in paths.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+                eprintln!("[model-load] LoRA adapter: --lora {p}");
+                extra_args.push("--lora".to_string());
+                extra_args.push(p.to_string());
             }
         }
         let alias = resolved

@@ -127,7 +127,7 @@ Evidence gathered by direct inspection of the working tree:
 - [x] Implement drain-and-restart rebalancing on real serving path. (First cut: `RpcSupervisor` revokes advertisements on crash and fails in-flight requests cleanly; topology re-plans on next model load via `handle_gui_model_load` peer discovery. Mid-request active rebalancing deferred.)
 - [x] Add `plugins.toml` registry + loader. (`BackendPluginRegistry::load_from_plugins_file` + `from_env_and_plugins_file`; `plugins.toml.example` added.)
 - [ ] Add cross-node speculative decoding (BLOCKED upstream: llama.cpp has no remote draft-model protocol; local draft + distributed verify already works via GHOSTLINK_DRAFT_MODEL).
-- [ ] Add LoRA/adapter passthrough + API.
+- [x] Add LoRA/adapter passthrough + API. (`load_model_into_slot` accepts `lora_path`; RuntimeSettings.lora_path (serde default); `--lora` passthrough for comma-separated adapters.)
 - [ ] Add OIDC provider (layered).
 - [ ] Add pluggable guardrail middleware (off by default).
 - [ ] Add model pin/rollback over HF integration.
