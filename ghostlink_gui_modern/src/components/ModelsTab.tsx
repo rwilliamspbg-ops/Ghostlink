@@ -10,7 +10,6 @@ import {
   CheckCircle2,
   AlertCircle,
   Loader,
-  ChevronRight,
   Copy,
   Check,
   X,
@@ -70,7 +69,7 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
   const [loading, setLoading] = useState(false);
   const [hfSearch, setHfSearch] = useState('');
   const [message, setMessage] = useState<string | null>(null);
-  const [hfResults, setHfResults] = useState<{ id: string; name: string; downloads: number; likes: number }[]>([]);
+  const [hfResults, setHfResults] = useState<{ id: string; name: string; downloads: number; likes: number; author?: string; pipeline_tag?: string; tags?: string[]; last_modified?: string; trending?: number; description?: string }[]>([]);
   const [hfLoading, setHfLoading] = useState(false);
   const [ollamaModels, setOllamaModels] = useState<any[]>([]);
   const [showModelfile, setShowModelfile] = useState<string | null>(null);
@@ -987,25 +986,50 @@ export const ModelsTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                 <EmptyState icon={Layers} title="No models found" />
               ) : (
               filteredHfResults.map((m) => (
-                <div key={m.id} className="flex items-center justify-between px-4 py-3 hover:bg-slate-800/50 rounded-lg transition">
-                  <div className="flex items-center gap-3 min-w-0">
-                    <div className="flex items-center justify-center text-orange-500 bg-orange-500/10 h-10 w-10 rounded-lg shrink-0">
-                      <ChevronRight size={14} />
+                <div key={m.id} className="flex flex-col gap-2 px-4 py-4 hover:bg-slate-800/50 rounded-lg transition border border-slate-800/60">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="flex items-start gap-3 min-w-0">
+                      <div className="flex items-center justify-center text-orange-500 bg-orange-500/10 h-10 w-10 rounded-lg shrink-0 mt-0.5">
+                        <Layers size={18} />
+                      </div>
+                      <div className="min-w-0">
+                        <div className="font-bold text-slate-100 truncate">{m.name}</div>
+                        <div className="text-[11px] text-slate-400 font-mono truncate">{m.id}</div>
+                        {m.author && m.author !== m.name && (
+                          <div className="text-[10px] text-slate-500 mt-0.5">by {m.author}</div>
+                        )}
+                        {m.description && (
+                          <p className="text-xs text-slate-300 mt-1 line-clamp-2">{m.description}</p>
+                        )}
+                        <div className="flex flex-wrap gap-1.5 mt-2">
+                          {m.pipeline_tag && (
+                            <span className="px-2 py-0.5 text-[10px] font-medium rounded-full bg-blue-500/15 text-blue-300 border border-blue-500/30">
+                              {m.pipeline_tag}
+                            </span>
+                          )}
+                          {(m.tags || []).slice(0, 6).map((t) => (
+                            <span key={t} className="px-2 py-0.5 text-[10px] rounded-full bg-slate-700/60 text-slate-300 border border-slate-600/60">
+                              {t}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
                     </div>
-                    <div className="min-w-0">
-                      <div className="font-bold text-slate-200 truncate">{m.name}</div>
-                      <div className="text-[10px] text-slate-500 font-mono truncate">{m.id}</div>
+                    <div className="flex flex-col items-end gap-1 shrink-0 text-xs text-slate-400">
+                      <span title="Downloads">
+                        <span aria-hidden="true">📥</span> {(m.downloads / 1000).toFixed(0)}K
+                      </span>
+                      <span title="Likes">
+                        <span aria-hidden="true">👍</span> {(m.likes / 1000).toFixed(1)}K
+                      </span>
+                      {m.last_modified && (
+                        <span className="text-[10px] text-slate-500" title="Last modified">
+                          {new Date(m.last_modified).toLocaleDateString()}
+                        </span>
+                      )}
                     </div>
                   </div>
-                  <div className="flex items-center gap-4 shrink-0">
-                    <div className="text-xs text-slate-400">
-                      <span className="mr-3">
-                        <span aria-hidden="true">📥</span> <span className="sr-only">Downloads: </span>{(m.downloads / 1000).toFixed(0)}K
-                      </span>
-                      <span>
-                        <span aria-hidden="true">👍</span> <span className="sr-only">Likes: </span>{(m.likes / 1000).toFixed(1)}K
-                      </span>
-                    </div>
+                  <div className="flex items-center justify-end gap-2 pt-1">
                     <button
                       onClick={() => handleDownloadHFModel(m.id)}
                       title={

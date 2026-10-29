@@ -8239,11 +8239,50 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                                         m.get("downloads").and_then(|v| v.as_u64()).unwrap_or(0);
                                     let likes =
                                         m.get("likes").and_then(|v| v.as_u64()).unwrap_or(0);
+                                    let author = id.split('/').next().unwrap_or("").to_string();
+                                    let pipeline_tag = m
+                                        .get("pipeline_tag")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("")
+                                        .to_string();
+                                    let tags = m
+                                        .get("tags")
+                                        .and_then(|v| v.as_array())
+                                        .map(|arr| {
+                                            arr.iter()
+                                                .filter_map(|t| t.as_str())
+                                                .map(String::from)
+                                                .collect::<Vec<_>>()
+                                        })
+                                        .unwrap_or_default();
+                                    let last_modified = m
+                                        .get("lastModified")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("")
+                                        .to_string();
+                                    let trending = m
+                                        .get("trendingScore")
+                                        .and_then(|v| v.as_f64())
+                                        .unwrap_or(0.0);
+                                    let description = m
+                                        .get("cardData")
+                                        .and_then(|c| {
+                                            c.get("description").or_else(|| c.get("summary"))
+                                        })
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("")
+                                        .to_string();
                                     serde_json::json!({
                                         "id": id,
                                         "name": name,
+                                        "author": author,
                                         "downloads": downloads,
                                         "likes": likes,
+                                        "pipeline_tag": pipeline_tag,
+                                        "tags": tags,
+                                        "last_modified": last_modified,
+                                        "trending": trending,
+                                        "description": description,
                                     })
                                 })
                                 .collect::<Vec<_>>()
