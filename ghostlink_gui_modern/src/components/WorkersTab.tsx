@@ -25,7 +25,7 @@ export const WorkersTab: React.FC<{ api: any }> = ({ api }) => {
 
   // Settings state for controls
   const [settings, setSettings] = useState<Settings | null>(null);
-  const [showAdvanced, setShowAddvanced] = useState(false);
+  const [showAdvanced, setShowAdvanced] = useState(false);
   const [showHowToJoin, setShowHowToJoin] = useState(false);
   const [showAddForm, setShowAddForm] = useState(false);
   const [showContributeWarning, setShowContributeWarning] = useState(false);
@@ -461,15 +461,19 @@ export const WorkersTab: React.FC<{ api: any }> = ({ api }) => {
         {/* Advanced Settings Drawer */}
         <div className="border-t border-slate-800/80 pt-4">
           <button
-            onClick={() => setShowAddvanced(!showAdvanced)}
+            onClick={() => setShowAdvanced(!showAdvanced)}
+            aria-expanded={showAdvanced}
+            aria-controls="advanced-settings-drawer"
+            aria-label={showAdvanced ? 'Collapse advanced settings' : 'Expand advanced settings'}
+            title={showAdvanced ? 'Collapse advanced settings' : 'Expand advanced settings'}
             className="flex items-center gap-2 text-xs font-bold text-slate-400 hover:text-slate-200 transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none rounded-lg px-2 py-1"
           >
-            {showAdvanced ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+            {showAdvanced ? <ChevronUp size={16} aria-hidden="true" /> : <ChevronDown size={16} aria-hidden="true" />}
             <span>Advanced Contributor & Security Settings</span>
           </button>
 
           {showAdvanced && (
-            <div className="mt-4 p-5 bg-slate-950/80 border border-slate-800 rounded-2xl space-y-5">
+            <div id="advanced-settings-drawer" className="mt-4 p-5 bg-slate-950/80 border border-slate-800 rounded-2xl space-y-5">
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-slate-800">
                 <div>
                   <h4 className="text-xs font-bold text-slate-200 uppercase tracking-wider">

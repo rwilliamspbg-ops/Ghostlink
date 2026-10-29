@@ -197,6 +197,31 @@ describe('WorkersTab', () => {
     });
   });
 
+  it('updates aria-expanded, aria-controls, aria-label, and title on Advanced Settings toggle button', async () => {
+    const api = createMockApi();
+    render(<WorkersTab api={api} />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'Expand advanced settings' })).toBeInTheDocument();
+    });
+
+    const toggleBtn = screen.getByRole('button', { name: 'Expand advanced settings' });
+    expect(toggleBtn).toHaveAttribute('aria-expanded', 'false');
+    expect(toggleBtn).toHaveAttribute('aria-controls', 'advanced-settings-drawer');
+    expect(toggleBtn).toHaveAttribute('title', 'Expand advanced settings');
+
+    fireEvent.click(toggleBtn);
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'Collapse advanced settings' })).toBeInTheDocument();
+    });
+
+    const expandedBtn = screen.getByRole('button', { name: 'Collapse advanced settings' });
+    expect(expandedBtn).toHaveAttribute('aria-expanded', 'true');
+    expect(expandedBtn).toHaveAttribute('aria-controls', 'advanced-settings-drawer');
+    expect(expandedBtn).toHaveAttribute('title', 'Collapse advanced settings');
+  });
+
   it('opens How To Join modal when empty state CTA is clicked', async () => {
     const api = createMockApi({
       getClusterTopology: vi.fn().mockResolvedValue({

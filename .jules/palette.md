@@ -147,3 +147,7 @@
 ## 2026-10-23 - Modal Dialog Keyboard Escape Dismissal and Cancel Control Ergonomics
 **Learning:** Creation modal overlays (such as Project and Task creation forms) trap keyboard navigators if pressing `Escape` fails to dismiss the modal, and secondary controls like "Cancel" can be overlooked during keyboard navigation if they lack distinct `focus-visible:` focus rings and contextual `aria-label`/`title` tooltips.
 **Action:** Always register an `Escape` key listener on active modal dialogs to allow clean dismissal, and equip all modal action controls (both Submit and Cancel) with explicit `focus-visible:ring-2`, `aria-label`, and `title` attributes.
+
+## 2026-10-24 - Expandable Drawer ARIA Attributes and Controls Association
+**Learning:** Accordion or drawer trigger buttons (such as the Advanced Settings toggle in the Cluster Workers tab) that toggle collapsible sections without explicit `aria-expanded` and `aria-controls` leave screen reader users unaware of whether the section is open or closed, or which element is controlled by the trigger button.
+**Action:** Always equip accordion and drawer trigger buttons with dynamic `aria-expanded={isOpen}`, `aria-controls={drawerId}`, contextual `aria-label`/`title` tooltips ('Expand...' / 'Collapse...'), and link the target container with matching `id={drawerId}`.

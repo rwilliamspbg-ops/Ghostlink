@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useCallback } from 'react';
 import { CheckCircle2, XCircle, Info, X } from 'lucide-react';
 import { useAppStore, Toast } from '../store';
 
@@ -17,28 +17,28 @@ const ToastItem: React.FC<Toast> = ({ id, type, message }) => {
   const remainingTimeRef = useRef<number>(AUTO_DISMISS_MS);
   const startTimeRef = useRef<number>(Date.now());
 
-  const startTimer = () => {
+  const startTimer = useCallback(() => {
     startTimeRef.current = Date.now();
     timerRef.current = setTimeout(() => {
       removeToast(id);
     }, remainingTimeRef.current);
-  };
+  }, [id, removeToast]);
 
-  const pauseTimer = () => {
+  const pauseTimer = useCallback(() => {
     if (timerRef.current) {
       clearTimeout(timerRef.current);
       timerRef.current = null;
       const elapsed = Date.now() - startTimeRef.current;
       remainingTimeRef.current = Math.max(0, remainingTimeRef.current - elapsed);
     }
-  };
+  }, []);
 
   useEffect(() => {
     startTimer();
     return () => {
       if (timerRef.current) clearTimeout(timerRef.current);
     };
-  }, [id, removeToast]);
+  }, [startTimer]);
 
   const Icon = ICONS[type];
 
