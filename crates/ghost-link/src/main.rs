@@ -8266,7 +8266,9 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                                         .unwrap_or(0.0);
                                     let description = m
                                         .get("cardData")
-                                        .and_then(|c| c.get("description").or_else(|| c.get("summary")))
+                                        .and_then(|c| {
+                                            c.get("description").or_else(|| c.get("summary"))
+                                        })
                                         .and_then(|v| v.as_str())
                                         .unwrap_or("")
                                         .to_string();
