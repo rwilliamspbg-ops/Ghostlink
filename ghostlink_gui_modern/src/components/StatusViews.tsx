@@ -110,7 +110,7 @@ export const ErrorPanel: React.FC<ErrorPanelProps> = ({
           title={effectiveLabel}
           className="mt-4 inline-flex items-center gap-2 px-4 py-2 bg-red-600/20 hover:bg-red-600/30 text-red-300 border border-red-800/60 text-xs font-bold rounded-xl transition disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
         >
-          <RefreshCw size={14} className={isRetrying ? 'animate-spin' : ''} aria-hidden="true" />
+          <RefreshCw size={14} className={isRetrying ? 'motion-safe:animate-spin' : ''} aria-hidden="true" />
           {isRetrying ? 'Retrying...' : retryLabel}
         </button>
       )}

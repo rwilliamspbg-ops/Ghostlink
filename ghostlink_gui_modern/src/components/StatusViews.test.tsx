@@ -76,7 +76,7 @@ describe('StatusViews', () => {
     expect(screen.getByText('Retrying...')).toBeInTheDocument();
 
     const icon = retryBtn.querySelector('svg');
-    expect(icon).toHaveClass('animate-spin');
+    expect(icon).toHaveClass('motion-safe:animate-spin');
   });
 
   it('renders EmptyState with title and description', () => {
