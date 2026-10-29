@@ -2133,6 +2133,10 @@ struct RuntimeSettings {
     native_engine: String,
     ngl: i32,
     model_path: String,
+    /// Optional LoRA/adapter GGUF path(s), comma-separated, applied via
+    /// `--lora` when loading a model into llama-server.
+    #[serde(default)]
+    lora_path: String,
     models_dir: String,
     llama_server_url: String,
     vllm_base_url: String,
@@ -2409,6 +2413,7 @@ impl Default for RuntimeSettings {
             native_engine: "llama_server".to_string(),
             ngl: -1,
             model_path: String::new(),
+            lora_path: String::new(),
             models_dir: "models".to_string(),
             llama_server_url: "http://127.0.0.1:8080/completion".to_string(),
             vllm_base_url: "http://127.0.0.1:8000".to_string(),
@@ -7605,7 +7610,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
 
         // Extract model info and settings under the lock, then drop it before
         // the potentially-long blocking load_model_into_slot call.
-        let (native_engine_client, local_path, native_engine, selected_model) = {
+        let (native_engine_client, local_path, native_engine, selected_model, lora_path) = {
             let mut backend = lock_state(&state);
 
             // Must run before `load_model_into_slot` reads any
@@ -7681,6 +7686,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                 local_path,
                 backend.settings.native_engine.clone(),
                 selected,
+                backend.settings.lora_path.clone(),
             )
         }; // <-- state lock dropped here
 
@@ -7718,6 +7724,11 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                         rpc_servers.as_deref(),
                         tensor_split.as_deref(),
                         tensor_override.as_deref(),
+                        if lora_path.is_empty() {
+                            None
+                        } else {
+                            Some(lora_path.as_str())
+                        },
                     )
                 }
             })
@@ -7744,6 +7755,11 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                             rpc_servers.as_deref(),
                             tensor_split.as_deref(),
                             tensor_override.as_deref(),
+                            if lora_path.is_empty() {
+                                None
+                            } else {
+                                Some(lora_path.as_str())
+                            },
                         )
                     }
                 })
@@ -11152,7 +11168,7 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
                         let result = tokio::task::spawn_blocking({
                             let engine = engine.clone();
                             let path = path_for_load.clone();
-                            move || engine.load_model_into_slot(&path, None, None, None)
+                            move || engine.load_model_into_slot(&path, None, None, None, None)
                         })
                         .await;
                         // Release on every outcome, including failure, so a failed load can
