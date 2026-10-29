@@ -7,6 +7,8 @@ All notable changes to Ghostlink Studio are documented here.
 
 ## [Unreleased]
 
+## [2.6.0] - 2026-10-27
+
 ### Added
 
 - **Cluster-aware HF quant selection** (`crates/ghost-link/src/main.rs`): `download_hf_model` now accepts an aggregate cluster VRAM budget; `handle_gui_model_download` sums local + discovered peer VRAM when `distributed_inference` is on, so quant selection targets a model that fits the whole topology instead of a single node.
