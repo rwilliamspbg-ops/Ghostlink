@@ -6713,7 +6713,9 @@ fn start_openai_api_server(port: u16, host: &str) -> Result<()> {
             .into_response());
         }
 
-        let nodes = cluster.nodes();
+        // Optimization: Borrow shared Arc<Vec<NodeResources>> via nodes_snapshot()
+        // instead of calling nodes(), eliminating redundant deep cloning of NodeResources.
+        let nodes = cluster.nodes_snapshot();
         let total_vram = cluster.total_vram_gb();
         let layer_count = (total_vram * 2.0).clamp(8.0, 60.0) as usize;
         let layers: Vec<LayerSpec> = (0..layer_count)
