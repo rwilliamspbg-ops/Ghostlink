@@ -3,6 +3,7 @@ import { Plus, FolderGit2, Loader2 } from 'lucide-react';
 import { Project, Task, GhostlinkAPI } from '../api';
 import { useAppStore } from '../store';
 import { TaskView } from './TaskView';
+import { EmptyState } from './StatusViews';
 
 interface ProjectsTabProps {
   api?: GhostlinkAPI;
@@ -230,12 +231,38 @@ export const ProjectsTab: React.FC<ProjectsTabProps> = ({ api }) => {
         {activeTask ? (
           <TaskView task={activeTask} api={activeApi} onRefresh={fetchTasks} />
         ) : (
-          <div className="h-full flex flex-col items-center justify-center text-slate-500 space-y-3 p-6 text-center">
-            <FolderGit2 size={48} className="text-slate-700" aria-hidden="true" />
-            <h3 className="text-lg font-bold text-slate-300">Select a Project & Task</h3>
-            <p className="text-xs max-w-md text-slate-500">
-              Ghostlink Task Runtime lets an agent execute against your workspace, run tests, and propose a ReviewPacket for human acceptance.
-            </p>
+          <div className="h-full flex items-center justify-center p-6">
+            {projects.length === 0 ? (
+              <EmptyState
+                icon={FolderGit2}
+                title="No projects yet"
+                description="Create a project to start managing workspaces and executing tasks."
+                action={{
+                  label: 'Create Project',
+                  icon: Plus,
+                  onClick: () => setShowNewProjModal(true),
+                  ariaLabel: 'Create new project',
+                }}
+              />
+            ) : tasks.length === 0 ? (
+              <EmptyState
+                icon={FolderGit2}
+                title="No tasks in this project"
+                description={`Create a task for "${activeProject?.name || 'this project'}" to begin autonomous implementation.`}
+                action={{
+                  label: 'Create Task',
+                  icon: Plus,
+                  onClick: () => setShowNewTaskModal(true),
+                  ariaLabel: 'Create new task',
+                }}
+              />
+            ) : (
+              <EmptyState
+                icon={FolderGit2}
+                title="Select a task to inspect"
+                description="Choose a task from the sidebar to inspect live execution events, status, and review packets."
+              />
+            )}
           </div>
         )}
       </div>
