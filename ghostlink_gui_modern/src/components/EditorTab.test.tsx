@@ -225,7 +225,9 @@ describe('EditorTab', () => {
       expect(screen.getByTestId('diff-modified')).toHaveTextContent('# Hello, fixed');
     });
 
-    fireEvent.click(screen.getByRole('button', { name: 'Accept' }));
+    const acceptBtn = screen.getByRole('button', { name: 'Accept proposed diff for README.md' });
+    expect(acceptBtn).toHaveAttribute('title', 'Accept proposed diff for README.md');
+    fireEvent.click(acceptBtn);
 
     await waitFor(() => {
       expect(api.writeWorkspaceFile).toHaveBeenCalledWith('README.md', '# Hello, fixed');
@@ -247,7 +249,9 @@ describe('EditorTab', () => {
     fireEvent.click(screen.getByRole('button', { name: /Refactor/ }));
     await waitFor(() => expect(screen.getByTestId('mock-diff-editor')).toBeInTheDocument());
 
-    fireEvent.click(screen.getByRole('button', { name: 'Reject' }));
+    const rejectBtn = screen.getByRole('button', { name: 'Reject proposed diff for README.md' });
+    expect(rejectBtn).toHaveAttribute('title', 'Reject proposed diff for README.md');
+    fireEvent.click(rejectBtn);
 
     await waitFor(() => {
       expect(screen.queryByTestId('mock-diff-editor')).not.toBeInTheDocument();
@@ -265,7 +269,8 @@ describe('EditorTab', () => {
     await waitFor(() => expect(screen.getByText('README.md')).toBeInTheDocument());
 
     fireEvent.click(screen.getByLabelText('Select README.md for multi-file refactor'));
-    const refactorButton = await screen.findByRole('button', { name: /Refactor Selected/ });
+    const refactorButton = await screen.findByRole('button', { name: 'Refactor 1 selected file(s)' });
+    expect(refactorButton).toHaveAttribute('title', 'Refactor 1 selected file(s)');
     fireEvent.click(refactorButton);
 
     await waitFor(() => {
@@ -278,7 +283,9 @@ describe('EditorTab', () => {
       expect(screen.getByTestId('diff-modified')).toHaveTextContent('# Hello, multi-refactored');
     });
 
-    fireEvent.click(screen.getByRole('button', { name: 'Accept' }));
+    const acceptBtn = screen.getByRole('button', { name: 'Accept proposed diff for README.md' });
+    expect(acceptBtn).toHaveAttribute('title', 'Accept proposed diff for README.md');
+    fireEvent.click(acceptBtn);
 
     await waitFor(() => {
       expect(api.writeWorkspaceFile).toHaveBeenCalledWith('README.md', '# Hello, multi-refactored');
@@ -286,16 +293,45 @@ describe('EditorTab', () => {
     });
   });
 
-  it('toggles the ghost-text autocomplete button state', async () => {
+  it('toggles the ghost-text autocomplete button state and updates dynamic aria-label/title', async () => {
     const api = createMockApi();
     render(<EditorTab api={api} />);
     await waitFor(() => expect(screen.getByText('README.md')).toBeInTheDocument());
 
-    const toggle = screen.getByRole('button', { name: 'Ghost-text autocomplete' });
+    const toggle = screen.getByRole('button', { name: 'Enable ghost-text autocomplete' });
     expect(toggle).toHaveAttribute('aria-pressed', 'false');
+    expect(toggle).toHaveAttribute(
+      'title',
+      'Enable ghost-text autocomplete (experimental — fires a real completion request as you pause typing)'
+    );
 
     fireEvent.click(toggle);
     expect(toggle).toHaveAttribute('aria-pressed', 'true');
+    expect(toggle).toHaveAttribute('aria-label', 'Disable ghost-text autocomplete');
+    expect(toggle).toHaveAttribute('title', 'Disable ghost-text autocomplete');
+  });
+
+  it('disables tree refresh button and shows aria-busy during tree loading', async () => {
+    const api = createMockApi();
+    let resolveTree: any;
+    (api.getWorkspaceTree as any).mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveTree = resolve;
+        })
+    );
+    render(<EditorTab api={api} />);
+
+    const refreshBtn = screen.getByRole('button', { name: 'Refreshing file tree...' });
+    expect(refreshBtn).toBeDisabled();
+    expect(refreshBtn).toHaveAttribute('aria-busy', 'true');
+    expect(refreshBtn).toHaveAttribute('title', 'Refreshing file tree...');
+
+    resolveTree({ path: '', entries: [{ name: 'README.md', path: 'README.md', is_dir: false, size: 10 }] });
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'Refresh file tree' })).not.toBeDisabled();
+    });
   });
 
   it('shows an error toast when opening a file fails', async () => {

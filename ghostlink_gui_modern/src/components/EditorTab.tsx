@@ -567,8 +567,12 @@ export const EditorTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
             <button
               onClick={() => setAutocompleteEnabled((v) => !v)}
               aria-pressed={autocompleteEnabled}
-              aria-label="Ghost-text autocomplete"
-              title="Ghost-text autocomplete (experimental — fires a real completion request as you pause typing)"
+              aria-label={autocompleteEnabled ? 'Disable ghost-text autocomplete' : 'Enable ghost-text autocomplete'}
+              title={
+                autocompleteEnabled
+                  ? 'Disable ghost-text autocomplete'
+                  : 'Enable ghost-text autocomplete (experimental — fires a real completion request as you pause typing)'
+              }
               className={`p-1 rounded-lg transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none ${
                 autocompleteEnabled ? 'bg-blue-600/20 text-blue-400' : 'text-slate-500 hover:text-white hover:bg-slate-900'
               }`}
@@ -577,8 +581,11 @@ export const EditorTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
             </button>
             <button
               onClick={loadRoot}
-              aria-label="Refresh file tree"
-              className="p-1 rounded-lg hover:bg-slate-900 text-slate-500 hover:text-white transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
+              disabled={treeLoading}
+              aria-busy={treeLoading}
+              aria-label={treeLoading ? 'Refreshing file tree...' : 'Refresh file tree'}
+              title={treeLoading ? 'Refreshing file tree...' : 'Refresh file tree'}
+              className="p-1 rounded-lg hover:bg-slate-900 text-slate-500 hover:text-white transition disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
             >
               <RefreshCw size={13} className={treeLoading ? 'animate-spin' : ''} aria-hidden="true" />
             </button>
@@ -590,6 +597,17 @@ export const EditorTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
             <button
               onClick={runMultiFileRefactor}
               disabled={multiRunning}
+              aria-busy={multiRunning}
+              aria-label={
+                multiRunning
+                  ? `Refactoring ${selectedPaths.size} selected file(s)...`
+                  : `Refactor ${selectedPaths.size} selected file(s)`
+              }
+              title={
+                multiRunning
+                  ? `Refactoring ${selectedPaths.size} selected file(s)...`
+                  : `Refactor ${selectedPaths.size} selected file(s)`
+              }
               className="flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-bold bg-purple-600 hover:bg-purple-500 text-white disabled:opacity-40 transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
             >
               {multiRunning ? <Loader size={11} className="animate-spin" aria-hidden="true" /> : <Wand2 size={11} aria-hidden="true" />}
@@ -703,19 +721,24 @@ export const EditorTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                 <div className="flex gap-2">
                   <button
                     onClick={acceptMultiCurrent}
+                    aria-label={`Accept proposed diff for ${currentMultiItem.path}`}
+                    title={`Accept proposed diff for ${currentMultiItem.path}`}
                     className="flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-bold bg-green-600 hover:bg-green-500 text-white transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
                   >
                     <Check size={13} aria-hidden="true" /> Accept
                   </button>
                   <button
                     onClick={rejectMultiCurrent}
+                    aria-label={`Reject proposed diff for ${currentMultiItem.path}`}
+                    title={`Reject proposed diff for ${currentMultiItem.path}`}
                     className="flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-bold bg-slate-800 hover:bg-slate-700 text-slate-300 transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
                   >
                     <X size={13} aria-hidden="true" /> Reject
                   </button>
                   <button
                     onClick={advanceMultiQueue}
-                    title="Skip without applying or discarding — you can revisit it another time"
+                    aria-label={`Skip proposed diff for ${currentMultiItem.path}`}
+                    title={`Skip proposed diff for ${currentMultiItem.path} without applying or discarding`}
                     className="flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-bold bg-slate-800 hover:bg-slate-700 text-slate-300 transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
                   >
                     <SkipForward size={13} aria-hidden="true" /> Skip
@@ -752,12 +775,16 @@ export const EditorTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                 <div className="flex gap-2">
                   <button
                     onClick={acceptDiff}
+                    aria-label={`Accept proposed diff for ${editorOpenPath || 'file'}`}
+                    title={`Accept proposed diff for ${editorOpenPath || 'file'}`}
                     className="flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-bold bg-green-600 hover:bg-green-500 text-white transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
                   >
                     <Check size={13} aria-hidden="true" /> Accept
                   </button>
                   <button
                     onClick={rejectDiff}
+                    aria-label={`Reject proposed diff for ${editorOpenPath || 'file'}`}
+                    title={`Reject proposed diff for ${editorOpenPath || 'file'}`}
                     className="flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-bold bg-slate-800 hover:bg-slate-700 text-slate-300 transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
                   >
                     <X size={13} aria-hidden="true" /> Reject
