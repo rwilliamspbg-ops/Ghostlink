@@ -43,6 +43,54 @@ impl DeviceKind {
     }
 }
 
+/// OPTIMIZATION: Zero-allocation $O(N)$ quickselect percentile extraction for p95 and p99.
+/// Uses a stack-allocated buffer for bounded samples (`latencies.len() <= STACK_SAMPLES_CAP`)
+/// and linear-time `select_nth_unstable_by` partitioning to locate p95 and p99 without heap
+/// allocations or full $O(N \log N)$ sorting.
+#[inline]
+fn compute_p95_p99_latencies(latencies: &[f32]) -> (f32, f32) {
+    const STACK_SAMPLES_CAP: usize = 256;
+    let len = latencies.len();
+    if len == 0 {
+        return (0.0, 0.0);
+    }
+    if len == 1 {
+        let val = latencies[0];
+        return (val, val);
+    }
+
+    let p95_idx = ((len - 1) as f32 * 0.95).round() as usize;
+    let p99_idx = ((len - 1) as f32 * 0.99).round() as usize;
+
+    let select_p95_p99 = |slice: &mut [f32]| {
+        if p95_idx == p99_idx {
+            let (_, elem, _) = slice.select_nth_unstable_by(p95_idx, |a, b| {
+                a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)
+            });
+            (*elem, *elem)
+        } else {
+            let (_, p99_elem, _) = slice.select_nth_unstable_by(p99_idx, |a, b| {
+                a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)
+            });
+            let p99 = *p99_elem;
+            let (_, p95_elem, _) = slice[..p99_idx].select_nth_unstable_by(p95_idx, |a, b| {
+                a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)
+            });
+            (*p95_elem, p99)
+        }
+    };
+
+    if len <= STACK_SAMPLES_CAP {
+        let mut stack_buf = [0.0_f32; STACK_SAMPLES_CAP];
+        let slice = &mut stack_buf[..len];
+        slice.copy_from_slice(latencies);
+        select_p95_p99(slice)
+    } else {
+        let mut heap_buf = latencies.to_vec();
+        select_p95_p99(&mut heap_buf)
+    }
+}
+
 /// Placement of one contiguous layer range onto a node and device.
 #[derive(Clone, Debug, PartialEq)]
 pub struct StagePlacement {
@@ -730,13 +778,7 @@ pub fn execute_pipeline_with_rebalance_and_measured(
         token_latencies.iter().sum::<f32>() / token_latencies.len() as f32
     };
 
-    let mut sorted = token_latencies.clone();
-    // OPTIMIZATION: Unstable sorting avoids scratch buffer allocations and stability tracking overhead.
-    sorted.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    let p95_idx = (sorted.len().saturating_sub(1) as f32 * 0.95).round() as usize;
-    let p95_token_latency_ms = sorted.get(p95_idx).copied().unwrap_or(0.0);
-    let p99_idx = (sorted.len().saturating_sub(1) as f32 * 0.99).round() as usize;
-    let p99_token_latency_ms = sorted.get(p99_idx).copied().unwrap_or(0.0);
+    let (p95_token_latency_ms, p99_token_latency_ms) = compute_p95_p99_latencies(&token_latencies);
 
     Ok(ExecutionResult {
         token_count,
@@ -1638,12 +1680,7 @@ pub fn execute_pipeline_distributed(
         token_latencies.iter().sum::<f32>() / token_latencies.len() as f32
     };
 
-    let mut sorted = token_latencies.clone();
-    sorted.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    let p95_idx = ((sorted.len().saturating_sub(1)) as f32 * 0.95).round() as usize;
-    let p95_token_latency_ms = sorted.get(p95_idx).copied().unwrap_or(0.0);
-    let p99_idx = ((sorted.len().saturating_sub(1)) as f32 * 0.99).round() as usize;
-    let p99_token_latency_ms = sorted.get(p99_idx).copied().unwrap_or(0.0);
+    let (p95_token_latency_ms, p99_token_latency_ms) = compute_p95_p99_latencies(&token_latencies);
 
     Ok(ExecutionResult {
         token_count,
@@ -1903,13 +1940,7 @@ pub fn execute_pipeline_tcp_loopback_with_config(
         token_latencies.iter().sum::<f32>() / token_latencies.len() as f32
     };
 
-    let mut sorted = token_latencies.clone();
-    // OPTIMIZATION: Unstable sorting avoids scratch buffer allocations and stability tracking overhead.
-    sorted.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    let p95_idx = ((sorted.len().saturating_sub(1)) as f32 * 0.95).round() as usize;
-    let p95_token_latency_ms = sorted.get(p95_idx).copied().unwrap_or(0.0);
-    let p99_idx = ((sorted.len().saturating_sub(1)) as f32 * 0.99).round() as usize;
-    let p99_token_latency_ms = sorted.get(p99_idx).copied().unwrap_or(0.0);
+    let (p95_token_latency_ms, p99_token_latency_ms) = compute_p95_p99_latencies(&token_latencies);
 
     Ok(ExecutionResult {
         token_count,
@@ -2215,12 +2246,7 @@ pub fn execute_pipeline_with_remote_stage(
     } else {
         token_latencies.iter().sum::<f32>() / token_latencies.len() as f32
     };
-    let mut sorted = token_latencies.clone();
-    sorted.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    let p95_idx = (sorted.len().saturating_sub(1) as f32 * 0.95).round() as usize;
-    let p95_token_latency_ms = sorted.get(p95_idx).copied().unwrap_or(0.0);
-    let p99_idx = (sorted.len().saturating_sub(1) as f32 * 0.99).round() as usize;
-    let p99_token_latency_ms = sorted.get(p99_idx).copied().unwrap_or(0.0);
+    let (p95_token_latency_ms, p99_token_latency_ms) = compute_p95_p99_latencies(&token_latencies);
 
     Ok(ExecutionResult {
         token_count,
@@ -2267,6 +2293,28 @@ mod tests {
     use crate::planning::LayerAssignment;
     use std::collections::HashMap;
     use std::io::Cursor;
+
+    #[test]
+    fn test_compute_p95_p99_latencies() {
+        assert_eq!(compute_p95_p99_latencies(&[]), (0.0, 0.0));
+        assert_eq!(compute_p95_p99_latencies(&[42.0]), (42.0, 42.0));
+        assert_eq!(compute_p95_p99_latencies(&[10.0, 20.0]), (20.0, 20.0));
+
+        let samples: Vec<f32> = (1..=100).map(|x| x as f32).collect();
+        let (p95, p99) = compute_p95_p99_latencies(&samples);
+        // (100 - 1) * 0.95 = 94.05 -> round to 94 -> 95.0
+        // (100 - 1) * 0.99 = 98.01 -> round to 98 -> 99.0
+        assert_eq!(p95, 95.0);
+        assert_eq!(p99, 99.0);
+
+        // Large vector (> 256) exercising heap fallback
+        let samples_large: Vec<f32> = (1..=300).map(|x| x as f32).collect();
+        let (p95_l, p99_l) = compute_p95_p99_latencies(&samples_large);
+        // (300 - 1) * 0.95 = 284.05 -> round to 284 -> 285.0
+        // (300 - 1) * 0.99 = 296.01 -> round to 296 -> 297.0
+        assert_eq!(p95_l, 285.0);
+        assert_eq!(p99_l, 297.0);
+    }
 
     #[test]
     fn pipeline_plan_uses_node_device_mapping() {
