@@ -161,4 +161,41 @@ describe('ProjectsTab', () => {
     fireEvent.keyDown(window, { key: 'Escape' });
     expect(screen.queryByRole('dialog', { name: /Create Task for/ })).not.toBeInTheDocument();
   });
+
+  it('renders actionable empty states with CTA buttons when projects or tasks are empty', async () => {
+    mockApi.listProjects.mockResolvedValueOnce([]);
+    const { unmount } = render(<ProjectsTab api={mockApi} />);
+
+    // When there are no projects
+    await waitFor(() => {
+      expect(screen.getByText('No projects yet')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Create new project' })).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Create new project' }));
+    expect(screen.getByRole('dialog', { name: 'Create New Project' })).toBeInTheDocument();
+
+    unmount();
+
+    // When a project exists but has no tasks
+    mockApi.listProjects.mockResolvedValue([
+      {
+        id: 'proj_1',
+        name: 'Core System',
+        kind: 'code',
+        root_path: '/workspace/core',
+      },
+    ]);
+    mockApi.listProjectTasks.mockResolvedValue([]);
+
+    render(<ProjectsTab api={mockApi} />);
+
+    await waitFor(() => {
+      expect(screen.getByText('No tasks in this project')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Create new task' })).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Create new task' }));
+    expect(screen.getByRole('dialog', { name: /Create Task for Core System/ })).toBeInTheDocument();
+  });
 });
