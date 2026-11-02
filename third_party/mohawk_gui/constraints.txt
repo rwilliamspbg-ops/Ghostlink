@@ -10,7 +10,7 @@ mypy==2.4.0
 psutil==6.1.0
 pyqtgraph==0.13.7
 pytest-asyncio==1.4.1
-pytest==9.1.1
+pytest==9.2.0
 python-dotenv==1.2.4
 requests==2.34.2
 safety==3.2.9
