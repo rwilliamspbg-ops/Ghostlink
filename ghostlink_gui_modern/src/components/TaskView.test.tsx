@@ -115,4 +115,46 @@ describe('TaskView', () => {
     expect(cancelBtn).toHaveAttribute('aria-busy', 'false');
     expect(cancelBtn).toHaveAttribute('title', 'Cancel the active task run');
   });
+
+  it('renders copy-to-clipboard button on event items and copies payload with accessible feedback', async () => {
+    const mockAddToast = vi.fn();
+    useAppStore.setState({
+      taskEvents: [
+        {
+          task_id: 'task_1',
+          kind: 'step_completed',
+          payload: { step: 1, action: 'read_file' },
+          ts: '2026-08-10T10:01:00Z',
+        },
+      ],
+      addToast: mockAddToast,
+    });
+
+    const writeTextMock = vi.fn().mockResolvedValue(undefined);
+    Object.assign(navigator, {
+      clipboard: {
+        writeText: writeTextMock,
+      },
+    });
+
+    render(<TaskView task={sampleTask} api={mockApi} />);
+
+    const copyBtn = screen.getByRole('button', { name: 'Copy event #1 payload' });
+    expect(copyBtn).toBeInTheDocument();
+    expect(copyBtn).toHaveAttribute('title', 'Copy event payload (JSON)');
+    expect(copyBtn).toHaveClass('focus-visible:ring-indigo-500');
+
+    await act(async () => {
+      fireEvent.click(copyBtn);
+    });
+
+    const expectedJson = JSON.stringify({ step: 1, action: 'read_file' }, null, 2);
+    expect(writeTextMock).toHaveBeenCalledWith(expectedJson);
+    expect(mockAddToast).toHaveBeenCalledWith({
+      message: 'Copied event #1 payload to clipboard',
+      type: 'info',
+    });
+
+    expect(screen.getByRole('button', { name: 'Copied event payload to clipboard' })).toBeInTheDocument();
+  });
 });
