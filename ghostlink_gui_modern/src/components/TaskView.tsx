@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { Play, Square, Shield, Clock, Layers, KeyRound, Loader2 } from "lucide-react";
+import { Play, Square, Shield, Clock, Layers, KeyRound, Loader2, Copy, Check } from "lucide-react";
 import { Task, ReviewPacket, TaskEvent, GhostlinkAPI } from "../api";
 import { useAppStore } from "../store";
 import { ReviewPane } from "./ReviewPane";
@@ -16,6 +16,7 @@ export const TaskView: React.FC<TaskViewProps> = ({ task, api, onRefresh }) => {
   const [spawning, setSpawning] = useState<boolean>(false);
   const [cancelling, setCancelling] = useState<boolean>(false);
   const [brief, setBrief] = useState<string>("");
+  const [copiedEventIdx, setCopiedEventIdx] = useState<number | null>(null);
 
   const taskEvents = useAppStore((state) => state.taskEvents);
   const addTaskEvent = useAppStore((state) => state.addTaskEvent);
@@ -278,19 +279,46 @@ export const TaskView: React.FC<TaskViewProps> = ({ task, api, onRefresh }) => {
           <p className="text-xs text-slate-500 italic">No events emitted yet. Spawn a run to see live events.</p>
         ) : (
           <div className="space-y-3 font-mono text-xs">
-            {relevantEvents.map((ev: TaskEvent, idx: number) => (
-              <div key={idx} className="p-3 bg-slate-950 rounded-lg border border-slate-800 flex items-start gap-3">
-                <span className="text-[10px] px-2 py-0.5 rounded bg-indigo-500/20 text-indigo-400 font-bold uppercase">
-                  {ev.kind}
-                </span>
-                <span className="text-slate-500 text-[10px]">
-                  {new Date(ev.ts).toLocaleTimeString()}
-                </span>
-                <div className="flex-1 text-slate-300 overflow-x-auto">
-                  <pre className="whitespace-pre-wrap">{JSON.stringify(ev.payload, null, 2)}</pre>
+            {relevantEvents.map((ev: TaskEvent, idx: number) => {
+              const isCopied = copiedEventIdx === idx;
+              return (
+                <div key={idx} className="p-3 bg-slate-950 rounded-lg border border-slate-800 flex items-start gap-3 group">
+                  <span className="text-[10px] px-2 py-0.5 rounded bg-indigo-500/20 text-indigo-400 font-bold uppercase shrink-0">
+                    {ev.kind}
+                  </span>
+                  <span className="text-slate-500 text-[10px] shrink-0">
+                    {new Date(ev.ts).toLocaleTimeString()}
+                  </span>
+                  <div className="flex-1 text-slate-300 overflow-x-auto">
+                    <pre className="whitespace-pre-wrap">{JSON.stringify(ev.payload, null, 2)}</pre>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      const payloadStr = JSON.stringify(ev.payload, null, 2);
+                      await navigator.clipboard.writeText(payloadStr);
+                      setCopiedEventIdx(idx);
+                      addToast({
+                        message: `Copied event #${idx + 1} payload to clipboard`,
+                        type: 'info',
+                      });
+                      setTimeout(() => {
+                        setCopiedEventIdx((curr) => (curr === idx ? null : curr));
+                      }, 2000);
+                    }}
+                    aria-label={isCopied ? "Copied event payload to clipboard" : `Copy event #${idx + 1} payload`}
+                    title={isCopied ? "Copied payload to clipboard" : "Copy event payload (JSON)"}
+                    className="p-1 rounded text-slate-500 hover:text-slate-300 hover:bg-slate-800/80 transition opacity-0 group-hover:opacity-100 focus:opacity-100 focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:outline-none shrink-0"
+                  >
+                    {isCopied ? (
+                      <Check size={12} className="text-emerald-400" aria-hidden="true" />
+                    ) : (
+                      <Copy size={12} aria-hidden="true" />
+                    )}
+                  </button>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </div>

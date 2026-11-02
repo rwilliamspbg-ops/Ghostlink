@@ -1,5 +1,9 @@
 # Palette's Journal
 
+## 2026-11-02 - Event Payload Copy Utility with Accessible States and Keyboard Focus
+**Learning:** Live event streams displaying structured JSON payloads (such as TaskView agent events) are difficult for operators and developers to extract or debug without a convenient copy mechanism. Providing a localized copy-to-clipboard button that remains accessible via keyboard tab navigation (`focus-visible:opacity-100`, high-contrast focus rings, and explicit dynamic `aria-label` / `title` tooltips) along with visual checkmark transitions and transient toast notifications gives users immediate confirmation across mouse, keyboard, and screen reader interactions.
+**Action:** Equip structured event timeline item cards with localized copy buttons that feature `group-hover:opacity-100 focus:opacity-100 focus-visible:ring-2`, dynamic ARIA labels ("Copy event #N payload" vs "Copied event payload to clipboard"), visual Check icon swap, and toast feedback.
+
 ## 2026-10-02 - `aria-current` and High-Contrast Focus Rings on Sidebar Selection Lists
 **Learning:** Selection items in sidebar list views (such as Project and Task selection item buttons) that communicate active state purely through background colors (e.g., `bg-indigo-600/20`) fail to convey selection state to screen reader users and lack visual keyboard focus indication for keyboard navigators.
 **Action:** Always annotate active list item selection buttons with `aria-current={isActive ? 'true' : undefined}`, descriptive `title` tooltips, and explicit `focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:outline-none` focus rings.
