@@ -162,18 +162,20 @@ fn migrate(conn: &Connection) -> Result<(), String> {
 }
 
 fn row_to_memory(row: &rusqlite::Row<'_>) -> rusqlite::Result<Memory> {
-    let kind_raw: String = row.get(2)?;
-    let source_raw: String = row.get(5)?;
+    // OPTIMIZATION: Borrow &str directly from SQLite's column buffer using get_ref().as_str()
+    // instead of allocating heap Strings for enum parsing.
+    let kind_raw = row.get_ref(2)?.as_str()?;
+    let source_raw = row.get_ref(5)?.as_str()?;
     // An unknown kind/source in an existing row degrades to the safest reading
     // rather than dropping the row — losing a memory because a future version
     // added a kind would be worse than mislabeling it.
     Ok(Memory {
         id: row.get(0)?,
         workspace_id: row.get(1)?,
-        kind: MemoryKind::parse(&kind_raw).unwrap_or(MemoryKind::ProjectFact),
+        kind: MemoryKind::parse(kind_raw).unwrap_or(MemoryKind::ProjectFact),
         title: row.get(3)?,
         body: row.get(4)?,
-        source: MemorySource::parse(&source_raw).unwrap_or(MemorySource::Tool),
+        source: MemorySource::parse(source_raw).unwrap_or(MemorySource::Tool),
         created_at: row.get(6)?,
         updated_at: row.get(7)?,
         pinned: row.get(8)?,
@@ -214,10 +216,12 @@ pub fn catalog(
 
     let rows = stmt
         .query_map(args.as_slice(), |row| {
-            let kind_raw: String = row.get(1)?;
+            // OPTIMIZATION: Borrow &str directly from SQLite's column buffer instead of
+            // allocating a heap String for kind enum parsing.
+            let kind_raw = row.get_ref(1)?.as_str()?;
             Ok(CatalogEntry {
                 id: row.get(0)?,
-                kind: MemoryKind::parse(&kind_raw).unwrap_or(MemoryKind::ProjectFact),
+                kind: MemoryKind::parse(kind_raw).unwrap_or(MemoryKind::ProjectFact),
                 title: row.get(2)?,
                 pinned: row.get(3)?,
                 shared: row.get(4)?,
@@ -336,15 +340,24 @@ pub fn search(
         .collect();
 
     // Total ordering: score desc, then most recently updated, then id.
-    // OPTIMIZATION: Unstable sorting avoids scratch buffer allocations and stability tracking overhead.
-    hits.sort_unstable_by(|a, b| {
+    let cmp = |a: &SearchHit, b: &SearchHit| {
         b.score
             .partial_cmp(&a.score)
             .unwrap_or(std::cmp::Ordering::Equal)
             .then(b.memory.updated_at.cmp(&a.memory.updated_at))
             .then(a.memory.id.cmp(&b.memory.id))
-    });
-    hits.truncate(limit);
+    };
+
+    // OPTIMIZATION: Use select_nth_unstable_by to partially sort only the top K elements,
+    // reducing time complexity from O(N log N) to O(N + K log K) for search limits.
+    if limit > 0 && hits.len() > limit {
+        hits.select_nth_unstable_by(limit - 1, cmp);
+        hits.truncate(limit);
+    } else if limit == 0 {
+        hits.clear();
+    }
+    // OPTIMIZATION: Unstable sorting avoids scratch buffer allocations and stability tracking overhead.
+    hits.sort_unstable_by(cmp);
     Ok(hits)
 }
 
@@ -629,5 +642,32 @@ mod tests {
         // Reopening runs migrate() again; it must not fail on existing tables.
         let conn = open(&path).unwrap();
         assert_eq!(catalog(&conn, "ws", &[]).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn search_respects_limit_with_partial_sort() {
+        let (_d, conn) = conn();
+        for i in 0..15 {
+            let body = if i < 3 {
+                "rust rust rust match"
+            } else if i < 8 {
+                "rust rust match"
+            } else {
+                "rust match"
+            };
+            mem(
+                &conn,
+                "ws",
+                MemoryKind::ProjectFact,
+                &format!("title {i}"),
+                body,
+            );
+        }
+
+        let hits = search(&conn, "ws", &[], "rust", &[], 5).unwrap();
+        assert_eq!(hits.len(), 5);
+        for window in hits.windows(2) {
+            assert!(window[0].score >= window[1].score);
+        }
     }
 }
