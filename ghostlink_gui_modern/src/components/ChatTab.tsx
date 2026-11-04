@@ -1403,22 +1403,42 @@ export const ChatTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
                       {isEditing ? (
                         <div className="space-y-2 bg-slate-900 p-3 rounded-2xl border border-slate-800">
                           <textarea
+                            // eslint-disable-next-line jsx-a11y/no-autofocus
+                            autoFocus
                             value={editingMsgText}
                             aria-label="Edit message"
                             onChange={(e) => setEditingMsgText(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Escape") {
+                                e.preventDefault();
+                                setEditingMsgId(null);
+                              } else if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+                                e.preventDefault();
+                                if (editingMsgText.trim() && !loading) {
+                                  void handleSaveUserEdit(m.id);
+                                }
+                              }
+                            }}
                             className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-xs text-slate-200 focus:outline-none focus:ring-1 focus:ring-blue-500"
                             rows={3}
                           />
                           <div className="flex justify-end gap-2">
                             <button
+                              type="button"
                               onClick={() => setEditingMsgId(null)}
-                              className="px-3 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg text-xs"
+                              aria-label="Cancel editing message"
+                              title="Cancel editing (Esc)"
+                              className="px-3 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg text-xs transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
                             >
                               Cancel
                             </button>
                             <button
+                              type="button"
+                              disabled={!editingMsgText.trim() || loading}
                               onClick={() => handleSaveUserEdit(m.id)}
-                              className="px-3 py-1 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-xs font-semibold"
+                              aria-label="Save and regenerate response"
+                              title="Save and regenerate response (Ctrl+Enter)"
+                              className="px-3 py-1 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-xs font-semibold transition disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
                             >
                               Save & Regenerate
                             </button>
