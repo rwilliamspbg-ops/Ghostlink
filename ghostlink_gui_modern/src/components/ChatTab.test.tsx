@@ -468,9 +468,63 @@ describe('ChatTab', () => {
       const editTextarea = screen.getByDisplayValue("Turn 1 User");
       fireEvent.change(editTextarea, { target: { value: "Turn 1 User Edited" } });
 
-      const saveBtn = screen.getByText("Save & Regenerate");
+      const saveBtn = screen.getByRole("button", { name: "Save and regenerate response" });
+      expect(saveBtn).toHaveAttribute("title", "Save and regenerate response (Ctrl+Enter)");
+      const cancelBtn = screen.getByRole("button", { name: "Cancel editing message" });
+      expect(cancelBtn).toHaveAttribute("title", "Cancel editing (Esc)");
+
       await act(async () => {
         fireEvent.click(saveBtn);
+      });
+
+      expect(api.sendMessage).toHaveBeenCalled();
+    });
+
+    it("cancels user message editing on Escape keypress", () => {
+      useAppStore.setState({
+        chatMessages: [
+          { role: "user", content: "Turn 1 User", id: "u1", timestamp: "12:00 PM" },
+        ],
+      });
+      const api = createMockApi();
+      render(<ChatTab api={api} />);
+
+      const editBtn = screen.getByTitle("Edit message");
+      fireEvent.click(editBtn);
+
+      const editTextarea = screen.getByRole("textbox", { name: "Edit message" });
+      expect(editTextarea).toBeInTheDocument();
+
+      fireEvent.keyDown(editTextarea, { key: "Escape" });
+      expect(screen.queryByRole("textbox", { name: "Edit message" })).not.toBeInTheDocument();
+    });
+
+    it("submits user message edit on Ctrl+Enter and disables save button when input is empty", async () => {
+      useAppStore.setState({
+        chatMessages: [
+          { role: "user", content: "Turn 1 User", id: "u1", timestamp: "12:00 PM" },
+        ],
+      });
+      const api = createMockApi();
+      render(<ChatTab api={api} />);
+
+      const editBtn = screen.getByTitle("Edit message");
+      fireEvent.click(editBtn);
+
+      const editTextarea = screen.getByRole("textbox", { name: "Edit message" });
+      const saveBtn = screen.getByRole("button", { name: "Save and regenerate response" });
+      expect(saveBtn).not.toBeDisabled();
+
+      // Clear input: Save button should be disabled
+      fireEvent.change(editTextarea, { target: { value: "   " } });
+      expect(saveBtn).toBeDisabled();
+
+      // Type new text and trigger Ctrl+Enter
+      fireEvent.change(editTextarea, { target: { value: "Updated with shortcut" } });
+      expect(saveBtn).not.toBeDisabled();
+
+      await act(async () => {
+        fireEvent.keyDown(editTextarea, { key: "Enter", ctrlKey: true });
       });
 
       expect(api.sendMessage).toHaveBeenCalled();

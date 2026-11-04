@@ -1,5 +1,9 @@
 # Palette's Journal
 
+## 2026-11-05 - Inline Message Editing Keyboard Shortcuts, Focus Traversal, and Tooltips
+**Learning:** Inline message editing modes that require manual mouse interactions to submit or cancel create high friction for power users and keyboard-only navigators. Equipping the editing textarea with `autoFocus` enables immediate text editing, while `Escape` dismissal and `Ctrl+Enter` / `Cmd+Enter` shortcuts allow fluid keyboard-driven operations without context switching. Pairing action controls with explicit high-contrast focus rings (`focus-visible:ring-2`), contextual `title` and `aria-label` tooltips, and empty-input disabled states ensures full accessibility across screen readers and keyboard users.
+**Action:** Always equip inline message editing controls with `autoFocus`, `Escape` dismissal, `Ctrl+Enter` / `Cmd+Enter` submission, explicit `aria-label` / `title` attributes with shortcut hints, and `focus-visible:ring-2` focus rings.
+
 ## 2026-11-02 - Event Payload Copy Utility with Accessible States and Keyboard Focus
 **Learning:** Live event streams displaying structured JSON payloads (such as TaskView agent events) are difficult for operators and developers to extract or debug without a convenient copy mechanism. Providing a localized copy-to-clipboard button that remains accessible via keyboard tab navigation (`focus-visible:opacity-100`, high-contrast focus rings, and explicit dynamic `aria-label` / `title` tooltips) along with visual checkmark transitions and transient toast notifications gives users immediate confirmation across mouse, keyboard, and screen reader interactions.
 **Action:** Equip structured event timeline item cards with localized copy buttons that feature `group-hover:opacity-100 focus:opacity-100 focus-visible:ring-2`, dynamic ARIA labels ("Copy event #N payload" vs "Copied event payload to clipboard"), visual Check icon swap, and toast feedback.
