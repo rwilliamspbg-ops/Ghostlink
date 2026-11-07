@@ -159,3 +159,7 @@
 ## 2026-10-24 - Expandable Drawer ARIA Attributes and Controls Association
 **Learning:** Accordion or drawer trigger buttons (such as the Advanced Settings toggle in the Cluster Workers tab) that toggle collapsible sections without explicit `aria-expanded` and `aria-controls` leave screen reader users unaware of whether the section is open or closed, or which element is controlled by the trigger button.
 **Action:** Always equip accordion and drawer trigger buttons with dynamic `aria-expanded={isOpen}`, `aria-controls={drawerId}`, contextual `aria-label`/`title` tooltips ('Expand...' / 'Collapse...'), and link the target container with matching `id={drawerId}`.
+
+## 2026-11-04 - [Persistent AI Assistant Panes Dismissal & Clipboard Controls]
+**Learning:** Docked assistant panels embedded within code editors (such as Explain, Fix, and Refactor result panes) that lack dismiss controls permanently consume vertical editor viewport space, frustrating users who want to focus on their code. Providing semantic region landmarks (`role="region"` and `aria-label`), explicit dismiss buttons with `focus-visible:` focus rings, and one-click clipboard copy controls with dynamic state feedback preserves editor real estate and improves accessibility.
+**Action:** Always complement docked contextual AI output panes with accessible region roles, clear dismiss controls, and clipboard copy buttons with visual and audible feedback.

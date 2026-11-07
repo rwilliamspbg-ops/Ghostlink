@@ -19,6 +19,7 @@ import {
   RefreshCw,
   Zap,
   SkipForward,
+  Copy,
 } from 'lucide-react';
 import { useAppStore, WorkspaceEntry } from '../store';
 import { GhostlinkAPI } from '../api';
@@ -211,6 +212,7 @@ export const EditorTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
   const [saving, setSaving] = useState(false);
   const [running, setRunning] = useState<ActionKind | null>(null);
   const [reply, setReply] = useState<ScratchReply | null>(null);
+  const [replyCopied, setReplyCopied] = useState(false);
   const editorRef = useRef<Parameters<OnMount>[0] | null>(null);
   const editorContainerRef = useRef<HTMLDivElement>(null);
   const editorResizeObserverRef = useRef<ResizeObserver | null>(null);
@@ -862,11 +864,48 @@ export const EditorTab: React.FC<{ api: GhostlinkAPI }> = ({ api }) => {
           )}
 
           {reply && (
-            <div className="max-h-64 overflow-y-auto border-t border-slate-900 px-4 py-3 bg-slate-900/40">
-              <div className="flex items-center gap-2 mb-1.5">
-                <Sparkles size={13} className="text-blue-400" aria-hidden="true" />
-                <span className="text-xs font-bold text-slate-300 capitalize">{reply.kind} result</span>
-                {reply.loading && <Loader size={12} className="animate-spin text-blue-500" aria-hidden="true" />}
+            <div
+              role="region"
+              aria-label={`${reply.kind} assistant result`}
+              className="max-h-64 overflow-y-auto border-t border-slate-900 px-4 py-3 bg-slate-900/40"
+            >
+              <div className="flex items-center justify-between gap-2 mb-1.5">
+                <div className="flex items-center gap-2">
+                  <Sparkles size={13} className="text-blue-400" aria-hidden="true" />
+                  <span className="text-xs font-bold text-slate-300 capitalize">{reply.kind} result</span>
+                  {reply.loading && <Loader size={12} className="animate-spin text-blue-500" aria-hidden="true" />}
+                </div>
+                <div className="flex items-center gap-1">
+                  {reply.content && !reply.loading && (
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        await navigator.clipboard.writeText(reply.content);
+                        setReplyCopied(true);
+                        addToast({ type: 'info', message: 'Copied assistant result to clipboard' });
+                        setTimeout(() => setReplyCopied(false), 2000);
+                      }}
+                      aria-label={replyCopied ? 'Copied assistant result to clipboard' : 'Copy assistant result to clipboard'}
+                      title={replyCopied ? 'Copied!' : 'Copy assistant result to clipboard'}
+                      className="p-1 rounded text-slate-500 hover:text-white hover:bg-slate-800 transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
+                    >
+                      {replyCopied ? (
+                        <Check size={13} className="text-emerald-400" aria-hidden="true" />
+                      ) : (
+                        <Copy size={13} aria-hidden="true" />
+                      )}
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => setReply(null)}
+                    aria-label="Dismiss assistant result"
+                    title="Dismiss assistant result"
+                    className="p-1 rounded text-slate-500 hover:text-white hover:bg-slate-800 transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
+                  >
+                    <X size={13} aria-hidden="true" />
+                  </button>
+                </div>
               </div>
               <div className="prose prose-invert prose-sm max-w-none break-words text-sm">
                 <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]}>

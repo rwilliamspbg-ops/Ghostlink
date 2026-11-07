@@ -207,6 +207,45 @@ describe('EditorTab', () => {
     expect(screen.queryByTestId('mock-diff-editor')).not.toBeInTheDocument();
   });
 
+  it('supports dismissing and copying the assistant result', async () => {
+    const api = createMockApi();
+    const writeTextSpy = vi.fn().mockResolvedValue(undefined);
+    Object.assign(navigator, {
+      clipboard: {
+        writeText: writeTextSpy,
+      },
+    });
+
+    render(<EditorTab api={api} />);
+    await waitFor(() => expect(screen.getByText('README.md')).toBeInTheDocument());
+    fireEvent.click(screen.getByText('README.md'));
+    await waitFor(() => expect(screen.getByTestId('mock-editor')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', { name: /Explain/ }));
+
+    await waitFor(() => {
+      expect(screen.getByRole('region', { name: 'explain assistant result' })).toBeInTheDocument();
+      expect(screen.getByText('This file says hello.')).toBeInTheDocument();
+    });
+
+    const copyBtn = screen.getByRole('button', { name: 'Copy assistant result to clipboard' });
+    expect(copyBtn).toHaveAttribute('title', 'Copy assistant result to clipboard');
+    fireEvent.click(copyBtn);
+
+    await waitFor(() => {
+      expect(writeTextSpy).toHaveBeenCalledWith('This file says hello.');
+      expect(screen.getByRole('button', { name: 'Copied assistant result to clipboard' })).toBeInTheDocument();
+      expect(useAppStore.getState().toasts.some((t) => t.message === 'Copied assistant result to clipboard')).toBe(true);
+    });
+
+    const dismissBtn = screen.getByRole('button', { name: 'Dismiss assistant result' });
+    expect(dismissBtn).toHaveAttribute('title', 'Dismiss assistant result');
+    fireEvent.click(dismissBtn);
+
+    expect(screen.queryByRole('region', { name: 'explain assistant result' })).not.toBeInTheDocument();
+    expect(screen.queryByText('This file says hello.')).not.toBeInTheDocument();
+  });
+
   it('shows a diff preview for Fix, and Accept writes the proposed content', async () => {
     const api = createMockApi();
     (api.sendMessage as any).mockResolvedValue({
