@@ -1,5 +1,9 @@
 # Palette's Journal
 
+## 2026-11-08 - Roving `tabIndex` and Keyboard Navigation on Diff Review Listboxes
+**Learning:** Dense file lists in review panes (such as proposed diffs in ReviewPane) that render plain button lists force keyboard users to Tab through every file item before reaching primary decision actions or verification summaries. Encapsulating diff lists in a `role="listbox"` with roving `tabIndex={isSelected ? 0 : -1}`, `role="option"`, `aria-selected`, and arrow key traversal (`ArrowDown`, `ArrowUp`, `Home`, `End`) enables keyboard and screen reader users to quickly browse through changed files without cluttering the global focus order.
+**Action:** In multi-item review or diff selection sidebars, wrap item buttons in `role="listbox"`, apply `role="option"`, roving `tabIndex`, `aria-selected`, and handle `ArrowUp`/`ArrowDown`/`Home`/`End` to cycle selections and shift focus smoothly.
+
 ## 2026-11-05 - Inline Message Editing Keyboard Shortcuts, Focus Traversal, and Tooltips
 **Learning:** Inline message editing modes that require manual mouse interactions to submit or cancel create high friction for power users and keyboard-only navigators. Equipping the editing textarea with `autoFocus` enables immediate text editing, while `Escape` dismissal and `Ctrl+Enter` / `Cmd+Enter` shortcuts allow fluid keyboard-driven operations without context switching. Pairing action controls with explicit high-contrast focus rings (`focus-visible:ring-2`), contextual `title` and `aria-label` tooltips, and empty-input disabled states ensures full accessibility across screen readers and keyboard users.
 **Action:** Always equip inline message editing controls with `autoFocus`, `Escape` dismissal, `Ctrl+Enter` / `Cmd+Enter` submission, explicit `aria-label` / `title` attributes with shortcut hints, and `focus-visible:ring-2` focus rings.
