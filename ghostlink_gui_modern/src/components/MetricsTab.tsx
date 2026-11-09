@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { RefreshCw, Activity, Cpu, Database, Zap, Clock, ShieldCheck, Server, TrendingUp, HeartPulse, Thermometer, Download, Network } from 'lucide-react';
+import { RefreshCw, Activity, Cpu, Database, Zap, Clock, ShieldCheck, Server, TrendingUp, HeartPulse, Thermometer, Download, Network, LucideIcon } from 'lucide-react';
 import { MetricsHistoryPoint } from '../api';
 import {
   ResponsiveContainer,
@@ -579,7 +579,9 @@ const UtilizationTooltip = ({
   );
 };
 
-const StatusRow = ({
+// OPTIMIZATION: Memoize leaf display components to prevent unnecessary re-rendering
+// and DOM reconciliation during recurring 3s metrics polling passes.
+const StatusRow = React.memo(({
   ok,
   label,
   warn = false,
@@ -601,7 +603,7 @@ const StatusRow = ({
     />
     <span className="text-sm font-medium text-slate-300">{label}</span>
   </div>
-);
+));
 
 function buildSparkline(
   history: MetricsHistoryPoint[],
@@ -627,7 +629,7 @@ function buildSparkline(
     .join(' ');
 }
 
-const HistoryCard = ({
+const HistoryCard = React.memo(({
   title,
   subtitle,
   value,
@@ -668,10 +670,11 @@ const HistoryCard = ({
       </svg>
     </div>
   </div>
-);
+));
+
 // Minimal inline trend line — no charting library needed for a glance-sized
 // sparkline. Renders nothing meaningful until a couple of samples exist.
-const Sparkline: React.FC<{ data: number[]; color: string }> = ({ data, color }) => {
+const Sparkline: React.FC<{ data: number[]; color: string }> = React.memo(({ data, color }) => {
   if (data.length < 2) {
     return <div className="h-8 flex items-center text-[10px] text-slate-600">Collecting samples…</div>;
   }
@@ -688,9 +691,23 @@ const Sparkline: React.FC<{ data: number[]; color: string }> = ({ data, color })
       <polyline points={points} fill="none" stroke={color} strokeWidth="1.5" vectorEffect="non-scaling-stroke" />
     </svg>
   );
-};
+});
 
-const StatCard = ({
+interface StatCardProps {
+  label: string;
+  value: number;
+  unit: string;
+  icon: LucideIcon;
+  color: string;
+  bg: string;
+  progress: number;
+  inverse?: boolean;
+  history?: number[];
+  sparkColor?: string;
+  hasSamples?: boolean;
+}
+
+const StatCard: React.FC<StatCardProps> = React.memo(({
   label,
   value,
   unit,
@@ -702,7 +719,7 @@ const StatCard = ({
   history,
   sparkColor,
   hasSamples = true,
-}: any) => (
+}) => (
   <div className="bg-slate-900/50 border border-slate-800 rounded-3xl p-6 hover:border-slate-700 transition-all group">
     <div className="flex items-center justify-between mb-4">
       <div className={`p-3 rounded-2xl ${bg} ${color}`}>
@@ -743,13 +760,13 @@ const StatCard = ({
     </div>
     {history && (
       <div className="mt-3 pt-3 border-t border-slate-800/50">
-        <Sparkline data={history} color={sparkColor} />
+        <Sparkline data={history} color={sparkColor ?? '#22d3ee'} />
       </div>
     )}
   </div>
-);
+));
 
-const GaugeCard = ({
+const GaugeCard = React.memo(({
   label,
   value,
   icon: Icon,
@@ -807,4 +824,4 @@ const GaugeCard = ({
       {subtitle && <p className="text-[10px] text-slate-500 mt-1">{subtitle}</p>}
     </div>
   );
-};
+});
