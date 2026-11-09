@@ -49,7 +49,7 @@ impl DashboardState {
     /// Update cluster state
     pub fn update_cluster(&mut self) {
         let active_count = self.cluster.active_nodes_count();
-        let total_nodes = self.cluster.nodes_snapshot().len();
+        let total_nodes = self.cluster.node_count();
         let quantization_label = match self.quantization_mode {
             QuantizationMode::None => "full precision",
             QuantizationMode::Int8 => "int8",
@@ -127,7 +127,7 @@ impl AsciiDashboard {
             String::from("+───────────────────────────────────────────────────────────────+\n");
         output.push_str(&format!(
             "| GHOST-LINK CLUSTER DASHBOARD               [STATUS: {:<8}] |\n",
-            if self.cluster.nodes_snapshot().is_empty() {
+            if self.cluster.is_empty() {
                 "EMPTY"
             } else {
                 "ACTIVE"

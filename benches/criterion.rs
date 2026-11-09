@@ -177,6 +177,9 @@ fn bench_cluster(c: &mut Criterion) {
     group.bench_function("nodes_snapshot_10", |b| {
         b.iter(|| black_box(snapshot_cluster.nodes_snapshot()));
     });
+    group.bench_function("node_count_10", |b| {
+        b.iter(|| black_box(snapshot_cluster.node_count()));
+    });
     group.bench_function("total_vram_10", |b| {
         b.iter(|| black_box(snapshot_cluster.total_vram_gb()));
     });

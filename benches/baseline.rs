@@ -382,6 +382,9 @@ fn main() {
     bench("cluster: nodes() snapshot (10 nodes)", 200_000, || {
         let _ = cluster2.nodes();
     });
+    bench("cluster: node_count() (10 nodes)", 500_000, || {
+        let _ = cluster2.node_count();
+    });
     bench("cluster: total_vram_gb() (10 nodes)", 500_000, || {
         let _ = cluster2.total_vram_gb();
     });
