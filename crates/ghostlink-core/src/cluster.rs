@@ -7,7 +7,7 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -226,6 +226,8 @@ pub struct ClusterState {
     nodes_snapshot: Arc<ArcSwap<Vec<NodeResources>>>,
     /// Indicates whether the shared snapshot needs to be refreshed
     nodes_snapshot_dirty: Arc<AtomicBool>,
+    /// Cached count of registered nodes for fast zero-cost reads without snapshot load
+    node_count_cache: Arc<AtomicUsize>,
     /// Map of node ID to live metrics
     pub(crate) metrics: Arc<Mutex<HashMap<String, NodeMetrics>>>,
     /// Last cluster update timestamp
@@ -248,6 +250,7 @@ impl Clone for ClusterState {
             nodes: Arc::clone(&self.nodes),
             nodes_snapshot: Arc::clone(&self.nodes_snapshot),
             nodes_snapshot_dirty: Arc::clone(&self.nodes_snapshot_dirty),
+            node_count_cache: Arc::clone(&self.node_count_cache),
             metrics: Arc::clone(&self.metrics),
             last_update: Arc::clone(&self.last_update),
             total_vram_cache: Arc::clone(&self.total_vram_cache),
@@ -270,6 +273,7 @@ impl ClusterState {
             nodes: Arc::new(Mutex::new(HashMap::new())),
             nodes_snapshot: Arc::new(ArcSwap::from_pointee(Vec::<NodeResources>::new())),
             nodes_snapshot_dirty: Arc::new(AtomicBool::new(false)),
+            node_count_cache: Arc::new(AtomicUsize::new(0)),
             metrics: Arc::new(Mutex::new(HashMap::new())),
             last_update: Arc::new(AtomicU64::new(0)),
             total_vram_cache: Arc::new(AtomicU64::new(0.0_f64.to_bits())),
@@ -370,6 +374,7 @@ impl ClusterState {
         } else {
             let node_id = node.id.clone();
             nodes.insert(node_id, node); // Zero-cost ownership move into new map entry
+            self.node_count_cache.store(nodes.len(), Ordering::Release);
         }
 
         if resources_changed {
@@ -408,8 +413,19 @@ impl ClusterState {
     }
 
     /// Get total number of registered nodes.
+    ///
+    /// OPTIMIZATION: Reads from atomic `node_count_cache` directly without loading
+    /// `nodes_snapshot` (`ArcSwap::load_full`), eliminating atomic reference counting
+    /// overhead and vector dereferencing on hot polling paths.
+    #[inline]
     pub fn node_count(&self) -> usize {
-        self.nodes_snapshot().len()
+        self.node_count_cache.load(Ordering::Acquire)
+    }
+
+    /// Check if the cluster has no registered nodes.
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.node_count() == 0
     }
 
     /// Get a shared snapshot of all nodes
@@ -591,7 +607,7 @@ impl ClusterHealthMonitor {
     /// Get health report
     pub fn health_report(&self) -> String {
         let active_count = self.cluster.active_nodes_count();
-        let total_nodes = self.cluster.nodes_snapshot().len();
+        let total_nodes = self.cluster.node_count();
 
         format!(
             "Cluster Health Report\n\

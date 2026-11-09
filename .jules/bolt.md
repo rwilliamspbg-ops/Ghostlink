@@ -238,3 +238,7 @@
 ## 2026-09-07 - [Distribution Plan Chunking Fast-Path]
 **Learning:** In load distribution planning (`chunk_distribution_plan`), unconditionally running `.into_iter().map(...).collect()` to chunk layer slices across workers introduces unnecessary heap allocations (vector allocations and tuple rebuilding) when all tensor slices already fit within `slice_limit`. Adding an early `needs_chunking` check allows returning the plan directly without any allocations.
 **Action:** Check whether any element requires transformation before mapping/collecting collections to provide zero-allocation fast paths.
+
+## 2026-11-09 - [Atomic Node Count Tracking in ClusterState]
+**Learning:** Calling `self.nodes_snapshot().len()` for collection size or emptiness checks loads an `ArcSwap` snapshot via `load_full()`, paying atomic reference counting increment/decrement and pointer chasing overhead on hot polling and health loops. Tracking registered node count with a dedicated `AtomicUsize` updated on registration mutations reduces `node_count` latency from ~39.4 ns to ~1.17 ns (~97% speedup).
+**Action:** Prefer dedicated atomic counters for collection sizes on read-heavy data structures with snapshot caching instead of querying snapshot length.
