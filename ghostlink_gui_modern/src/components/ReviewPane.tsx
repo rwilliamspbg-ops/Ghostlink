@@ -54,12 +54,29 @@ export const ReviewPane: React.FC<ReviewPaneProps> = ({ packet, api: propApi, on
   const [note, setNote] = useState<string>('');
   const [showNoteInput, setShowNoteInput] = useState<boolean>(false);
   const noteInputRef = useRef<HTMLInputElement>(null);
+  const diffButtonsRef = useRef<(HTMLButtonElement | null)[]>([]);
 
   useEffect(() => {
     if (showNoteInput) {
       noteInputRef.current?.focus();
     }
   }, [showNoteInput]);
+
+  const handleDiffListKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    const total = packet.diffs.length;
+    if (total === 0) return;
+    let nextIndex = -1;
+    if (e.key === 'ArrowDown') nextIndex = (selectedDiffIndex + 1) % total;
+    else if (e.key === 'ArrowUp') nextIndex = (selectedDiffIndex - 1 + total) % total;
+    else if (e.key === 'Home') nextIndex = 0;
+    else if (e.key === 'End') nextIndex = total - 1;
+
+    if (nextIndex !== -1) {
+      e.preventDefault();
+      setSelectedDiffIndex(nextIndex);
+      diffButtonsRef.current[nextIndex]?.focus();
+    }
+  };
 
   const addToast = useAppStore((state) => state.addToast);
   const currentDiff: ReviewDiff | undefined = packet.diffs[selectedDiffIndex];
@@ -241,23 +258,38 @@ export const ReviewPane: React.FC<ReviewPaneProps> = ({ packet, api: propApi, on
             {packet.diffs.length === 0 ? (
               <p className="text-xs text-slate-500 italic">No file changes proposed</p>
             ) : (
-              <div className="space-y-1">
-                {packet.diffs.map((diff, idx) => (
-                  <button
-                    key={diff.path}
-                    onClick={() => setSelectedDiffIndex(idx)}
-                    aria-current={selectedDiffIndex === idx ? 'true' : undefined}
-                    aria-label={`View diff for ${diff.path}`}
-                    title={`View diff for ${diff.path}`}
-                    className={`w-full text-left px-3 py-2 rounded-lg text-xs font-mono transition flex items-center justify-between focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:outline-none ${
-                      selectedDiffIndex === idx
-                        ? 'bg-indigo-600/20 text-indigo-300 border border-indigo-500/30'
-                        : 'text-slate-300 hover:bg-slate-900'
-                    }`}
-                  >
-                    <span className="truncate">{diff.path}</span>
-                  </button>
-                ))}
+              <div
+                role="listbox"
+                aria-label="Proposed file diffs"
+                tabIndex={0}
+                onKeyDown={handleDiffListKeyDown}
+                className="space-y-1 focus:outline-none"
+              >
+                {packet.diffs.map((diff, idx) => {
+                  const isSelected = selectedDiffIndex === idx;
+                  return (
+                    <button
+                      key={diff.path}
+                      ref={(el) => {
+                        diffButtonsRef.current[idx] = el;
+                      }}
+                      role="option"
+                      aria-selected={isSelected}
+                      tabIndex={isSelected ? 0 : -1}
+                      onClick={() => setSelectedDiffIndex(idx)}
+                      aria-current={isSelected ? 'true' : undefined}
+                      aria-label={`View diff for ${diff.path}`}
+                      title={`View diff for ${diff.path}`}
+                      className={`w-full text-left px-3 py-2 rounded-lg text-xs font-mono transition flex items-center justify-between focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:outline-none ${
+                        isSelected
+                          ? 'bg-indigo-600/20 text-indigo-300 border border-indigo-500/30'
+                          : 'text-slate-300 hover:bg-slate-900'
+                      }`}
+                    >
+                      <span className="truncate">{diff.path}</span>
+                    </button>
+                  );
+                })}
               </div>
             )}
           </div>

@@ -270,10 +270,74 @@ describe('ReviewPane', () => {
   it('renders diff file selection button with accessible aria-label, title, and aria-current', () => {
     render(<ReviewPane packet={mockPacket} api={mockApi} />);
 
-    const diffBtn = screen.getByRole('button', { name: /view diff for src\/lib.rs/i });
+    const diffBtn = screen.getByRole('option', { name: /view diff for src\/lib.rs/i });
     expect(diffBtn).toBeInTheDocument();
     expect(diffBtn).toHaveAttribute('title', 'View diff for src/lib.rs');
     expect(diffBtn).toHaveAttribute('aria-current', 'true');
+    expect(diffBtn).toHaveAttribute('aria-selected', 'true');
+    expect(diffBtn).toHaveAttribute('tabIndex', '0');
+  });
+
+  it('supports roving tabIndex and keyboard arrow navigation across proposed diffs', () => {
+    const multiDiffPacket: ReviewPacket = {
+      ...mockPacket,
+      diffs: [
+        {
+          path: 'src/lib.rs',
+          unified_diff: '--- a/src/lib.rs\n+++ b/src/lib.rs',
+          original: 'fn old() {}',
+          proposed: 'fn new_func() {}',
+        },
+        {
+          path: 'src/main.rs',
+          unified_diff: '--- a/src/main.rs\n+++ b/src/main.rs',
+          original: 'fn main_old() {}',
+          proposed: 'fn main() {}',
+        },
+        {
+          path: 'README.md',
+          unified_diff: '--- a/README.md\n+++ b/README.md',
+          original: '# Old',
+          proposed: '# New',
+        },
+      ],
+    };
+
+    render(<ReviewPane packet={multiDiffPacket} api={mockApi} />);
+
+    const listbox = screen.getByRole('listbox', { name: 'Proposed file diffs' });
+    expect(listbox).toBeInTheDocument();
+
+    const options = screen.getAllByRole('option');
+    expect(options).toHaveLength(3);
+
+    // Initial state: first item selected with tabIndex=0, others tabIndex=-1
+    expect(options[0]).toHaveAttribute('tabIndex', '0');
+    expect(options[0]).toHaveAttribute('aria-selected', 'true');
+    expect(options[1]).toHaveAttribute('tabIndex', '-1');
+    expect(options[1]).toHaveAttribute('aria-selected', 'false');
+
+    // ArrowDown moves selection to second item
+    fireEvent.keyDown(listbox, { key: 'ArrowDown', code: 'ArrowDown' });
+    expect(options[1]).toHaveAttribute('tabIndex', '0');
+    expect(options[1]).toHaveAttribute('aria-selected', 'true');
+    expect(options[0]).toHaveAttribute('tabIndex', '-1');
+    expect(options[0]).toHaveAttribute('aria-selected', 'false');
+
+    // End key moves selection to last item
+    fireEvent.keyDown(listbox, { key: 'End', code: 'End' });
+    expect(options[2]).toHaveAttribute('tabIndex', '0');
+    expect(options[2]).toHaveAttribute('aria-selected', 'true');
+
+    // Home key moves selection to first item
+    fireEvent.keyDown(listbox, { key: 'Home', code: 'Home' });
+    expect(options[0]).toHaveAttribute('tabIndex', '0');
+    expect(options[0]).toHaveAttribute('aria-selected', 'true');
+
+    // ArrowUp wraps around to last item
+    fireEvent.keyDown(listbox, { key: 'ArrowUp', code: 'ArrowUp' });
+    expect(options[2]).toHaveAttribute('tabIndex', '0');
+    expect(options[2]).toHaveAttribute('aria-selected', 'true');
   });
 
   it('renders commands list with judge status badges', () => {
