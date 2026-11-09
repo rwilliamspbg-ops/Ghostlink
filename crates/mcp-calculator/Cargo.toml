@@ -8,7 +8,7 @@ description = "Local stdio MCP server exposing a safe expression-evaluator 'calc
 readme = "README.md"
 
 [dependencies]
-rmcp = { version = "2", features = ["transport-io", "schemars"] }
+rmcp = { version = "3.9", features = ["transport-io", "schemars"] }
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 evalexpr = "13"
