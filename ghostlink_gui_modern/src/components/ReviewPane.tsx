@@ -1,7 +1,7 @@
 import { resolveApiBase } from '../config';
 import React, { useState, useRef, useEffect } from 'react';
 import { DiffEditor } from '@monaco-editor/react';
-import { Check, X, RefreshCw, AlertTriangle, Terminal, Shield, FileText, Cpu, Layers } from 'lucide-react';
+import { Check, X, RefreshCw, AlertTriangle, Terminal, Shield, FileText, Cpu, Layers, Copy } from 'lucide-react';
 import { ReviewPacket, ReviewDiff, VerificationResult, GhostlinkAPI } from '../api';
 import { useAppStore } from '../store';
 
@@ -52,6 +52,7 @@ export const ReviewPane: React.FC<ReviewPaneProps> = ({ packet, api: propApi, on
   const [selectedDiffIndex, setSelectedDiffIndex] = useState<number>(0);
   const [activeAction, setActiveAction] = useState<'accept' | 'request_changes' | 'reject' | null>(null);
   const [note, setNote] = useState<string>('');
+  const [copiedExcerptIdx, setCopiedEventIdx] = useState<number | null>(null);
   const [showNoteInput, setShowNoteInput] = useState<boolean>(false);
   const noteInputRef = useRef<HTMLInputElement>(null);
   const diffButtonsRef = useRef<(HTMLButtonElement | null)[]>([]);
@@ -329,9 +330,42 @@ export const ReviewPane: React.FC<ReviewPaneProps> = ({ packet, api: propApi, on
                     {/* The excerpt is why the backend captured it: a bare
                         "FAIL" does not tell a reviewer what to fix. */}
                     {!v.passed && v.excerpt && (
-                      <pre className="mt-1.5 p-1.5 bg-slate-950 rounded text-[10px] text-slate-400 overflow-x-auto max-h-24 whitespace-pre-wrap">
-                        {v.excerpt}
-                      </pre>
+                      <div className="relative group/excerpt mt-1.5">
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            await navigator.clipboard.writeText(v.excerpt || '');
+                            setCopiedEventIdx(idx);
+                            addToast({
+                              message: 'Copied verification excerpt to clipboard',
+                              type: 'info',
+                            });
+                            setTimeout(() => {
+                              setCopiedEventIdx((curr) => (curr === idx ? null : curr));
+                            }, 2000);
+                          }}
+                          aria-label={
+                            copiedExcerptIdx === idx
+                              ? 'Copied verification excerpt to clipboard'
+                              : 'Copy verification excerpt'
+                          }
+                          title={
+                            copiedExcerptIdx === idx
+                              ? 'Copied excerpt to clipboard'
+                              : 'Copy verification excerpt'
+                          }
+                          className="absolute right-1 top-1 p-1 rounded bg-slate-900/90 text-slate-400 hover:text-slate-200 transition opacity-0 group-hover/excerpt:opacity-100 focus:opacity-100 focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:outline-none"
+                        >
+                          {copiedExcerptIdx === idx ? (
+                            <Check size={12} className="text-emerald-400" aria-hidden="true" />
+                          ) : (
+                            <Copy size={12} aria-hidden="true" />
+                          )}
+                        </button>
+                        <pre className="p-1.5 bg-slate-950 rounded text-[10px] text-slate-400 overflow-x-auto max-h-24 whitespace-pre-wrap pr-7">
+                          {v.excerpt}
+                        </pre>
+                      </div>
                     )}
                   </div>
                 ))}
