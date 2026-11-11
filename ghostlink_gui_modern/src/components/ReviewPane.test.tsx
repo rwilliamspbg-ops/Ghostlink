@@ -113,6 +113,45 @@ describe('ReviewPane', () => {
     expect(screen.getByText('exit 101')).toBeInTheDocument();
   });
 
+  it('renders copy button for failed verification excerpt and copies excerpt to clipboard on click', async () => {
+    const writeTextMock = vi.fn().mockResolvedValue(undefined);
+    Object.assign(navigator, {
+      clipboard: {
+        writeText: writeTextMock,
+      },
+    });
+
+    render(
+      <ReviewPane
+        packet={{
+          ...mockPacket,
+          verification: [
+            {
+              argv: ['cargo', 'clippy'],
+              exit: 101,
+              passed: false,
+              excerpt: 'error: unused variable `x`',
+            },
+          ],
+        }}
+        api={mockApi}
+      />
+    );
+
+    const copyBtn = screen.getByRole('button', { name: 'Copy verification excerpt' });
+    expect(copyBtn).toBeInTheDocument();
+    expect(copyBtn).toHaveAttribute('title', 'Copy verification excerpt');
+
+    fireEvent.click(copyBtn);
+
+    await waitFor(() => {
+      expect(writeTextMock).toHaveBeenCalledWith('error: unused variable `x`');
+    });
+
+    expect(copyBtn).toHaveAttribute('aria-label', 'Copied verification excerpt to clipboard');
+    expect(copyBtn).toHaveAttribute('title', 'Copied excerpt to clipboard');
+  });
+
   it('marks a timed-out verification command as a timeout, not a plain failure', () => {
     render(
       <ReviewPane

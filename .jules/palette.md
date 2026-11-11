@@ -1,5 +1,9 @@
 # Palette's Journal
 
+## 2026-11-10 - Failure Excerpt Copy Controls and Focus Rings in ReviewPanes
+**Learning:** Terminal failure excerpts and error logs captured during automated verification checks in review panels are often rendered in scroll-constrained `<pre>` containers, making text selection cumbersome on mouse and assistive devices. Equipping failed verification excerpts with an overlay copy-to-clipboard button that reveals on container hover (`group-hover/excerpt:opacity-100`) and keyboard focus (`focus:opacity-100`, `focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:outline-none`)—along with dynamic ARIA labels, tooltips, checkmark icon swaps, and toast feedback—drastically reduces friction when diagnosing or reporting CI/CD failures.
+**Action:** Provide accessible one-click copy buttons on preformatted error and verification failure excerpt blocks, ensuring they remain visible and discoverable during keyboard Tab navigation with explicit focus-visible rings and audible feedback.
+
 ## 2026-11-08 - Roving `tabIndex` and Keyboard Navigation on Diff Review Listboxes
 **Learning:** Dense file lists in review panes (such as proposed diffs in ReviewPane) that render plain button lists force keyboard users to Tab through every file item before reaching primary decision actions or verification summaries. Encapsulating diff lists in a `role="listbox"` with roving `tabIndex={isSelected ? 0 : -1}`, `role="option"`, `aria-selected`, and arrow key traversal (`ArrowDown`, `ArrowUp`, `Home`, `End`) enables keyboard and screen reader users to quickly browse through changed files without cluttering the global focus order.
 **Action:** In multi-item review or diff selection sidebars, wrap item buttons in `role="listbox"`, apply `role="option"`, roving `tabIndex`, `aria-selected`, and handle `ArrowUp`/`ArrowDown`/`Home`/`End` to cycle selections and shift focus smoothly.
