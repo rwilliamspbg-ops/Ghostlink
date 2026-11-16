@@ -7,6 +7,8 @@ All notable changes to Ghostlink Studio are documented here.
 
 ## [Unreleased]
 
+## [2.7.0] - 2026-11-16
+
 ### Added
 
 - **Palette: ReviewPane listbox semantics and excerpt copy** (`ghostlink_gui_modern/src/components/ReviewPane.tsx`): the proposed-diffs list is now `role="listbox"` / `role="option"` with `aria-selected` and roving `tabIndex` (arrow/Home/End with wrap-around), and verification-failure excerpts gained a copy-to-clipboard button with toast and checkmark feedback.

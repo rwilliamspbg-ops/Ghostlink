@@ -1246,7 +1246,7 @@ dependencies = [
 
 [[package]]
 name = "ghost-link"
-version = "2.6.0"
+version = "2.7.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1291,7 +1291,7 @@ dependencies = [
 
 [[package]]
 name = "ghostlink-core"
-version = "2.6.0"
+version = "2.7.0"
 dependencies = [
  "arc-swap",
  "crc32fast",
