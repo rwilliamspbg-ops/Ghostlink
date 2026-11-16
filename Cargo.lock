@@ -1203,7 +1203,6 @@ dependencies = [
 name = "ghostlink-core"
 version = "2.6.0"
 dependencies = [
- "anyhow",
  "arc-swap",
  "crc32fast",
  "criterion",
@@ -1220,11 +1219,9 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "tempfile",
- "thiserror 2.0.21",
  "tokio",
  "tokio-test",
  "tracing",
- "tracing-subscriber",
  "windows-sys 0.59.0",
 ]
 
