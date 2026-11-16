@@ -1864,7 +1864,6 @@ impl NativeEngineClient {
     }
 
     #[allow(clippy::too_many_arguments)]
-    #[allow(clippy::too_many_arguments)]
     pub async fn generate(
         &self,
         model: &str,
@@ -2250,7 +2249,6 @@ impl NativeEngineClient {
     /// HTTP 400), falls back to the existing non-streaming `/completion`
     /// path and yields the whole result as a single chunk rather than
     /// duplicating a second incremental parser for an uncommon case.
-    #[allow(clippy::too_many_arguments)]
     #[allow(clippy::too_many_arguments)]
     pub async fn generate_chat_stream(
         &self,

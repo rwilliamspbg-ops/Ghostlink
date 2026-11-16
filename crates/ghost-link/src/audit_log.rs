@@ -100,11 +100,7 @@ fn should_rotate(path: &Path) -> bool {
     }
 
     let max_lines = audit_log_max_lines();
-    if max_lines > 0 && count_file_lines(path) >= max_lines {
-        return true;
-    }
-
-    false
+    max_lines > 0 && count_file_lines(path) >= max_lines
 }
 
 fn rotate_audit_log(path: &Path) {

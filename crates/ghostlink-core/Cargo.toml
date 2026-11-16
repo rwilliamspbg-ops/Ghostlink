@@ -4,7 +4,6 @@ version = "2.6.0"
 edition = "2021"
 authors = ["Ryan K Williams"]
 description = "Core runtime primitives for Ghostlink, including planning, routing, health monitoring, and transport logic for distributed inference workloads."
-homepage = "https://rwilliamspbg-ops.github.io/Ghostlink/"
 documentation = "https://rwilliamspbg-ops.github.io/Ghostlink/"
 repository = "https://github.com/rwilliamspbg-ops/Ghostlink"
 readme = "README.md"
@@ -32,21 +31,14 @@ sha2 = "0.10"
 rand = "0.8"
 crc32fast = "1.5"
 
-# Error types
-thiserror = "2"
-
 # Async runtime (for health monitoring)
 tokio = { version = "1", features = ["full"] }
 
 # Terminal UI
-ratatui = "0.28"
-
-# Production error handling
-anyhow = "1"
+ratatui = "0.30"
 
 # Logging
 tracing = "0.1"
-tracing-subscriber = "0.3"
 libc = "0.2.186"
 crossterm = "0.29.0"
 arc-swap = "1"
