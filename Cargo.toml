@@ -3,10 +3,6 @@ members = ["crates/ghost-link", "crates/ghostlink-core", "crates/mcp-calculator"
 exclude = ["fuzz"]
 resolver = "2"
 
-[workspace.package]
-edition = "2021"
-license = "MIT"
-
 # Cross-crate inlining matters here: the ring buffer / protocol / planning hot
 # paths in ghostlink-core are called from ghost-link across a crate boundary,
 # which LTO + a single codegen unit lets the compiler optimize as if it were
