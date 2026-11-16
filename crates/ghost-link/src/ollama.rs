@@ -392,7 +392,6 @@ impl OllamaClient {
 
     /// Chat with Ollama (non-streaming)
     #[allow(clippy::too_many_arguments)]
-    #[allow(clippy::too_many_arguments)]
     pub async fn chat(
         &self,
         model: &str,
