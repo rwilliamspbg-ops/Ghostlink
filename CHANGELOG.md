@@ -7,6 +7,35 @@ All notable changes to Ghostlink Studio are documented here.
 
 ## [Unreleased]
 
+### Added
+
+- **Palette: ReviewPane listbox semantics and excerpt copy** (`ghostlink_gui_modern/src/components/ReviewPane.tsx`): the proposed-diffs list is now `role="listbox"` / `role="option"` with `aria-selected` and roving `tabIndex` (arrow/Home/End with wrap-around), and verification-failure excerpts gained a copy-to-clipboard button with toast and checkmark feedback.
+- **Palette: editor assistant dismiss and copy** (`ghostlink_gui_modern/src/components/EditorTab.tsx`): the docked Explain/Fix/Refactor result pane can be dismissed and copied, with `role="region"`, a dynamic `aria-label`, and focus-visible rings.
+- **Palette: message-editing keyboard support** (`ghostlink_gui_modern/src/components/ChatTab.tsx`): `Escape` cancels editing, `Ctrl/Cmd+Enter` saves and regenerates, the textarea autofocuses, and Save is disabled on empty input.
+- **Palette: task event copy** (`ghostlink_gui_modern/src/components/TaskView.tsx`): per-event copy button on Live Agent Events payloads with toast confirmation.
+- **Palette: ProjectsTab empty states** (`ghostlink_gui_modern/src/components/ProjectsTab.tsx`): actionable `EmptyState` CTAs ("Create Project" / "Create Task") that open the creation modals.
+- **Palette: EditorTab and WorkersTab accessibility** (`EditorTab.tsx`, `WorkersTab.tsx`): `aria-busy`/`disabled` on the file-tree refresh and Refactor actions, contextual `aria-label`s naming the target file, and `aria-expanded`/`aria-controls` on the Advanced Settings drawer (also fixes the `setShowAddvanced` typo).
+
+### Changed
+
+- **`ratatui` 0.28 -> 0.30** (`crates/ghostlink-core/Cargo.toml`): clears RUSTSEC-2026-0253 (`lru < 0.18.2`) by pulling `lru 0.18.5`.
+- **`rmcp` 2.x -> 3.9 and `rusqlite` 0.32 -> 0.41** (MCP crates): clears the Cargo Deny advisories on `rmcp` and `libsqlite3-sys` (0.30.1 -> 0.39.1).
+- **`quinn-udp` -> 0.5.16**.
+- **Removed unused `ghostlink-core` dependencies** (`anyhow`, `thiserror`, `tracing-subscriber`): Rust 1.100's `cargo::unused_dependencies` lint fails the workspace under `-D warnings`; none are referenced in the crate.
+- **Dropped unused `[workspace.package]` fields and redundant `homepage`** from the publishable manifests.
+- **Clippy (Rust 1.100)**: removed duplicated `#[allow(clippy::too_many_arguments)]` attributes and simplified a bool-guard in `audit_log::should_rotate`.
+- **Dependabot** (`third_party/mohawk_gui`, `.github/workflows`): fastapi 0.162.5, pytest-asyncio 1.5.0, mypy 2.4.1, certifi 2026.10.23, pytest 9.2.0, pyqt6 6.12.0, flake8 7.5.0, markdownlint-cli2-action 25.0.0.
+
+### Performance
+
+- **`ClusterState::node_count` atomic cache** (`crates/ghostlink-core/src/cluster.rs`, `dashboard.rs`): a `node_count_cache: Arc<AtomicUsize>` updated in `register` replaces `nodes_snapshot().len()` (an `ArcSwap::load_full()` per call) on hot polling paths; `ClusterHealthMonitor::health_report` and `DashboardState` now use `node_count`/`is_empty`. PR-reported `cluster/node_count_10` 39.4 -> 1.17 ns/op.
+- **Zero-copy cluster snapshot in `/v1/completions`** (`crates/ghost-link/src/main.rs`): `cluster.nodes()` (clones the `Vec<NodeResources>` and its heap strings on every request) replaced with `cluster.nodes_snapshot()`, which returns a shared `Arc<Vec<NodeResources>>`.
+- **Quickselect percentiles** (`crates/ghostlink-core/src/runtime.rs`): `compute_p95_p99_latencies` replaces clone + full `sort_unstable_by` with a stack `[f32; 256]` buffer and two-stage `select_nth_unstable_by`, removing heap allocation for runs <= 256 tokens and dropping O(N log N) to O(N). PR-reported ~1.7% latency speedup in `fabric_inmem_single_gpu`.
+- **mcp-memory zero-allocation search** (`crates/mcp-memory/src/store.rs`): `row.get_ref(idx)?.as_str()` borrows from SQLite's column buffer instead of allocating `String`s for `MemoryKind`/`MemorySource`, and `select_nth_unstable_by(limit - 1, ...)` precedes the final sort. PR-reported search 91.1 -> 85.5 ms over 500 rows x 100 queries.
+- **`PlacementPlan::new` capacity reclaim** (`crates/ghostlink-core/src/planning.rs`): `participating_nodes.shrink_to_fit()` after dedup, freeing capacity allocated for `assignments.len()` when many chunked assignments share few nodes.
+- **MetricsTab render memoization** (`ghostlink_gui_modern/src/components/MetricsTab.tsx`): leaf components (`StatusRow`, `HistoryCard`, `Sparkline`, `StatCard`, `GaugeCard`) wrapped in `React.memo` so the 3-second metrics poll does not reconcile unchanged subtrees.
+
+
 ## [2.6.0] - 2026-10-27
 
 ### Added
@@ -15,6 +44,7 @@ All notable changes to Ghostlink Studio are documented here.
 - **Event-driven config hot-reload** (`crates/ghost-link/src/main.rs`): replaced 2s-only polling with `notify::recommended_watcher`, retaining 2s fallback cadence.
 - **Plugin marketplace-lite** (`crates/ghost-link/src/backend_plugin.rs`, `plugins.toml.example`): `BackendPluginRegistry::load_from_plugins_file` / `from_env_and_plugins_file` register OpenAI-compatible backends from `plugins.toml`; documented in `CONTRIBUTING.md`.
 - **LoRA/adapter passthrough** (`crates/ghost-link/src/native_engine.rs`, `main.rs`): `load_model_into_slot` accepts `lora_path`; `RuntimeSettings.lora_path` (serde default, comma-separated) applied via `--lora` per adapter.
+- **Richer Hugging Face model cards** (`crates/ghost-link/src/main.rs`, `ghostlink_gui_modern/src/components/ModelsTab.tsx`): the HF search backend now returns `author`, `pipeline_tag`, `tags`, `last_modified`, `trending`, and `description`, and the Models tab renders them. Shipped in `v2.6.0`; this bullet was missing from the release notes until now.
 - **Coordinator-side RPC TLS client proxy** (`crates/ghost-link/src/rpc_tls.rs`): `spawn_client_proxy`/`run_client_proxy` bind a local plaintext listener and wrap each connection in TLS (`InsecureVerifier`; authentication remains the HMAC admission handshake) so `llama-server --rpc` can talk to a TLS-enabled contributor. Wired into `handle_gui_model_load`.
 - **Contributor advertising race fix** (`crates/ghost-link/src/main.rs`): poll `is_contributing_healthy()` (10×600ms) before advertising the node, so `rpc_port` is broadcast only once the child has bound.
 - **RPC admission TTL 30s → 300s** (`crates/ghost-link/src/rpc_cluster.rs`): covers 30B-class model load times.
