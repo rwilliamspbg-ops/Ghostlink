@@ -4,7 +4,6 @@ version = "2.6.0"
 edition = "2021"
 authors = ["Ryan K Williams"]
 description = "CLI and API runtime for Ghostlink, a distributed inference fabric for routing and scheduling custom LLM workloads across heterogeneous hardware."
-homepage = "https://rwilliamspbg-ops.github.io/Ghostlink/"
 documentation = "https://rwilliamspbg-ops.github.io/Ghostlink/"
 repository = "https://github.com/rwilliamspbg-ops/Ghostlink"
 readme = "README.md"
