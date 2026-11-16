@@ -59,3 +59,14 @@ jobs:
           grep -q "cargo test --workspace" TESTING.md
           grep -q "cargo clippy --workspace --all-targets -- -D warnings" TESTING.md
           grep -q "scripts/verify_hf_models.py" TESTING.md
+
+      - name: Verify published version strings match the manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(sed -n 's/^version = "\(.*\)"$/\1/p' crates/ghost-link/Cargo.toml | head -1)"
+          echo "manifest version: ${version}"
+          grep -q "version-${version}-blueviolet" README.md
+          grep -q "v${version}" docs/index.html
+          grep -qF "## [${version}]" CHANGELOG.md
+          echo "README badge, Pages eyebrow, and CHANGELOG header all match ${version}"

@@ -112,8 +112,15 @@ hand-edit around it.
 5. Push and open `release/2.7.0` → `main` with the Release Rubric checklist.
 6. Merge. The push to `main` triggers `tag-release-on-main.yml`, which validates
    lockstep and creates/pushes `v2.7.0` **at the `main` tip** (the merge commit).
-7. Tag `v2.7.0` triggers `publish-crates.yml`, `publish-sdks.yml`, and
-   `release-artifacts.yml` (crates.io, npm, PyPI, GitHub Release + SHA256SUMS +
+7. Dispatch the publish workflows against the tag — the tag alone does not start
+   them (the automation creates it with `GITHUB_TOKEN`, and GitHub does not run
+   further workflows from `GITHUB_TOKEN` pushes):
+   ```bash
+   gh workflow run publish-crates.yml    --repo rwilliamspbg-ops/Ghostlink --ref v2.7.0
+   gh workflow run publish-sdks.yml      --repo rwilliamspbg-ops/Ghostlink --ref v2.7.0
+   gh workflow run release-artifacts.yml --repo rwilliamspbg-ops/Ghostlink --ref v2.7.0
+   ```
+   These publish to crates.io, npm, PyPI, and the GitHub Release (+ SHA256SUMS +
    SBOM).
 
 ### Tag-integrity checks
