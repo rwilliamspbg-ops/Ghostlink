@@ -106,14 +106,32 @@ If a status document is no longer current, move it to `docs/archive/` and update
 
 1. **Version Consistency**: Release PRs must bump product version across all publishable manifests to `X.Y.Z` (`crates/ghostlink-core/Cargo.toml`, `crates/ghost-link/Cargo.toml`, `ghostlink_gui_modern/package.json`, `sdks/js/package.json`, `sdks/python/pyproject.toml`) and `CHANGELOG.md` (`## [X.Y.Z] - YYYY-MM-DD`).
 2. **Automated Tagging**: Upon merging a release PR to `main`, `.github/workflows/tag-release-on-main.yml` validates version consistency across all manifests and creates/pushes tag `vX.Y.Z`.
-3. **Publish Workflows**: Tag `vX.Y.Z` automatically triggers:
+3. **Publish Workflows** (manual dispatch): the tag is created by the automation
+   as `github-actions[bot]` with the workflow's `GITHUB_TOKEN`, and GitHub does
+   **not** start further workflows from `GITHUB_TOKEN` pushes — so the tag alone
+   does not publish anything. Dispatch each workflow against the tag:
+
+   ```bash
+   gh workflow run publish-crates.yml    --repo <owner>/<repo> --ref vX.Y.Z
+   gh workflow run publish-sdks.yml      --repo <owner>/<repo> --ref vX.Y.Z
+   gh workflow run release-artifacts.yml --repo <owner>/<repo> --ref vX.Y.Z
+   ```
+
    - `.github/workflows/publish-crates.yml` (crates.io publication for `ghostlink-core` and `ghost-link`)
    - `.github/workflows/publish-sdks.yml` (npm and PyPI publication for JavaScript and Python SDKs)
    - `.github/workflows/release-artifacts.yml` (GitHub Release asset bundles, SHA256SUMS, SBOM, provenance)
-4. **Manual Tag Fallback**: If workflow permissions prevent automatic tagging on main, create and push the tag manually:
+
+   Each workflow opens with a "Require a tag ref" guard that fails loudly if it
+   is dispatched against a branch instead of the tag.
+4. **Manual Tag Fallback**: If workflow permissions prevent automatic tagging on
+   main, create and push the tag manually — on **`main`'s merge commit**, never
+   the release-branch tip:
    ```bash
-   git tag -a v2.4.0 -m "Ghostlink 2.4.0" && git push origin v2.4.0
+   git fetch origin
+   git checkout main && git pull --ff-only origin main
+   git tag -a vX.Y.Z -m "Ghostlink vX.Y.Z" && git push origin vX.Y.Z
    ```
+   Then dispatch the three publish workflows as in step 3.
 
 ## Release Rubric
 

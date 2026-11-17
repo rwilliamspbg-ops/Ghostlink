@@ -11,7 +11,7 @@ Route workloads across CPU, GPU, and NPU resources with explicit scheduling, har
 [![MSRV](https://github.com/rwilliamspbg-ops/Ghostlink/actions/workflows/msrv.yml/badge.svg)](https://github.com/rwilliamspbg-ops/Ghostlink/actions/workflows/msrv.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Docs](https://img.shields.io/badge/Docs-GitHub%20Pages-0ea5e9)](https://rwilliamspbg-ops.github.io/Ghostlink/)
-[![Version](https://img.shields.io/badge/version-2.4.0-blueviolet)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-2.7.0-blueviolet)](CHANGELOG.md)
 [![Rust](https://img.shields.io/badge/Rust-2021-orange?logo=rust)](Cargo.toml)
 [![Platforms](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey)](#quick-start)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
@@ -111,7 +111,7 @@ ghost-link doctor --strict         # sanity-check your setup
 ghost-link serve 127.0.0.1 8003    # start the OpenAI-compatible API server
 ```
 
-Both scripts accept `VERSION=v2.4.0` (env var) to pin a specific release
+Both scripts accept `VERSION=v2.7.0` (env var) to pin a specific release
 instead of latest, and print PATH guidance if the install directory isn't
 already on it. Source for both lives at
 [`scripts/install.sh`](scripts/install.sh) and
@@ -125,10 +125,9 @@ the `ghost-link` binary, its checksums, and an SBOM are (see
 [`scripts/release_bundle.sh`](scripts/release_bundle.sh)). The one-line
 install gets you the CLI and OpenAI-compatible API server; for the full
 browser GUI, use the build-from-source or Docker paths below. Release
-binaries are also **x86_64/amd64-only** — tagged release installers are x86_64-only
-(though arm64 CI workflow artifacts exist on GitHub Actions workflow runs), and
-both scripts detect and refuse non-x86_64 hosts rather than silently
-handing you a binary that won't run.
+binaries cover x86_64 and arm64 on Linux and macOS and x86_64 on Windows;
+both install scripts detect the host architecture and fetch the matching
+tarball.
 
 ### Build from source (full stack, including the GUI)
 
@@ -620,19 +619,19 @@ CI enforces the same checks across Ubuntu, Windows, and macOS.
 
 Ghostlink is positioned as a launch-ready open-source foundation with a strong demo story and public-facing collateral.
 
-*Note: `main` branch development is at `v2.4.0`.*
-To publish: tag v2.4.0 and push; do not claim the GitHub Release exists in this PR.
+*Note: `main` branch development is at `v2.7.0`.*
+To publish: merge the release PR, then dispatch the publish workflows against the new tag (see [CONTRIBUTING.md](CONTRIBUTING.md#tag--release-publication-flow)).
 
 ### Current Strengths
 - **Verified VRAM/RAM Capacity Splitting**: Real cross-machine tensor splitting via `ggml-rpc` allows loading models too large for any single machine alone (e.g. 30B-class MoE models).
 - **Hardened Cluster Security**: Scoped API key access control (`owner`, `operator`, `inference`, `viewer`), HMAC-SHA256 discovery authentication, and `rpc_shared_secret` nonce challenge peer admission.
 - **Resilient Contributor Process Lifecycle**: `ggml-rpc-server` is actively supervised by `RpcSupervisor`; if a worker crashes, discovery advertisement is revoked immediately and active requests fail/drain cleanly.
 - **Zero-Config Developer Launcher**: One-command setup (`launch.sh` / `launch.bat`) manages builds, services, and the Web GUI with built-in Monaco editor and MCP tools.
+- **arm64 Release Binaries**: release builds cover `aarch64-unknown-linux-gnu` and `aarch64-apple-darwin` alongside x86_64, and `install.sh` / `install.ps1` detect the host architecture and fetch the matching tarball.
 
 ### Remaining Known Gaps
-- **arm64 Prebuilt Release Binaries**: Prebuilt arm64 CI workflow artifacts (`aarch64-unknown-linux-gnu` and `aarch64-apple-darwin`) are built and uploaded on GitHub Actions CI runs; tagged release installer downloads remain x86_64-only for now.
 - **GUI & Control Plane Release Packaging**: Prebuilt binaries package the core Rust engine (`ghost-link`); the Go control plane (`control-plane`) and React GUI (`ghostlink_gui_modern`) run via source/launchers.
-- **RPC Byte Stream Unencrypted**: `rpc_shared_secret` authenticates peer admission at the boundary, but the underlying `ggml-rpc` byte stream itself remains plain TCP without transport-layer encryption.
+- **Inter-Node mTLS**: `rpc_shared_secret` authenticates peer admission at the boundary, and `enable_rpc_tls` adds opt-in TLS termination for contributor RPC, but mutually authenticated TLS between fabric nodes is not implemented (see [docs/SECURITY_MODEL.md](docs/SECURITY_MODEL.md)).
 - **Usable Multi-Node Speed Unproven**: While cross-machine VRAM capacity splitting is verified, high tokens-per-second throughput on network-bound split layers and zero-touch cluster orchestration across arbitrary networks are still in progress (see [docs/BENCHMARKS.md](docs/BENCHMARKS.md)).
 
 **Public launch assets:**
